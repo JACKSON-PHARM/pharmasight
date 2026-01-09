@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PharmaSight - Pharmacy Management System</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-page="dashboard">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-page="items">
+                    <i class="fas fa-box"></i>
+                    <span>Items</span>
+                </a>
+                <a href="#" class="nav-item" data-page="sales">
+                    <i class="fas fa-shopping-cart"></i>
+                    <span>Sales</span>
+                </a>
+                <a href="#" class="nav-item" data-page="purchases">
+                    <i class="fas fa-shopping-bag"></i>
+                    <span>Purchases</span>
+                </a>
+                <a href="#" class="nav-item" data-page="inventory">
+                    <i class="fas fa-warehouse"></i>
+                    <span>Inventory</span>
+                </a>
+                <a href="#" class="nav-item" data-page="expenses">
+                    <i class="fas fa-money-bill-wave"></i>
+                    <span>Expenses</span>
+                </a>
+                <a href="#" class="nav-item" data-page="reports">
+                    <i class="fas fa-chart-bar"></i>
+                    <span>Reports</span>
+                </a>
+                <a href="#" class="nav-item" data-page="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <i class="fas fa-user-circle"></i>
+                    <span id="username">Admin</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <header class="top-bar">
+                <button class="menu-toggle" id="menuToggle">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <div class="top-bar-right">
+                    <button class="btn btn-primary" id="newSaleBtn" style="display: none;">
+                        <i class="fas fa-plus"></i> New Sale
+                    </button>
+                    <button class="btn btn-primary" id="newPurchaseBtn" style="display: none;">
+                        <i class="fas fa-plus"></i> New Purchase
+                    </button>
+                </div>
+            </header>
+
+            <!-- Page Content -->
+            <div class="page-content" id="pageContent">
+                <!-- Dashboard will be loaded here -->
+                <div id="dashboard" class="page active">
+                    <h2>Dashboard</h2>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-box"></i></div>
+                            <div class="stat-info">
+                                <h3 id="totalItems">0</h3>
+                                <p>Total Items</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-warehouse"></i></div>
+                            <div class="stat-info">
+                                <h3 id="totalStock">0</h3>
+                                <p>Total Stock Value</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-shopping-cart"></i></div>
+                            <div class="stat-info">
+                                <h3 id="todaySales">0</h3>
+                                <p>Today's Sales</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-exclamation-triangle"></i></div>
+                            <div class="stat-info">
+                                <h3 id="expiringItems">0</h3>
+                                <p>Expiring Soon</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Other pages will be loaded dynamically -->
+                <div id="items" class="page"></div>
+                <div id="sales" class="page"></div>
+                <div id="purchases" class="page"></div>
+                <div id="inventory" class="page"></div>
+                <div id="expenses" class="page"></div>
+                <div id="reports" class="page"></div>
+                <div id="settings" class="page"></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div id="modalOverlay" class="modal-overlay" style="display: none;">
+        <div class="modal" id="modal">
+            <!-- Modal content will be inserted here -->
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="js/config.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/app.js"></script>
+    <script src="js/pages/dashboard.js"></script>
+    <script src="js/pages/items.js"></script>
+    <script src="js/pages/sales.js"></script>
+    <script src="js/pages/purchases.js"></script>
+    <script src="js/pages/inventory.js"></script>
+    <script src="js/pages/settings.js"></script>
+</body>
+</html>
+

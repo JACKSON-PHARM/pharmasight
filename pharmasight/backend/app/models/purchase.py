@@ -1,0 +1,109 @@
+"""
+Purchase models (GRN and Purchase Invoices)
+"""
+from sqlalchemy import Column, String, Numeric, Date, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from sqlalchemy.types import TIMESTAMP
+import uuid
+from app.database import Base
+
+
+class GRN(Base):
+    """Goods Received Note"""
+    __tablename__ = "grns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=False)
+    grn_no = Column(String(100), nullable=False)
+    date_received = Column(Date, nullable=False)
+    total_cost = Column(Numeric(20, 4), default=0)
+    notes = Column(Text)
+    created_by = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    # Relationships
+    company = relationship("Company")
+    branch = relationship("Branch")
+    supplier = relationship("Supplier")
+    items = relationship("GRNItem", back_populates="grn", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        {"comment": "GRN updates stock and cost. VAT is handled separately in Purchase Invoice."},
+    )
+
+
+class GRNItem(Base):
+    """GRN line items"""
+    __tablename__ = "grn_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    grn_id = Column(UUID(as_uuid=True), ForeignKey("grns.id", ondelete="CASCADE"), nullable=False)
+    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id"), nullable=False)
+    unit_name = Column(String(50), nullable=False)  # Purchase unit (box, carton, etc.)
+    quantity = Column(Numeric(20, 4), nullable=False)  # In purchase unit
+    unit_cost = Column(Numeric(20, 4), nullable=False)  # Cost per purchase unit
+    batch_number = Column(String(200))
+    expiry_date = Column(Date)
+    total_cost = Column(Numeric(20, 4), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    # Relationships
+    grn = relationship("GRN", back_populates="items")
+    item = relationship("Item")
+
+
+class PurchaseInvoice(Base):
+    """Purchase Invoice (VAT Input)"""
+    __tablename__ = "purchase_invoices"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=False)
+    invoice_number = Column(String(100), nullable=False)  # Supplier's invoice number
+    pin_number = Column(String(100))  # Supplier's PIN
+    invoice_date = Column(Date, nullable=False)
+    linked_grn_id = Column(UUID(as_uuid=True), ForeignKey("grns.id"))
+    total_exclusive = Column(Numeric(20, 4), default=0)
+    vat_rate = Column(Numeric(5, 2), default=16.00)
+    vat_amount = Column(Numeric(20, 4), default=0)
+    total_inclusive = Column(Numeric(20, 4), default=0)
+    created_by = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    # Relationships
+    company = relationship("Company")
+    branch = relationship("Branch")
+    supplier = relationship("Supplier")
+    linked_grn = relationship("GRN")
+    items = relationship("PurchaseInvoiceItem", back_populates="purchase_invoice", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        {"comment": "VAT input claim. Separate from GRN for KRA compliance."},
+    )
+
+
+class PurchaseInvoiceItem(Base):
+    """Purchase Invoice line items"""
+    __tablename__ = "purchase_invoice_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    purchase_invoice_id = Column(UUID(as_uuid=True), ForeignKey("purchase_invoices.id", ondelete="CASCADE"), nullable=False)
+    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id"), nullable=False)
+    unit_name = Column(String(50), nullable=False)
+    quantity = Column(Numeric(20, 4), nullable=False)
+    unit_cost_exclusive = Column(Numeric(20, 4), nullable=False)
+    vat_rate = Column(Numeric(5, 2), default=16.00)
+    vat_amount = Column(Numeric(20, 4), default=0)
+    line_total_exclusive = Column(Numeric(20, 4), nullable=False)
+    line_total_inclusive = Column(Numeric(20, 4), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    # Relationships
+    purchase_invoice = relationship("PurchaseInvoice", back_populates="items")
+    item = relationship("Item")
+
