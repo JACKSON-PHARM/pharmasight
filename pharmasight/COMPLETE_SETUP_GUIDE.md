@@ -185,21 +185,34 @@ Fill in these **exact** settings:
 
 ### Step 3.4: Add Environment Variables
 
-Click **Add Environment Variable** for each:
+**Quick Method**: Open `RENDER_ENV_COPY_PASTE.txt` in this project for copy-paste ready values!
+
+**Manual Entry**: Click **Add Environment Variable** for each:
 
 | Key | Value | Secret? |
 |-----|-------|---------|
 | `DATABASE_URL` | `postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres` | ✅ Yes |
 | `DEBUG` | `False` | No |
-| `SECRET_KEY` | Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"` | ✅ Yes |
+| `SECRET_KEY` | Generate with script (see below) | ✅ Yes |
 | `CORS_ORIGINS` | `*` | No |
 
 **How to generate SECRET_KEY:**
+
+**Windows:**
+- Double-click `generate-secret-key.bat`, OR
+- Run: `python generate-secret-key.py`, OR
+- Run: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+
+**Mac/Linux:**
 ```bash
+python generate-secret-key.py
+# Or
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Copy the output and paste as `SECRET_KEY` value.
+Copy the output and paste as `SECRET_KEY` value in Render.
+
+**📝 Detailed instructions**: See `RENDER_ENV_SETUP.md` for complete guide.
 
 ### Step 3.5: Deploy
 

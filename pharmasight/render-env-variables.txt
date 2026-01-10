@@ -1,0 +1,54 @@
+# Render Environment Variables - Copy and Paste into Render Dashboard
+# 
+# INSTRUCTIONS:
+# 1. Go to Render Dashboard → Your Service → Environment
+# 2. For each variable below, click "Add Environment Variable"
+# 3. Copy the KEY and VALUE exactly as shown
+# 4. Mark sensitive variables (DATABASE_URL, SECRET_KEY) as "Secret" by clicking the lock icon
+#
+# IMPORTANT: Generate a new SECRET_KEY for production (see command below)
+
+# ============================================
+# REQUIRED VARIABLES
+# ============================================
+
+KEY: DATABASE_URL
+VALUE: postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+SECRET: YES ✅ (Mark as secret)
+
+KEY: DEBUG
+VALUE: False
+SECRET: NO
+
+KEY: SECRET_KEY
+VALUE: [GENERATE BELOW - Use the command: python -c "import secrets; print(secrets.token_urlsafe(32))"]
+SECRET: YES ✅ (Mark as secret)
+
+KEY: CORS_ORIGINS
+VALUE: *
+SECRET: NO
+
+# ============================================
+# OPTIONAL VARIABLES (if needed later)
+# ============================================
+
+# KEY: SUPABASE_URL
+# VALUE: https://kwvkkbofubsjiwqlqakt.supabase.co
+# SECRET: NO
+
+# KEY: SUPABASE_KEY
+# VALUE: [Get from Supabase Dashboard → Settings → API → anon/public key]
+# SECRET: YES ✅
+
+# ============================================
+# HOW TO GENERATE SECRET_KEY
+# ============================================
+#
+# Run this command in terminal:
+# python -c "import secrets; print(secrets.token_urlsafe(32))"
+#
+# Copy the output and paste as SECRET_KEY value in Render
+#
+# Example output: xK9mP2qR7vL4nJ8hT5wY3zA6bC1dE0fG
+#
+

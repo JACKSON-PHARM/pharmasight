@@ -1,0 +1,77 @@
+========================================
+RENDER ENVIRONMENT VARIABLES - COPY & PASTE
+========================================
+Copy each section below and paste into Render Dashboard → Environment Variables
+
+========================================
+VARIABLE 1: DATABASE_URL
+========================================
+KEY:
+DATABASE_URL
+
+VALUE:
+postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+
+MARK AS SECRET: YES (click lock icon 🔒)
+
+========================================
+VARIABLE 2: DEBUG
+========================================
+KEY:
+DEBUG
+
+VALUE:
+False
+
+MARK AS SECRET: NO
+
+========================================
+VARIABLE 3: SECRET_KEY
+========================================
+KEY:
+SECRET_KEY
+
+VALUE:
+[GENERATE USING COMMAND BELOW - then paste here]
+
+GENERATE COMMAND (run in terminal):
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+Or run: python generate-secret-key.py
+
+MARK AS SECRET: YES (click lock icon 🔒)
+
+========================================
+VARIABLE 4: CORS_ORIGINS
+========================================
+KEY:
+CORS_ORIGINS
+
+VALUE:
+*
+
+MARK AS SECRET: NO
+
+========================================
+QUICK GENERATE SECRET_KEY (Windows PowerShell)
+========================================
+Run this command:
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+Or:
+cd pharmasight
+python generate-secret-key.py
+
+Copy the output and use as SECRET_KEY value above.
+
+========================================
+INSTRUCTIONS
+========================================
+1. Go to Render Dashboard → Your Service → Environment
+2. Click "Add Environment Variable" for each variable above
+3. Copy KEY and VALUE exactly as shown
+4. Mark DATABASE_URL and SECRET_KEY as Secret (lock icon)
+5. Save and redeploy
+
+========================================
+
