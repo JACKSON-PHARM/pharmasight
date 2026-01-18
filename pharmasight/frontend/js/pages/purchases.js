@@ -1,9 +1,14 @@
 // Purchases Page - Document Management (Purchase Orders, Invoices, Credit Notes)
 
+// Immediate verification that script is executing
+console.log('✅ purchases.js script loaded');
+console.log('✅ Script execution started at:', new Date().toISOString());
+
 let currentPurchaseSubPage = 'orders'; // 'orders', 'invoices', 'credit-notes', 'create'
 let purchaseDocuments = [];
 let currentDocument = null;
 let documentItems = [];
+let allSuppliers = [];
 
 // Initialize purchases page
 async function loadPurchases() {
@@ -15,18 +20,32 @@ async function loadPurchases() {
     }
     
     // Show the page
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => {
+        p.classList.remove('active');
+        p.style.display = 'none';
+        p.style.visibility = 'hidden';
+    });
     page.classList.add('active');
+    page.style.display = 'block';
+    page.style.visibility = 'visible';
     
-    if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
+    // Check CONFIG availability (defensive check)
+    if (typeof window === 'undefined' || !window.CONFIG) {
+        console.error('CONFIG not available! Waiting for config.js to load...');
+        setTimeout(() => loadPurchases(), 500);
+        return;
+    }
+    
+    if (!window.CONFIG.COMPANY_ID || !window.CONFIG.BRANCH_ID) {
         console.warn('Company or Branch not configured');
         page.innerHTML = '<div class="card"><p>Please configure Company and Branch in Settings</p></div>';
         return;
     }
     
     console.log('Loading purchase sub-page:', currentPurchaseSubPage);
-    // Load sub-page based on current selection
-    await loadPurchaseSubPage(currentPurchaseSubPage);
+    // Load sub-page based on current selection (default to 'orders' if not set)
+    const subPageToLoad = currentPurchaseSubPage || 'orders';
+    await loadPurchaseSubPage(subPageToLoad);
 }
 
 // Load specific sub-page
@@ -41,8 +60,14 @@ async function loadPurchaseSubPage(subPage) {
     }
     
     // Ensure page is visible
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => {
+        p.classList.remove('active');
+        p.style.display = 'none';
+        p.style.visibility = 'hidden';
+    });
     page.classList.add('active');
+    page.style.display = 'block';
+    page.style.visibility = 'visible';
     
     switch(subPage) {
         case 'orders':
@@ -77,9 +102,13 @@ function renderPurchaseOrdersShell() {
     console.log('renderPurchaseOrdersShell() called - rendering page shell');
     const page = document.getElementById('purchases');
     if (!page) {
-        console.error('Purchases page element not found!');
+        console.error('Purchases page element not found in renderPurchaseOrdersShell!');
         return;
     }
+    
+    // Ensure page is visible before rendering
+    page.style.display = 'block';
+    page.style.visibility = 'visible';
     
     // Default to today's date
     const today = new Date().toISOString().split('T')[0];
@@ -110,7 +139,7 @@ function renderPurchaseOrdersShell() {
                         <input type="date" 
                                class="form-input" 
                                id="filterDateFrom" 
-                               value="${today}"
+                               placeholder="All dates"
                                onchange="if(window.applyDateFilter) window.applyDateFilter()"
                                style="width: 150px;">
                     </div>
@@ -119,7 +148,7 @@ function renderPurchaseOrdersShell() {
                         <input type="date" 
                                class="form-input" 
                                id="filterDateTo" 
-                               value="${today}"
+                               placeholder="All dates"
                                onchange="if(window.applyDateFilter) window.applyDateFilter()"
                                style="width: 150px;">
                     </div>
@@ -152,13 +181,14 @@ function renderPurchaseOrdersShell() {
                                 <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">AcctName</th>
                                 <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Branch</th>
                                 <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Status</th>
+                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">User</th>
                                 <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="purchaseOrdersTableBody">
                             <!-- Loading state in tbody -->
                             <tr>
-                                <td colspan="10" style="padding: 3rem; text-align: center;">
+                                <td colspan="11" style="padding: 3rem; text-align: center;">
                                     <div class="spinner" style="margin: 0 auto 1rem;"></div>
                                     <p style="color: var(--text-secondary);">Loading documents...</p>
                                 </td>
@@ -246,7 +276,7 @@ function renderPurchaseOrdersTableBody() {
         branch: doc.branch_name || '—',
         curr: 'Kshs',
         status: doc.status || 'PENDING',
-        doneBy: '—',
+        doneBy: doc.created_by_name || '—', // Show user name
         id: doc.id
     }));
     
@@ -257,7 +287,12 @@ function renderPurchaseOrdersTableBody() {
         return `
             <tr style="cursor: pointer;" onclick="if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')">
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    <strong style="color: var(--primary-color);">${doc.docNumber}</strong>
+                    <strong style="color: var(--primary-color); cursor: pointer; text-decoration: underline;" 
+                            onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')"
+                            onmouseover="this.style.textDecoration='underline'; this.style.color='var(--primary-dark, #0056b3)'"
+                            onmouseout="this.style.color='var(--primary-color)'">
+                        ${doc.docNumber}
+                    </strong>
                 </td>
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                     ${formatDate(doc.docDate)}
@@ -274,12 +309,20 @@ function renderPurchaseOrdersTableBody() {
                     <span class="badge ${statusClass}">${statusText}</span>
                 </td>
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                    ${doc.doneBy || '—'}
+                </td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                     <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')" title="View">
                         <i class="fas fa-eye"></i>
                     </button>
+                    ${statusText === 'PENDING' ? `
                     <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.editPurchaseDocument) window.editPurchaseDocument('${doc.id}', '${docType}')" title="Edit">
                         <i class="fas fa-edit"></i>
                     </button>
+                    <button class="btn btn-outline btn-danger" onclick="event.stopPropagation(); if(window.deletePurchaseOrder) window.deletePurchaseOrder('${doc.id}')" title="Delete">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                    ` : ''}
                 </td>
             </tr>
         `;
@@ -292,11 +335,36 @@ function renderPurchaseOrdersTableBody() {
 async function renderPurchaseOrdersPage() {
     console.log('renderPurchaseOrdersPage() called');
     
-    // Step 1: ALWAYS render shell first (synchronous)
-    renderPurchaseOrdersShell();
-    
-    // Step 2: Then fetch and render data (async)
-    await fetchAndRenderPurchaseOrdersData();
+    try {
+        // Ensure page element exists and is visible
+        const page = document.getElementById('purchases');
+        if (!page) {
+            console.error('❌ Purchases page element not found in renderPurchaseOrdersPage!');
+            return;
+        }
+        
+        // Step 1: ALWAYS render shell first (synchronous)
+        renderPurchaseOrdersShell();
+        
+        // Verify shell was rendered
+        if (!page.innerHTML || page.innerHTML.trim() === '') {
+            console.error('❌ Page shell was not rendered! Retrying...');
+            // Retry once
+            setTimeout(() => {
+                renderPurchaseOrdersShell();
+            }, 100);
+        }
+        
+        // Step 2: Then fetch and render data (async)
+        await fetchAndRenderPurchaseOrdersData();
+    } catch (error) {
+        console.error('❌ Error in renderPurchaseOrdersPage:', error);
+        // Fallback: render shell even if there's an error
+        const page = document.getElementById('purchases');
+        if (page && (!page.innerHTML || page.innerHTML.trim() === '')) {
+            renderPurchaseOrdersShell();
+        }
+    }
 }
 
 // =====================================================
@@ -592,21 +660,23 @@ async function loadPurchaseDocuments(documentType = 'order') {
             return;
         }
         
-        // Get filter values (default to today)
-        const today = new Date().toISOString().split('T')[0];
-        const dateFrom = document.getElementById('filterDateFrom')?.value || today;
-        const dateTo = document.getElementById('filterDateTo')?.value || today;
+        // Get filter values (default to all dates if not set - don't restrict to today)
+        const dateFromEl = document.getElementById('filterDateFrom');
+        const dateToEl = document.getElementById('filterDateTo');
+        const dateFrom = dateFromEl?.value || null; // Don't default to today - show all orders
+        const dateTo = dateToEl?.value || null;
         const supplierId = document.getElementById('filterSupplier')?.value || null;
         const status = document.getElementById('filterStatus')?.value || null;
         
         if (documentType === 'order') {
             // Load purchase orders
             const params = {
-                company_id: CONFIG.COMPANY_ID,
-                date_from: dateFrom,
-                date_to: dateTo
+                company_id: CONFIG.COMPANY_ID
             };
             if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+            // Only add date filters if explicitly set
+            if (dateFrom) params.date_from = dateFrom;
+            if (dateTo) params.date_to = dateTo;
             if (supplierId) params.supplier_id = supplierId;
             if (status) params.status = status;
             
@@ -743,9 +813,11 @@ function clearDateFilter() {
 
 // Create new Purchase Order (Navigate to create page)
 function createNewPurchaseOrder() {
-    console.log('createNewPurchaseOrder()');
+    console.log('createNewPurchaseOrder() called');
+    // Reset document state for new order
     currentDocument = { type: 'order', items: [] };
     documentItems = [];
+    // Navigate to create page
     loadPurchaseSubPage('create');
 }
 
@@ -758,14 +830,20 @@ if (typeof window !== 'undefined') {
 function createNewPurchaseInvoice() {
     currentDocument = { type: 'invoice', items: [] };
     documentItems = [];
-    showPurchaseDocumentForm('invoice');
+    // TODO: Implement invoice creation page
+    showToast('Purchase invoice creation coming soon', 'info');
+    // For now, redirect to create page (will show order form - to be updated)
+    loadPurchaseSubPage('create');
 }
 
 // Create new Credit Note
 function createNewCreditNote() {
     currentDocument = { type: 'credit-note', items: [] };
     documentItems = [];
-    showPurchaseDocumentForm('credit-note');
+    // TODO: Implement credit note creation page
+    showToast('Credit note creation coming soon', 'info');
+    // For now, redirect to create page (will show order form - to be updated)
+    loadPurchaseSubPage('create');
 }
 
 // Render Create Purchase Order Page (NOT a modal)
@@ -778,25 +856,58 @@ async function renderCreatePurchaseOrderPage() {
         return;
     }
     
-    // Reset document state
-    currentDocument = { type: 'order', items: [] };
-    documentItems = [];
+    // Check if we're editing an existing document
+    const isEditMode = currentDocument && currentDocument.id;
+    const orderId = currentDocument?.id || null;
+    
+    // If not editing, reset document state
+    if (!isEditMode) {
+        currentDocument = { type: 'order', items: [] };
+        documentItems = [];
+    }
     
     const today = new Date().toISOString().split('T')[0];
+    
+    // Prepare buttons for top bar based on mode
+    const topButtonsHtml = isEditMode ? `
+        <button type="button" class="btn btn-primary btn-save-order" onclick="if(window.updatePurchaseOrder) { const form = document.getElementById('purchaseDocumentForm'); if(form) updatePurchaseOrder({preventDefault:()=>{},target:form}, '${orderId}'); }">
+            <i class="fas fa-save"></i> Save
+        </button>
+        <button type="button" class="btn btn-outline" onclick="showToast('Batch functionality coming soon', 'info')" title="Batch">
+            <i class="fas fa-layer-group"></i> Batch
+        </button>
+        <button type="button" class="btn btn-outline" onclick="if(window.printPurchaseOrder) window.printPurchaseOrder('${orderId}')" title="Print">
+            <i class="fas fa-print"></i> Print
+        </button>
+        <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deletePurchaseOrder) window.deletePurchaseOrder('${orderId}')" title="Delete">
+            <i class="fas fa-trash"></i> Delete
+        </button>
+        <button type="button" class="btn btn-secondary" onclick="loadPurchaseSubPage('orders')">
+            <i class="fas fa-arrow-left"></i> Back
+        </button>
+    ` : `
+        <button type="submit" class="btn btn-primary" form="purchaseDocumentForm">
+            <i class="fas fa-save"></i> Save
+        </button>
+        <button type="button" class="btn btn-secondary" onclick="loadPurchaseSubPage('orders')">
+            <i class="fas fa-arrow-left"></i> Back
+        </button>
+    `;
     
     page.innerHTML = `
         <div class="card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
                 <h3 class="card-title" style="margin: 0; font-size: 1.5rem;">
-                    <i class="fas fa-file-invoice"></i> Create Purchase Order
+                    <i class="fas fa-file-invoice"></i> ${isEditMode ? 'Edit' : 'Create'} Purchase Order
+                    ${isEditMode && currentDocument.order_number ? `: ${currentDocument.order_number}` : ''}
                 </h3>
-                <button class="btn btn-outline" onclick="loadPurchaseSubPage('orders')">
-                    <i class="fas fa-arrow-left"></i> Back to Orders
-                </button>
+                <div style="display: flex; gap: 0.5rem;">
+                    ${topButtonsHtml}
+                </div>
             </div>
             
             <div class="card-body" style="padding: 1.5rem;">
-                <form id="purchaseDocumentForm" onsubmit="savePurchaseDocument(event, 'order')">
+                <form id="purchaseDocumentForm" ${isEditMode ? '' : 'onsubmit="savePurchaseDocument(event, \'order\')"'} >
                     <!-- Document Header -->
                     <div class="card" style="margin-bottom: 1.5rem;">
                         <div class="card-header">
@@ -850,16 +961,6 @@ async function renderCreatePurchaseOrderPage() {
                             <!-- TransactionItemsTable component will render here -->
                         </div>
                     </div>
-                    
-                    <!-- Form Actions -->
-                    <div style="display: flex; gap: 1rem; justify-content: flex-end; padding-top: 1rem; border-top: 1px solid var(--border-color);">
-                        <button type="button" class="btn btn-secondary" onclick="loadPurchaseSubPage('orders')">
-                            Cancel
-                        </button>
-                        <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-save"></i> Save Purchase Order
-                        </button>
-                    </div>
                 </form>
             </div>
         </div>
@@ -867,6 +968,19 @@ async function renderCreatePurchaseOrderPage() {
     
     // Initialize TransactionItemsTable component
     initializeTransactionItemsTable();
+    
+    // Set form submit handler for edit mode (after form is rendered)
+    if (isEditMode && orderId) {
+        setTimeout(() => {
+            const form = document.getElementById('purchaseDocumentForm');
+            if (form) {
+                form.onsubmit = (e) => {
+                    e.preventDefault();
+                    updatePurchaseOrder(e, orderId);
+                };
+            }
+        }, 100);
+    }
 }
 
 // Initialize TransactionItemsTable component
@@ -894,25 +1008,33 @@ function initializeTransactionItemsTable() {
         }))
         : [];
     
-    // Create component instance
-    transactionItemsTable = new TransactionItemsTable('transactionItemsContainer', {
+    // Create component instance with new API
+    transactionItemsTable = new window.TransactionItemsTable({
+        mountEl: container,
         mode: 'purchase',
         items: items,
+        priceType: 'purchase_price',
         onItemsChange: (validItems) => {
             // Update documentItems
             documentItems = validItems.map(item => ({
                 item_id: item.item_id,
                 item_name: item.item_name,
                 item_sku: item.item_sku,
+                item_code: item.item_code || item.item_sku,
                 unit_name: item.unit_name,
                 quantity: item.quantity,
                 unit_price: item.unit_price,
+                discount_percent: item.discount_percent || 0,
                 total: item.total
             }));
         },
         onTotalChange: (total) => {
             // Update total display (if needed elsewhere)
             console.log('Total changed:', total);
+        },
+        onItemCreate: (query, rowIndex, callback) => {
+            // Show option to create item
+            showToast(`To create item "${query}", please go to Items page`, 'info');
         }
     });
     
@@ -1072,22 +1194,51 @@ function handleSupplierSearchBlur(event) {
 // Removed old table rendering functions - now handled by TransactionItemsTable component
 
 // Save purchase document
+let isSavingDocument = false; // Flag to prevent duplicate submissions
+let isDeletingOrder = false; // Flag to prevent duplicate delete operations
+
 async function savePurchaseDocument(event, documentType) {
     console.log('savePurchaseDocument()');
     
     event.preventDefault();
+    
+    // Prevent duplicate submissions
+    if (isSavingDocument) {
+        showToast('Please wait, order is being saved...', 'warning');
+        return;
+    }
+    
     const form = event.target;
+    const submitButton = form.querySelector('button[type="submit"]');
+    
+    // Disable submit button and set flag
+    isSavingDocument = true;
+    if (submitButton) {
+        submitButton.disabled = true;
+        submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+    }
+    
     const formData = new FormData(form);
     
     // Get items from component
     const items = transactionItemsTable ? transactionItemsTable.getItems() : [];
     
     if (items.length === 0) {
+        isSavingDocument = false;
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.innerHTML = '<i class="fas fa-save"></i> Save Purchase Order';
+        }
         showToast('Please add at least one item', 'warning');
         return;
     }
     
     if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
+        isSavingDocument = false;
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.innerHTML = '<i class="fas fa-save"></i> Save Purchase Order';
+        }
         showToast('Company and Branch must be configured', 'error');
         return;
     }
@@ -1129,6 +1280,7 @@ async function savePurchaseDocument(event, documentType) {
         documentItems = [];
         currentDocument = null;
         transactionItemsTable = null;
+        isSavingDocument = false; // Reset flag
         
         // Navigate back
         if (documentType === 'order') {
@@ -1139,19 +1291,456 @@ async function savePurchaseDocument(event, documentType) {
     } catch (error) {
         console.error('Error saving purchase document:', error);
         showToast(error.message || 'Error saving document', 'error');
+        isSavingDocument = false; // Reset flag on error
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.innerHTML = '<i class="fas fa-save"></i> Save Purchase Order';
+        }
     }
 }
 
 // View document
-function viewPurchaseDocument(docId, docType) {
-    // TODO: Implement view document
-    showToast('View document functionality coming soon', 'info');
+async function viewPurchaseDocument(docId, docType) {
+    if (docType !== 'order') {
+        showToast('Viewing this document type is not yet implemented', 'info');
+        return;
+    }
+    
+    try {
+        const order = await API.purchases.getOrder(docId);
+        
+        const formatDate = (dateStr) => {
+            if (!dateStr) return '—';
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        };
+        
+        const formatCurrency = (amount) => {
+            return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES' }).format(amount || 0);
+        };
+        
+        // Use item details from response (already loaded by backend)
+        const itemsHtml = (order.items || []).map(item => {
+            const itemName = item.item_name || 'Item';
+            const itemCode = item.item_code || '';
+            return `
+                <tr>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">
+                        <div style="font-weight: 600;">${itemName}</div>
+                        ${itemCode ? `<div style="font-size: 0.875rem; color: var(--text-secondary);">Code: ${itemCode}</div>` : ''}
+                        ${item.item_category ? `<div style="font-size: 0.875rem; color: var(--text-secondary);">Category: ${item.item_category}</div>` : ''}
+                    </td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: center;">${item.quantity || 0}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">${item.unit_name || '—'}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: right;">
+                        ${formatCurrency(item.unit_price || 0)}
+                        ${item.default_cost ? `<div style="font-size: 0.875rem; color: var(--text-secondary);">Cost: ${formatCurrency(item.default_cost)}</div>` : ''}
+                    </td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: right;">
+                        <strong>${formatCurrency(item.total_price || 0)}</strong>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+        
+        const content = `
+            <div style="max-height: 70vh; overflow-y: auto;">
+                <div style="margin-bottom: 1.5rem;">
+                    <h4 style="margin-bottom: 1rem;">Purchase Order Details</h4>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem;">
+                        <div>
+                            <strong>Order Number:</strong> ${order.order_number || '—'}
+                        </div>
+                        <div>
+                            <strong>Date:</strong> ${formatDate(order.order_date)}
+                        </div>
+                        <div>
+                            <strong>Supplier:</strong> ${order.supplier_name || '—'}
+                        </div>
+                        <div>
+                            <strong>Branch:</strong> ${order.branch_name || '—'}
+                        </div>
+                        <div>
+                            <strong>Reference:</strong> ${order.reference || '—'}
+                        </div>
+                        <div>
+                            <strong>Status:</strong> <span class="badge ${order.status === 'PENDING' ? 'badge-warning' : order.status === 'RECEIVED' ? 'badge-success' : 'badge-danger'}">${order.status || 'PENDING'}</span>
+                        </div>
+                        <div>
+                            <strong>Created By:</strong> ${order.created_by_name || '—'}
+                        </div>
+                        <div>
+                            <strong>Total Amount:</strong> <strong style="font-size: 1.1rem;">${formatCurrency(order.total_amount || 0)}</strong>
+                        </div>
+                    </div>
+                    ${order.notes ? `<div style="margin-top: 1rem;"><strong>Notes:</strong><br>${order.notes}</div>` : ''}
+                </div>
+                
+                <div>
+                    <h5 style="margin-bottom: 1rem;">Items</h5>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: #f8f9fa;">
+                                <th style="padding: 0.5rem; text-align: left; border-bottom: 2px solid var(--border-color);">Item</th>
+                                <th style="padding: 0.5rem; text-align: center; border-bottom: 2px solid var(--border-color);">Qty</th>
+                                <th style="padding: 0.5rem; text-align: left; border-bottom: 2px solid var(--border-color);">Unit</th>
+                                <th style="padding: 0.5rem; text-align: right; border-bottom: 2px solid var(--border-color);">Unit Price</th>
+                                <th style="padding: 0.5rem; text-align: right; border-bottom: 2px solid var(--border-color);">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${itemsHtml || '<tr><td colspan="5" style="text-align: center; padding: 1rem;">No items</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+        
+        const isPending = order.status === 'PENDING';
+        const footer = `
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+            ${isPending ? `
+            <button class="btn btn-outline" onclick="closeModal(); if(window.editPurchaseDocument) window.editPurchaseDocument('${order.id}', 'order')" title="Edit">
+                <i class="fas fa-edit"></i> Edit
+            </button>
+            <button class="btn btn-outline btn-danger" onclick="closeModal(); if(window.deletePurchaseOrder) window.deletePurchaseOrder('${order.id}')" title="Delete">
+                <i class="fas fa-trash"></i> Delete
+            </button>
+            ` : ''}
+            <button class="btn btn-primary" onclick="if(window.printPurchaseOrder) window.printPurchaseOrder('${order.id}')" title="Print">
+                <i class="fas fa-print"></i> Print
+            </button>
+        `;
+        
+        showModal(`Purchase Order: ${order.order_number || '—'}`, content, footer, 'modal-large');
+    } catch (error) {
+        console.error('Error loading purchase order:', error);
+        showToast(error.message || 'Error loading purchase order', 'error');
+    }
 }
 
 // Edit document
-function editPurchaseDocument(docId, docType) {
-    // TODO: Implement edit document
-    showToast('Edit document functionality coming soon', 'info');
+async function editPurchaseDocument(docId, docType) {
+    if (docType !== 'order') {
+        showToast('Editing this document type is not yet implemented', 'info');
+        return;
+    }
+    
+    try {
+        const order = await API.purchases.getOrder(docId);
+        
+        if (order.status !== 'PENDING') {
+            showToast(`Cannot edit purchase order with status ${order.status}. Only PENDING orders can be edited.`, 'error');
+            return;
+        }
+        
+        // Use item details from response (already loaded by backend with item_name, item_code)
+        // Set current document and items
+        currentDocument = { 
+            type: 'order', 
+            id: order.id,
+            order_number: order.order_number,
+            supplier_id: order.supplier_id,
+            supplier_name: order.supplier_name,
+            order_date: order.order_date,
+            reference: order.reference,
+            notes: order.notes,
+            status: order.status,
+            ...order 
+        };
+        
+        // Map items using backend response (item_name, item_code already included)
+        documentItems = (order.items || []).map(item => ({
+            item_id: item.item_id,
+            item_name: item.item_name || 'Item',
+            item_sku: item.item_code || '',
+            item_code: item.item_code || '',
+            unit_name: item.unit_name,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            total: item.total_price,
+            is_empty: false
+        }));
+        
+        // Load the create page with existing data (will be pre-filled by the form initialization)
+        await renderCreatePurchaseOrderPage();
+        
+        // After page renders, populate form with existing order data
+        setTimeout(() => {
+            const form = document.getElementById('purchaseDocumentForm');
+            if (form) {
+                if (order.supplier_id) {
+                    const supplierIdInput = document.getElementById('supplierId');
+                    const supplierSearch = document.getElementById('supplierSearch');
+                    if (supplierIdInput) supplierIdInput.value = order.supplier_id;
+                    if (supplierSearch && order.supplier_name) supplierSearch.value = order.supplier_name;
+                }
+                
+                const dateInput = form.querySelector('input[name="document_date"]');
+                if (dateInput && order.order_date) {
+                    dateInput.value = new Date(order.order_date).toISOString().split('T')[0];
+                }
+                
+                const referenceInput = form.querySelector('input[name="reference"]');
+                if (referenceInput) referenceInput.value = order.reference || '';
+                
+                const notesInput = form.querySelector('input[name="notes"]');
+                if (notesInput) notesInput.value = order.notes || '';
+            }
+            
+            // Update TransactionItemsTable if it exists
+            if (transactionItemsTable && documentItems.length > 0) {
+                transactionItemsTable.items = transactionItemsTable.normalizeItems(documentItems);
+                transactionItemsTable.render();
+                transactionItemsTable.attachEventListeners();
+            }
+            
+            // Ensure form submit handler is set for edit mode (reuse existing form variable from above)
+            // form variable is already declared at line 1469, just reuse it
+            if (form) {
+                form.onsubmit = (e) => {
+                    e.preventDefault();
+                    updatePurchaseOrder(e, order.id);
+                };
+            }
+        }, 300);
+        
+    } catch (error) {
+        console.error('Error loading purchase order for editing:', error);
+        showToast(error.message || 'Error loading purchase order', 'error');
+    }
+}
+
+// Update purchase order
+async function updatePurchaseOrder(event, orderId) {
+    event.preventDefault();
+    
+    // Prevent duplicate submissions
+    if (isSavingDocument) {
+        showToast('Please wait, order is being saved...', 'warning');
+        return;
+    }
+    
+    const form = event.target;
+    const submitButton = form.querySelector('button[type="submit"], .btn-save-order');
+    
+    // Disable submit button and set flag
+    isSavingDocument = true;
+    if (submitButton) {
+        submitButton.disabled = true;
+        const originalText = submitButton.innerHTML;
+        submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+    }
+    
+    const formData = new FormData(form);
+    
+    // Get items from component
+    let validItems = [];
+    if (transactionItemsTable && typeof transactionItemsTable.getItems === 'function') {
+        validItems = transactionItemsTable.getItems();
+    } else {
+        validItems = documentItems.filter(item => item.item_id && item.item_id !== null);
+    }
+    
+    if (validItems.length === 0) {
+        isSavingDocument = false;
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.innerHTML = '<i class="fas fa-save"></i> Save';
+        }
+        showToast('Please add at least one item', 'warning');
+        return;
+    }
+    
+    const orderData = {
+        company_id: CONFIG.COMPANY_ID,
+        branch_id: CONFIG.BRANCH_ID,
+        supplier_id: formData.get('supplier_id'),
+        order_date: formData.get('document_date'),
+        reference: formData.get('reference') || null,
+        notes: formData.get('notes') || null,
+        status: 'PENDING',
+        items: validItems.map(item => ({
+            item_id: item.item_id,
+            unit_name: item.unit_name,
+            quantity: item.quantity,
+            unit_price: item.unit_price
+        })),
+        created_by: CONFIG.USER_ID
+    };
+    
+    try {
+        const updatedOrder = await API.purchases.updateOrder(orderId, orderData);
+        showToast('Purchase order updated successfully!', 'success');
+        loadPurchaseSubPage('orders');
+    } catch (error) {
+        console.error('Error updating purchase order:', error);
+        showToast(error.message || 'Error updating purchase order', 'error');
+    }
+}
+
+// Delete purchase order
+async function deletePurchaseOrder(orderId) {
+    // Prevent duplicate delete operations
+    if (isDeletingOrder) {
+        showToast('Delete operation already in progress. Please wait...', 'warning');
+        return;
+    }
+    
+    if (!confirm('Are you sure you want to delete this purchase order? This action cannot be undone.')) {
+        return;
+    }
+    
+    // Set flag to prevent duplicate operations
+    isDeletingOrder = true;
+    
+    try {
+        await API.purchases.deleteOrder(orderId);
+        showToast('Purchase order deleted successfully!', 'success');
+        
+        // Reset flag
+        isDeletingOrder = false;
+        
+        // Refresh the orders list
+        await fetchAndRenderPurchaseOrdersData();
+        
+        // If modal is open, close it
+        const modal = document.getElementById('modalOverlay');
+        if (modal && modal.style.display !== 'none') {
+            closeModal();
+        }
+    } catch (error) {
+        console.error('Error deleting purchase order:', error);
+        isDeletingOrder = false; // Reset flag on error
+        
+        // Handle 404 (order already deleted) gracefully
+        if (error.status === 404 || error.message.includes('404') || error.message.includes('Not Found')) {
+            showToast('Purchase order not found. It may have already been deleted.', 'info');
+            // Still refresh the list in case it was deleted by another process
+            await fetchAndRenderPurchaseOrdersData();
+        } else {
+            showToast(error.message || 'Error deleting purchase order', 'error');
+        }
+    }
+}
+
+// Print purchase order
+async function printPurchaseOrder(orderId) {
+    try {
+        const order = await API.purchases.getOrder(orderId);
+        
+        const formatDate = (dateStr) => {
+            if (!dateStr) return '—';
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        };
+        
+        const formatCurrency = (amount) => {
+            return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES' }).format(amount || 0);
+        };
+        
+        // Create print-friendly HTML
+        const printContent = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Purchase Order ${order.order_number}</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    .header { text-align: center; margin-bottom: 30px; }
+                    .header h1 { margin: 0; color: #333; }
+                    .info-section { margin-bottom: 30px; }
+                    .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+                    .info-item { margin: 5px 0; }
+                    .info-label { font-weight: bold; }
+                    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                    th { background: #f8f9fa; padding: 10px; text-align: left; border-bottom: 2px solid #333; }
+                    td { padding: 8px; border-bottom: 1px solid #ddd; }
+                    .text-right { text-align: right; }
+                    .text-center { text-align: center; }
+                    .total-row { font-weight: bold; background: #f8f9fa; }
+                    .footer { margin-top: 40px; text-align: center; font-size: 0.9em; color: #666; }
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <h1>PURCHASE ORDER</h1>
+                    <p>${order.order_number || '—'}</p>
+                </div>
+                
+                <div class="info-section">
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <span class="info-label">Date:</span> ${formatDate(order.order_date)}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Supplier:</span> ${order.supplier_name || '—'}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Branch:</span> ${order.branch_name || '—'}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Reference:</span> ${order.reference || '—'}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Status:</span> ${order.status || 'PENDING'}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Created By:</span> ${order.created_by_name || '—'}
+                        </div>
+                    </div>
+                    ${order.notes ? `<div class="info-item" style="margin-top: 15px;"><span class="info-label">Notes:</span> ${order.notes}</div>` : ''}
+                </div>
+                
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Item Name</th>
+                            <th class="text-center">Qty</th>
+                            <th>Unit</th>
+                            <th class="text-right">Unit Price</th>
+                            <th class="text-right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${(order.items || []).map(item => `
+                            <tr>
+                                <td>${item.item_name || 'Item'}${item.item_code ? ` (${item.item_code})` : ''}</td>
+                                <td class="text-center">${item.quantity || 0}</td>
+                                <td>${item.unit_name || '—'}</td>
+                                <td class="text-right">${formatCurrency(item.unit_price || 0)}</td>
+                                <td class="text-right">${formatCurrency(item.total_price || 0)}</td>
+                            </tr>
+                        `).join('')}
+                        <tr class="total-row">
+                            <td colspan="4" class="text-right"><strong>Total:</strong></td>
+                            <td class="text-right"><strong>${formatCurrency(order.total_amount || 0)}</strong></td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                <div class="footer">
+                    <p>Generated on ${new Date().toLocaleString('en-KE')}</p>
+                </div>
+            </body>
+            </html>
+        `;
+        
+        // Open print window
+        const printWindow = window.open('', '_blank');
+        printWindow.document.write(printContent);
+        printWindow.document.close();
+        printWindow.focus();
+        
+        // Wait for content to load, then print
+        setTimeout(() => {
+            printWindow.print();
+        }, 250);
+        
+    } catch (error) {
+        console.error('Error printing purchase order:', error);
+        showToast(error.message || 'Error printing purchase order', 'error');
+    }
 }
 
 // Update sub-nav active state
@@ -1162,6 +1751,15 @@ function updatePurchaseSubNavActiveState() {
         return;
     }
     
+    // When on 'create' page, don't highlight any sub-nav item (it's not a list page)
+    if (currentPurchaseSubPage === 'create') {
+        subNavItemsContainer.querySelectorAll('.sub-nav-item').forEach(subItem => {
+            subItem.classList.remove('active');
+        });
+        return;
+    }
+    
+    // For list pages (orders, invoices, credit-notes, suppliers), highlight active one
     subNavItemsContainer.querySelectorAll('.sub-nav-item').forEach(subItem => {
         const page = subItem.dataset.page;
         const subPage = subItem.dataset.subPage;
@@ -1283,10 +1881,13 @@ if (typeof window !== 'undefined') {
     window.filterSuppliers = filterSuppliers;
     window.editSupplier = editSupplier;
     window.savePurchaseDocument = savePurchaseDocument;
-    window.showPurchaseDocumentForm = showPurchaseDocumentForm;
     window.filterPurchaseDocuments = filterPurchaseDocuments;
     window.showPurchaseFilters = showPurchaseFilters;
     window.viewPurchaseDocument = viewPurchaseDocument;
+    window.editPurchaseDocument = editPurchaseDocument;
+    window.deletePurchaseOrder = deletePurchaseOrder;
+    window.updatePurchaseOrder = updatePurchaseOrder;
+    window.printPurchaseOrder = printPurchaseOrder;
     // New Page-Shell First pattern functions
     window.fetchAndRenderPurchaseOrdersData = fetchAndRenderPurchaseOrdersData;
     window.fetchAndRenderPurchaseInvoicesData = fetchAndRenderPurchaseInvoicesData;
@@ -1304,10 +1905,91 @@ if (typeof window !== 'undefined') {
     console.log('✓ Purchases functions exported to window');
 }
 
+// Render suppliers page
+async function renderSuppliersPage() {
+    console.log('renderSuppliersPage() called');
+    const page = document.getElementById('purchases');
+    if (!page) {
+        console.error('Purchases page element not found!');
+        return;
+    }
+    
+    // Render page shell
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0; font-size: 1.5rem;">
+                    <i class="fas fa-truck"></i> Suppliers
+                </h3>
+                <button class="btn btn-primary" onclick="if(window.showCreateSupplierModal) window.showCreateSupplierModal()">
+                    <i class="fas fa-plus"></i> New Supplier
+                </button>
+            </div>
+            
+            <div class="card-body" style="padding: 1.5rem;">
+                <div style="margin-bottom: 1.5rem;">
+                    <input type="text" 
+                           class="form-input" 
+                           id="supplierSearchInput" 
+                           placeholder="Search suppliers by name, phone, email..." 
+                           onkeyup="if(window.filterSuppliers) window.filterSuppliers()"
+                           style="width: 100%; max-width: 500px; padding: 0.75rem;">
+                </div>
+                
+                <div id="suppliersTable">
+                    <div class="spinner"></div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Load suppliers from API
+    await loadSuppliers();
+    
+    // Render table
+    renderSuppliersTable();
+}
+
+// Load suppliers from API
+async function loadSuppliers() {
+    try {
+        if (!window.CONFIG || !window.CONFIG.COMPANY_ID) {
+            console.warn('Company ID not configured');
+            allSuppliers = [];
+            return;
+        }
+        
+        if (!window.API || !window.API.suppliers || !window.API.suppliers.list) {
+            console.error('API.suppliers.list not available');
+            allSuppliers = [];
+            return;
+        }
+        
+        console.log('Loading suppliers for company:', window.CONFIG.COMPANY_ID);
+        allSuppliers = await window.API.suppliers.list(window.CONFIG.COMPANY_ID);
+        console.log('✅ Loaded suppliers:', allSuppliers.length);
+    } catch (error) {
+        console.error('❌ Error loading suppliers:', error);
+        console.error('Error details:', error.message);
+        allSuppliers = [];
+    }
+}
+
 // Render suppliers table
 function renderSuppliersTable() {
     const container = document.getElementById('suppliersTable');
     if (!container) return;
+    
+    if (!allSuppliers || allSuppliers.length === 0) {
+        container.innerHTML = `
+            <div class="text-center" style="padding: 3rem;">
+                <i class="fas fa-truck" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
+                <p style="color: var(--text-secondary);">No suppliers found</p>
+                <p style="color: var(--text-secondary); font-size: 0.875rem;">Click "New Supplier" to create your first supplier</p>
+            </div>
+        `;
+        return;
+    }
     
     const searchTerm = document.getElementById('supplierSearchInput')?.value.toLowerCase() || '';
     const filtered = allSuppliers.filter(supplier => {
@@ -1402,4 +2084,13 @@ function escapeHtml(text) {
 function editSupplier(supplierId) {
     // TODO: Implement supplier editing
     showToast('Supplier editing coming soon', 'info');
+}
+
+// Verify exports at end of file (after all exports are done)
+if (typeof window !== 'undefined') {
+    // This runs after the main export block at line 1827-1867
+    console.log('✓ Purchases functions final verification');
+    console.log('  - window.loadPurchases:', typeof window.loadPurchases);
+    console.log('  - window.createNewPurchaseOrder:', typeof window.createNewPurchaseOrder);
+    console.log('  - window.loadPurchaseSubPage:', typeof window.loadPurchaseSubPage);
 }

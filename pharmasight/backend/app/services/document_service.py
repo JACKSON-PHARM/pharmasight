@@ -42,10 +42,11 @@ class DocumentService:
         from sqlalchemy import text
         
         # Use database function that enforces branch code
+        # Note: Use CAST() instead of ::UUID to avoid SQLAlchemy parameter parsing issues
         sql = text("""
             SELECT get_next_document_number(
-                :company_id::UUID,
-                :branch_id::UUID,
+                CAST(:company_id AS UUID),
+                CAST(:branch_id AS UUID),
                 :document_type,
                 :prefix
             )

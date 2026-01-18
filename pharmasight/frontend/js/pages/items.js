@@ -621,11 +621,11 @@ function showImportExcelModal() {
     setTimeout(() => {
         const fileInput = document.getElementById('excelFileInput');
         if (fileInput) fileInput.value = '';
-        window.excelFileData = null;
+        window.excelFile = null;
     }, 100);
 }
 
-let excelFileData = null;
+let excelFile = null; // Store the actual file object
 
 function handleFileSelect(event) {
     const file = event.target.files[0];
@@ -640,7 +640,7 @@ function handleFileSelect(event) {
     errorDiv.style.display = 'none';
     previewDiv.style.display = 'none';
     importBtn.disabled = true;
-    excelFileData = null;
+    excelFile = null;
     
     const reader = new FileReader();
     reader.onload = function(e) {
@@ -659,7 +659,7 @@ function handleFileSelect(event) {
                 throw new Error('No data found in Excel file');
             }
             
-            excelFileData = jsonData;
+            excelFile = file; // Store file for upload
             
             // Show preview
             const previewRows = jsonData.slice(0, 5);
@@ -703,8 +703,13 @@ async function importExcelFile() {
         return;
     }
     
-    if (!excelFileData || excelFileData.length === 0) {
-        showToast('No data to import', 'error');
+    if (!excelFile) {
+        showToast('Please select an Excel file first', 'error');
+        return;
+    }
+    
+    if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID || !CONFIG.USER_ID) {
+        showToast('Company, Branch, and User must be configured', 'error');
         return;
     }
     
@@ -722,14 +727,9 @@ async function importExcelFile() {
     // Add progress indicator
     let progressHTML = `
         <div id="importProgress" style="margin-top: 1rem; padding: 1rem; background: var(--bg-secondary); border-radius: 4px;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-                <span>Processing items...</span>
-                <span id="progressText">0 / ${excelFileData.length}</span>
+            <div id="importStatus" style="font-size: 0.875rem; color: var(--text-secondary);">
+                <i class="fas fa-spinner fa-spin"></i> Uploading and processing Excel file...
             </div>
-            <div style="width: 100%; height: 20px; background: var(--border-color); border-radius: 10px; overflow: hidden;">
-                <div id="progressBar" style="height: 100%; background: var(--primary); width: 0%; transition: width 0.3s;"></div>
-            </div>
-            <div id="importStatus" style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);"></div>
         </div>
     `;
     modalBody.insertAdjacentHTML('beforeend', progressHTML);
@@ -737,513 +737,51 @@ async function importExcelFile() {
     importBtn.disabled = true;
     importBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Importing...';
     
-    // Helper function to safely get string value (defined at function scope)
-    const safeString = (value, defaultValue = '') => {
-        if (value === null || value === undefined || value === 'None') {
-            return defaultValue;
-        }
-        const str = String(value).trim();
-        return str || defaultValue;
-    };
-    
-    // ============================================
-    // STEP 1: Extract and create suppliers FIRST (INDEPENDENT of items)
-    // ============================================
-    const supplierMap = new Map(); // Map supplier name -> supplier_id
-    let supplierExtractionComplete = false;
-    let supplierStats = { created: 0, skipped: 0, errors: 0 };
-    
     try {
-        const uniqueSuppliers = new Set();
-        
-        // First, let's check what column names exist in the Excel file
-        const firstRow = excelFileData[0];
-        const allColumnNames = Object.keys(firstRow || {});
-        console.log('Excel column names:', allColumnNames);
-        
-        // Try multiple possible column names for supplier
-        const supplierColumnNames = [
-            'Supplier', 'supplier', 'SUPPLIER',
-            'Supplier Name', 'supplier name', 'SUPPLIER NAME',
-            'Supplier_Name', 'supplier_name', 'SUPPLIER_NAME',
-            'Vendor', 'vendor', 'VENDOR',
-            'Vendor Name', 'vendor name', 'VENDOR NAME'
-        ];
-        
-        // Find the actual supplier column name
-        let supplierColumnName = null;
-        for (const colName of supplierColumnNames) {
-            if (allColumnNames.includes(colName)) {
-                supplierColumnName = colName;
-                console.log(`Found supplier column: "${colName}"`);
-                break;
-            }
+        // Check import mode first
+        const modeInfo = await API.excel.getMode(CONFIG.COMPANY_ID);
+        const statusEl = document.getElementById('importStatus');
+        if (statusEl) {
+            statusEl.innerHTML = `<i class="fas fa-info-circle"></i> Mode: ${modeInfo.mode} ${modeInfo.has_live_transactions ? '(Live transactions detected - non-destructive)' : '(No live transactions - authoritative reset allowed)'}`;
         }
         
-        // Collect unique suppliers from Excel
-        if (supplierColumnName) {
-            for (let idx = 0; idx < excelFileData.length; idx++) {
-                const row = excelFileData[idx];
-                const supplierName = safeString(row[supplierColumnName]);
-                if (supplierName && supplierName.trim() !== '' && supplierName.trim() !== 'None') {
-                    uniqueSuppliers.add(supplierName.trim());
-                }
-            }
-            console.log(`Found ${uniqueSuppliers.size} unique suppliers in Excel`);
-        } else {
-            console.warn('Supplier column not found in Excel. Available columns:', allColumnNames);
-            showToast('Warning: Supplier column not found in Excel file. Suppliers will not be imported.', 'warning');
+        // Upload file to backend
+        const result = await API.excel.import(
+            excelFile,
+            CONFIG.COMPANY_ID,
+            CONFIG.BRANCH_ID,
+            CONFIG.USER_ID
+        );
+        
+        // Show results
+        const stats = result.stats || {};
+        let message = `Import completed in ${result.mode} mode. `;
+        message += `Items: ${stats.items_created || 0} created`;
+        if (stats.items_updated) message += `, ${stats.items_updated} updated`;
+        if (stats.items_skipped) message += `, ${stats.items_skipped} skipped`;
+        if (stats.opening_balances_created) message += ` | Opening balances: ${stats.opening_balances_created} created`;
+        if (stats.suppliers_created) message += ` | Suppliers: ${stats.suppliers_created} created`;
+        
+        if (stats.errors && stats.errors.length > 0) {
+            console.warn('Import errors:', stats.errors);
+            message += ` | ${stats.errors.length} errors (check console)`;
         }
         
-        // Create suppliers in bulk (INDEPENDENT of item processing)
-        if (uniqueSuppliers.size > 0) {
-            const progressStatus = document.getElementById('importStatus');
-            if (progressStatus) {
-                progressStatus.innerHTML = `Step 1/2: Creating ${uniqueSuppliers.size} suppliers...`;
-            }
-            
-            // Load existing suppliers once
-            let existingSuppliers = [];
-            try {
-                existingSuppliers = await API.suppliers.list(CONFIG.COMPANY_ID);
-                console.log(`Loaded ${existingSuppliers.length} existing suppliers`);
-            } catch (error) {
-                console.error('Error loading existing suppliers:', error);
-                showToast('Error loading existing suppliers. Will create new ones.', 'warning');
-            }
-            
-            for (const supplierName of uniqueSuppliers) {
-                try {
-                    // Check if supplier already exists
-                    const existing = existingSuppliers.find(s => s.name.toLowerCase() === supplierName.toLowerCase());
-                    
-                    if (existing) {
-                        supplierMap.set(supplierName, existing.id);
-                        supplierStats.skipped++;
-                        console.log(`Supplier already exists: ${supplierName}`);
-                    } else {
-                        // Create new supplier
-                        console.log(`Creating supplier: ${supplierName}`);
-                        const newSupplier = await API.suppliers.create({
-                            company_id: CONFIG.COMPANY_ID,
-                            name: supplierName
-                        });
-                        supplierMap.set(supplierName, newSupplier.id);
-                        // Add to existing list to avoid duplicates in same import
-                        existingSuppliers.push(newSupplier);
-                        supplierStats.created++;
-                        console.log(`✅ Created supplier: ${supplierName} (ID: ${newSupplier.id})`);
-                    }
-                } catch (error) {
-                    console.error(`❌ Error creating supplier ${supplierName}:`, error);
-                    supplierStats.errors++;
-                    // Continue with other suppliers even if one fails
-                }
-            }
-            
-            supplierExtractionComplete = true;
-            
-            if (progressStatus) {
-                progressStatus.innerHTML = `Step 1/2 Complete: Suppliers - ${supplierStats.created} created, ${supplierStats.skipped} skipped, ${supplierStats.errors} errors. Starting item import...`;
-            }
-            
-            // Show supplier results
-            if (supplierStats.created > 0) {
-                showToast(`✅ Successfully created ${supplierStats.created} supplier(s)`, 'success');
-            }
-            if (supplierStats.skipped > 0) {
-                console.log(`ℹ️ ${supplierStats.skipped} supplier(s) already existed and were skipped`);
-            }
-            if (supplierStats.errors > 0) {
-                showToast(`⚠️ Failed to create ${supplierStats.errors} supplier(s). Check console for details.`, 'warning');
-            }
-        } else {
-            console.warn('No suppliers found in Excel file');
-            supplierExtractionComplete = true; // Mark as complete even if no suppliers found
-        }
-    } catch (error) {
-        console.error('❌ Critical error during supplier extraction:', error);
-        showToast('Error extracting suppliers, but continuing with item import...', 'warning');
-        supplierExtractionComplete = true; // Mark as complete to allow item processing to continue
-    }
-    
-    // ============================================
-    // STEP 2: Process items (even if supplier extraction had issues)
-    // ============================================
-    try {
-        let totalSuccessCount = 0;
-        let totalErrorCount = 0;
-        const allErrors = [];
-        
-        // Process in batches of 100 items for better performance
-        const BATCH_SIZE = 100;
-        const batches = [];
-        
-        // First, map all rows to item data
-        const itemDataList = [];
-        for (let idx = 0; idx < excelFileData.length; idx++) {
-            const row = excelFileData[idx];
-            
-            // Map template headers to item data (matching pharmasight_template.xlsx structure)
-            // Safely convert to string and handle null/undefined/None
-            const itemNameRaw = row['Item name*'] || row['Item name'] || '';
-            const itemName = (itemNameRaw === null || itemNameRaw === undefined || itemNameRaw === 'None') 
-                ? '' 
-                : String(itemNameRaw).trim();
-            
-            // Skip rows without item name
-            if (!itemName || itemName === '') {
-                totalErrorCount++;
-                allErrors.push({ index: idx, name: 'Missing name', error: 'Missing "Item name*" (required)' });
-                continue;
-            }
-            
-            // Use Price_List_Last_Cost as purchase price, fallback to Price_List_Average_Cost
-            let purchasePrice = parseFloat(
-                row['Price_List_Last_Cost'] || 
-                row['Price_List_Average_Cost'] || 
-                row['Purchase price'] || 
-                0
-            );
-            // Validate purchase price (must be >= 0, not NaN)
-            if (isNaN(purchasePrice) || purchasePrice < 0) {
-                purchasePrice = 0;
-            }
-            
-            // Get base unit - must not be empty
-            // Handle None/null values from Excel (openpyxl returns None for empty cells)
-            let baseUnitRaw = row['Base Unit (x)'] || row['Base Unit'] || row['Base unit'];
-            if (baseUnitRaw === null || baseUnitRaw === undefined || baseUnitRaw === 'None' || baseUnitRaw === '') {
-                baseUnitRaw = 'PCS'; // Default fallback
-            }
-            let baseUnit = String(baseUnitRaw).trim();
-            if (!baseUnit || baseUnit === '' || baseUnit === 'None') {
-                baseUnit = 'PCS'; // Default fallback
-            }
-            baseUnit = baseUnit.toUpperCase();
-            
-            // Map Excel row to item data
-            // VAT Classification (Kenya Pharmacy Context)
-            // Handle None/null values properly
-            let taxPercentageRaw = row['Price_List_Tax_Percentage'];
-            if (taxPercentageRaw === null || taxPercentageRaw === undefined || taxPercentageRaw === 'None' || taxPercentageRaw === '') {
-                taxPercentageRaw = row['Tax Rate'] || 0;
-            }
-            let taxPercentage = parseFloat(taxPercentageRaw) || 0;
-            // Validate VAT rate (must be 0-100)
-            if (isNaN(taxPercentage) || taxPercentage < 0) {
-                taxPercentage = 0;
-            } else if (taxPercentage > 100) {
-                taxPercentage = 16; // Default to standard rate if invalid
-            }
-            
-            // Handle tax code - if None/null, infer from percentage
-            let taxCodeRaw = row['Price_List_Tax_Code'];
-            let taxCode;
-            if (taxCodeRaw === null || taxCodeRaw === undefined || taxCodeRaw === 'None' || taxCodeRaw === '') {
-                taxCode = (taxPercentage === 0 ? 'ZERO_RATED' : taxPercentage === 16 ? 'STANDARD' : null);
-            } else {
-                taxCode = taxCodeRaw;
-            }
-            
-            // Handle price inclusive - check for None/null
-            let priceInclusiveRaw = row['Price_List_Price_Inclusive'];
-            const priceInclusive = (priceInclusiveRaw !== null && priceInclusiveRaw !== undefined && priceInclusiveRaw !== 'None' && priceInclusiveRaw !== '')
-                ? (String(priceInclusiveRaw).toLowerCase() === 'true' || String(priceInclusiveRaw) === '1')
-                : false;
-            
-            // Helper function to safely get string value
-            const safeString = (value, defaultValue = '') => {
-                if (value === null || value === undefined || value === 'None') {
-                    return defaultValue;
-                }
-                const str = String(value).trim();
-                return str || defaultValue;
-            };
-            
-            const itemData = {
-                company_id: CONFIG.COMPANY_ID,
-                name: itemName,
-                generic_name: safeString(row['Description']) || null,
-                sku: safeString(row['Item code'] || row['Item Code']) || null,
-                category: safeString(row['Category']) || null,
-                base_unit: baseUnit,
-                default_cost: purchasePrice,
-                // VAT Classification (from Excel)
-                is_vatable: taxCode !== 'EXEMPT',  // EXEMPT items are not vatable
-                vat_rate: taxPercentage,
-                // Only include vat_code if it's a valid string (not null/undefined)
-                ...(taxCode && typeof taxCode === 'string' ? { vat_code: taxCode } : {}),
-                price_includes_vat: priceInclusive,
-                units: []
-            };
-            
-            // Add base unit conversion (always required)
-            // Validate base_unit is not empty (already validated above, but double-check)
-            if (!itemData.base_unit || itemData.base_unit === '') {
-                totalErrorCount++;
-                allErrors.push({ 
-                    index: idx, 
-                    name: itemName || 'Unknown', 
-                    error: 'Base Unit is required and cannot be empty' 
-                });
-                continue;
-            }
-            
-            itemData.units.push({
-                unit_name: itemData.base_unit,
-                multiplier_to_base: 1.0,
-                is_default: true
-            });
-            
-            // Add secondary unit conversion if provided
-            const secondaryUnitRaw = row['Secondary Unit (y)'] || row['Secondary Unit'] || row['Secondary unit'];
-            const secondaryUnit = safeString(secondaryUnitRaw);
-            let conversionRate = parseFloat(row['Conversion Rate (n) (x = ny)'] || row['Conversion Rate'] || row['Conversion rate'] || 0);
-            
-            // Validate conversion rate
-            if (isNaN(conversionRate) || conversionRate <= 0) {
-                conversionRate = 0;
-            }
-            
-            if (secondaryUnit && secondaryUnit !== '' && conversionRate > 0) {
-                itemData.units.push({
-                    unit_name: secondaryUnit.toUpperCase(),
-                    multiplier_to_base: conversionRate,
-                    is_default: false
-                });
-            }
-            
-            // Final validation before adding to list
-            // Ensure all required fields are valid
-            if (!itemData.name || itemData.name.trim() === '') {
-                totalErrorCount++;
-                allErrors.push({ 
-                    index: idx, 
-                    name: 'Unknown', 
-                    error: 'Item name is required and cannot be empty' 
-                });
-                continue;
-            }
-            
-            if (!itemData.base_unit || itemData.base_unit.trim() === '') {
-                totalErrorCount++;
-                allErrors.push({ 
-                    index: idx, 
-                    name: itemData.name, 
-                    error: 'Base unit is required and cannot be empty' 
-                });
-                continue;
-            }
-            
-            // Validate units array - ensure all multipliers are > 0
-            const invalidUnits = itemData.units.filter(u => !u.multiplier_to_base || u.multiplier_to_base <= 0);
-            if (invalidUnits.length > 0) {
-                totalErrorCount++;
-                allErrors.push({ 
-                    index: idx, 
-                    name: itemData.name, 
-                    error: `Invalid unit multipliers: ${invalidUnits.map(u => u.unit_name).join(', ')}` 
-                });
-                continue;
-            }
-            
-            // Ensure name is not too long (backend max is 255)
-            if (itemData.name.length > 255) {
-                itemData.name = itemData.name.substring(0, 255);
-            }
-            
-            // Ensure default_cost is valid (>= 0)
-            if (isNaN(itemData.default_cost) || itemData.default_cost < 0) {
-                itemData.default_cost = 0;
-            }
-            
-            itemDataList.push(itemData);
-        }
-        
-        // Split into batches
-        for (let i = 0; i < itemDataList.length; i += BATCH_SIZE) {
-            batches.push(itemDataList.slice(i, i + BATCH_SIZE));
-        }
-        
-        // Process batches
-        for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-            const batch = batches[batchIdx];
-            const processedCount = batchIdx * BATCH_SIZE;
-            const progress = Math.round((processedCount / excelFileData.length) * 100);
-            
-            // Update progress
-            document.getElementById('progressText').textContent = `${processedCount} / ${excelFileData.length}`;
-            document.getElementById('progressBar').style.width = `${progress}%`;
-            document.getElementById('importStatus').textContent = `Processing batch ${batchIdx + 1} of ${batches.length} (${batch.length} items)...`;
-            
-            try {
-                // Send batch to backend
-                const result = await API.items.bulkCreate({
-                    company_id: CONFIG.COMPANY_ID,
-                    items: batch
-                });
-                
-                totalSuccessCount += result.created || 0;
-                totalErrorCount += result.errors || 0;
-                
-                // Handle skipped items (duplicates)
-                if (result.skipped && result.skipped > 0) {
-                    console.log(`Batch ${batchIdx + 1}: ${result.skipped} items skipped (already exist)`);
-                }
-                
-                if (result.error_details && result.error_details.length > 0) {
-                    allErrors.push(...result.error_details);
-                }
-                
-            } catch (error) {
-                // If batch fails, extract detailed error information
-                console.warn(`Batch ${batchIdx + 1} failed:`, error);
-                
-                // Try to extract validation errors from response
-                let errorDetails = error.message || 'Unknown error';
-                if (error.data && error.data.detail) {
-                    if (Array.isArray(error.data.detail)) {
-                        // Pydantic validation errors
-                        errorDetails = error.data.detail.map(err => {
-                            const field = err.loc ? err.loc.join('.') : 'unknown';
-                            return `${field}: ${err.msg}`;
-                        }).join('; ');
-                    } else {
-                        errorDetails = error.data.detail;
-                    }
-                }
-                
-                // If batch fails, try individual items to get specific errors
-                console.log(`Trying individual items for batch ${batchIdx + 1}...`);
-                for (let itemIdx = 0; itemIdx < batch.length; itemIdx++) {
-                    const item = batch[itemIdx];
-                    try {
-                        const result = await API.items.bulkCreate({
-                            company_id: CONFIG.COMPANY_ID,
-                            items: [item]
-                        });
-                        if (result.created > 0) {
-                            totalSuccessCount++;
-                        } else {
-                            totalErrorCount++;
-                            allErrors.push({
-                                index: processedCount + itemIdx,
-                                name: item.name,
-                                error: result.error_details?.[0]?.error || errorDetails
-                            });
-                        }
-                    } catch (itemError) {
-                        totalErrorCount++;
-                        let itemErrorMsg = itemError.message || 'Validation failed';
-                        if (itemError.data && itemError.data.detail) {
-                            if (Array.isArray(itemError.data.detail)) {
-                                // Pydantic validation errors
-                                itemErrorMsg = itemError.data.detail.map(err => {
-                                    const field = err.loc ? err.loc.join('.') : 'unknown';
-                                    return `${field}: ${err.msg}`;
-                                }).join('; ');
-                            } else if (typeof itemError.data.detail === 'string') {
-                                itemErrorMsg = itemError.data.detail;
-                            } else {
-                                itemErrorMsg = JSON.stringify(itemError.data.detail);
-                            }
-                        }
-                        // Log detailed error for debugging
-                        console.warn(`Item validation failed:`, {
-                            name: item.name,
-                            error: itemErrorMsg,
-                            itemData: {
-                                name: item.name,
-                                base_unit: item.base_unit,
-                                default_cost: item.default_cost,
-                                units_count: item.units?.length,
-                                units: item.units?.map(u => ({
-                                    unit_name: u.unit_name,
-                                    multiplier: u.multiplier_to_base
-                                }))
-                            }
-                        });
-                        allErrors.push({
-                            index: processedCount + itemIdx,
-                            name: item.name,
-                            error: itemErrorMsg
-                        });
-                    }
-                }
-            }
-            
-            // Small delay to prevent overwhelming the server
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-        // Final progress update
-        const progressStatus = document.getElementById('importStatus');
-        if (progressStatus) {
-            progressStatus.innerHTML = `Step 2/2 Complete: Items - ${totalSuccessCount} imported, ${totalErrorCount} failed. Import completed!`;
-        }
-        document.getElementById('progressText').textContent = `${excelFileData.length} / ${excelFileData.length}`;
-        document.getElementById('progressBar').style.width = '100%';
-        
+        showToast(message, result.success ? 'success' : 'warning');
         closeModal();
-        
-        // Show supplier results summary
-        if (supplierExtractionComplete) {
-            console.log(`\n📊 SUPPLIER IMPORT SUMMARY:`);
-            console.log(`   ✅ Created: ${supplierStats.created}`);
-            console.log(`   ⏭️  Skipped (already exist): ${supplierStats.skipped}`);
-            console.log(`   ❌ Errors: ${supplierStats.errors}`);
-        }
-        
-        // Show item results
-        if (totalSuccessCount > 0) {
-            let message = `✅ Items: ${totalSuccessCount} imported`;
-            if (totalErrorCount > 0) {
-                message += `, ${totalErrorCount} failed`;
-            }
-            if (supplierStats.created > 0) {
-                message += ` | ✅ Suppliers: ${supplierStats.created} created`;
-            }
-            showToast(message, 'success');
-            loadItems();
-        } else if (totalErrorCount === 0 && excelFileData.length > 0) {
-            // All items were skipped (duplicates)
-            let message = `ℹ️ All items already exist (skipped duplicates)`;
-            if (supplierStats.created > 0) {
-                message += ` | ✅ Suppliers: ${supplierStats.created} created`;
-            }
-            showToast(message, 'info');
-            loadItems();
-        } else {
-            let message = `❌ Items: All ${totalErrorCount} failed`;
-            if (supplierStats.created > 0) {
-                message += ` | ✅ Suppliers: ${supplierStats.created} created successfully`;
-            }
-            showToast(message, 'error');
-        }
-        
-        if (totalErrorCount > 0 && allErrors.length > 0) {
-            console.log('Item import errors:', allErrors.slice(0, 50)); // Log first 50 errors
-            if (allErrors.length > 50) {
-                console.log(`... and ${allErrors.length - 50} more errors`);
-            }
-        }
+        loadItems();
         
     } catch (error) {
-        console.error('❌ Item import error:', error);
-        
-        // Show supplier results even if items failed
-        if (supplierExtractionComplete && supplierStats.created > 0) {
-            showToast(`⚠️ Item import failed, but ${supplierStats.created} supplier(s) were created successfully`, 'warning');
-        } else {
-            showToast(`Import failed: ${error.message}`, 'error');
+        console.error('Excel import error:', error);
+        const statusEl = document.getElementById('importStatus');
+        if (statusEl) {
+            statusEl.innerHTML = `<span style="color: var(--danger-color);"><i class="fas fa-exclamation-triangle"></i> Error: ${error.message}</span>`;
         }
-        
+        showToast(`Import failed: ${error.message}`, 'error');
+    } finally {
+        isImporting = false;
         importBtn.disabled = false;
         importBtn.innerHTML = '<i class="fas fa-upload"></i> Import Items';
-    } finally {
-        // Always reset importing flag
-        isImporting = false;
     }
 }
 

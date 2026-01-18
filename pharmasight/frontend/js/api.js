@@ -13,17 +13,26 @@ class APIClient {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         
+        // Check if body is FormData (for file uploads)
+        const isFormData = options.body instanceof FormData;
+        
         const config = {
-            headers: {
+            headers: isFormData ? {} : {
                 'Content-Type': 'application/json',
                 ...options.headers,
             },
             signal: controller.signal,
             ...options,
         };
-
-        if (config.body && typeof config.body === 'object') {
+        
+        // Only JSON.stringify if it's not FormData
+        if (config.body && typeof config.body === 'object' && !isFormData) {
             config.body = JSON.stringify(config.body);
+        }
+        
+        // Merge any additional headers (but don't override FormData handling)
+        if (options.headers && !isFormData) {
+            config.headers = { ...config.headers, ...options.headers };
         }
 
         try {
@@ -126,8 +135,11 @@ const API = {
 
     // Items
     items: {
-        search: (q, companyId, limit = 10) => 
-            api.get(`${CONFIG.API_ENDPOINTS.items}/search`, { q, company_id: companyId, limit }),
+        search: (q, companyId, limit = 10, branchId = null) => {
+            const params = { q, company_id: companyId, limit };
+            if (branchId) params.branch_id = branchId;
+            return api.get(`${CONFIG.API_ENDPOINTS.items}/search`, params);
+        },
         list: (companyId, options = {}) => {
             const params = new URLSearchParams();
             if (options.limit) params.append('limit', options.limit);
@@ -212,6 +224,7 @@ const API = {
         },
         getOrder: (orderId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
         updateOrder: (orderId, data) => api.put(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`, data),
+        deleteOrder: (orderId) => api.delete(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
         listInvoices: (companyId, branchId) => {
             const params = { company_id: companyId };
             if (branchId) params.branch_id = branchId;
@@ -229,5 +242,42 @@ const API = {
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.suppliers}/`, data),
         update: (supplierId, data) => api.put(`${CONFIG.API_ENDPOINTS.suppliers}/${supplierId}`, data),
     },
+    
+    // Excel Import
+    excel: {
+        import: (file, companyId, branchId, userId, forceMode = null) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('company_id', companyId);
+            formData.append('branch_id', branchId);
+            formData.append('user_id', userId);
+            if (forceMode) {
+                formData.append('force_mode', forceMode);
+            }
+            // For FormData, don't set Content-Type - browser will set it with boundary
+            return api.request('/api/excel/import', {
+                method: 'POST',
+                body: formData,
+                headers: {} // Let browser set Content-Type for FormData
+            });
+        },
+        getMode: (companyId) => api.get(`/api/excel/mode/${companyId}`),
+    },
+    
+    // User Management
+    users: {
+        list: (includeDeleted = false) => api.get('/api/users', { include_deleted: includeDeleted }),
+        get: (userId) => api.get(`/api/users/${userId}`),
+        create: (data) => api.post('/api/users', data),
+        update: (userId, data) => api.put(`/api/users/${userId}`, data),
+        activate: (userId, isActive) => api.post(`/api/users/${userId}/activate`, { is_active: isActive }),
+        delete: (userId) => api.delete(`/api/users/${userId}`),
+        assignRole: (userId, roleData) => api.post(`/api/users/${userId}/roles`, roleData),
+        listRoles: () => api.get('/api/users/roles'),
+    },
 };
 
+// Expose API to window for global access
+if (typeof window !== 'undefined') {
+    window.API = API;
+}

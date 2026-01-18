@@ -142,6 +142,12 @@ class PurchaseOrderItemResponse(PurchaseOrderItemBase):
     purchase_order_id: UUID
     total_price: Decimal
     created_at: datetime
+    # Enhanced item details (from Item relationship)
+    item_code: Optional[str] = None
+    item_name: Optional[str] = None
+    item_category: Optional[str] = None
+    base_unit: Optional[str] = None
+    default_cost: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -176,6 +182,7 @@ class PurchaseOrderResponse(PurchaseOrderBase):
     items: List[PurchaseOrderItemResponse] = []
     supplier_name: Optional[str] = None  # From relationship
     branch_name: Optional[str] = None  # From relationship
+    created_by_name: Optional[str] = None  # From User relationship
 
     class Config:
         from_attributes = True

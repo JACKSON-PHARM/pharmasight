@@ -296,6 +296,68 @@ body {
     margin-left: 80px;
 }
 
+/* Status Bar (phAMACore style) */
+.status-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex: 1;
+    margin: 0 1.5rem;
+    padding: 0.5rem 1rem;
+    background: rgba(255, 255, 255, 0.9);
+    border-radius: 0.5rem;
+    border: 1px solid var(--border-color);
+    font-size: 0.875rem;
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-primary);
+}
+
+.status-item i {
+    color: var(--primary-color);
+    font-size: 0.875rem;
+}
+
+.status-divider {
+    color: var(--text-secondary);
+    opacity: 0.5;
+}
+
+.status-item span {
+    font-weight: 500;
+}
+
+.status-item .status-warning {
+    color: var(--warning-color);
+    font-style: italic;
+}
+
+.status-item.status-clickable {
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    transition: background-color 0.2s;
+}
+
+.status-item.status-clickable:hover {
+    background-color: rgba(37, 99, 235, 0.1);
+}
+
+.status-item.status-clickable:active {
+    background-color: rgba(37, 99, 235, 0.2);
+}
+
+/* Responsive status bar */
+@media (max-width: 768px) {
+    .status-bar {
+        display: none; /* Hide on mobile, show in sidebar instead */
+    }
+}
+
 .top-bar {
     background: white;
     padding: 1rem 2rem;

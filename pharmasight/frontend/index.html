@@ -82,6 +82,23 @@
                 <button class="menu-toggle" id="menuToggle">
                     <i class="fas fa-bars"></i>
                 </button>
+                <!-- Status Bar (phAMACore style) -->
+                <div class="status-bar" id="statusBar">
+                    <div class="status-item">
+                        <i class="fas fa-user"></i>
+                        <span id="statusUser">Loading...</span>
+                    </div>
+                    <div class="status-divider">|</div>
+                    <div class="status-item status-clickable" onclick="if(window.loadPage) window.loadPage('settings'); if(window.loadSettingsSubPage) setTimeout(() => window.loadSettingsSubPage('company'), 100);" title="Click to configure company">
+                        <i class="fas fa-building"></i>
+                        <span id="statusCompany">Not Set</span>
+                    </div>
+                    <div class="status-divider">|</div>
+                    <div class="status-item status-clickable" onclick="if(window.loadPage) window.loadPage('settings'); if(window.loadSettingsSubPage) setTimeout(() => window.loadSettingsSubPage('branches'), 100);" title="Click to configure branch">
+                        <i class="fas fa-code-branch"></i>
+                        <span id="statusBranch">Not Set</span>
+                    </div>
+                </div>
                 <div class="top-bar-right">
                     <button class="btn btn-primary" id="newSaleBtn" style="display: none;">
                         <i class="fas fa-plus"></i> New Sale
@@ -193,14 +210,34 @@
         console.log('🔍 Window location:', window.location.href);
         console.log('🔍 Document ready state:', document.readyState);
         
+        // Track script loading
+        let scriptsLoaded = 0;
+        const totalScripts = 11; // Count of script tags after this one
+        
+        // Monitor DOMContentLoaded
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                console.log('✅ DOMContentLoaded event fired');
+            });
+        } else {
+            console.log('✅ DOM already loaded when diagnostic script ran');
+        }
+        
         // Ensure at least dashboard is visible if script fails
         window.addEventListener('error', function(e) {
             console.error('❌ JavaScript Error:', e.error);
+            console.error('❌ Error at:', e.filename, 'line', e.lineno);
+            console.error('❌ Error stack:', e.error?.stack);
             const dashboard = document.getElementById('dashboard');
             if (dashboard) {
                 dashboard.classList.add('active');
                 dashboard.style.display = 'block';
             }
+        });
+        
+        // Log when document is fully loaded
+        window.addEventListener('load', function() {
+            console.log('✅ Window load event fired - all resources loaded');
         });
     </script>
     <script src="js/config.js?v=7"></script>
@@ -214,7 +251,7 @@
     <script src="js/pages/items.js?v=5"></script>
     <script src="js/pages/sales.js?v=5"></script>
     <script src="js/components/TransactionItemsTable.js"></script>
-    <script src="js/pages/purchases.js?v=14"></script>
+    <script src="js/pages/purchases.js?v=18"></script>
     <script src="js/pages/inventory.js?v=6"></script>
     <script src="js/pages/settings.js?v=5"></script>
 </body>

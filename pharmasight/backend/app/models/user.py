@@ -17,6 +17,13 @@ class User(Base):
     All users belong to the single company in this database.
     No company_id needed - there is only one company.
     User ID must match Supabase Auth user_id.
+    
+    NEW FIELDS (for invitation system):
+    - invitation_token: Unique token for invitation link
+    - invitation_code: Simple code for invitation (alternative to link)
+    - is_pending: Whether user is pending password setup
+    - password_set: Whether user has set their password
+    - deleted_at: Soft delete timestamp (NULL = active, timestamp = deleted)
     """
     __tablename__ = "users"
 
@@ -25,6 +32,14 @@ class User(Base):
     full_name = Column(String(255))
     phone = Column(String(50))
     is_active = Column(Boolean, default=True)
+    
+    # NEW: Invitation fields
+    invitation_token = Column(String(255), unique=True, nullable=True)
+    invitation_code = Column(String(50), unique=True, nullable=True)
+    is_pending = Column(Boolean, default=False)  # True for newly invited users
+    password_set = Column(Boolean, default=False)  # Set to True after first login with password
+    deleted_at = Column(TIMESTAMP(timezone=True), nullable=True)  # Soft delete timestamp
+    
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

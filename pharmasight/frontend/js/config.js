@@ -61,3 +61,11 @@ function saveSupabaseConfig() {
 // Initialize
 loadConfig();
 
+// Expose CONFIG to window for global access
+if (typeof window !== 'undefined') {
+    window.CONFIG = CONFIG;
+    
+    // Also expose saveConfig for external use
+    window.saveConfig = saveConfig;
+    window.loadConfig = loadConfig;
+}

@@ -12,17 +12,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadingIndicator.style.display = 'none';
     }
     
-    // Ensure dashboard is visible by default
-    const dashboard = document.getElementById('dashboard');
-    if (dashboard) {
-        dashboard.style.display = 'block';
-    }
+    // Hide all pages first, then show dashboard if needed
+    const allPages = document.querySelectorAll('.page');
+    allPages.forEach(page => {
+        page.style.display = 'none';
+        page.style.visibility = 'hidden';
+    });
     
-    // Ensure at least dashboard is visible
-    const dashboard = document.getElementById('dashboard');
-    if (dashboard && !dashboard.classList.contains('active')) {
-        dashboard.classList.add('active');
-    }
+    // Dashboard will be shown by loadPage() after auth check
     
     console.log('✅ CONFIG loaded:', { COMPANY_ID: CONFIG.COMPANY_ID, BRANCH_ID: CONFIG.BRANCH_ID });
     
@@ -113,6 +110,7 @@ async function checkAuthAndSetup() {
             loadPage('setup');
         } else if (CONFIG.COMPANY_ID && CONFIG.BRANCH_ID) {
             // Already configured, go to dashboard
+            await updateStatusBar(user); // Refresh status bar with company/branch
             loadPage('dashboard');
         } else {
             // Need to load company/branch from database (with timeout)
@@ -138,6 +136,7 @@ async function checkAuthAndSetup() {
                         if (branches && branches.length > 0) {
                             CONFIG.BRANCH_ID = branches[0].id;
                             saveConfig();
+                            await updateStatusBar(user); // Refresh status bar
                             loadPage('dashboard');
                             return;
                         }
@@ -161,7 +160,8 @@ async function checkAuthAndSetup() {
 // Sub-navigation definitions
 window.subNavItems = {
     sales: [
-        { page: 'sales', label: 'Point of Sale', icon: 'fa-cash-register' },
+        { page: 'sales', subPage: 'pos', label: 'Point of Sale', icon: 'fa-cash-register' },
+        { page: 'sales', subPage: 'invoices', label: 'Sales Invoices', icon: 'fa-file-invoice-dollar' },
         { page: 'sales-history', label: 'Sales History', icon: 'fa-history' },
         { page: 'sales-returns', label: 'Returns', icon: 'fa-undo' }
     ],
@@ -190,10 +190,11 @@ window.subNavItems = {
         { page: 'reports-custom', label: 'Custom Reports', icon: 'fa-file-alt' }
     ],
     settings: [
-        { page: 'settings', label: 'General Settings', icon: 'fa-cog' },
-        { page: 'settings-company', label: 'Company', icon: 'fa-building' },
-        { page: 'settings-users', label: 'Users & Roles', icon: 'fa-users' },
-        { page: 'settings-pricing', label: 'Pricing Rules', icon: 'fa-tags' }
+        { page: 'settings', subPage: 'general', label: 'General Settings', icon: 'fa-cog' },
+        { page: 'settings', subPage: 'company', label: 'Company', icon: 'fa-building' },
+        { page: 'settings', subPage: 'branches', label: 'Branches', icon: 'fa-code-branch' },
+        { page: 'settings', subPage: 'users', label: 'Users & Roles', icon: 'fa-users' },
+        { page: 'settings', subPage: 'transaction', label: 'Transaction', icon: 'fa-receipt' }
     ]
 };
 
@@ -298,6 +299,26 @@ function showSubNav(pageKey, title) {
                         // If no sub-page specified, ensure default sub-page loads
                         setTimeout(() => {
                             window.loadPurchases();
+                        }, 100);
+                    }
+                } else if (page === 'sales') {
+                    // For sales, load the page first, then switch to sub-page if specified
+                    loadPage(page);
+                    if (subPage && window.switchSalesSubPage) {
+                        setTimeout(() => {
+                            window.switchSalesSubPage(subPage);
+                        }, 100);
+                    } else if (!subPage && window.loadSales) {
+                        setTimeout(() => {
+                            window.loadSales();
+                        }, 100);
+                    }
+                } else if (page === 'settings') {
+                    // For settings, load the page with sub-page
+                    loadPage(subPage ? `${page}-${subPage}` : page);
+                    if (subPage && window.loadSettingsSubPage) {
+                        setTimeout(() => {
+                            window.loadSettingsSubPage(subPage);
                         }, 100);
                     }
                 } else {
@@ -429,6 +450,15 @@ function loadPage(pageName) {
     console.log('📄 Loading page:', pageName);
     currentPage = pageName;
     
+    // Handle sub-pages (e.g., settings-company, purchases-orders)
+    let mainPage = pageName;
+    let subPage = null;
+    if (pageName.includes('-')) {
+        const parts = pageName.split('-');
+        mainPage = parts[0];
+        subPage = parts.slice(1).join('-');
+    }
+    
     // Update URL hash
     try {
         window.location.hash = `#${pageName}`;
@@ -436,15 +466,17 @@ function loadPage(pageName) {
         console.warn('Could not update URL hash:', e);
     }
     
-    // Hide all pages
+    // Hide all pages (explicitly set display: none to override any inline styles)
     const allPages = document.querySelectorAll('.page');
     console.log(`📄 Found ${allPages.length} page elements`);
     allPages.forEach(page => {
         page.classList.remove('active');
+        page.style.display = 'none';  // Explicitly hide to override any previous inline styles
+        page.style.visibility = 'hidden';
     });
     
-    // Show selected page
-    const pageElement = document.getElementById(pageName);
+    // Show selected page (use mainPage for element ID)
+    const pageElement = document.getElementById(mainPage);
     if (pageElement) {
         pageElement.classList.add('active');
         console.log('✅ Page element found and activated:', pageName);
@@ -491,8 +523,8 @@ function loadPage(pageName) {
         }
     }
     
-    // Load page content
-    switch(pageName) {
+    // Load page content (use mainPage for switch)
+    switch(mainPage) {
         case 'login':
             if (window.loadLogin) window.loadLogin();
             break;
@@ -503,10 +535,30 @@ function loadPage(pageName) {
             if (window.loadDashboard) window.loadDashboard();
             break;
         case 'sales':
-            if (window.loadSales) window.loadSales();
+            if (window.loadSales) {
+                window.loadSales();
+                // Load sub-page if specified
+                if (subPage && window.loadSalesSubPage) {
+                    setTimeout(() => window.loadSalesSubPage(subPage), 100);
+                }
+            }
             break;
         case 'purchases':
-            if (window.loadPurchases) window.loadPurchases();
+            if (window.loadPurchases) {
+                window.loadPurchases();
+                // Load sub-page if specified
+                if (subPage && window.loadPurchaseSubPage) {
+                    setTimeout(() => window.loadPurchaseSubPage(subPage), 100);
+                }
+            } else {
+                console.error('❌ window.loadPurchases is not defined! purchases.js may not have loaded.');
+                console.error('   Checking for script errors...');
+                // Show error message on page
+                const page = document.getElementById('purchases');
+                if (page) {
+                    page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Error Loading Purchases Page</h3><p>The purchases.js script may not have loaded properly. Please check the browser console for errors.</p><p>Expected logs: "✅ purchases.js script loaded" and "✓ Purchases functions exported to window"</p></div>';
+                }
+            }
             break;
         case 'inventory':
             console.log('Loading inventory page...');
@@ -517,12 +569,73 @@ function loadPage(pageName) {
             }
             break;
         case 'settings':
-            if (window.loadSettings) window.loadSettings();
+            if (window.loadSettings) {
+                window.loadSettings();
+                // Load sub-page if specified
+                if (subPage && window.loadSettingsSubPage) {
+                    setTimeout(() => window.loadSettingsSubPage(subPage), 100);
+                }
+            }
             break;
+    }
+}
+
+/**
+ * Update Status Bar (phAMACore style)
+ * Shows: User | Company Name | Branch Name
+ */
+async function updateStatusBar(user) {
+    const statusUser = document.getElementById('statusUser');
+    const statusCompany = document.getElementById('statusCompany');
+    const statusBranch = document.getElementById('statusBranch');
+    
+    if (!statusUser || !statusCompany || !statusBranch) {
+        console.warn('Status bar elements not found');
+        return;
+    }
+    
+    // Update user
+    if (user) {
+        statusUser.textContent = user.email || user.user_metadata?.full_name || 'User';
+    } else {
+        statusUser.textContent = 'Not Logged In';
+    }
+    
+    // Update company
+    if (CONFIG.COMPANY_ID) {
+        try {
+            const company = await API.company.get(CONFIG.COMPANY_ID);
+            statusCompany.textContent = company.name || 'Unknown Company';
+            statusCompany.classList.remove('status-warning');
+        } catch (error) {
+            console.error('Error loading company:', error);
+            statusCompany.textContent = 'Company Not Found';
+            statusCompany.classList.add('status-warning');
+        }
+    } else {
+        statusCompany.textContent = 'Not Set';
+        statusCompany.classList.add('status-warning');
+    }
+    
+    // Update branch
+    if (CONFIG.BRANCH_ID) {
+        try {
+            const branch = await API.branch.get(CONFIG.BRANCH_ID);
+            statusBranch.textContent = branch.name || 'Unknown Branch';
+            statusBranch.classList.remove('status-warning');
+        } catch (error) {
+            console.error('Error loading branch:', error);
+            statusBranch.textContent = 'Branch Not Found';
+            statusBranch.classList.add('status-warning');
+        }
+    } else {
+        statusBranch.textContent = 'Not Set';
+        statusBranch.classList.add('status-warning');
     }
 }
 
 // Export for use in other scripts
 window.loadPage = loadPage;
 window.currentPage = currentPage;
+window.updateStatusBar = updateStatusBar;
 

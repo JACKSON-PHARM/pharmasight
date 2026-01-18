@@ -2,7 +2,7 @@
 Purchases API routes (GRN and Purchase Invoices)
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
@@ -266,6 +266,10 @@ def create_purchase_order(order: PurchaseOrderCreate, db: Session = Depends(get_
         db_order.supplier_name = db_order.supplier.name
     if db_order.branch:
         db_order.branch_name = db_order.branch.name
+    # Load created_by user name
+    created_by_user = db.query(User).filter(User.id == db_order.created_by).first()
+    if created_by_user:
+        db_order.created_by_name = created_by_user.full_name or created_by_user.email
     
     return db_order
 
@@ -310,28 +314,50 @@ def list_purchase_orders(
     # Order by date descending (newest first)
     orders = query.order_by(PurchaseOrder.order_date.desc(), PurchaseOrder.created_at.desc()).all()
     
-    # Load supplier and branch names
+    # Load supplier, branch, and user names
     for order in orders:
         if order.supplier:
             order.supplier_name = order.supplier.name
         if order.branch:
             order.branch_name = order.branch.name
+        # Load created_by user name
+        created_by_user = db.query(User).filter(User.id == order.created_by).first()
+        if created_by_user:
+            order.created_by_name = created_by_user.full_name or created_by_user.email
     
     return orders
 
 
 @router.get("/order/{order_id}", response_model=PurchaseOrderResponse)
 def get_purchase_order(order_id: UUID, db: Session = Depends(get_db)):
-    """Get purchase order by ID"""
-    order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    """Get purchase order by ID with full item details"""
+    # Load order with items and item relationships
+    order = db.query(PurchaseOrder).options(
+        selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.item)
+    ).filter(PurchaseOrder.id == order_id).first()
+    
     if not order:
         raise HTTPException(status_code=404, detail="Purchase order not found")
     
-    # Load supplier and branch names
+    # Load supplier, branch, and user names
     if order.supplier:
         order.supplier_name = order.supplier.name
     if order.branch:
         order.branch_name = order.branch.name
+    # Load created_by user name
+    created_by_user = db.query(User).filter(User.id == order.created_by).first()
+    if created_by_user:
+        order.created_by_name = created_by_user.full_name or created_by_user.email
+    
+    # Enhance items with full item details (similar to phAMACore response)
+    for order_item in order.items:
+        if order_item.item:
+            # Add item details to order_item object (will be serialized by response model)
+            order_item.item_code = order_item.item.sku or ''
+            order_item.item_name = order_item.item.name or ''
+            order_item.item_category = order_item.item.category or ''
+            order_item.base_unit = order_item.item.base_unit or ''
+            order_item.default_cost = float(order_item.item.default_cost) if order_item.item.default_cost else 0.0
     
     return order
 
@@ -379,11 +405,38 @@ def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db:
     db.commit()
     db.refresh(db_order)
     
-    # Load supplier and branch names
+    # Load supplier, branch, and user names
     if db_order.supplier:
         db_order.supplier_name = db_order.supplier.name
     if db_order.branch:
         db_order.branch_name = db_order.branch.name
+    # Load created_by user name
+    created_by_user = db.query(User).filter(User.id == db_order.created_by).first()
+    if created_by_user:
+        db_order.created_by_name = created_by_user.full_name or created_by_user.email
     
     return db_order
+
+
+@router.delete("/order/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_purchase_order(order_id: UUID, db: Session = Depends(get_db)):
+    """Delete purchase order (only if status is PENDING)"""
+    db_order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not db_order:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    
+    if db_order.status != "PENDING":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete purchase order with status {db_order.status}. Only PENDING orders can be deleted."
+        )
+    
+    # Delete order items (cascade should handle this, but explicit is safer)
+    db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id == order_id).delete()
+    
+    # Delete order
+    db.delete(db_order)
+    db.commit()
+    
+    return None
 
