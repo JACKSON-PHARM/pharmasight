@@ -1,11 +1,12 @@
 """
 Document Numbering Service - KRA Compliant Sequential Numbering
 """
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, extract
 from datetime import date
 from uuid import UUID
-from app.models import Company, Branch
+from app.models import Company, Branch, DocumentSequence
 from app.database import SessionLocal
 
 
@@ -23,30 +24,31 @@ class DocumentService:
         """
         Get next sequential document number (KRA compliant)
         
+        Uses database function that ENFORCES branch code in invoice numbers.
+        Format: {BRANCH_CODE}-{TYPE}-YYYY-000001
+        
         Args:
             company_id: Company ID
-            branch_id: Branch ID
+            branch_id: Branch ID (must have a code)
             document_type: SALES_INVOICE, GRN, CREDIT_NOTE, PAYMENT
-            prefix: Optional prefix (e.g., "INV", "GRN")
+            prefix: Optional prefix (will be ignored - branch code is required)
         
         Returns:
-            str: Next document number (e.g., "INV-000001" or "000001")
-        """
-        current_year = date.today().year
+            str: Next document number with branch code (e.g., "MAIN-INV-2026-000001")
         
-        # Use raw SQL for atomic increment (better than ORM for this)
+        Raises:
+            ValueError: If branch code is missing
+        """
         from sqlalchemy import text
         
-        # Insert or update sequence
+        # Use database function that enforces branch code
         sql = text("""
-            INSERT INTO document_sequences 
-                (company_id, branch_id, document_type, prefix, current_number, year)
-            VALUES 
-                (:company_id, :branch_id, :document_type, :prefix, 0, :year)
-            ON CONFLICT (company_id, branch_id, document_type, year)
-            DO UPDATE SET 
-                current_number = document_sequences.current_number + 1
-            RETURNING current_number
+            SELECT get_next_document_number(
+                :company_id::UUID,
+                :branch_id::UUID,
+                :document_type,
+                :prefix
+            )
         """)
         
         result = db.execute(
@@ -55,18 +57,16 @@ class DocumentService:
                 "company_id": str(company_id),
                 "branch_id": str(branch_id),
                 "document_type": document_type,
-                "prefix": prefix,
-                "year": current_year
+                "prefix": prefix
             }
         )
         
-        next_number = result.scalar()
+        document_number = result.scalar()
         
-        # Format document number
-        if prefix:
-            return f"{prefix}-{str(next_number).zfill(6)}"
-        else:
-            return str(next_number).zfill(6)
+        if not document_number:
+            raise ValueError(f"Failed to generate document number. Ensure branch has a code.")
+        
+        return document_number
 
     @staticmethod
     def get_sales_invoice_number(
@@ -74,13 +74,14 @@ class DocumentService:
         company_id: UUID,
         branch_id: UUID
     ) -> str:
-        """Get next sales invoice number"""
-        # Get company/branch prefix if configured
-        branch = db.query(Branch).filter(Branch.id == branch_id).first()
-        prefix = branch.code if branch and branch.code else "INV"
+        """
+        Get next sales invoice number
         
+        Format: CS001 (Cash Sale), CS002, etc.
+        Branch-specific sequence.
+        """
         return DocumentService.get_next_document_number(
-            db, company_id, branch_id, "SALES_INVOICE", prefix
+            db, company_id, branch_id, "SALES_INVOICE", None
         )
 
     @staticmethod
@@ -89,15 +90,60 @@ class DocumentService:
         company_id: UUID,
         branch_id: UUID
     ) -> str:
-        """Get next GRN number"""
-        branch = db.query(Branch).filter(Branch.id == branch_id).first()
-        prefix = "GRN"
-        if branch and branch.code:
-            prefix = f"{branch.code}-GRN"
+        """
+        Get next GRN number
         
+        Format: GRN001, GRN002, etc.
+        Branch-specific sequence.
+        """
         return DocumentService.get_next_document_number(
-            db, company_id, branch_id, "GRN", prefix
+            db, company_id, branch_id, "GRN", None
         )
+    
+    @staticmethod
+    def get_purchase_order_number(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID
+    ) -> str:
+        """
+        Get next Purchase Order number
+        
+        Format: PO{BRANCH_CODE}-000001, PO{BRANCH_CODE}-000002, etc.
+        Branch-specific sequence.
+        """
+        # Get branch code
+        branch = db.query(Branch).filter(Branch.id == branch_id).first()
+        if not branch or not branch.code:
+            raise ValueError("Branch code is required for purchase order numbering")
+        
+        # Get next sequence number for this branch
+        from app.models import DocumentSequence
+        from sqlalchemy import func
+        
+        # Find or create sequence for this branch and document type
+        sequence = db.query(DocumentSequence).filter(
+            DocumentSequence.company_id == company_id,
+            DocumentSequence.branch_id == branch_id,
+            DocumentSequence.document_type == "PURCHASE_ORDER"
+        ).first()
+        
+        if not sequence:
+            sequence = DocumentSequence(
+                company_id=company_id,
+                branch_id=branch_id,
+                document_type="PURCHASE_ORDER",
+                current_number=0
+            )
+            db.add(sequence)
+            db.flush()
+        
+        # Increment and get next number
+        sequence.current_number += 1
+        db.commit()
+        
+        # Format: PO{BRANCH_CODE}-{6-digit number}
+        return f"PO{branch.code}-{sequence.current_number:06d}"
 
     @staticmethod
     def get_credit_note_number(
@@ -105,14 +151,14 @@ class DocumentService:
         company_id: UUID,
         branch_id: UUID
     ) -> str:
-        """Get next credit note number"""
-        branch = db.query(Branch).filter(Branch.id == branch_id).first()
-        prefix = "CN"
-        if branch and branch.code:
-            prefix = f"{branch.code}-CN"
+        """
+        Get next credit note number
         
+        Format: CN001 (Credit Note), CN002, etc.
+        Branch-specific sequence.
+        """
         return DocumentService.get_next_document_number(
-            db, company_id, branch_id, "CREDIT_NOTE", prefix
+            db, company_id, branch_id, "CREDIT_NOTE", None
         )
 
     @staticmethod
@@ -121,13 +167,13 @@ class DocumentService:
         company_id: UUID,
         branch_id: UUID
     ) -> str:
-        """Get next payment number"""
-        branch = db.query(Branch).filter(Branch.id == branch_id).first()
-        prefix = "PAY"
-        if branch and branch.code:
-            prefix = f"{branch.code}-PAY"
+        """
+        Get next payment number
         
+        Format: {BRANCH_CODE}-PAY-YYYY-000001
+        Branch code is REQUIRED and enforced by database function.
+        """
         return DocumentService.get_next_document_number(
-            db, company_id, branch_id, "PAYMENT", prefix
+            db, company_id, branch_id, "PAYMENT", None
         )
 

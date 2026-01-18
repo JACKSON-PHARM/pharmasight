@@ -1,7 +1,7 @@
 """
 Sales models (KRA Compliant)
 """
-from sqlalchemy import Column, String, Numeric, Date, ForeignKey
+from sqlalchemy import Column, String, Numeric, Date, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func

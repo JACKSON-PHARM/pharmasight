@@ -1,0 +1,43 @@
+# PharmaSight Backend .env File Template
+# 
+# INSTRUCTIONS:
+# 1. Create a file named ".env" in the backend/ folder
+# 2. Copy the content below into that file
+# 3. Replace the placeholder values with your actual Supabase credentials
+# 4. NEVER commit this file to git!
+
+# ============================================
+# Supabase Auth Configuration
+# Get these from: Supabase Dashboard → Settings → API
+# ============================================
+SUPABASE_URL=https://kwvkkbofubsjiwqlqakt.supabase.co
+SUPABASE_KEY=your-anon-key-here
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+
+# ============================================
+# Database Connection
+# ============================================
+DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+
+# Or use individual components (if not using DATABASE_URL):
+# SUPABASE_DB_HOST=db.kwvkkbofubsjiwqlqakt.supabase.co
+# SUPABASE_DB_PORT=5432
+# SUPABASE_DB_NAME=postgres
+# SUPABASE_DB_USER=postgres
+# SUPABASE_DB_PASSWORD=6iP.zRY6QyK8L*Z
+
+# ============================================
+# App Configuration
+# ============================================
+DEBUG=True
+SECRET_KEY=change-me-generate-with-python-secrets-token_urlsafe-32
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8000
+
+# ============================================
+# WHERE TO FIND YOUR VALUES:
+# ============================================
+# 1. Go to: https://supabase.com/dashboard/project/kwvkkbofubsjiwqlqakt/settings/api
+# 2. Find "Project URL" → Copy as SUPABASE_URL
+# 3. Find "anon" key → Copy as SUPABASE_KEY
+# 4. Find "service_role" key → Copy as SUPABASE_SERVICE_ROLE_KEY
+#    ⚠️ WARNING: service_role key has admin privileges! Keep it secret!

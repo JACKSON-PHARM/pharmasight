@@ -1,104 +1,81 @@
-# PharmaSight Quick Start Guide
+# ⚡ Quick Start Guide - Run PharmaSight Locally
 
-## 🚀 Fast Setup (5 Minutes)
+## 🚀 Start Everything with One Command
 
-### 1. Supabase Setup (2 min)
+### Windows (Easiest)
 
-1. Open: https://supabase.com/dashboard/project/kwvkkbofubsjiwqlqakt/sql/new
-2. Open `database/schema.sql` in this project
-3. Copy entire file
-4. Paste in Supabase SQL Editor
-5. Click **Run**
-6. ✅ Done!
+**Just double-click:** `start.bat`
 
-### 2. Local Testing (1 min)
-
-```bash
-# Terminal 1: Backend
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-
-# Terminal 2: Frontend (optional)
-cd frontend
-python -m http.server 3000
+Or run from terminal:
+```batch
+start.bat
 ```
 
-Visit: http://localhost:8000/docs
+This will:
+- ✅ Start backend server (http://localhost:8000)
+- ✅ Start frontend server (http://localhost:3000)
+- ✅ Open separate windows for each server
+- ✅ Show you all the URLs you need
 
-### 3. GitHub Push (1 min)
+### PowerShell
 
-```bash
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/YOUR_USERNAME/pharmasight.git
-git push -u origin main
+```powershell
+.\start.ps1
 ```
 
-**Note**: You'll need to provide your GitHub email. Replace `YOUR_USERNAME` with your actual GitHub username.
+### Python
 
-### 4. Render Deploy (1 min)
+```powershell
+python start.py
+```
 
-1. Go to: https://render.com
-2. **New +** → **Web Service**
-3. Connect GitHub repo
-4. Settings:
-   - **Name**: `pharmasight-backend`
-   - **Build Command**: `pip install -r backend/requirements.txt`
-   - **Start Command**: `cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-5. **Environment Variables**:
+## 📋 Prerequisites Check
+
+Before running, make sure:
+
+1. ✅ **Database Schema is Set Up**
+   - Go to: https://supabase.com/dashboard/project/kwvkkbofubsjiwqlqakt/sql/new
+   - Run the SQL from `database/schema.sql`
+
+2. ✅ **Virtual Environment is Created**
+   ```powershell
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   pip install -r backend/requirements.txt
    ```
-   DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
-   DEBUG=False
-   SECRET_KEY=generate-a-random-key
-   ```
-6. **Create Web Service**
-7. ✅ Wait 5-10 minutes for deployment
 
-### Your URLs
+3. ✅ **.env File Exists**
+   - Should be in `pharmasight/` directory
+   - Contains: DATABASE_URL, DEBUG, SECRET_KEY, CORS_ORIGINS
 
-- **Backend API**: `https://pharmasight-backend-xxx.onrender.com`
-- **API Docs**: `https://pharmasight-backend-xxx.onrender.com/docs`
-- **Health Check**: `https://pharmasight-backend-xxx.onrender.com/health`
+## 🌐 Access Your Application
 
-## 📝 What You Need
+Once servers are running:
 
-- ✅ Supabase project: `kwvkkbofubsjiwqlqakt`
-- ✅ Password: `6iP.zRY6QyK8L*Z`
-- ⚠️ GitHub email: (you'll provide when pushing)
-- ⚠️ GitHub username: (for repository URL)
+- **Frontend**: http://localhost:3000
+- **Backend API**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
+- **Health Check**: http://localhost:8000/health
 
-## 🎯 Next Steps After Deployment
+## 🛑 Stop the Servers
 
-1. **Get Company & Branch IDs**:
-   - Query Supabase database or create via API
-   - Save in frontend Settings
+- **Batch/PowerShell**: Close the command windows
+- **Python script**: Press `Ctrl+C`
 
-2. **Add Items**: Use Items page
+## 🐛 Troubleshooting
 
-3. **Create GRN**: Add purchases
+**Backend won't start?**
+- Check that virtual environment is activated
+- Verify `.env` file exists
+- Make sure port 8000 is not in use
 
-4. **Process Sales**: Use POS page
+**Frontend won't start?**
+- Make sure port 3000 is not in use
+- Check that Python HTTP server is available
 
-## ⚠️ Important
+**Can't connect to database?**
+- Verify database schema is run in Supabase
+- Check `.env` has correct DATABASE_URL
+- Test connection in Supabase dashboard
 
-- Never commit `.env` file
-- Never share your password publicly
-- Use environment variables in Render
-- Free Render tier spins down after 15 min inactivity
-
-## 🆘 Quick Troubleshooting
-
-**Database error?**
-- Check connection string in Render
-- Verify Supabase project is active
-
-**Build failed?**
-- Check `requirements.txt` exists
-- Verify Python 3.10+ is selected
-
-**CORS error?**
-- Add frontend URL to `CORS_ORIGINS`
-- Or use `*` for testing (not production)
-
+For detailed information, see: `LOCAL_RUN_GUIDE.md`

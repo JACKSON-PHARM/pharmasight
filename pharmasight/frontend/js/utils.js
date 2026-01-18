@@ -61,9 +61,16 @@ function formatDateTime(date) {
 }
 
 // Show modal
-function showModal(title, content, footer = '') {
+function showModal(title, content, footer = '', modalClass = '') {
     const overlay = document.getElementById('modalOverlay');
     const modal = document.getElementById('modal');
+    
+    // Add class if provided
+    if (modalClass) {
+        modal.classList.add(modalClass);
+    } else {
+        modal.classList.remove('modal-large');
+    }
     
     modal.innerHTML = `
         <div class="modal-header">

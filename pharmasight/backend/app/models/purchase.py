@@ -107,3 +107,49 @@ class PurchaseInvoiceItem(Base):
     purchase_invoice = relationship("PurchaseInvoice", back_populates="items")
     item = relationship("Item")
 
+
+class PurchaseOrder(Base):
+    """Purchase Order (Pre-order document before GRN)"""
+    __tablename__ = "purchase_orders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=False)
+    order_number = Column(String(100), nullable=False)  # PO{BRANCH_CODE}-000001
+    order_date = Column(Date, nullable=False)
+    reference = Column(String(255))  # User reference/notes
+    notes = Column(Text)
+    total_amount = Column(Numeric(20, 4), default=0)
+    status = Column(String(50), default="PENDING")  # PENDING, APPROVED, RECEIVED, CANCELLED
+    created_by = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    company = relationship("Company")
+    branch = relationship("Branch")
+    supplier = relationship("Supplier")
+    items = relationship("PurchaseOrderItem", back_populates="purchase_order", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        {"comment": "Purchase Orders are created before receiving goods. Can be converted to GRN."},
+    )
+
+
+class PurchaseOrderItem(Base):
+    """Purchase Order line items"""
+    __tablename__ = "purchase_order_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    purchase_order_id = Column(UUID(as_uuid=True), ForeignKey("purchase_orders.id", ondelete="CASCADE"), nullable=False)
+    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id"), nullable=False)
+    unit_name = Column(String(50), nullable=False)
+    quantity = Column(Numeric(20, 4), nullable=False)
+    unit_price = Column(Numeric(20, 4), nullable=False)  # Expected price
+    total_price = Column(Numeric(20, 4), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    # Relationships
+    purchase_order = relationship("PurchaseOrder", back_populates="items")
+    item = relationship("Item")

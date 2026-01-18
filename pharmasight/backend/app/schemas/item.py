@@ -19,6 +19,14 @@ class ItemUnitCreate(ItemUnitBase):
     pass
 
 
+class ItemUnitUpdate(BaseModel):
+    """Update item unit (for edits)"""
+    id: Optional[UUID] = Field(None, description="Unit ID (required for existing units)")
+    unit_name: str = Field(..., description="Unit name (box, carton, tablet, etc.)")
+    multiplier_to_base: float = Field(..., gt=0, description="Multiplier to base unit")
+    is_default: bool = Field(default=False, description="Is this the default unit?")
+
+
 class ItemUnitResponse(ItemUnitBase):
     """Item unit response"""
     id: UUID
@@ -38,12 +46,23 @@ class ItemBase(BaseModel):
     category: Optional[str] = None
     base_unit: str = Field(..., description="Base unit (tablet, ml, gram, etc.)")
     default_cost: float = Field(default=0, ge=0)
+    # VAT Classification (Kenya Pharmacy Context)
+    is_vatable: Optional[bool] = Field(default=True, description="Is this item VATable?")
+    vat_rate: Optional[float] = Field(default=0, ge=0, le=100, description="VAT rate: 0 for zero-rated, 16 for standard-rated")
+    vat_code: Optional[str] = Field(default=None, description="VAT code: ZERO_RATED | STANDARD | EXEMPT")
+    price_includes_vat: Optional[bool] = Field(default=False, description="Is price inclusive of VAT?")
 
 
 class ItemCreate(ItemBase):
     """Create item request"""
     company_id: UUID
     units: List[ItemUnitCreate] = Field(default_factory=list, description="Unit conversions")
+
+
+class ItemsBulkCreate(BaseModel):
+    """Bulk create items request"""
+    company_id: UUID
+    items: List[ItemCreate] = Field(..., min_items=1, max_items=1000, description="Items to create (max 1000 per batch)")
 
 
 class ItemUpdate(BaseModel):
@@ -55,7 +74,12 @@ class ItemUpdate(BaseModel):
     category: Optional[str] = None
     base_unit: Optional[str] = None
     default_cost: Optional[float] = Field(None, ge=0)
+    is_vatable: Optional[bool] = None
+    vat_rate: Optional[float] = Field(None, ge=0, le=100)
+    vat_code: Optional[str] = None
+    price_includes_vat: Optional[bool] = None
     is_active: Optional[bool] = None
+    units: Optional[List[ItemUnitUpdate]] = Field(None, description="Unit conversions (optional, only if modifying units)")
 
 
 class ItemResponse(ItemBase):
@@ -115,4 +139,13 @@ class CompanyPricingDefaultResponse(CompanyPricingDefaultBase):
 
     class Config:
         from_attributes = True
+
+
+class ItemOverviewResponse(ItemResponse):
+    """Item with overview data (stock, supplier, cost)"""
+    current_stock: Optional[float] = Field(default=None, description="Current stock in base units (aggregated from ledger)")
+    last_supplier: Optional[str] = Field(default=None, description="Name of last supplier from purchase transactions")
+    last_unit_cost: Optional[float] = Field(default=None, description="Last unit cost from purchase transactions")
+    has_transactions: bool = Field(default=False, description="Whether item has any inventory_ledger records (locks structural fields)")
+    minimum_stock: Optional[float] = Field(default=None, description="Minimum stock level (if configured)")
 

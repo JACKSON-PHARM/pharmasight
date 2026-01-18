@@ -12,10 +12,18 @@ async function loadDashboard() {
         document.getElementById('todaySales').textContent = formatCurrency(0);
         document.getElementById('expiringItems').textContent = '0';
         
-        // Load items count
+        // Load items count (use count endpoint for better performance)
         if (CONFIG.COMPANY_ID) {
-            const items = await API.items.list(CONFIG.COMPANY_ID);
-            document.getElementById('totalItems').textContent = items.length || 0;
+            try {
+                const countData = await API.items.count(CONFIG.COMPANY_ID);
+                document.getElementById('totalItems').textContent = countData.count || 0;
+            } catch (error) {
+                // Fallback to list if count endpoint fails
+                console.warn('Count endpoint failed, using list:', error);
+                const items = await API.items.list(CONFIG.COMPANY_ID, { include_units: false, limit: 1 });
+                // Note: This won't give accurate count, but prevents timeout
+                document.getElementById('totalItems').textContent = '...';
+            }
         }
         
         // Load stock summary

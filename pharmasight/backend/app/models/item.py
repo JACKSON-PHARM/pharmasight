@@ -23,6 +23,12 @@ class Item(Base):
     category = Column(String(100))
     base_unit = Column(String(50), nullable=False)  # tablet, ml, gram, etc.
     default_cost = Column(Numeric(20, 4), default=0)
+    # VAT Classification (Kenya Pharmacy Context)
+    # Most medicines are zero-rated (0%), some items/services are standard-rated (16%)
+    is_vatable = Column(Boolean, default=True)
+    vat_rate = Column(Numeric(5, 2), default=0)  # 0 for zero-rated, 16 for standard-rated
+    vat_code = Column(String(50))  # ZERO_RATED | STANDARD | EXEMPT
+    price_includes_vat = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())

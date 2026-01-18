@@ -6,47 +6,66 @@
     <title>PharmaSight - Pharmacy Management System</title>
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
     <div class="app-container">
         <!-- Sidebar Navigation -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                <h1><i class="fas fa-pills"></i> <span class="sidebar-title">PharmaSight</span></h1>
+                <button class="sidebar-toggle-btn" id="sidebarToggle" title="Collapse/Expand">
+                    <i class="fas fa-chevron-left"></i>
+                </button>
             </div>
-            <nav class="sidebar-nav">
-                <a href="#" class="nav-item active" data-page="dashboard">
+            <nav class="sidebar-nav" id="mainNav">
+                <a href="#" class="nav-item active" data-page="dashboard" data-has-sub="false">
                     <i class="fas fa-chart-line"></i>
                     <span>Dashboard</span>
                 </a>
-                <a href="#" class="nav-item" data-page="items">
-                    <i class="fas fa-box"></i>
-                    <span>Items</span>
-                </a>
-                <a href="#" class="nav-item" data-page="sales">
+                <a href="#" class="nav-item" data-page="sales" data-has-sub="true">
                     <i class="fas fa-shopping-cart"></i>
                     <span>Sales</span>
+                    <i class="fas fa-chevron-right nav-arrow"></i>
                 </a>
-                <a href="#" class="nav-item" data-page="purchases">
+                <a href="#" class="nav-item" data-page="purchases" data-has-sub="true">
                     <i class="fas fa-shopping-bag"></i>
                     <span>Purchases</span>
+                    <i class="fas fa-chevron-right nav-arrow"></i>
                 </a>
-                <a href="#" class="nav-item" data-page="inventory">
+                <a href="#" class="nav-item" data-page="inventory" data-has-sub="true">
                     <i class="fas fa-warehouse"></i>
                     <span>Inventory</span>
+                    <i class="fas fa-chevron-right nav-arrow"></i>
                 </a>
-                <a href="#" class="nav-item" data-page="expenses">
+                <a href="#" class="nav-item" data-page="expenses" data-has-sub="true">
                     <i class="fas fa-money-bill-wave"></i>
                     <span>Expenses</span>
+                    <i class="fas fa-chevron-right nav-arrow"></i>
                 </a>
-                <a href="#" class="nav-item" data-page="reports">
+                <a href="#" class="nav-item" data-page="reports" data-has-sub="true">
                     <i class="fas fa-chart-bar"></i>
                     <span>Reports</span>
+                    <i class="fas fa-chevron-right nav-arrow"></i>
                 </a>
-                <a href="#" class="nav-item" data-page="settings">
+                <a href="#" class="nav-item" data-page="settings" data-has-sub="true">
                     <i class="fas fa-cog"></i>
                     <span>Settings</span>
+                    <i class="fas fa-chevron-right nav-arrow"></i>
                 </a>
+            </nav>
+            <!-- Sub Navigation (shown when main nav is collapsed) -->
+            <nav class="sidebar-sub-nav" id="subNav" style="display: none;">
+                <div class="sub-nav-header">
+                    <button class="back-to-main-nav" id="backToMainNav" type="button">
+                        <i class="fas fa-chevron-left"></i>
+                        <span id="subNavTitle">Back</span>
+                    </button>
+                </div>
+                <div class="sub-nav-items" id="subNavItems">
+                    <!-- Sub-items will be dynamically inserted here -->
+                </div>
             </nav>
             <div class="sidebar-footer">
                 <div class="user-info">
@@ -75,7 +94,18 @@
 
             <!-- Page Content -->
             <div class="page-content" id="pageContent">
+                <!-- Loading indicator -->
+                <div id="appLoading" style="padding: 2rem; text-align: center; display: block;">
+                    <p>Loading PharmaSight...</p>
+                    <p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.5rem;">If this message doesn't disappear, check the browser console (F12) for errors.</p>
+                </div>
                 <!-- Dashboard will be loaded here -->
+                <noscript>
+                    <div style="padding: 2rem; text-align: center; color: var(--danger-color);">
+                        <h2>JavaScript Required</h2>
+                        <p>Please enable JavaScript to use PharmaSight.</p>
+                    </div>
+                </noscript>
                 <div id="dashboard" class="page active">
                     <h2>Dashboard</h2>
                     <div class="stats-grid">
@@ -110,8 +140,32 @@
                     </div>
                 </div>
 
+                <!-- Login Page -->
+                <div id="login" class="page">
+                    <div class="login-container">
+                        <div class="login-card">
+                            <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                            <h2>Sign In</h2>
+                            <form id="loginForm">
+                                <div class="form-group">
+                                    <label for="loginEmail">Email</label>
+                                    <input type="email" id="loginEmail" required placeholder="your@email.com">
+                                </div>
+                                <div class="form-group">
+                                    <label for="loginPassword">Password</label>
+                                    <input type="password" id="loginPassword" required placeholder="••••••••">
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-block">
+                                    <i class="fas fa-sign-in-alt"></i> Sign In
+                                </button>
+                            </form>
+                            <div id="loginError" class="error-message" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Other pages will be loaded dynamically -->
-                <div id="items" class="page"></div>
+                <div id="setup" class="page"></div>
                 <div id="sales" class="page"></div>
                 <div id="purchases" class="page"></div>
                 <div id="inventory" class="page"></div>
@@ -132,16 +186,37 @@
     <!-- Toast Notifications -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="js/config.js"></script>
-    <script src="js/api.js"></script>
-    <script src="js/utils.js"></script>
-    <script src="js/app.js"></script>
-    <script src="js/pages/dashboard.js"></script>
-    <script src="js/pages/items.js"></script>
-    <script src="js/pages/sales.js"></script>
-    <script src="js/pages/purchases.js"></script>
-    <script src="js/pages/inventory.js"></script>
-    <script src="js/pages/settings.js"></script>
+    <!-- Cache busting: Add ?v=timestamp to force reload during development -->
+    <script>
+        // Diagnostic script - runs first to catch errors
+        console.log('🔍 PharmaSight: Starting initialization...');
+        console.log('🔍 Window location:', window.location.href);
+        console.log('🔍 Document ready state:', document.readyState);
+        
+        // Ensure at least dashboard is visible if script fails
+        window.addEventListener('error', function(e) {
+            console.error('❌ JavaScript Error:', e.error);
+            const dashboard = document.getElementById('dashboard');
+            if (dashboard) {
+                dashboard.classList.add('active');
+                dashboard.style.display = 'block';
+            }
+        });
+    </script>
+    <script src="js/config.js?v=7"></script>
+    <script src="js/api.js?v=7"></script>
+    <script src="js/auth.js?v=1"></script>
+    <script src="js/utils.js?v=7"></script>
+    <script src="js/app.js?v=8"></script>
+    <script src="js/pages/login.js?v=1"></script>
+    <script src="js/pages/setup.js?v=7"></script>
+    <script src="js/pages/dashboard.js?v=5"></script>
+    <script src="js/pages/items.js?v=5"></script>
+    <script src="js/pages/sales.js?v=5"></script>
+    <script src="js/components/TransactionItemsTable.js"></script>
+    <script src="js/pages/purchases.js?v=14"></script>
+    <script src="js/pages/inventory.js?v=6"></script>
+    <script src="js/pages/settings.js?v=5"></script>
 </body>
 </html>
 

@@ -1,5 +1,25 @@
 # PharmaSight - Pharmacy Management System
 
+## 🚀 Quick Start (Local Development)
+
+**Windows Users - Easiest Way:**
+```batch
+# Just double-click or run:
+start.bat
+```
+
+This single command starts both backend and frontend servers!
+
+**Other Options:**
+- PowerShell: `.\start.ps1`
+- Python: `python start.py`
+
+See `QUICK_START.md` for more details.
+
+---
+
+## About PharmaSight - Pharmacy Management System
+
 A production-grade pharmacy management system built for retail pharmacies in Kenya, designed with inventory intelligence at its core.
 
 ## 🎯 Core Principles

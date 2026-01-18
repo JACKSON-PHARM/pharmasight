@@ -122,3 +122,60 @@ class PurchaseInvoiceResponse(PurchaseInvoiceBase):
     class Config:
         from_attributes = True
 
+
+class PurchaseOrderItemBase(BaseModel):
+    """Purchase order item base schema"""
+    item_id: UUID
+    unit_name: str = Field(..., description="Purchase unit (box, carton, etc.)")
+    quantity: Decimal = Field(..., gt=0, description="Quantity in purchase unit")
+    unit_price: Decimal = Field(..., ge=0, description="Expected price per purchase unit")
+
+
+class PurchaseOrderItemCreate(PurchaseOrderItemBase):
+    """Create purchase order item"""
+    pass
+
+
+class PurchaseOrderItemResponse(PurchaseOrderItemBase):
+    """Purchase order item response"""
+    id: UUID
+    purchase_order_id: UUID
+    total_price: Decimal
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PurchaseOrderBase(BaseModel):
+    """Purchase order base schema"""
+    branch_id: UUID
+    supplier_id: UUID
+    order_date: date
+    reference: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[str] = Field(default="PENDING", description="PENDING, APPROVED, RECEIVED, CANCELLED")
+
+
+class PurchaseOrderCreate(PurchaseOrderBase):
+    """Create purchase order request"""
+    company_id: UUID
+    items: List[PurchaseOrderItemCreate] = Field(..., min_items=1)
+    created_by: UUID
+
+
+class PurchaseOrderResponse(PurchaseOrderBase):
+    """Purchase order response"""
+    id: UUID
+    company_id: UUID
+    order_number: str
+    total_amount: Decimal
+    created_by: UUID
+    created_at: datetime
+    updated_at: datetime
+    items: List[PurchaseOrderItemResponse] = []
+    supplier_name: Optional[str] = None  # From relationship
+    branch_name: Optional[str] = None  # From relationship
+
+    class Config:
+        from_attributes = True

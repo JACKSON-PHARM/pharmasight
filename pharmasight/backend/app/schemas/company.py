@@ -54,7 +54,7 @@ class BranchBase(BaseModel):
     """Branch base schema"""
     company_id: UUID
     name: str = Field(..., min_length=1, max_length=255)
-    code: Optional[str] = None
+    code: str = Field(..., min_length=1, max_length=50, description="REQUIRED: Used in invoice numbering")
     address: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool = Field(default=True)

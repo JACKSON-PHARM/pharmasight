@@ -38,7 +38,6 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
     # Calculate totals
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
-    vat_rate = Decimal("16.00")
     
     # Process each item
     invoice_items = []
@@ -49,6 +48,10 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
         item = db.query(Item).filter(Item.id == item_data.item_id).first()
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+        
+        # Copy VAT classification from item (Kenya Pharmacy Context)
+        # VAT is an intrinsic property of the item, not decided at transaction time
+        item_vat_rate = Decimal(str(item.vat_rate or 0))  # Default to 0 for zero-rated medicines
         
         # Convert quantity to base units
         quantity_base = InventoryService.convert_to_base_units(
@@ -101,10 +104,11 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
         line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
         discount_amount = item_data.discount_amount or (line_total_exclusive * item_data.discount_percent / Decimal("100"))
         line_total_exclusive -= discount_amount
-        line_vat = line_total_exclusive * vat_rate / Decimal("100")
+        # Calculate VAT using item's VAT rate (copied from item at transaction time)
+        line_vat = line_total_exclusive * item_vat_rate / Decimal("100")
         line_total_inclusive = line_total_exclusive + line_vat
         
-        # Create invoice item
+        # Create invoice item (VAT copied from item)
         invoice_item = SalesInvoiceItem(
             sales_invoice_id=None,  # Will be set after invoice creation
             item_id=item_data.item_id,
@@ -114,7 +118,7 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
             unit_price_exclusive=unit_price,
             discount_percent=item_data.discount_percent,
             discount_amount=discount_amount,
-            vat_rate=vat_rate,
+            vat_rate=item_vat_rate,  # Copied from item (not global default)
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
             line_total_inclusive=line_total_inclusive,
@@ -146,6 +150,10 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
     total_exclusive -= invoice.discount_amount
     total_inclusive = total_exclusive + total_vat
     
+    # Calculate average VAT rate for invoice header (weighted by line amounts)
+    # Note: Invoice header vat_rate is informational; actual VAT is per line item
+    invoice_vat_rate = (total_vat / total_exclusive * Decimal("100")) if total_exclusive > 0 else Decimal("0")
+    
     # Create invoice
     db_invoice = SalesInvoice(
         company_id=invoice.company_id,
@@ -157,7 +165,7 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
         payment_mode=invoice.payment_mode,
         payment_status=invoice.payment_status,
         total_exclusive=total_exclusive,
-        vat_rate=vat_rate,
+        vat_rate=invoice_vat_rate,  # Average VAT rate (informational)
         vat_amount=total_vat,
         discount_amount=invoice.discount_amount,
         total_inclusive=total_inclusive,
