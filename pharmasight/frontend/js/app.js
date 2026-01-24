@@ -299,11 +299,36 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             renderAppLayout();
             
+            // Initialize session timeout monitoring (only for authenticated users)
+            if (window.SessionTimeout) {
+                window.SessionTimeout.init();
+                console.log('[AUTH GATE] Session timeout monitoring initialized');
+            }
+            
             // Set up auth state listener for authenticated state
             AuthBootstrap.onAuthStateChange((user, session) => {
                 if (!user || !session) {
                     // User logged out - FORCE immediate switch to auth layout and login
                     console.log('[AUTH STATE CHANGE] User logged out, forcing auth layout and login...');
+                    
+                    // Clean up session timeout monitoring
+                    if (window.SessionTimeout) {
+                        window.SessionTimeout.cleanup();
+                    }
+
+                    // Clear password_set caches and session flags for previous user
+                    try {
+                        const previousUserId = CONFIG.USER_ID;
+                        if (previousUserId) {
+                            const localStorageKey = `user_${previousUserId}_password_set`;
+                            localStorage.removeItem(localStorageKey);
+                        }
+                        sessionStorage.removeItem('just_set_password');
+                        sessionStorage.removeItem('needs_password_setup');
+                        sessionStorage.removeItem('last_app_flow_run');
+                    } catch (clearError) {
+                        console.warn('[AUTH STATE CHANGE] Error clearing auth-related caches on logout:', clearError);
+                    }
                     
                     // CRITICAL: Force auth layout FIRST before any routing
                     renderAuthLayout();
@@ -334,6 +359,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // User still logged in - update UI state only (no navigation)
                     if (layoutRendered === 'app') {
                         updateUserUI(user);
+                        // Ensure session timeout is running
+                        if (window.SessionTimeout && !window.SessionTimeout.isInitialized) {
+                            window.SessionTimeout.init();
+                        }
                     }
                 }
             });
@@ -543,6 +572,19 @@ async function startAppFlow() {
         return;
     }
     
+    // Debounce: avoid running app flow multiple times within a very short window
+    try {
+        const now = Date.now();
+        const lastRun = sessionStorage.getItem('last_app_flow_run');
+        if (lastRun && now - parseInt(lastRun, 10) < 1000) {
+            console.log('[APP FLOW] Skipping startAppFlow - ran too recently');
+            return;
+        }
+        sessionStorage.setItem('last_app_flow_run', String(now));
+    } catch (e) {
+        console.warn('[APP FLOW] Could not update last_app_flow_run:', e);
+    }
+    
     isInitializing = true;
     
     try {
@@ -567,22 +609,83 @@ async function startAppFlow() {
         CONFIG.USER_ID = user.id;
         saveConfig();
         
-        // Check if password setup is needed (for invited users)
-        // Uses persistent password_set flag from user profile
-        // GUARD: Do NOT redirect to password-set if we're already on branch-select route
-        // (user may have already set password but flag not updated yet, or in transition)
-        const currentHashForCheck = window.location.hash || '';
-        const hashRouteForCheck = currentHashForCheck.replace('#', '').split('?')[0];
-        const needsPassword = await AuthBootstrap.needsPasswordSetup(user);
-        if (needsPassword && hashRouteForCheck !== 'branch-select') {
+        // Check URL parameters first to determine flow type
+        const hash = window.location.hash || '';
+        const fullUrl = window.location.href || '';
+        
+        // Parse URL parameters - handle both hash and full URL formats
+        let paramsString = '';
+        if (hash.includes('?')) {
+            paramsString = hash.split('?')[1];
+        } else if (hash.includes('=')) {
+            paramsString = hash.replace('#', '');
+        } else if (fullUrl.includes('?')) {
+            paramsString = fullUrl.split('?')[1].split('#')[0];
+        }
+        
+        const urlParams = new URLSearchParams(paramsString);
+        const isPasswordReset = urlParams.get('type') === 'recovery' || 
+                              hash.includes('type=recovery') || 
+                              hash.includes('type%3Drecovery') ||
+                              fullUrl.includes('type=recovery');
+        const hasInvitationToken = urlParams.get('invitation_token') || 
+                                  hash.includes('invitation_token') ||
+                                  fullUrl.includes('invitation_token');
+        const hashRoute = hash.replace('#', '').split('?')[0];
+        
+        // Case 1: User is in password reset flow
+        if (isPasswordReset) {
+            console.log('[APP FLOW] Password reset flow detected');
+            // Let password_reset.js handle it (already handled earlier in DOMContentLoaded)
+            isInitializing = false;
+            return;
+        }
+        
+        // Case 2: User is accepting invitation
+        if (hasInvitationToken) {
+            console.log('[APP FLOW] Invitation flow detected');
             if (currentScreen !== 'password-set') {
-                console.log('🔑 Password setup required');
                 currentScreen = 'password-set';
                 loadPage('password-set');
             }
             isInitializing = false;
             return;
         }
+        
+        // Case 3: Normal login - check if password needs setup
+        // GUARD: Do NOT redirect to password-set if we're already on branch-select route
+        // (user may have already set password but flag not updated yet, or in transition)
+        // Before calling needsPasswordSetup, consult local cache and session flag
+        let needsPassword = false;
+        try {
+            const localStorageKey = `user_${user.id}_password_set`;
+            const cachedPasswordSet = localStorage.getItem(localStorageKey) === 'true';
+            const justSetPassword = sessionStorage.getItem('just_set_password') === 'true';
+            
+            if (cachedPasswordSet || justSetPassword) {
+                console.log('[APP FLOW] Skipping password setup check due to cached password_set / just_set_password');
+                needsPassword = false;
+            } else {
+                needsPassword = await AuthBootstrap.needsPasswordSetup(user, 'normal');
+                // If backend reports password_set true, needsPasswordSetup will cache it.
+            }
+        } catch (cacheErr) {
+            console.warn('[APP FLOW] Error during password setup cache check:', cacheErr);
+            needsPassword = await AuthBootstrap.needsPasswordSetup(user, 'normal');
+        }
+
+        if (needsPassword && hashRoute !== 'branch-select') {
+            if (currentScreen !== 'password-set') {
+                console.log('[APP FLOW] First login, needs password setup');
+                currentScreen = 'password-set';
+                loadPage('password-set');
+            }
+            isInitializing = false;
+            return;
+        }
+        
+        // Case 4: Normal login with password already set
+        console.log('[APP FLOW] Normal login, checking branch selection');
         
         // Check if company setup is needed
         let needsSetup = false;
@@ -706,15 +809,20 @@ function updateUserUI(user) {
 
 /**
  * Handle password set completion
+ * FIXED: After password set, go to branch-select (not dashboard)
  */
 window.handlePasswordSetComplete = async function() {
-    console.log('[PASSWORD SET COMPLETE] Continuing app flow...');
+    console.log('[PASSWORD SET COMPLETE] Redirecting to branch-select...');
     // Refresh auth state
     await AuthBootstrap.refresh();
     // Reset currentScreen to allow navigation
     currentScreen = null;
-    // Continue app flow
-    await startAppFlow();
+    // Navigate directly to branch-select (user must select branch)
+    if (window.loadPage) {
+        window.loadPage('branch-select');
+    } else {
+        window.location.hash = '#branch-select';
+    }
 };
 
 /**
@@ -736,20 +844,31 @@ window.handleBranchSelected = async function() {
     }
     // Reset currentScreen and navigate to dashboard
     currentScreen = null;
+    
+    // Force route to dashboard now that a branch is selected so that
+    // the branch-select page does not persist and the dashboard metrics
+    // are shown instead.
+    try {
+        window.location.hash = '#dashboard';
+    } catch (e) {
+        console.warn('[BRANCH SELECTED] Could not update hash to #dashboard:', e);
+    }
+    
     await startAppFlow();
 };
 
 // Sub-navigation definitions
 window.subNavItems = {
     sales: [
-        { page: 'sales', subPage: 'pos', label: 'Point of Sale', icon: 'fa-cash-register' },
         { page: 'sales', subPage: 'invoices', label: 'Sales Invoices', icon: 'fa-file-invoice-dollar' },
+        { page: 'sales', subPage: 'quotations', label: 'Quotations', icon: 'fa-file-invoice' },
         { page: 'sales-history', label: 'Sales History', icon: 'fa-history' },
         { page: 'sales-returns', label: 'Returns', icon: 'fa-undo' }
     ],
     purchases: [
         { page: 'purchases', subPage: 'orders', label: 'Purchase Orders', icon: 'fa-file-invoice' },
-        { page: 'purchases', subPage: 'invoices', label: 'Purchase Invoices', icon: 'fa-file-invoice-dollar' },
+        { page: 'purchases', subPage: 'order-book', label: 'Order Book', icon: 'fa-clipboard-list' },
+        { page: 'purchases', subPage: 'invoices', label: 'Supplier Invoices', icon: 'fa-file-invoice-dollar' },
         { page: 'purchases', subPage: 'credit-notes', label: 'Credit Notes', icon: 'fa-file-invoice' },
         { page: 'purchases', subPage: 'suppliers', label: 'Suppliers', icon: 'fa-truck' }
     ],
@@ -758,7 +877,8 @@ window.subNavItems = {
         { page: 'inventory', subPage: 'batch', label: 'Batch Tracking', icon: 'fa-tags' },
         { page: 'inventory', subPage: 'expiry', label: 'Expiry Report', icon: 'fa-calendar-times' },
         { page: 'inventory', subPage: 'movement', label: 'Item Movement', icon: 'fa-exchange-alt' },
-        { page: 'inventory', subPage: 'stock', label: 'Current Stock', icon: 'fa-chart-bar' }
+        { page: 'inventory', subPage: 'stock', label: 'Current Stock', icon: 'fa-chart-bar' },
+        { page: 'stock-take', label: 'Stock Take', icon: 'fa-clipboard-list' }
     ],
     expenses: [
         { page: 'expenses', label: 'All Expenses', icon: 'fa-money-bill-wave' },
@@ -1077,23 +1197,52 @@ function loadPage(pageName) {
     
     // ENFORCE LAYOUT ISOLATION: Auth pages must use Auth Layout
     // EXCEPTION: Allow password-reset page even when authenticated if it's a recovery token
+    // EXCEPTION: Allow password-set page even when authenticated (for new invited users)
     // GUARD: Do NOT redirect away from branch-select route - user must select branch manually
     const hashRoute = currentHash.replace('#', '').split('?')[0];
     const isOnBranchSelectRoute = hashRoute === 'branch-select';
-    if (isAuthPage && authenticated && !isPasswordResetFlow && layoutRendered !== 'auth' && !isOnBranchSelectRoute) {
+    const isPasswordSetPage = pageName === 'password-set';
+    if (isAuthPage && authenticated && !isPasswordResetFlow && !isPasswordSetPage && layoutRendered !== 'auth' && !isOnBranchSelectRoute) {
         console.warn('[ROUTING] Auth page requested but user is authenticated, redirecting to dashboard...');
         // Don't load auth pages in app layout - redirect to dashboard
         // UNLESS it's a password reset flow with recovery token
+        // UNLESS it's password-set page (new users need to set password)
         // UNLESS user is on branch-select route (must allow user to select branch)
         pageName = 'dashboard';
         currentPage = 'dashboard';
     }
     
     // Ensure correct layout is rendered before proceeding
-    if (isAuthPage && layoutRendered !== 'auth') {
-        renderAuthLayout();
-    } else if (!isAuthPage && authenticated && layoutRendered !== 'app') {
-        renderAppLayout();
+    // SPECIAL HANDLING: when coming from password-set to branch-select, we need to
+    // force the App layout even if layoutRendered is stale.
+    const layoutHash = window.location.hash || '';
+    const layoutRoute = layoutHash.replace('#', '').split('?')[0];
+    const isComingFromPasswordSet = (() => {
+        try {
+            return sessionStorage.getItem('just_set_password') === 'true';
+        } catch {
+            return false;
+        }
+    })();
+    const isBranchSelectRoute = layoutRoute === 'branch-select';
+
+    if (isAuthPage) {
+        if (layoutRendered !== 'auth') {
+            renderAuthLayout();
+        }
+    } else {
+        // App pages should always use the app layout. If we just set the password
+        // we force a re-render of the app layout to ensure authLayout is hidden.
+        if (authenticated && (layoutRendered !== 'app' || isComingFromPasswordSet)) {
+            renderAppLayout();
+            if (isComingFromPasswordSet) {
+                try {
+                    sessionStorage.removeItem('just_set_password');
+                } catch (e) {
+                    console.warn('Could not clear just_set_password flag from sessionStorage:', e);
+                }
+            }
+        }
     }
     
     // Handle sub-pages (e.g., settings-company, purchases-orders)
@@ -1101,12 +1250,23 @@ function loadPage(pageName) {
     let mainPage = pageName;
     let subPage = null;
     // Pages that should NOT be split into main/sub by the '-' character
-    // (includes auth pages and special app pages like 'branch-select')
-    const authPages = ['password-reset', 'password-set', 'reset-password', 'branch-select'];
+    // (includes auth pages and special app pages like 'branch-select', 'stock-take')
+    const authPages = ['password-reset', 'password-set', 'reset-password', 'branch-select', 'stock-take'];
     if (pageName.includes('-') && !authPages.includes(pageName)) {
         const parts = pageName.split('-');
         mainPage = parts[0];
         subPage = parts.slice(1).join('-');
+    }
+    
+    // Layout debug logs
+    try {
+        const authLayoutEl = document.getElementById('authLayout');
+        const appLayoutEl = document.getElementById('appLayout');
+        console.log(`[LAYOUT DEBUG] Current: ${layoutRendered}, New Page: ${mainPage}, isAuthPage: ${isAuthPage}`);
+        console.log(`[LAYOUT DEBUG] authLayout display: ${authLayoutEl ? authLayoutEl.style.display : 'n/a'}`);
+        console.log(`[LAYOUT DEBUG] appLayout display: ${appLayoutEl ? appLayoutEl.style.display : 'n/a'}`);
+    } catch (e) {
+        console.warn('[LAYOUT DEBUG] Error logging layout state:', e);
     }
     
     // Update URL hash
@@ -1376,6 +1536,65 @@ function loadPage(pageName) {
                 window.loadInventory();
             } else {
                 console.error('loadInventory function not found on window object');
+            }
+            break;
+        case 'stock-take':
+            console.log('[ROUTER] Loading stock-take page...');
+            // Wait for function to be available (script might still be loading)
+            if (typeof window.loadStockTake === 'function') {
+                console.log('[ROUTER] Calling window.loadStockTake()');
+                window.loadStockTake();
+            } else {
+                console.warn('[ROUTER] loadStockTake not yet available, waiting for script to load...');
+                // Retry mechanism - wait for script to load
+                let retryCount = 0;
+                const maxRetries = 50; // Check up to 50 times
+                const retryInterval = 100; // Check every 100ms (total max wait: 5 seconds)
+                
+                const checkInterval = setInterval(() => {
+                    retryCount++;
+                    
+                    if (typeof window.loadStockTake === 'function') {
+                        console.log(`✅ [ROUTER] loadStockTake now available after ${retryCount * retryInterval}ms, calling it`);
+                        clearInterval(checkInterval);
+                        try {
+                            window.loadStockTake();
+                        } catch (error) {
+                            console.error('[ROUTER] Error calling loadStockTake:', error);
+                            const page = document.getElementById('stock-take');
+                            if (page) {
+                                page.innerHTML = `
+                                    <div class="card">
+                                        <div class="alert alert-danger">
+                                            <i class="fas fa-exclamation-circle"></i>
+                                            <p>Error loading stock take page: ${error.message}</p>
+                                        </div>
+                                    </div>
+                                `;
+                            }
+                        }
+                    } else if (retryCount >= maxRetries) {
+                        console.error(`❌ [ROUTER] loadStockTake not defined after ${maxRetries * retryInterval}ms (${maxRetries} attempts)`);
+                        clearInterval(checkInterval);
+                        
+                        // Show error message
+                        const page = document.getElementById('stock-take');
+                        if (page) {
+                            page.innerHTML = `
+                                <div class="card">
+                                    <div class="alert alert-danger">
+                                        <i class="fas fa-exclamation-circle"></i>
+                                        <h3>Stock Take Page Not Available</h3>
+                                        <p>The stock take functionality could not be loaded. Please refresh the page.</p>
+                                        <p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 1rem;">
+                                            If the problem persists, check the browser console (F12) for errors.
+                                        </p>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    }
+                }, retryInterval);
             }
             break;
         case 'settings':

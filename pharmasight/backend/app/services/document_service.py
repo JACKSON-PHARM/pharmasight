@@ -30,7 +30,7 @@ class DocumentService:
         Args:
             company_id: Company ID
             branch_id: Branch ID (must have a code)
-            document_type: SALES_INVOICE, GRN, CREDIT_NOTE, PAYMENT
+            document_type: SALES_INVOICE, GRN, CREDIT_NOTE, PAYMENT, SUPPLIER_INVOICE
             prefix: Optional prefix (will be ignored - branch code is required)
         
         Returns:
@@ -139,12 +139,27 @@ class DocumentService:
             db.add(sequence)
             db.flush()
         
-        # Increment and get next number
+        # Increment and return
         sequence.current_number += 1
         db.commit()
         
-        # Format: PO{BRANCH_CODE}-{6-digit number}
         return f"PO{branch.code}-{sequence.current_number:06d}"
+    
+    @staticmethod
+    def get_supplier_invoice_number(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID
+    ) -> str:
+        """
+        Get next Supplier Invoice number
+        
+        Format: SUP-INV001, SUP-INV002, etc.
+        Branch-specific sequence.
+        """
+        return DocumentService.get_next_document_number(
+            db, company_id, branch_id, "SUPPLIER_INVOICE", None
+        )
 
     @staticmethod
     def get_credit_note_number(
@@ -177,4 +192,48 @@ class DocumentService:
         return DocumentService.get_next_document_number(
             db, company_id, branch_id, "PAYMENT", None
         )
+    
+    @staticmethod
+    def get_quotation_number(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID
+    ) -> str:
+        """
+        Get next quotation number
+        
+        Format: QT001 (Quotation), QT002, etc.
+        Branch-specific sequence.
+        """
+        # Get branch code
+        branch = db.query(Branch).filter(Branch.id == branch_id).first()
+        if not branch or not branch.code:
+            raise ValueError("Branch code is required for quotation numbering")
+        
+        # Get next sequence number for this branch
+        from app.models import DocumentSequence
+        
+        # Find or create sequence for this branch and document type
+        sequence = db.query(DocumentSequence).filter(
+            DocumentSequence.company_id == company_id,
+            DocumentSequence.branch_id == branch_id,
+            DocumentSequence.document_type == "QUOTATION"
+        ).first()
+        
+        if not sequence:
+            sequence = DocumentSequence(
+                company_id=company_id,
+                branch_id=branch_id,
+                document_type="QUOTATION",
+                current_number=0
+            )
+            db.add(sequence)
+            db.flush()
+        
+        # Increment and get next number
+        sequence.current_number += 1
+        db.commit()
+        
+        # Format: QT{BRANCH_CODE}-{6-digit number}
+        return f"QT{branch.code}-{sequence.current_number:06d}"
 

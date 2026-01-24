@@ -253,10 +253,35 @@ async function loadLogin() {
             }
             
             try {
+                // Check if user is blocked (brute force protection)
+                if (window.LoginSecurity) {
+                    if (window.LoginSecurity.isUserBlocked(email)) {
+                        const blockedUntil = window.LoginSecurity.getBlockedUntil(email);
+                        const timeRemaining = window.LoginSecurity.formatTimeUntilUnblock(blockedUntil);
+                        
+                        const errorMsg = timeRemaining 
+                            ? `Account locked due to too many failed attempts. Try again in ${timeRemaining}.`
+                            : 'Account locked due to too many failed attempts. Please contact an administrator.';
+                        
+                        if (errorDiv) {
+                            errorDiv.textContent = errorMsg;
+                            errorDiv.style.display = 'block';
+                        } else {
+                            showToast(errorMsg, 'error');
+                        }
+                        return;
+                    }
+                }
+                
                 // Sign in via AuthBootstrap
                 const data = await AuthBootstrap.signIn(email, password);
                 
                 if (data.user) {
+                    // Clear failed attempts on successful login
+                    if (window.LoginSecurity) {
+                        window.LoginSecurity.clearAttempts(email);
+                    }
+                    
                     // Store user ID in config
                     CONFIG.USER_ID = data.user.id;
                     saveConfig();
@@ -271,25 +296,116 @@ async function loadLogin() {
                         window.renderAppLayout();
                     }
                     
-                    // Continue app flow (will handle password set, branch select, etc.)
-                    if (window.startAppFlow) {
-                        if (window.currentScreen !== undefined) {
-                            window.currentScreen = null; // Reset for new layout
+                    // Initialize session timeout
+                    if (window.SessionTimeout) {
+                        window.SessionTimeout.init();
+                    }
+                    
+                    // FIXED: Check if this is a special flow requiring password setup
+                    // Reset currentScreen to allow navigation
+                    if (window.currentScreen !== undefined) {
+                        window.currentScreen = null;
+                    }
+                    
+                    // Check URL parameters to determine flow type
+                    const hash = window.location.hash || '';
+                    const fullUrl = window.location.href || '';
+                    
+                    // Parse URL parameters - handle both hash and full URL formats
+                    let paramsString = '';
+                    if (hash.includes('?')) {
+                        paramsString = hash.split('?')[1];
+                    } else if (hash.includes('=')) {
+                        paramsString = hash.replace('#', '');
+                    } else if (fullUrl.includes('?')) {
+                        paramsString = fullUrl.split('?')[1].split('#')[0];
+                    }
+                    
+                    const urlParams = new URLSearchParams(paramsString);
+                    const isPasswordResetFlow = urlParams.get('type') === 'recovery' || 
+                                              hash.includes('type=recovery') || 
+                                              hash.includes('type%3Drecovery') ||
+                                              fullUrl.includes('type=recovery');
+                    const hasInvitationToken = urlParams.get('invitation_token') || 
+                                              hash.includes('invitation_token') ||
+                                              fullUrl.includes('invitation_token');
+                    
+                    if (isPasswordResetFlow || hasInvitationToken) {
+                        // User needs to set/reset password (invitation/reset flow)
+                        console.log('[LOGIN] Password setup required (invitation/reset flow)');
+                        if (window.loadPage) {
+                            window.loadPage('password-set');
+                        } else {
+                            window.location.hash = '#password-set';
                         }
-                        await window.startAppFlow();
                     } else {
-                        loadPage('dashboard');
+                        // Normal login - check if user already has password
+                        const needsPassword = await AuthBootstrap.needsPasswordSetup(data.user, 'login');
+                        if (needsPassword) {
+                            console.log('[LOGIN] Password setup required (first login)');
+                            if (window.loadPage) {
+                                window.loadPage('password-set');
+                            } else {
+                                window.location.hash = '#password-set';
+                            }
+                        } else {
+                            // Normal login - password already set, go to branch selection
+                            console.log('[LOGIN] Normal login, redirecting to branch-select');
+                            if (window.loadPage) {
+                                window.loadPage('branch-select');
+                            } else {
+                                window.location.hash = '#branch-select';
+                            }
+                        }
                     }
                 }
             } catch (error) {
                 console.error('Login error:', error);
                 
-                // Show error
-                if (errorDiv) {
-                    errorDiv.textContent = error.message || 'Invalid email or password';
-                    errorDiv.style.display = 'block';
+                // Record failed attempt (brute force protection)
+                if (window.LoginSecurity) {
+                    const attemptInfo = window.LoginSecurity.recordFailedAttempt(email);
+                    const remaining = window.LoginSecurity.getRemainingAttempts(email);
+                    
+                    let errorMsg = error.message || 'Invalid email or password';
+                    
+                    // Add remaining attempts info if not blocked yet
+                    if (!attemptInfo.blocked && remaining > 0) {
+                        errorMsg += ` (${remaining} attempt${remaining !== 1 ? 's' : ''} remaining)`;
+                    }
+                    
+                    // Show error
+                    if (errorDiv) {
+                        errorDiv.textContent = errorMsg;
+                        errorDiv.style.display = 'block';
+                    } else {
+                        showToast(errorMsg, 'error');
+                    }
+                    
+                    // If blocked, show additional message
+                    if (attemptInfo.blocked) {
+                        const blockedUntil = window.LoginSecurity.getBlockedUntil(email);
+                        const timeRemaining = window.LoginSecurity.formatTimeUntilUnblock(blockedUntil);
+                        const blockMsg = timeRemaining 
+                            ? `Account locked. Try again in ${timeRemaining}.`
+                            : 'Account locked. Please contact an administrator.';
+                        
+                        setTimeout(() => {
+                            if (errorDiv) {
+                                errorDiv.textContent = blockMsg;
+                            } else {
+                                showToast(blockMsg, 'error');
+                            }
+                        }, 2000);
+                    }
                 } else {
-                    showToast(error.message || 'Login failed', 'error');
+                    // No LoginSecurity available, show basic error
+                    if (errorDiv) {
+                        errorDiv.textContent = error.message || 'Invalid email or password';
+                        errorDiv.style.display = 'block';
+                    } else {
+                        showToast(error.message || 'Login failed', 'error');
+                    }
                 }
             }
         };

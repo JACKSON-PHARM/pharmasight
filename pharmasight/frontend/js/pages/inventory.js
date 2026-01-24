@@ -157,10 +157,13 @@ function renderItemsSubPage() {
                     type="text" 
                     id="itemsSearchInput" 
                     class="form-input" 
-                    placeholder="Search by name, SKU, or category..." 
+                    placeholder="Search by name, SKU, or category... (Type to search)" 
                     oninput="filterItems()"
                     style="max-width: 400px;"
                 >
+                <small style="color: var(--text-secondary); font-size: 0.875rem; display: block; margin-top: 0.25rem;">
+                    <i class="fas fa-info-circle"></i> Search is optimized for 20,000+ items. Type at least 2 characters.
+                </small>
             </div>
             
             <div id="itemsTableContainer">
@@ -172,6 +175,8 @@ function renderItemsSubPage() {
 
 let inventoryItemsList = [];
 let inventoryFilteredItemsList = [];
+let inventorySearchTimeout = null;
+let isInventorySearching = false;
 
 async function loadSubPageData() {
     switch(currentInventorySubPage) {
@@ -194,42 +199,126 @@ async function loadSubPageData() {
 }
 
 async function loadItemsData() {
-    try {
-        inventoryItemsList = await API.items.overview(CONFIG.COMPANY_ID, CONFIG.BRANCH_ID);
-        inventoryFilteredItemsList = [];
-        renderItemsTable();
-    } catch (error) {
-        console.error('Error loading items:', error);
-        showToast('Error loading items', 'error');
-        const container = document.getElementById('itemsTableContainer');
-        if (container) {
-            container.innerHTML = '<p>Error loading items. Please try again.</p>';
-        }
+    // OPTIMIZED: Don't load all items initially - wait for user search
+    const container = document.getElementById('itemsTableContainer');
+    if (container) {
+        container.innerHTML = `
+            <div style="padding: 3rem; text-align: center; color: var(--text-secondary);">
+                <i class="fas fa-search" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
+                <p style="font-size: 1.1rem; margin-bottom: 0.5rem;">Search for items to get started</p>
+                <p style="font-size: 0.875rem;">Type at least 2 characters in the search box above to find items</p>
+            </div>
+        `;
     }
+    
+    // Reset lists
+    inventoryItemsList = [];
+    inventoryFilteredItemsList = [];
 }
 
-function filterItems() {
-    const searchTerm = document.getElementById('itemsSearchInput')?.value.toLowerCase() || '';
-    if (!searchTerm) {
-        inventoryFilteredItemsList = [];
-    } else {
-        inventoryFilteredItemsList = inventoryItemsList.filter(item => 
-            (item.name || '').toLowerCase().includes(searchTerm) ||
-            (item.sku || '').toLowerCase().includes(searchTerm) ||
-            (item.category || '').toLowerCase().includes(searchTerm)
-        );
+// OPTIMIZED: Use API search instead of client-side filtering
+async function filterItems() {
+    const searchInput = document.getElementById('itemsSearchInput');
+    if (!searchInput) return;
+    
+    const searchTerm = searchInput.value.trim();
+    const container = document.getElementById('itemsTableContainer');
+    if (!container) return;
+    
+    // Clear previous timeout
+    if (inventorySearchTimeout) {
+        clearTimeout(inventorySearchTimeout);
     }
-    renderItemsTable();
+    
+    // If search is empty, show prompt
+    if (searchTerm.length < 2) {
+        inventoryFilteredItemsList = [];
+        container.innerHTML = `
+            <div style="padding: 3rem; text-align: center; color: var(--text-secondary);">
+                <i class="fas fa-search" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
+                <p style="font-size: 1.1rem; margin-bottom: 0.5rem;">Search for items to get started</p>
+                <p style="font-size: 0.875rem;">Type at least 2 characters in the search box above to find items</p>
+            </div>
+        `;
+        return;
+    }
+    
+    // Show loading state
+    if (!isInventorySearching) {
+        container.innerHTML = `
+            <div style="padding: 2rem; text-align: center;">
+                <div class="spinner" style="margin: 0 auto 1rem;"></div>
+                <p style="color: var(--text-secondary);">Searching items...</p>
+            </div>
+        `;
+    }
+    
+    // Debounce search (150ms for fast response)
+    inventorySearchTimeout = setTimeout(async () => {
+        isInventorySearching = true;
+        
+        try {
+            // OPTIMIZED: Check cache first
+            const cache = window.searchCache || null;
+            let searchResults = null;
+            
+            if (cache) {
+                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20);
+            }
+            
+            if (!searchResults) {
+                // OPTIMIZED: Use search API (fast, no pricing needed for list view)
+                // API max limit is 20, so use that for performance
+                searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 20, CONFIG.BRANCH_ID || null, false);
+                
+                // Cache the results
+                if (cache && searchResults) {
+                    cache.set(searchTerm, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20, searchResults);
+                }
+            }
+            
+            // Convert search results to display format
+            inventoryFilteredItemsList = searchResults.map(item => ({
+                id: item.id,
+                name: item.name,
+                sku: item.sku || '',
+                base_unit: item.base_unit,
+                category: item.category || '',
+                current_stock: null, // Stock not included in search for performance
+                last_supplier: item.last_supplier || '',
+                last_unit_cost: item.purchase_price || null,
+                default_cost: item.price || 0,
+                is_active: item.is_active !== undefined ? item.is_active : true
+            }));
+            
+            renderItemsTable();
+        } catch (error) {
+            console.error('Error searching items:', error);
+            container.innerHTML = `
+                <div style="padding: 2rem; text-align: center; color: var(--danger-color);">
+                    <i class="fas fa-exclamation-circle" style="font-size: 2rem; margin-bottom: 1rem;"></i>
+                    <p>Error searching items: ${error.message || 'Search failed'}</p>
+                </div>
+            `;
+        } finally {
+            isInventorySearching = false;
+        }
+    }, 150);
 }
 
 function renderItemsTable() {
     const container = document.getElementById('itemsTableContainer');
     if (!container) return;
     
-    const displayList = inventoryFilteredItemsList.length > 0 || document.getElementById('itemsSearchInput')?.value ? inventoryFilteredItemsList : inventoryItemsList;
+    // Use filtered list (from search)
+    const displayList = inventoryFilteredItemsList;
     
     if (displayList.length === 0) {
-        container.innerHTML = '<p>No items found. Add your first item to get started.</p>';
+        const searchInput = document.getElementById('itemsSearchInput');
+        const hasSearch = searchInput && searchInput.value.trim().length >= 2;
+        container.innerHTML = hasSearch 
+            ? '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found matching your search.</p>'
+            : '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found. Add your first item to get started.</p>';
         return;
     }
     
@@ -287,8 +376,8 @@ function renderItemsTable() {
                 </tbody>
             </table>
         </div>
-        ${inventoryFilteredItemsList.length > 0 && inventoryFilteredItemsList.length < inventoryItemsList.length 
-            ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${inventoryFilteredItemsList.length} of ${inventoryItemsList.length} items</p>`
+        ${inventoryFilteredItemsList.length > 0 
+            ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${inventoryFilteredItemsList.length} search result${inventoryFilteredItemsList.length !== 1 ? 's' : ''}</p>`
             : ''}
     `;
 }
@@ -359,11 +448,15 @@ function formatNumber(num) {
             if (typeof updateSubNavActiveState === 'function') {
                 window.updateSubNavActiveState = updateSubNavActiveState;
             }
+            // Export loadItemsData for use from items.js
+            window.loadItemsData = loadItemsData;
+            
             console.log('✓ Inventory functions exported to window:', {
                 loadInventory: typeof window.loadInventory,
                 switchInventorySubPage: typeof window.switchInventorySubPage,
                 filterItems: typeof window.filterItems,
-                updateSubNavActiveState: typeof window.updateSubNavActiveState
+                updateSubNavActiveState: typeof window.updateSubNavActiveState,
+                loadItemsData: typeof window.loadItemsData
             });
         } catch (error) {
             console.error('✗ Error exporting inventory functions:', error);

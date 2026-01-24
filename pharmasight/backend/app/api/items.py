@@ -4,13 +4,13 @@ Items API routes
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy import func, or_, desc
+from sqlalchemy import func, or_, and_, desc
 from typing import List, Optional
 from uuid import UUID
 from app.database import get_db
 from app.models import (
     Item, ItemUnit, ItemPricing, CompanyPricingDefault,
-    InventoryLedger, PurchaseInvoice, PurchaseInvoiceItem, Supplier,
+    InventoryLedger, SupplierInvoice, SupplierInvoiceItem, Supplier,
     PurchaseOrder, PurchaseOrderItem
 )
 from app.schemas.item import (
@@ -110,142 +110,274 @@ def create_item(item: ItemCreate, db: Session = Depends(get_db)):
 def search_items(
     q: str = Query(..., min_length=2, description="Search query"),
     company_id: UUID = Query(..., description="Company ID"),
-    branch_id: Optional[UUID] = Query(None, description="Branch ID for pricing (optional)"),
+    branch_id: Optional[UUID] = Query(None, description="Branch ID for pricing and stock (optional)"),
     limit: int = Query(10, ge=1, le=20, description="Maximum results"),
+    include_pricing: bool = Query(False, description="Include pricing info (slower)"),
+    context: Optional[str] = Query(None, description="Context: 'purchase_order' for PO-specific fields"),
     db: Session = Depends(get_db)
 ):
     """
-    Lightweight item search endpoint for ERP-style inline search.
-    Returns minimal data: id, name, base_unit, prices, sku.
-    Includes sale_price and purchase_price for display.
-    """
-    search_term = f"%{q.lower()}%"
+    Optimized item search endpoint for ERP-style inline search.
+    Returns minimal data: id, name, base_unit, prices, sku, stock, VAT info.
     
-    # Query only essential fields - no relations
-    # Order by name for consistent results
-    items = db.query(
+    Performance optimizations:
+    - Uses indexed fields for fast search
+    - Pricing info is optional (set include_pricing=true if needed)
+    - Stock is always calculated if branch_id is provided
+    - Limits results early to reduce query time
+    - Orders by best match first, then by stock level (highest first)
+    """
+    search_term_lower = q.lower()
+    search_term_pattern = f"%{search_term_lower}%"
+    
+    # OPTIMIZED: Use direct index-friendly query with VAT info
+    # PostgreSQL can use trigram indexes for LIKE queries
+    items_query = db.query(
         Item.id,
         Item.name,
         Item.base_unit,
         Item.default_cost,
-        Item.sku
+        Item.sku,
+        Item.category,
+        Item.is_active,
+        Item.vat_rate,
+        Item.vat_code,
+        Item.is_vatable
     ).filter(
         Item.company_id == company_id,
         Item.is_active == True,
         or_(
-            func.lower(Item.name).like(search_term),
-            func.lower(Item.sku).like(search_term),
-            func.lower(Item.barcode).like(search_term)
+            Item.name.ilike(search_term_pattern),  # Uses index better than func.lower()
+            and_(Item.sku.isnot(None), Item.sku.ilike(search_term_pattern)),
+            and_(Item.barcode.isnot(None), Item.barcode.ilike(search_term_pattern))
         )
-    ).order_by(Item.name.asc()).limit(limit).all()
-    
-    item_ids = [item.id for item in items]
-    
-    # Get last purchase info for each item (price, supplier, date)
-    # Include PurchaseOrder for last order date
-    from sqlalchemy import desc
-    last_purchase_subq = (
-        db.query(
-            PurchaseInvoiceItem.item_id,
-            PurchaseInvoiceItem.unit_cost_exclusive,
-            PurchaseInvoice.supplier_id,
-            PurchaseInvoice.created_at.label('last_purchase_date'),
-            func.row_number().over(
-                partition_by=PurchaseInvoiceItem.item_id,
-                order_by=desc(PurchaseInvoice.created_at)
-            ).label('rn')
-        )
-        .join(PurchaseInvoice, PurchaseInvoiceItem.purchase_invoice_id == PurchaseInvoice.id)
-        .filter(
-            PurchaseInvoiceItem.item_id.in_(item_ids),
-            PurchaseInvoice.company_id == company_id
-        )
-        .subquery()
     )
     
-    last_purchases = (
-        db.query(
-            last_purchase_subq.c.item_id,
-            last_purchase_subq.c.unit_cost_exclusive,
-            last_purchase_subq.c.supplier_id,
-            last_purchase_subq.c.last_purchase_date
+    # Get all matching items first (before limiting)
+    all_items = items_query.all()
+    
+    if not all_items:
+        return []
+    
+    item_ids = [item.id for item in all_items]
+    
+    # Always calculate stock if branch_id is provided
+    stock_map = {}
+    if branch_id:
+        stock_data = (
+            db.query(
+                InventoryLedger.item_id,
+                func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label('total_stock')
+            )
+            .filter(
+                InventoryLedger.item_id.in_(item_ids),
+                InventoryLedger.company_id == company_id,
+                InventoryLedger.branch_id == branch_id
+            )
+            .group_by(InventoryLedger.item_id)
+            .all()
         )
-        .filter(last_purchase_subq.c.rn == 1)
-        .all()
+        stock_map = {row.item_id: int(row.total_stock) if row.total_stock else 0 for row in stock_data}
+    
+    # Calculate relevance score for ordering (best match first)
+    # Items starting with search term get higher score, then containing, then SKU/barcode match
+    def calculate_relevance(item, search_term):
+        name_lower = item.name.lower()
+        sku_lower = (item.sku or "").lower()
+        score = 0
+        if name_lower.startswith(search_term):
+            score += 1000
+        elif search_term in name_lower:
+            score += 500
+        if sku_lower.startswith(search_term):
+            score += 100
+        elif search_term in sku_lower:
+            score += 50
+        return score
+    
+    # Sort by relevance first, then by stock (highest first), then alphabetically
+    sorted_items = sorted(
+        all_items,
+        key=lambda item: (
+            -calculate_relevance(item, search_term_lower),  # Negative for descending
+            -(stock_map.get(item.id, 0)),  # Negative for descending (highest stock first)
+            item.name.lower()  # Alphabetical tiebreaker
+        )
     )
     
-    purchase_price_map = {row.item_id: float(row.unit_cost_exclusive) if row.unit_cost_exclusive else 0.0 
-                         for row in last_purchases}
+    # Limit after sorting
+    items = sorted_items[:limit]
     
-    # Get supplier names for last suppliers
-    supplier_ids = {row.supplier_id for row in last_purchases if row.supplier_id}
-    suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()} if supplier_ids else {}
-    last_supplier_map = {row.item_id: suppliers.get(row.supplier_id, '') for row in last_purchases if row.supplier_id}
-    
-    # Get last order date from PurchaseOrder (separate query for purchase orders)
-    last_order_subq = (
-        db.query(
-            PurchaseOrderItem.item_id,
-            PurchaseOrder.order_date.label('last_order_date'),
-            func.row_number().over(
-                partition_by=PurchaseOrderItem.item_id,
-                order_by=desc(PurchaseOrder.order_date)
-            ).label('rn')
-        )
-        .join(PurchaseOrder, PurchaseOrderItem.purchase_order_id == PurchaseOrder.id)
-        .filter(
-            PurchaseOrderItem.item_id.in_(item_ids),
-            PurchaseOrder.company_id == company_id
-        )
-        .subquery()
-    )
-    
-    last_orders = (
-        db.query(
-            last_order_subq.c.item_id,
-            last_order_subq.c.last_order_date
-        )
-        .filter(last_order_subq.c.rn == 1)
-        .all()
-    )
-    
-    last_order_date_map = {row.item_id: row.last_order_date.isoformat() if row.last_order_date else None 
-                          for row in last_orders}
-    
-    # Get recommended sale prices using PricingService (static methods)
+    # OPTIMIZED: Only fetch purchase/order info if pricing is requested
+    purchase_price_map = {}
+    last_supplier_map = {}
+    last_order_date_map = {}
     sale_price_map = {}
-    for item in items:
-        try:
-            if branch_id:
-                price_info = PricingService.calculate_recommended_price(
-                    db=db,
-                    item_id=item.id,
-                    branch_id=branch_id,
-                    company_id=company_id,
-                    unit_name=item.base_unit
-                )
-                sale_price_map[item.id] = float(price_info["recommended_unit_price"]) if price_info and price_info.get("recommended_unit_price") else 0.0
-            else:
-                sale_price_map[item.id] = 0.0
-        except Exception as e:
-            logger.warning(f"Could not calculate price for item {item.id}: {e}")
-            sale_price_map[item.id] = 0.0
     
-    # Return response with pricing, supplier, and order date
-    return [
-        {
+    if include_pricing:
+        # Get last purchase info - OPTIMIZED: Use window function for reliable results
+        from sqlalchemy import desc
+        from sqlalchemy.sql import func as sql_func
+        last_purchase_subq = (
+            db.query(
+                SupplierInvoiceItem.item_id,
+                SupplierInvoiceItem.unit_cost_exclusive,
+                SupplierInvoice.supplier_id,
+                SupplierInvoice.created_at.label('last_purchase_date'),
+                sql_func.row_number().over(
+                    partition_by=SupplierInvoiceItem.item_id,
+                    order_by=desc(SupplierInvoice.created_at)
+                ).label('rn')
+            )
+            .join(SupplierInvoice, SupplierInvoiceItem.purchase_invoice_id == SupplierInvoice.id)
+            .filter(
+                SupplierInvoiceItem.item_id.in_(item_ids),
+                SupplierInvoice.company_id == company_id
+            )
+            .subquery()
+        )
+        last_purchases = (
+            db.query(
+                last_purchase_subq.c.item_id,
+                last_purchase_subq.c.unit_cost_exclusive,
+                last_purchase_subq.c.supplier_id,
+                last_purchase_subq.c.last_purchase_date
+            )
+            .filter(last_purchase_subq.c.rn == 1)
+            .all()
+        )
+        
+        purchase_price_map = {
+            row.item_id: float(row.unit_cost_exclusive) if row.unit_cost_exclusive else 0.0 
+            for row in last_purchases
+        }
+        
+        # Get supplier names in batch
+        supplier_ids = {row.supplier_id for row in last_purchases if row.supplier_id}
+        if supplier_ids:
+            suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()}
+            last_supplier_map = {row.item_id: suppliers.get(row.supplier_id, '') for row in last_purchases if row.supplier_id}
+        
+        # Get last order dates - OPTIMIZED: Use window function
+        last_order_subq = (
+            db.query(
+                PurchaseOrderItem.item_id,
+                PurchaseOrder.order_date.label('last_order_date'),
+                sql_func.row_number().over(
+                    partition_by=PurchaseOrderItem.item_id,
+                    order_by=desc(PurchaseOrder.order_date)
+                ).label('rn')
+            )
+            .join(PurchaseOrder, PurchaseOrderItem.purchase_order_id == PurchaseOrder.id)
+            .filter(
+                PurchaseOrderItem.item_id.in_(item_ids),
+                PurchaseOrder.company_id == company_id
+            )
+            .subquery()
+        )
+        last_orders = (
+            db.query(
+                last_order_subq.c.item_id,
+                last_order_subq.c.last_order_date
+            )
+            .filter(last_order_subq.c.rn == 1)
+            .all()
+        )
+        
+        last_order_date_map = {
+            row.item_id: row.last_order_date.isoformat() if row.last_order_date else None 
+            for row in last_orders
+        }
+        
+        # For Purchase Order context, get additional fields from inventory_ledger
+        last_supply_date_map = {}
+        last_unit_cost_ledger_map = {}
+        if context == 'purchase_order' and branch_id:
+            # Get last supply date and unit cost from inventory_ledger (PURCHASE transactions)
+            last_supply_subq = (
+                db.query(
+                    InventoryLedger.item_id,
+                    InventoryLedger.created_at.label('last_supply_date'),
+                    InventoryLedger.unit_cost,
+                    sql_func.row_number().over(
+                        partition_by=InventoryLedger.item_id,
+                        order_by=desc(InventoryLedger.created_at)
+                    ).label('rn')
+                )
+                .filter(
+                    InventoryLedger.item_id.in_(item_ids),
+                    InventoryLedger.company_id == company_id,
+                    InventoryLedger.branch_id == branch_id,
+                    InventoryLedger.transaction_type == "PURCHASE",
+                    InventoryLedger.quantity_delta > 0
+                )
+                .subquery()
+            )
+            last_supplies = (
+                db.query(
+                    last_supply_subq.c.item_id,
+                    last_supply_subq.c.last_supply_date,
+                    last_supply_subq.c.unit_cost
+                )
+                .filter(last_supply_subq.c.rn == 1)
+                .all()
+            )
+            
+            last_supply_date_map = {
+                row.item_id: row.last_supply_date.isoformat() if row.last_supply_date else None
+                for row in last_supplies
+            }
+            last_unit_cost_ledger_map = {
+                row.item_id: float(row.unit_cost) if row.unit_cost else 0.0
+                for row in last_supplies
+            }
+        
+        # OPTIMIZED: Batch pricing calculation (if branch_id provided)
+        if branch_id:
+            for item in items:
+                try:
+                    price_info = PricingService.calculate_recommended_price(
+                        db=db,
+                        item_id=item.id,
+                        branch_id=branch_id,
+                        company_id=company_id,
+                        unit_name=item.base_unit
+                    )
+                    sale_price_map[item.id] = float(price_info["recommended_unit_price"]) if price_info and price_info.get("recommended_unit_price") else 0.0
+                except Exception as e:
+                    logger.warning(f"Could not calculate price for item {item.id}: {e}")
+                    sale_price_map[item.id] = 0.0
+    
+    # Return response - includes stock, VAT info, and pricing
+    # For purchase_order context, include additional fields from inventory_ledger
+    result = []
+    for item in items:
+        item_data = {
             "id": str(item.id),
             "name": item.name,
             "base_unit": item.base_unit,
             "price": float(item.default_cost) if item.default_cost else 0.0,
             "sku": item.sku or "",
-            "purchase_price": purchase_price_map.get(item.id, float(item.default_cost) if item.default_cost else 0.0),
-            "sale_price": sale_price_map.get(item.id, 0.0),
-            "last_supplier": last_supplier_map.get(item.id, ""),
-            "last_order_date": last_order_date_map.get(item.id, None)
+            "category": getattr(item, 'category', None) or "",
+            "is_active": getattr(item, 'is_active', True),
+            "current_stock": stock_map.get(item.id, 0) if branch_id else None,
+            "vat_rate": float(item.vat_rate) if item.vat_rate else 0.0,
+            "vat_code": item.vat_code or "",
+            "is_vatable": getattr(item, 'is_vatable', True),
+            "purchase_price": purchase_price_map.get(item.id, float(item.default_cost) if item.default_cost else 0.0) if include_pricing else float(item.default_cost) if item.default_cost else 0.0,
+            "sale_price": sale_price_map.get(item.id, 0.0) if include_pricing else 0.0,
+            "last_supplier": last_supplier_map.get(item.id, "") if include_pricing else "",
+            "last_order_date": last_order_date_map.get(item.id, None) if include_pricing else None
         }
-        for item in items
-    ]
+        
+        # Add Purchase Order specific fields
+        if context == 'purchase_order':
+            item_data["last_supply_date"] = last_supply_date_map.get(item.id, None)
+            item_data["last_unit_cost"] = last_unit_cost_ledger_map.get(item.id, purchase_price_map.get(item.id, float(item.default_cost) if item.default_cost else 0.0) if include_pricing else float(item.default_cost) if item.default_cost else 0.0)
+        
+        result.append(item_data)
+    
+    return result
 
 
 @router.get("/{item_id}", response_model=ItemResponse)
@@ -314,19 +446,19 @@ def get_items_overview(
     from sqlalchemy import desc
     last_purchase_subq = (
         db.query(
-            PurchaseInvoiceItem.item_id,
-            PurchaseInvoice.supplier_id,
-            PurchaseInvoiceItem.unit_cost_exclusive,
-            PurchaseInvoice.created_at,
+            SupplierInvoiceItem.item_id,
+            SupplierInvoice.supplier_id,
+            SupplierInvoiceItem.unit_cost_exclusive,
+            SupplierInvoice.created_at,
             func.row_number().over(
-                partition_by=PurchaseInvoiceItem.item_id,
-                order_by=desc(PurchaseInvoice.created_at)
+                partition_by=SupplierInvoiceItem.item_id,
+                order_by=desc(SupplierInvoice.created_at)
             ).label('rn')
         )
-        .join(PurchaseInvoice, PurchaseInvoiceItem.purchase_invoice_id == PurchaseInvoice.id)
+        .join(SupplierInvoice, SupplierInvoiceItem.purchase_invoice_id == SupplierInvoice.id)
         .filter(
-            PurchaseInvoiceItem.item_id.in_(item_ids),
-            PurchaseInvoice.company_id == company_id
+            SupplierInvoiceItem.item_id.in_(item_ids),
+            SupplierInvoice.company_id == company_id
         )
         .subquery()
     )

@@ -30,6 +30,9 @@ class Item(Base):
     vat_code = Column(String(50))  # ZERO_RATED | STANDARD | EXEMPT
     price_includes_vat = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
+    # Batch and expiry tracking
+    requires_batch_tracking = Column(Boolean, default=False)  # Whether item requires batch tracking
+    requires_expiry_tracking = Column(Boolean, default=False)  # Whether item requires expiry date tracking
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

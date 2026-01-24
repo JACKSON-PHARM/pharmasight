@@ -203,79 +203,109 @@ function renderBranchSelection() {
         return;
     }
     
-    // Show branch selection list
-    const branchList = availableBranches.map(branch => `
-        <button class="branch-card" onclick="selectBranchById('${branch.id}')">
-            <div class="branch-card-header">
-                <i class="fas fa-code-branch"></i>
-                <h3>${escapeHtml(branch.name)}</h3>
-            </div>
-            ${branch.code ? `<div class="branch-card-code">Code: ${escapeHtml(branch.code)}</div>` : ''}
-            ${branch.address ? `<div class="branch-card-address">${escapeHtml(branch.address)}</div>` : ''}
-        </button>
+    // Build options for select dropdown
+    const branchOptions = availableBranches.map(branch => `
+        <option value="${branch.id}">
+            ${escapeHtml(branch.name)}${branch.code ? ' - ' + escapeHtml(branch.code) : ''}
+        </option>
     `).join('');
     
-    console.log('[BRANCH SELECT] Rendering branch list with', availableBranches.length, 'branch(es)');
+    console.log('[BRANCH SELECT] Rendering branch dropdown with', availableBranches.length, 'branch(es)');
     const branchSelectionHTML = `
-        <div class="login-container">
-            <div class="login-card" style="max-width: 600px;">
-                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
-                <h2>Select Branch</h2>
-                <p style="margin-bottom: 1.5rem; color: var(--text-secondary);">
-                    Please select a branch to continue.
-                </p>
-                <div class="branch-list">
-                    ${branchList}
+        <div class="branch-select-fullscreen">
+            <div class="branch-select-card">
+                <div class="branch-select-logo">
+                    <i class="fas fa-pills"></i>
+                </div>
+                <h2 class="branch-select-title">Select transacting branch to proceed!</h2>
+                
+                <div class="branch-select-form-group">
+                    <label for="branchSelectDropdown" class="branch-select-label">Assigned Branches</label>
+                    <select id="branchSelectDropdown" class="branch-select-dropdown">
+                        <option value="">Select Branch</option>
+                        ${branchOptions}
+                    </select>
+                </div>
+                
+                <div class="branch-select-actions">
+                    <button class="btn btn-primary branch-select-proceed" id="branchSelectProceedBtn">
+                        Proceed
+                    </button>
+                    <button class="btn btn-secondary branch-select-logout" id="branchSelectLogoutBtn">
+                        Logout
+                    </button>
                 </div>
             </div>
         </div>
         <style>
-            .branch-list {
-                display: flex;
-                flex-direction: column;
-                gap: 1rem;
-                margin-top: 1.5rem;
-            }
-            .branch-card {
-                background: var(--bg-secondary, #f8f9fa);
-                border: 2px solid var(--border-color, #dee2e6);
-                border-radius: 0.5rem;
-                padding: 1.5rem;
-                text-align: left;
-                cursor: pointer;
-                transition: all 0.2s;
+            .branch-select-fullscreen {
                 width: 100%;
-            }
-            .branch-card:hover {
-                border-color: var(--primary-color, #3498db);
-                background: var(--bg-hover, #e9ecef);
-                transform: translateY(-2px);
-                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-            }
-            .branch-card-header {
+                height: 100vh;
+                min-height: 100vh;
                 display: flex;
                 align-items: center;
-                gap: 0.75rem;
+                justify-content: center;
+                background: var(--bg-color);
+            }
+            .branch-select-card {
+                background: var(--card-bg);
+                border-radius: 0.75rem;
+                padding: 2.5rem 3rem;
+                box-shadow: var(--shadow-lg);
+                border: 1px solid var(--border-color);
+                max-width: 480px;
+                width: 100%;
+                text-align: center;
+            }
+            .branch-select-logo {
+                width: 56px;
+                height: 56px;
+                border-radius: 999px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0 auto 1rem auto;
+                background: rgba(37, 99, 235, 0.1);
+                color: var(--primary-color);
+                font-size: 1.75rem;
+            }
+            .branch-select-title {
+                font-size: 1.4rem;
+                margin-bottom: 1.5rem;
+                color: var(--text-primary);
+            }
+            .branch-select-form-group {
+                text-align: left;
+                margin-bottom: 2rem;
+            }
+            .branch-select-label {
+                display: block;
                 margin-bottom: 0.5rem;
+                font-weight: 500;
+                color: var(--text-secondary);
             }
-            .branch-card-header i {
-                font-size: 1.5rem;
-                color: var(--primary-color, #3498db);
+            .branch-select-dropdown {
+                width: 100%;
+                padding: 0.75rem 0.9rem;
+                border-radius: 0.5rem;
+                border: 1px solid var(--border-color);
+                font-size: 1rem;
+                outline: none;
             }
-            .branch-card-header h3 {
-                margin: 0;
-                font-size: 1.25rem;
-                color: var(--text-primary, #212529);
+            .branch-select-dropdown:focus {
+                border-color: var(--primary-color);
+                box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.3);
             }
-            .branch-card-code {
-                color: var(--text-secondary, #6c757d);
-                font-size: 0.875rem;
-                margin-top: 0.5rem;
+            .branch-select-actions {
+                display: flex;
+                gap: 1rem;
+                justify-content: center;
             }
-            .branch-card-address {
-                color: var(--text-secondary, #6c757d);
-                font-size: 0.875rem;
-                margin-top: 0.25rem;
+            .branch-select-proceed {
+                min-width: 140px;
+            }
+            .branch-select-logout {
+                min-width: 140px;
             }
         </style>
     `;
@@ -284,6 +314,35 @@ function renderBranchSelection() {
     console.log('[BRANCH SELECT] Branch selection UI rendered, page.innerHTML length:', page.innerHTML.length);
     console.log('[BRANCH SELECT] Page element display:', window.getComputedStyle(page).display);
     console.log('[BRANCH SELECT] Page element visibility:', window.getComputedStyle(page).visibility);
+    
+    // Wire up Proceed and Logout buttons
+    const dropdown = document.getElementById('branchSelectDropdown');
+    const proceedBtn = document.getElementById('branchSelectProceedBtn');
+    const logoutBtn = document.getElementById('branchSelectLogoutBtn');
+    
+    if (proceedBtn && dropdown) {
+        proceedBtn.onclick = () => {
+            const selectedId = dropdown.value;
+            if (!selectedId) {
+                showToast('Please select a branch to continue', 'warning');
+                return;
+            }
+            selectBranchById(selectedId);
+        };
+    }
+    
+    if (logoutBtn) {
+        logoutBtn.onclick = async () => {
+            try {
+                if (window.AuthBootstrap && typeof window.AuthBootstrap.signOut === 'function') {
+                    await window.AuthBootstrap.signOut();
+                }
+            } finally {
+                window.location.hash = '#login';
+                window.location.reload();
+            }
+        };
+    }
 }
 
 async function selectBranch(branch) {

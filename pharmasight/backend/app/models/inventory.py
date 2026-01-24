@@ -1,7 +1,7 @@
 """
 Inventory Ledger model - Single source of truth for stock
 """
-from sqlalchemy import Column, String, Integer, Numeric, Date, ForeignKey, CheckConstraint
+from sqlalchemy import Column, String, Integer, Numeric, Date, ForeignKey, CheckConstraint, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -26,13 +26,20 @@ class InventoryLedger(Base):
     batch_number = Column(String(200))
     expiry_date = Column(Date)
     transaction_type = Column(String(50), nullable=False)  # PURCHASE, SALE, ADJUSTMENT, TRANSFER, OPENING_BALANCE
-    reference_type = Column(String(50))  # purchase_invoice, sales_invoice, adjustment, grn
+    reference_type = Column(String(50))  # supplier_invoice (was purchase_invoice), sales_invoice, adjustment, grn
     reference_id = Column(UUID(as_uuid=True))
     quantity_delta = Column(Integer, nullable=False)  # Positive = add, Negative = remove (BASE UNITS ONLY)
     unit_cost = Column(Numeric(20, 4), nullable=False)  # Cost per base unit
     total_cost = Column(Numeric(20, 4), nullable=False)  # quantity_delta * unit_cost
     created_by = Column(UUID(as_uuid=True), nullable=False)  # User ID
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    
+    # Enhanced batch tracking fields
+    batch_cost = Column(Numeric(20, 4), nullable=True)  # Cost for this specific batch (for FIFO/LIFO)
+    remaining_quantity = Column(Integer, nullable=True)  # Remaining quantity in this batch (for tracking)
+    is_batch_tracked = Column(Boolean, default=True)  # Whether this entry is batch-tracked
+    parent_batch_id = Column(UUID(as_uuid=True), ForeignKey("inventory_ledger.id"), nullable=True)  # For batch splits
+    split_sequence = Column(Integer, default=0)  # 0=main batch, 1,2,3... for splits within same transaction
 
     # Constraints
     __table_args__ = (
@@ -44,4 +51,5 @@ class InventoryLedger(Base):
     item = relationship("Item")
     branch = relationship("Branch")
     company = relationship("Company")
+    parent_batch = relationship("InventoryLedger", remote_side=[id], foreign_keys=[parent_batch_id])
 

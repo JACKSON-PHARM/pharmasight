@@ -33,6 +33,8 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     line_total_exclusive: Decimal
     line_total_inclusive: Decimal
     unit_cost_used: Optional[Decimal]
+    item_name: Optional[str] = None
+    item_code: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -45,8 +47,10 @@ class SalesInvoiceBase(BaseModel):
     invoice_date: date
     customer_name: Optional[str] = None
     customer_pin: Optional[str] = None
-    payment_mode: str = Field(..., description="cash, mpesa, credit, bank")
-    payment_status: str = Field(default="PAID", description="PAID, PARTIAL, CREDIT")
+    customer_phone: Optional[str] = None  # Required if payment_mode is 'credit'
+    payment_mode: str = Field(default="cash", description="cash, mpesa, credit, bank (legacy - use invoice_payments for split payments)")
+    payment_status: str = Field(default="UNPAID", description="UNPAID, PARTIAL, PAID")
+    status: Optional[str] = Field(default="DRAFT", description="DRAFT, BATCHED, PAID, CANCELLED")
     discount_amount: Decimal = Field(default=0, ge=0)
 
 
@@ -62,6 +66,8 @@ class SalesInvoiceUpdate(BaseModel):
     payment_status: Optional[str] = None
     customer_name: Optional[str] = None
     customer_pin: Optional[str] = None
+    customer_phone: Optional[str] = None
+    payment_mode: Optional[str] = None
 
 
 class SalesInvoiceResponse(SalesInvoiceBase):
@@ -73,6 +79,13 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     vat_rate: Decimal
     vat_amount: Decimal
     total_inclusive: Decimal
+    status: Optional[str] = "DRAFT"  # Optional for backward compatibility
+    batched: Optional[bool] = False
+    batched_by: Optional[UUID] = None
+    batched_at: Optional[datetime] = None
+    cashier_approved: Optional[bool] = False
+    approved_by: Optional[UUID] = None
+    approved_at: Optional[datetime] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime
@@ -173,3 +186,126 @@ class CreditNoteResponse(CreditNoteBase):
     class Config:
         from_attributes = True
 
+
+# =====================================================
+# QUOTATION SCHEMAS
+# =====================================================
+
+class QuotationItemBase(BaseModel):
+    """Quotation item base schema"""
+    item_id: UUID
+    unit_name: str = Field(..., description="Sale unit (tablet, box, etc.)")
+    quantity: Decimal = Field(..., gt=0, description="Quantity in sale unit")
+    unit_price_exclusive: Optional[Decimal] = Field(None, ge=0, description="Price per unit (exclusive of VAT)")
+    discount_percent: Decimal = Field(default=0, ge=0, le=100)
+
+
+class QuotationItemCreate(QuotationItemBase):
+    """Create quotation item"""
+    pass
+
+
+class QuotationItemResponse(QuotationItemBase):
+    """Quotation item response"""
+    id: UUID
+    quotation_id: UUID
+    vat_rate: Decimal
+    vat_amount: Decimal
+    discount_amount: Decimal
+    line_total_exclusive: Decimal
+    line_total_inclusive: Decimal
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class QuotationBase(BaseModel):
+    """Quotation base schema"""
+    branch_id: UUID
+    quotation_date: date
+    customer_name: Optional[str] = None
+    customer_pin: Optional[str] = None
+    reference: Optional[str] = None
+    notes: Optional[str] = None
+    status: str = Field(default="draft", description="draft, sent, accepted, converted, cancelled")
+    discount_amount: Decimal = Field(default=0, ge=0)
+    valid_until: Optional[date] = None
+
+
+class QuotationCreate(QuotationBase):
+    """Create quotation request"""
+    company_id: UUID
+    items: List[QuotationItemCreate] = Field(..., min_items=1)
+    created_by: UUID
+
+
+class QuotationUpdate(BaseModel):
+    """Update quotation (before conversion)"""
+    customer_name: Optional[str] = None
+    customer_pin: Optional[str] = None
+    reference: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None
+    discount_amount: Optional[Decimal] = None
+    valid_until: Optional[date] = None
+    items: Optional[List[QuotationItemCreate]] = None
+
+
+class QuotationResponse(QuotationBase):
+    """Quotation response"""
+    id: UUID
+    company_id: UUID
+    quotation_no: str
+    total_exclusive: Decimal
+    vat_rate: Decimal
+    vat_amount: Decimal
+    total_inclusive: Decimal
+    converted_to_invoice_id: Optional[UUID] = None
+    created_by: UUID
+    created_at: datetime
+    updated_at: datetime
+    items: List[QuotationItemResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class QuotationConvertRequest(BaseModel):
+    """Convert quotation to invoice request"""
+    invoice_date: Optional[date] = None  # If not provided, use current date
+    payment_mode: str = Field(default="cash", description="cash, mpesa, credit, bank")
+    payment_status: str = Field(default="UNPAID", description="UNPAID, PARTIAL, PAID")
+    customer_name: Optional[str] = None  # Override if needed
+    customer_pin: Optional[str] = None  # Override if needed
+    reference: Optional[str] = None  # Override if needed
+    notes: Optional[str] = None  # Override if needed
+
+
+# =====================================================
+# INVOICE PAYMENT SCHEMAS (SPLIT PAYMENTS)
+# =====================================================
+
+class InvoicePaymentBase(BaseModel):
+    """Invoice payment base schema"""
+    payment_mode: str = Field(..., description="cash, mpesa, card, credit, insurance")
+    amount: Decimal = Field(..., gt=0)
+    payment_reference: Optional[str] = None
+
+
+class InvoicePaymentCreate(InvoicePaymentBase):
+    """Create invoice payment request"""
+    invoice_id: UUID
+    paid_by: UUID
+
+
+class InvoicePaymentResponse(InvoicePaymentBase):
+    """Invoice payment response"""
+    id: UUID
+    invoice_id: UUID
+    paid_by: Optional[UUID] = None
+    paid_at: datetime
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

@@ -76,14 +76,20 @@ async function loadPurchaseSubPage(subPage) {
         case 'create':
             await renderCreatePurchaseOrderPage();
             break;
+        case 'create-invoice':
+            await renderCreateSupplierInvoicePage();
+            break;
         case 'invoices':
-            await renderPurchaseInvoicesPage();
+            await renderSupplierInvoicesPage();
             break;
         case 'credit-notes':
             await renderCreditNotesPage();
             break;
         case 'suppliers':
             await renderSuppliersPage();
+            break;
+        case 'order-book':
+            await renderOrderBookPage();
             break;
         default:
             await renderPurchaseOrdersPage();
@@ -242,6 +248,10 @@ async function fetchAndRenderPurchaseOrdersData() {
 function renderPurchaseOrdersTableBody() {
     const tbody = document.getElementById('purchaseOrdersTableBody');
     if (!tbody) {
+        // Silently return if we're not on the orders page (prevents error when on invoices page)
+        if (currentPurchaseSubPage !== 'orders') {
+            return;
+        }
         console.error('purchaseOrdersTableBody not found in renderPurchaseOrdersTableBody!');
         return;
     }
@@ -284,11 +294,18 @@ function renderPurchaseOrdersTableBody() {
         const statusClass = doc.status === 'RECEIVED' || doc.status === 'APPROVED' ? 'badge-success' : 
                           doc.status === 'CANCELLED' ? 'badge-danger' : 'badge-warning';
         const statusText = doc.status || 'PENDING';
+        const isPending = statusText === 'PENDING';
+        const rowClickHandler = isPending && window.editPurchaseDocument
+            ? `if(window.editPurchaseDocument) window.editPurchaseDocument('${doc.id}', '${docType}')`
+            : `if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')`;
+        const linkClickHandler = isPending && window.editPurchaseDocument
+            ? `event.stopPropagation(); if(window.editPurchaseDocument) window.editPurchaseDocument('${doc.id}', '${docType}'); return false;`
+            : `event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}'); return false;`;
         return `
-            <tr style="cursor: pointer;" onclick="if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')">
+            <tr style="cursor: pointer;" onclick="${rowClickHandler}">
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                     <strong style="color: var(--primary-color); cursor: pointer; text-decoration: underline;" 
-                            onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')"
+                            onclick="${linkClickHandler}"
                             onmouseover="this.style.textDecoration='underline'; this.style.color='var(--primary-dark, #0056b3)'"
                             onmouseout="this.style.color='var(--primary-color)'">
                         ${doc.docNumber}
@@ -368,11 +385,11 @@ async function renderPurchaseOrdersPage() {
 }
 
 // =====================================================
-// PAGE-SHELL FIRST PATTERN: Purchase Invoices
+// PAGE-SHELL FIRST PATTERN: Supplier Invoices
 // =====================================================
 
-function renderPurchaseInvoicesShell() {
-    console.log('renderPurchaseInvoicesShell() called');
+function renderSupplierInvoicesShell() {
+    console.log('renderSupplierInvoicesShell() called');
     const page = document.getElementById('purchases');
     if (!page) return;
     
@@ -382,14 +399,17 @@ function renderPurchaseInvoicesShell() {
         <div class="card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
                 <h3 class="card-title" style="margin: 0; font-size: 1.5rem;">
-                    <i class="fas fa-file-invoice-dollar"></i> Purchase Invoices
+                    <i class="fas fa-file-invoice-dollar"></i> Supplier Invoices
+                    <span style="font-size: 0.875rem; color: var(--text-secondary); margin-left: 0.5rem; font-weight: normal;">
+                        (Receiving Documents - Add Stock)
+                    </span>
                 </h3>
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn btn-outline" onclick="if(window.showPurchaseFilters) window.showPurchaseFilters()">
                         <i class="fas fa-filter"></i> Filters
                     </button>
-                    <button class="btn btn-primary" onclick="if(window.createNewPurchaseInvoice) window.createNewPurchaseInvoice()">
-                        <i class="fas fa-plus"></i> New Invoice
+                    <button class="btn btn-primary" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()">
+                        <i class="fas fa-plus"></i> New Supplier Invoice
                     </button>
                 </div>
             </div>
@@ -411,7 +431,7 @@ function renderPurchaseInvoicesShell() {
                 
                 <div style="margin-bottom: 1.5rem;">
                     <input type="text" class="form-input" id="purchaseSearchInput" 
-                           placeholder="Search by invoice number, supplier..." 
+                           placeholder="Search by supplier invoice number, supplier..." 
                            onkeyup="if(window.filterPurchaseDocuments) window.filterPurchaseDocuments()"
                            style="width: 100%; max-width: 500px; padding: 0.75rem;">
                 </div>
@@ -420,19 +440,21 @@ function renderPurchaseInvoicesShell() {
                     <table style="width: 100%; border-collapse: collapse;">
                         <thead style="position: sticky; top: 0; background: white; z-index: 20; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
                             <tr>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Invoice Number</th>
+                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Supplier Invoice #</th>
                                 <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Date</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Amount</th>
+                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Total</th>
+                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Paid</th>
+                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Balance</th>
                                 <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Supplier</th>
                                 <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Status</th>
                                 <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="purchaseInvoicesTableBody">
+                        <tbody id="supplierInvoicesTableBody">
                             <tr>
                                 <td colspan="6" style="padding: 3rem; text-align: center;">
                                     <div class="spinner" style="margin: 0 auto 1rem;"></div>
-                                    <p style="color: var(--text-secondary);">Loading invoices...</p>
+                                    <p style="color: var(--text-secondary);">Loading supplier invoices...</p>
                                 </td>
                             </tr>
                         </tbody>
@@ -441,16 +463,16 @@ function renderPurchaseInvoicesShell() {
             </div>
         </div>
     `;
-    console.log('✅ Purchase Invoices shell rendered');
+    console.log('✅ Supplier Invoices shell rendered');
 }
 
-async function fetchAndRenderPurchaseInvoicesData() {
-    const tbody = document.getElementById('purchaseInvoicesTableBody');
+async function fetchAndRenderSupplierInvoicesData() {
+    const tbody = document.getElementById('supplierInvoicesTableBody');
     if (!tbody) return;
     
     try {
         await loadPurchaseDocuments('invoice');
-        renderPurchaseInvoicesTableBody();
+        renderSupplierInvoicesTableBody();
     } catch (error) {
         console.error('Error fetching invoices:', error);
         tbody.innerHTML = `
@@ -458,7 +480,7 @@ async function fetchAndRenderPurchaseInvoicesData() {
                 <td colspan="6" style="padding: 3rem; text-align: center;">
                     <i class="fas fa-exclamation-triangle" style="font-size: 3rem; color: var(--danger-color); margin-bottom: 1rem;"></i>
                     <p style="color: var(--danger-color);">Error loading invoices</p>
-                    <button class="btn btn-outline" onclick="if(window.fetchAndRenderPurchaseInvoicesData) window.fetchAndRenderPurchaseInvoicesData()" style="margin-top: 1rem;">
+                    <button class="btn btn-outline" onclick="if(window.fetchAndRenderSupplierInvoicesData) window.fetchAndRenderSupplierInvoicesData()" style="margin-top: 1rem;">
                         <i class="fas fa-redo"></i> Retry
                     </button>
                 </td>
@@ -467,8 +489,8 @@ async function fetchAndRenderPurchaseInvoicesData() {
     }
 }
 
-function renderPurchaseInvoicesTableBody() {
-    const tbody = document.getElementById('purchaseInvoicesTableBody');
+function renderSupplierInvoicesTableBody() {
+    const tbody = document.getElementById('supplierInvoicesTableBody');
     if (!tbody) return;
     
     if (purchaseDocuments.length === 0) {
@@ -476,9 +498,9 @@ function renderPurchaseInvoicesTableBody() {
             <tr>
                 <td colspan="6" style="padding: 3rem; text-align: center;">
                     <i class="fas fa-file-invoice-dollar" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
-                    <p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">No purchase invoices found</p>
-                    <button class="btn btn-primary" onclick="if(window.createNewPurchaseInvoice) window.createNewPurchaseInvoice()">
-                        <i class="fas fa-plus"></i> Create Your First Purchase Invoice
+                    <p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">No supplier invoices found</p>
+                    <button class="btn btn-primary" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()">
+                        <i class="fas fa-plus"></i> Create Your First Supplier Invoice
                     </button>
                 </td>
             </tr>
@@ -487,16 +509,44 @@ function renderPurchaseInvoicesTableBody() {
     }
     
     tbody.innerHTML = purchaseDocuments.map(doc => {
-        const statusClass = doc.status === 'PAID' ? 'badge-success' : 'badge-warning';
+        const docStatus = doc.status || 'DRAFT';
+        const paymentStatus = doc.payment_status || 'UNPAID';
+        const total = parseFloat(doc.total_inclusive || doc.total_amount || 0);
+        const paid = parseFloat(doc.amount_paid || 0);
+        const balance = parseFloat(doc.balance || (total - paid));
+        
+        // Status badge colors
+        const docStatusClass = docStatus === 'BATCHED' ? 'badge-success' : 'badge-warning';
+        const paymentStatusClass = paymentStatus === 'PAID' ? 'badge-success' : 
+                                   paymentStatus === 'PARTIAL' ? 'badge-info' : 'badge-danger';
+        
         return `
-            <tr style="cursor: pointer;" onclick="if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'invoice')">
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong style="color: var(--primary-color);">${doc.invoice_number || '—'}</strong></td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatDate(doc.invoice_date || doc.created_at)}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong>${formatCurrency(doc.total_amount || 0)}</strong></td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.supplier_name || '—'}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><span class="badge ${statusClass}">${doc.status || 'PENDING'}</span></td>
+            <tr style="cursor: pointer;" onclick="if(window.viewSupplierInvoice) window.viewSupplierInvoice('${doc.id}')">
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'invoice')" title="View">
+                    <a href="#" onclick="event.stopPropagation(); if(window.viewSupplierInvoice) window.viewSupplierInvoice('${doc.id}'); return false;" 
+                       style="color: var(--primary-color); font-weight: 600; text-decoration: none;">
+                        ${doc.invoice_number || '—'}
+                    </a>
+                </td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatDate(doc.invoice_date || doc.created_at)}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong>${formatCurrency(total)}</strong></td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatCurrency(paid)}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong style="color: ${balance > 0 ? 'var(--danger-color)' : 'var(--success-color)'}">${formatCurrency(balance)}</strong></td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.supplier_name || '—'}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                    <span class="badge ${docStatusClass}" title="Document: ${docStatus}">${docStatus}</span>
+                    <span class="badge ${paymentStatusClass}" title="Payment: ${paymentStatus}" style="margin-left: 0.25rem;">${paymentStatus}</span>
+                </td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                    ${docStatus === 'DRAFT' ? `
+                        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); if(window.batchSupplierInvoice) window.batchSupplierInvoice('${doc.id}')" title="Batch Invoice (Add Stock)">
+                            <i class="fas fa-boxes"></i> Batch
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.updateInvoicePayment) window.updateInvoicePayment('${doc.id}', ${total}, ${paid})" title="Update Payment">
+                        <i class="fas fa-money-bill-wave"></i>
+                    </button>
+                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'invoice')" title="View">
                         <i class="fas fa-eye"></i>
                     </button>
                 </td>
@@ -505,9 +555,9 @@ function renderPurchaseInvoicesTableBody() {
     }).join('');
 }
 
-async function renderPurchaseInvoicesPage() {
-    renderPurchaseInvoicesShell();
-    await fetchAndRenderPurchaseInvoicesData();
+async function renderSupplierInvoicesPage() {
+    renderSupplierInvoicesShell();
+    await fetchAndRenderSupplierInvoicesData();
 }
 
 // =====================================================
@@ -682,8 +732,16 @@ async function loadPurchaseDocuments(documentType = 'order') {
             
             purchaseDocuments = await API.purchases.listOrders(params);
         } else if (documentType === 'invoice') {
-            // Load purchase invoices
-            purchaseDocuments = await API.purchases.listInvoices(CONFIG.COMPANY_ID, CONFIG.BRANCH_ID);
+            // Load supplier invoices (these are receiving documents that ADD STOCK)
+            const params = {
+                company_id: CONFIG.COMPANY_ID
+            };
+            if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+            if (dateFrom) params.date_from = dateFrom;
+            if (dateTo) params.date_to = dateTo;
+            if (supplierId) params.supplier_id = supplierId;
+            
+            purchaseDocuments = await API.purchases.listInvoices(params);
         } else if (documentType === 'credit-note') {
             // Load credit notes
             purchaseDocuments = []; // TODO: Implement credit notes
@@ -704,13 +762,22 @@ function filterPurchaseDocuments() {
     // For now, just re-render the current page's table body
     switch(currentPurchaseSubPage) {
         case 'orders':
-            renderPurchaseOrdersTableBody();
+            const ordersTbody = document.getElementById('purchaseOrdersTableBody');
+            if (ordersTbody) {
+                renderPurchaseOrdersTableBody();
+            }
             break;
         case 'invoices':
-            renderPurchaseInvoicesTableBody();
+            const invoicesTbody = document.getElementById('supplierInvoicesTableBody');
+            if (invoicesTbody) {
+                renderSupplierInvoicesTableBody();
+            }
             break;
         case 'credit-notes':
-            renderCreditNotesTableBody();
+            const creditNotesTbody = document.getElementById('creditNotesTableBody');
+            if (creditNotesTbody) {
+                renderCreditNotesTableBody();
+            }
             break;
     }
 }
@@ -768,7 +835,7 @@ function applyPurchaseFilters() {
                 renderPurchaseOrdersTableBody();
                 break;
             case 'invoices':
-                renderPurchaseInvoicesTableBody();
+                renderSupplierInvoicesTableBody();
                 break;
             case 'credit-notes':
                 renderCreditNotesTableBody();
@@ -789,7 +856,7 @@ async function applyDateFilter() {
                 renderPurchaseOrdersTableBody();
                 break;
             case 'invoices':
-                renderPurchaseInvoicesTableBody();
+                renderSupplierInvoicesTableBody();
                 break;
             case 'credit-notes':
                 renderCreditNotesTableBody();
@@ -826,14 +893,12 @@ if (typeof window !== 'undefined') {
     window.createNewPurchaseOrder = createNewPurchaseOrder;
 }
 
-// Create new Purchase Invoice
-function createNewPurchaseInvoice() {
+// Create new Supplier Invoice (RECEIVING document - ADDS STOCK)
+function createNewSupplierInvoice() {
     currentDocument = { type: 'invoice', items: [] };
     documentItems = [];
-    // TODO: Implement invoice creation page
-    showToast('Purchase invoice creation coming soon', 'info');
-    // For now, redirect to create page (will show order form - to be updated)
-    loadPurchaseSubPage('create');
+    // Navigate to create page with invoice mode
+    loadPurchaseSubPage('create-invoice');
 }
 
 // Create new Credit Note
@@ -868,26 +933,36 @@ async function renderCreatePurchaseOrderPage() {
     
     const today = new Date().toISOString().split('T')[0];
     
-    // Prepare buttons for top bar based on mode
+    // Get order status for button visibility
+    const orderStatus = currentDocument?.status || 'PENDING';
+    const canEdit = orderStatus === 'PENDING';
+    
+    // Prepare buttons for top bar based on mode and status
     const topButtonsHtml = isEditMode ? `
-        <button type="button" class="btn btn-primary btn-save-order" onclick="if(window.updatePurchaseOrder) { const form = document.getElementById('purchaseDocumentForm'); if(form) updatePurchaseOrder({preventDefault:()=>{},target:form}, '${orderId}'); }">
-            <i class="fas fa-save"></i> Save
-        </button>
-        <button type="button" class="btn btn-outline" onclick="showToast('Batch functionality coming soon', 'info')" title="Batch">
-            <i class="fas fa-layer-group"></i> Batch
-        </button>
+        ${canEdit ? `
+            <button type="button" class="btn btn-primary btn-save-order" onclick="if(window.updatePurchaseOrder) { const form = document.getElementById('purchaseDocumentForm'); if(form) updatePurchaseOrder({preventDefault:()=>{},target:form}, '${orderId}'); }">
+                <i class="fas fa-save"></i> Update Order
+            </button>
+            <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deletePurchaseOrder) window.deletePurchaseOrder('${orderId}')" title="Delete Order (Only for PENDING)">
+                <i class="fas fa-trash"></i> Delete
+            </button>
+        ` : `
+            <button type="button" class="btn btn-outline btn-danger" disabled title="Cannot delete order with status ${orderStatus}">
+                <i class="fas fa-trash"></i> Delete (Disabled)
+            </button>
+            <span style="color: var(--text-secondary); font-size: 0.875rem; align-self: center; margin-left: 0.5rem;">
+                Order is ${orderStatus} - cannot be edited or deleted
+            </span>
+        `}
         <button type="button" class="btn btn-outline" onclick="if(window.printPurchaseOrder) window.printPurchaseOrder('${orderId}')" title="Print">
             <i class="fas fa-print"></i> Print
-        </button>
-        <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deletePurchaseOrder) window.deletePurchaseOrder('${orderId}')" title="Delete">
-            <i class="fas fa-trash"></i> Delete
         </button>
         <button type="button" class="btn btn-secondary" onclick="loadPurchaseSubPage('orders')">
             <i class="fas fa-arrow-left"></i> Back
         </button>
     ` : `
         <button type="submit" class="btn btn-primary" form="purchaseDocumentForm">
-            <i class="fas fa-save"></i> Save
+            <i class="fas fa-save"></i> Save Order
         </button>
         <button type="button" class="btn btn-secondary" onclick="loadPurchaseSubPage('orders')">
             <i class="fas fa-arrow-left"></i> Back
@@ -895,21 +970,35 @@ async function renderCreatePurchaseOrderPage() {
     `;
     
     page.innerHTML = `
-        <div class="card">
-            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
-                <h3 class="card-title" style="margin: 0; font-size: 1.5rem;">
-                    <i class="fas fa-file-invoice"></i> ${isEditMode ? 'Edit' : 'Create'} Purchase Order
-                    ${isEditMode && currentDocument.order_number ? `: ${currentDocument.order_number}` : ''}
-                </h3>
+        <div class="card" id="purchaseOrderDocumentCard" style="transform-origin: top left; transition: transform 0.2s;">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: white; z-index: 10;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <h3 class="card-title" style="margin: 0; font-size: 1.25rem;">
+                        <i class="fas fa-file-invoice"></i> ${isEditMode ? 'Edit' : 'Create'} Purchase Order
+                        ${isEditMode && currentDocument.order_number ? `: ${currentDocument.order_number}` : ''}
+                    </h3>
+                    <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="zoomDocumentView('out')" title="Zoom Out (Ctrl + Mouse Wheel)">
+                            <i class="fas fa-search-minus"></i>
+                        </button>
+                        <span id="documentZoomLevel" style="min-width: 60px; text-align: center;">100%</span>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="zoomDocumentView('in')" title="Zoom In (Ctrl + Mouse Wheel)">
+                            <i class="fas fa-search-plus"></i>
+                        </button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="zoomDocumentView('reset')" title="Reset Zoom">
+                            <i class="fas fa-undo"></i>
+                        </button>
+                    </div>
+                </div>
                 <div style="display: flex; gap: 0.5rem;">
                     ${topButtonsHtml}
                 </div>
             </div>
             
-            <div class="card-body" style="padding: 1.5rem;">
+            <div class="card-body" style="padding: 1rem; max-height: calc(100vh - 200px); overflow-y: auto;">
                 <form id="purchaseDocumentForm" ${isEditMode ? '' : 'onsubmit="savePurchaseDocument(event, \'order\')"'} >
                     <!-- Document Header -->
-                    <div class="card" style="margin-bottom: 1.5rem;">
+                    <div class="card" style="margin-bottom: 1rem;">
                         <div class="card-header">
                             <h4>Order Details</h4>
                         </div>
@@ -923,6 +1012,7 @@ async function renderCreatePurchaseOrderPage() {
                                                id="supplierSearch" 
                                                placeholder="Search supplier by name..."
                                                autocomplete="off"
+                                               ${canEdit ? '' : 'disabled'}
                                                required
                                                onkeyup="searchSuppliersInline(event)"
                                                onfocus="handleSupplierSearchFocus(event)"
@@ -936,28 +1026,34 @@ async function renderCreatePurchaseOrderPage() {
                                 <div class="form-group">
                                     <label class="form-label">Date *</label>
                                     <input type="date" class="form-input" name="document_date" 
-                                           value="${today}" required>
+                                           value="${today}" 
+                                           ${canEdit ? '' : 'disabled'}
+                                           required>
                                 </div>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
                                     <label class="form-label">Reference</label>
-                                    <input type="text" class="form-input" name="reference" placeholder="Order reference">
+                                    <input type="text" class="form-input" name="reference" 
+                                           placeholder="Order reference"
+                                           ${canEdit ? '' : 'disabled'}>
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">Notes</label>
-                                    <input type="text" class="form-input" name="notes" placeholder="Additional notes">
+                                    <input type="text" class="form-input" name="notes" 
+                                           placeholder="Additional notes"
+                                           ${canEdit ? '' : 'disabled'}>
                                 </div>
                             </div>
                         </div>
                     </div>
                     
                     <!-- Transaction Items Table (Vyapar-style, table-driven) -->
-                    <div class="card" style="margin-bottom: 1.5rem;">
-                        <div class="card-header">
-                            <h4>Items</h4>
+                    <div class="card" style="margin-bottom: 1rem;">
+                        <div class="card-header" style="padding: 0.75rem 1rem;">
+                            <h4 style="margin: 0; font-size: 1rem;">Items</h4>
                         </div>
-                        <div class="card-body" id="transactionItemsContainer">
+                        <div class="card-body" id="transactionItemsContainer" style="padding: 0.5rem;">
                             <!-- TransactionItemsTable component will render here -->
                         </div>
                     </div>
@@ -966,8 +1062,11 @@ async function renderCreatePurchaseOrderPage() {
         </div>
     `;
     
-    // Initialize TransactionItemsTable component
-    initializeTransactionItemsTable();
+    // Initialize TransactionItemsTable component with edit permission
+    initializeTransactionItemsTable(canEdit);
+    
+    // Set up zoom functionality
+    setupDocumentZoom();
     
     // Set form submit handler for edit mode (after form is rendered)
     if (isEditMode && orderId) {
@@ -983,13 +1082,226 @@ async function renderCreatePurchaseOrderPage() {
     }
 }
 
-// Initialize TransactionItemsTable component
-let transactionItemsTable = null;
+// Render Create Supplier Invoice Page (RECEIVING document - ADDS STOCK)
+async function renderCreateSupplierInvoicePage() {
+    console.log('renderCreatePurchaseInvoicePage()');
+    
+    const page = document.getElementById('purchases');
+    if (!page) {
+        console.error('Purchases page element not found!');
+        return;
+    }
+    
+    // Check if we're in edit mode
+    const isEditMode = currentDocument && currentDocument.mode === 'edit' && currentDocument.invoiceId;
+    let invoiceData = isEditMode ? currentDocument.invoiceData : null;
+    
+    // Initialize document state
+    if (!currentDocument) {
+        currentDocument = { type: 'invoice', items: [] };
+    }
+    
+    // If edit mode, load invoice data if not already loaded
+    if (isEditMode && !invoiceData) {
+        try {
+            invoiceData = await API.purchases.getInvoice(currentDocument.invoiceId);
+            currentDocument.invoiceData = invoiceData;
+        } catch (error) {
+            console.error('Error loading invoice for edit:', error);
+            showToast('Error loading invoice data', 'error');
+            // Fall back to create mode
+            currentDocument = { type: 'invoice', items: [] };
+            documentItems = [];
+            invoiceData = null;
+        }
+    }
+    
+    // Populate items from invoice (whether just loaded or already in currentDocument)
+    if (isEditMode && invoiceData && invoiceData.items && invoiceData.items.length > 0) {
+        documentItems = invoiceData.items.map(item => {
+            let batches = null;
+            if (item.batch_data) {
+                try {
+                    batches = JSON.parse(item.batch_data);
+                } catch (e) {
+                    console.warn('Error parsing batch_data:', e);
+                }
+            }
+            return {
+                item_id: item.item_id,
+                item_name: item.item_name || item.item?.name || 'Item',
+                item_sku: item.item_code || item.item?.sku || '',
+                item_code: item.item_code || item.item?.sku || '',
+                quantity: parseFloat(item.quantity),
+                unit_name: item.unit_name,
+                unit_price: parseFloat(item.unit_cost_exclusive),
+                tax_percent: parseFloat(item.vat_rate),
+                discount_percent: 0,
+                total: parseFloat(item.line_total_inclusive),
+                batches: batches
+            };
+        });
+    } else if (!isEditMode) {
+        // Initialize empty items array for new invoice
+        documentItems = [];
+    }
+    
+    const today = invoiceData ? invoiceData.invoice_date : new Date().toISOString().split('T')[0];
+    const supplierId = invoiceData ? invoiceData.supplier_id : '';
+    const supplierName = invoiceData ? invoiceData.supplier_name : '';
+    const supplierInvoiceNumber = invoiceData ? invoiceData.reference : '';
+    const reference = invoiceData ? invoiceData.reference : '';
+    const vatRate = invoiceData ? parseFloat(invoiceData.vat_rate) : 16.00;
+    
+    page.innerHTML = `
+        <div class="card" id="supplierInvoiceDocumentCard" style="transform-origin: top left; transition: transform 0.2s;">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: white; z-index: 10;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <h3 class="card-title" style="margin: 0; font-size: 1.25rem;">
+                        <i class="fas fa-file-invoice"></i> ${isEditMode && invoiceData && invoiceData.invoice_number ? `Edit Supplier Invoice: ${invoiceData.invoice_number}` : 'Create Supplier Invoice'}
+                        <span style="font-size: 0.875rem; color: var(--text-secondary); margin-left: 0.5rem;">
+                            (Receiving Document - Adds Stock)
+                        </span>
+                    </h3>
+                    <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="zoomDocumentView('out', 'supplierInvoiceDocumentCard')" title="Zoom Out (Ctrl + Mouse Wheel)">
+                            <i class="fas fa-search-minus"></i>
+                        </button>
+                        <span id="supplierInvoiceZoomLevel" style="min-width: 60px; text-align: center;">100%</span>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="zoomDocumentView('in', 'supplierInvoiceDocumentCard')" title="Zoom In (Ctrl + Mouse Wheel)">
+                            <i class="fas fa-search-plus"></i>
+                        </button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="zoomDocumentView('reset', 'supplierInvoiceDocumentCard')" title="Reset Zoom">
+                            <i class="fas fa-undo"></i>
+                        </button>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    ${isEditMode && invoiceData ? `
+                        ${invoiceData.status === 'DRAFT' ? `
+                            <button type="button" class="btn btn-primary" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${invoiceData.id}')" title="Batch Invoice (Add Stock)">
+                                <i class="fas fa-boxes"></i> Batch Invoice
+                            </button>
+                            <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deleteSupplierInvoice) window.deleteSupplierInvoice('${invoiceData.id}')" title="Delete Invoice (Only for DRAFT)">
+                                <i class="fas fa-trash"></i> Delete
+                            </button>
+                        ` : `
+                            <button type="button" class="btn btn-outline btn-danger" disabled title="Cannot delete BATCHED invoice (stock already added)">
+                                <i class="fas fa-trash"></i> Delete (Disabled)
+                            </button>
+                            <span style="color: var(--text-secondary); font-size: 0.875rem; align-self: center; margin-left: 0.5rem;">
+                                Invoice is BATCHED - cannot be deleted
+                            </span>
+                        `}
+                    ` : ''}
+                    <button type="submit" class="btn btn-primary" form="purchaseInvoiceForm" ${isEditMode && invoiceData && invoiceData.status === 'BATCHED' ? 'disabled title="BATCHED invoices cannot be updated"' : ''}>
+                        <i class="fas fa-save"></i> ${isEditMode ? 'Update' : 'Save'} Invoice
+                    </button>
+                    <button type="button" class="btn btn-secondary" onclick="loadPurchaseSubPage('invoices')">
+                        <i class="fas fa-arrow-left"></i> Back
+                    </button>
+                </div>
+            </div>
+            
+            <div class="card-body" style="padding: 1rem; max-height: calc(100vh - 200px); overflow-y: auto;">
+                <form id="purchaseInvoiceForm" onsubmit="savePurchaseDocument(event, 'invoice')">
+                    <!-- Document Header -->
+                    <div class="card" style="margin-bottom: 1rem;">
+                        <div class="card-header">
+                            <h4>Invoice Details</h4>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-row">
+                                <div class="form-group" style="flex: 1;">
+                                    <label class="form-label">Supplier *</label>
+                                    <div style="position: relative;">
+                                        <input type="text" 
+                                               class="form-input" 
+                                               id="supplierSearchInvoice" 
+                                               placeholder="Search supplier by name..."
+                                               autocomplete="off"
+                                               required
+                                               onkeyup="searchSuppliersInline(event, 'supplierSearchInvoice', 'supplierIdInvoice', 'supplierSearchDropdownInvoice')"
+                                               onfocus="handleSupplierSearchFocus(event)"
+                                               onblur="handleSupplierSearchBlur(event)">
+                                        <input type="hidden" name="supplier_id" id="supplierIdInvoice" required>
+                                        <div id="supplierSearchDropdownInvoice" 
+                                             style="position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--border-color); border-radius: 0.25rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 1000; max-height: 300px; overflow-y: auto; display: none; margin-top: 0.25rem;">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Invoice Date *</label>
+                                    <input type="date" class="form-input" name="document_date" 
+                                           value="${today}" required>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label class="form-label">Supplier's Invoice Number</label>
+                                    <input type="text" class="form-input" name="supplier_invoice_number" 
+                                           value="${supplierInvoiceNumber || ''}"
+                                           placeholder="Enter supplier's invoice number (optional)">
+                                    <small style="color: var(--text-secondary); font-size: 0.75rem; display: block; margin-top: 0.25rem;">
+                                        Optional: Invoice number from your supplier. System will auto-generate our document number.
+                                    </small>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Reference / Comments</label>
+                                    <input type="text" class="form-input" name="reference" 
+                                           value="${reference || ''}"
+                                           placeholder="Optional reference or comments">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">VAT Rate (%)</label>
+                                    <input type="number" class="form-input" name="vat_rate" 
+                                           value="${vatRate}" step="0.01" min="0" max="100">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Transaction Items Table (Vyapar-style, table-driven) -->
+                    <div class="card" style="margin-bottom: 1rem;">
+                        <div class="card-header" style="padding: 0.75rem 1rem;">
+                            <h4 style="margin: 0; font-size: 1rem;">Items Received</h4>
+                            <p style="font-size: 0.75rem; color: var(--text-secondary); margin: 0.25rem 0 0 0;">
+                                Use "Manage Batches" button to distribute items across multiple batches
+                            </p>
+                        </div>
+                        <div class="card-body" id="transactionItemsContainerInvoice" style="padding: 0.5rem;">
+                            <!-- TransactionItemsTable component will render here -->
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+    
+    // Initialize TransactionItemsTable component for invoice
+    initializeTransactionItemsTableForInvoice();
+    
+    // Set up zoom functionality for Supplier Invoice
+    setupDocumentZoom('supplierInvoiceDocumentCard', 'supplierInvoiceZoomLevel');
+    
+    // If in edit mode, populate supplier field
+    if (isEditMode && invoiceData && supplierId) {
+        setTimeout(() => {
+            const supplierSearchInput = document.getElementById('supplierSearchInvoice');
+            const supplierHiddenInput = document.getElementById('supplierIdInvoice');
+            if (supplierSearchInput && supplierHiddenInput) {
+                supplierSearchInput.value = supplierName || '';
+                supplierHiddenInput.value = supplierId;
+            }
+        }, 100);
+    }
+}
 
-function initializeTransactionItemsTable() {
-    const container = document.getElementById('transactionItemsContainer');
+// Initialize TransactionItemsTable component for Invoice
+function initializeTransactionItemsTableForInvoice() {
+    const container = document.getElementById('transactionItemsContainerInvoice');
     if (!container) {
-        setTimeout(initializeTransactionItemsTable, 100);
+        setTimeout(initializeTransactionItemsTableForInvoice, 100);
         return;
     }
     
@@ -1004,6 +1316,7 @@ function initializeTransactionItemsTable() {
             quantity: item.quantity,
             unit_price: item.unit_price,
             total: item.total,
+            batches: item.batches || [],
             is_empty: false
         }))
         : [];
@@ -1025,16 +1338,131 @@ function initializeTransactionItemsTable() {
                 quantity: item.quantity,
                 unit_price: item.unit_price,
                 discount_percent: item.discount_percent || 0,
+                total: item.total,
+                batches: item.batches || []
+            }));
+            
+            // Auto-save when items change (if in edit mode and invoice is DRAFT)
+            if (currentDocument && currentDocument.mode === 'edit' && currentDocument.invoiceId) {
+                const invoiceData = currentDocument.invoiceData;
+                if (invoiceData && invoiceData.status === 'DRAFT' && validItems.length > 0) {
+                    // Debounce auto-save to avoid too many requests
+                    clearTimeout(window.autoSaveTimeout);
+                    window.autoSaveTimeout = setTimeout(() => {
+                        autoSaveInvoice();
+                    }, 2000); // Auto-save 2 seconds after last change
+                }
+            }
+        },
+        onTotalChange: (total) => {
+            console.log('Total changed:', total);
+        },
+        onItemCreate: (query, rowIndex, callback) => {
+            window._transactionItemCreateCallback = callback;
+            window._transactionItemCreateRowIndex = rowIndex;
+            if (query) {
+                window._transactionItemCreateName = query;
+            }
+            if (typeof showAddItemModal === 'function') {
+                showAddItemModal();
+                setTimeout(() => {
+                    const nameInput = document.querySelector('#itemForm input[name="name"]');
+                    if (nameInput && query) {
+                        nameInput.value = query;
+                    }
+                }, 100);
+            } else {
+                showToast(`To create item "${query}", please go to Items page`, 'info');
+            }
+        }
+    });
+    
+    // Expose to window for component callbacks
+    window[`transactionTable_transactionItemsContainerInvoice`] = transactionItemsTable;
+}
+
+// Initialize TransactionItemsTable component
+let transactionItemsTable = null;
+
+function initializeTransactionItemsTable(canEdit = true) {
+    const container = document.getElementById('transactionItemsContainer');
+    if (!container) {
+        setTimeout(() => initializeTransactionItemsTable(canEdit), 100);
+        return;
+    }
+    
+    // Convert existing documentItems to component format
+    const items = documentItems.length > 0 
+        ? documentItems.map(item => ({
+            id: item.item_id,
+            item_id: item.item_id,
+            item_name: item.item_name,
+            item_sku: item.item_sku,
+            unit_name: item.unit_name,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            total: item.total,
+            is_empty: false
+        }))
+        : [];
+    
+    // Create component instance with new API
+    // Set context to 'purchase_order' for Purchase Order specific fields
+    transactionItemsTable = new window.TransactionItemsTable({
+        mountEl: container,
+        mode: 'purchase',
+        context: 'purchase_order', // Enable PO-specific fields (last order date, last supply date, etc.)
+        items: items,
+        priceType: 'purchase_price',
+        canEdit: canEdit, // Pass edit permission to component
+        onItemsChange: (validItems) => {
+            // Update documentItems
+            documentItems = validItems.map(item => ({
+                item_id: item.item_id,
+                item_name: item.item_name,
+                item_sku: item.item_sku,
+                item_code: item.item_code || item.item_sku,
+                unit_name: item.unit_name,
+                quantity: item.quantity,
+                unit_price: item.unit_price,
+                discount_percent: item.discount_percent || 0,
                 total: item.total
             }));
+            
+            // Auto-save when items change (if in edit mode and order is PENDING)
+            if (currentDocument && currentDocument.id && currentDocument.status === 'PENDING') {
+                // Debounce auto-save to avoid too many requests
+                clearTimeout(window.autoSaveOrderTimeout);
+                window.autoSaveOrderTimeout = setTimeout(() => {
+                    autoSavePurchaseOrder();
+                }, 2000); // Auto-save 2 seconds after last change
+            }
         },
         onTotalChange: (total) => {
             // Update total display (if needed elsewhere)
             console.log('Total changed:', total);
         },
         onItemCreate: (query, rowIndex, callback) => {
-            // Show option to create item
-            showToast(`To create item "${query}", please go to Items page`, 'info');
+            // Store callback for when item is created
+            window._transactionItemCreateCallback = callback;
+            window._transactionItemCreateRowIndex = rowIndex;
+            // Pre-fill item name if provided
+            if (query) {
+                window._transactionItemCreateName = query;
+            }
+            // Use the existing item creation modal from items page
+            if (typeof showAddItemModal === 'function') {
+                showAddItemModal();
+                // Pre-fill the name field if query is provided
+                setTimeout(() => {
+                    const nameInput = document.querySelector('#itemForm input[name="name"]');
+                    if (nameInput && query) {
+                        nameInput.value = query;
+                    }
+                }, 100);
+            } else {
+                showToast(`To create item "${query}", please go to Items page`, 'info');
+            }
         }
     });
     
@@ -1050,10 +1478,10 @@ let supplierSearchAbortController = null;
 let supplierSearchCache = new Map(); // Cache recent searches
 const CACHE_TTL = 30000; // 30 seconds cache TTL
 
-async function searchSuppliersInline(event) {
+async function searchSuppliersInline(event, searchInputId = 'supplierSearch', hiddenInputId = 'supplierId', dropdownId = 'supplierSearchDropdown') {
     const query = event.target.value.trim();
-    const dropdown = document.getElementById('supplierSearchDropdown');
-    const hiddenInput = document.getElementById('supplierId');
+    const dropdown = document.getElementById(dropdownId);
+    const hiddenInput = document.getElementById(hiddenInputId);
     
     if (!dropdown || !hiddenInput) return;
     
@@ -1079,7 +1507,12 @@ async function searchSuppliersInline(event) {
     const cacheKey = `${CONFIG.COMPANY_ID}:${query.toLowerCase()}`;
     const cached = supplierSearchCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
-        renderSupplierSearchResults(cached.data, dropdown);
+        // Determine which form we're in based on dropdown ID
+        const isInvoiceForm = dropdownId.includes('Invoice');
+        const finalSearchId = isInvoiceForm ? 'supplierSearchInvoice' : 'supplierSearch';
+        const finalHiddenId = isInvoiceForm ? 'supplierIdInvoice' : 'supplierId';
+        const finalDropdownId = isInvoiceForm ? 'supplierSearchDropdownInvoice' : 'supplierSearchDropdown';
+        renderSupplierSearchResults(cached.data, dropdown, finalSearchId, finalHiddenId, finalDropdownId);
         return;
     }
     
@@ -1120,7 +1553,13 @@ async function searchSuppliersInline(event) {
                 supplierSearchCache.delete(oldestKey);
             }
             
-            renderSupplierSearchResults(suppliers, dropdown);
+            // Determine which form we're in based on dropdown ID
+            const isInvoiceForm = dropdownId.includes('Invoice');
+            const finalSearchId = isInvoiceForm ? 'supplierSearchInvoice' : 'supplierSearch';
+            const finalHiddenId = isInvoiceForm ? 'supplierIdInvoice' : 'supplierId';
+            const finalDropdownId = isInvoiceForm ? 'supplierSearchDropdownInvoice' : 'supplierSearchDropdown';
+            
+            renderSupplierSearchResults(suppliers, dropdown, finalSearchId, finalHiddenId, finalDropdownId);
         } catch (error) {
             if (error.name === 'AbortError') {
                 return; // Request was aborted, ignore
@@ -1133,7 +1572,7 @@ async function searchSuppliersInline(event) {
 }
 
 // Render supplier search results
-function renderSupplierSearchResults(suppliers, dropdown) {
+function renderSupplierSearchResults(suppliers, dropdown, searchInputId = 'supplierSearch', hiddenInputId = 'supplierId', dropdownId = 'supplierSearchDropdown') {
     if (suppliers.length === 0) {
         dropdown.innerHTML = '<div style="padding: 1rem; text-align: center; color: var(--text-secondary);">No suppliers found</div>';
         dropdown.style.display = 'block';
@@ -1147,7 +1586,7 @@ function renderSupplierSearchResults(suppliers, dropdown) {
                  style="padding: 0.75rem; cursor: pointer; border-bottom: 1px solid var(--border-color); transition: background 0.2s;"
                  onmouseover="this.style.background='#f8f9fa'"
                  onmouseout="this.style.background='white'"
-                 onclick="selectSupplier('${supplier.id}', '${escapeHtml(supplier.name)}')">
+                 onclick="selectSupplier('${supplier.id}', '${escapeHtml(supplier.name)}', '${searchInputId}', '${hiddenInputId}', '${dropdownId}')">
                 <strong>${escapeHtml(supplier.name)}</strong>
             </div>
         `;
@@ -1156,11 +1595,11 @@ function renderSupplierSearchResults(suppliers, dropdown) {
     dropdown.style.display = 'block';
 }
 
-// Select supplier from search
-function selectSupplier(supplierId, supplierName) {
-    const searchInput = document.getElementById('supplierSearch');
-    const hiddenInput = document.getElementById('supplierId');
-    const dropdown = document.getElementById('supplierSearchDropdown');
+// Select supplier from search (works with both order and invoice forms)
+function selectSupplier(supplierId, supplierName, searchInputId = 'supplierSearch', hiddenInputId = 'supplierId', dropdownId = 'supplierSearchDropdown') {
+    const searchInput = document.getElementById(searchInputId);
+    const hiddenInput = document.getElementById(hiddenInputId);
+    const dropdown = document.getElementById(dropdownId);
     
     if (searchInput) searchInput.value = supplierName;
     if (hiddenInput) hiddenInput.value = supplierId;
@@ -1172,21 +1611,25 @@ function selectSupplier(supplierId, supplierName) {
 
 // Removed handleItemSearchFocus/handleItemSearchBlur - now handled by TransactionItemsTable component
 
-// Handle supplier search focus
+// Handle supplier search focus (works with both order and invoice forms)
 function handleSupplierSearchFocus(event) {
+    const inputId = event.target.id;
+    const dropdownId = inputId.includes('Invoice') ? 'supplierSearchDropdownInvoice' : 'supplierSearchDropdown';
     const query = event.target.value.trim();
     if (query.length >= 2) {
-        const dropdown = document.getElementById('supplierSearchDropdown');
+        const dropdown = document.getElementById(dropdownId);
         if (dropdown && dropdown.innerHTML.trim() !== '') {
             dropdown.style.display = 'block';
         }
     }
 }
 
-// Handle supplier search blur (with delay to allow click)
+// Handle supplier search blur (with delay to allow click) - works with both forms
 function handleSupplierSearchBlur(event) {
+    const inputId = event.target.id;
+    const dropdownId = inputId.includes('Invoice') ? 'supplierSearchDropdownInvoice' : 'supplierSearchDropdown';
     setTimeout(() => {
-        const dropdown = document.getElementById('supplierSearchDropdown');
+        const dropdown = document.getElementById(dropdownId);
         if (dropdown) dropdown.style.display = 'none';
     }, 200);
 }
@@ -1255,26 +1698,126 @@ async function savePurchaseDocument(event, documentType) {
             notes: formData.get('notes') || null,
             status: 'PENDING',
             created_by: currentUserId,
-            items: items.map(item => ({
-                item_id: item.item_id,
-                unit_name: item.unit_name,
-                quantity: item.quantity,
-                unit_price: item.unit_price,
-                total_price: item.total
-            }))
+            items: items.map(item => {
+                const itemData = {
+                    item_id: item.item_id,
+                    unit_name: item.unit_name,
+                    quantity: item.quantity,
+                    unit_price: item.unit_price,
+                    total_price: item.total
+                };
+                
+                // Include batch distribution if available
+                if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
+                    itemData.batches = item.batches.map(batch => ({
+                        batch_number: batch.batch_number || '',
+                        expiry_date: batch.expiry_date || null,
+                        quantity: parseFloat(batch.quantity) || 0,
+                        unit_cost: parseFloat(batch.unit_cost) || 0
+                    }));
+                }
+                
+                return itemData;
+            })
         };
         
         let result;
         if (documentType === 'order') {
+            // Purchase Order: Just a request document, NO STOCK EFFECT
             result = await API.purchases.createOrder(documentData);
+            showToast('Purchase Order saved successfully! (No stock added)', 'success');
         } else if (documentType === 'invoice') {
-            result = await API.purchases.createInvoice(documentData);
+            // Supplier Invoice: RECEIVING document that ADDS STOCK
+            // Validate supplier_id
+            const supplierId = formData.get('supplier_id');
+            if (!supplierId) {
+                isSavingDocument = false;
+                if (submitButton) {
+                    submitButton.disabled = false;
+                    submitButton.innerHTML = '<i class="fas fa-save"></i> Save & Add Stock';
+                }
+                showToast('Please select a supplier', 'error');
+                return;
+            }
+            
+            // Convert items to invoice format with batch support
+            const invoiceData = {
+                company_id: CONFIG.COMPANY_ID,
+                branch_id: CONFIG.BRANCH_ID,
+                supplier_id: supplierId,
+                supplier_invoice_number: formData.get('supplier_invoice_number') || null,  // Supplier's invoice number (external)
+                reference: formData.get('reference') || null,  // Additional reference/comments
+                invoice_date: formData.get('document_date') || new Date().toISOString().split('T')[0],
+                linked_grn_id: formData.get('linked_grn_id') || null,
+                vat_rate: parseFloat(formData.get('vat_rate')) || 16.00,
+                created_by: currentUserId,
+                items: items.map(item => {
+                    const itemData = {
+                        item_id: item.item_id,
+                        unit_name: item.unit_name,
+                        quantity: item.quantity,
+                        unit_cost_exclusive: item.unit_price, // Supplier invoice uses exclusive cost
+                        vat_rate: item.tax_percent || 16.00
+                    };
+                    
+                    // Include batch distribution if available
+                    if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
+                        itemData.batches = item.batches.map(batch => ({
+                            batch_number: batch.batch_number || '',
+                            expiry_date: batch.expiry_date || null,
+                            quantity: parseFloat(batch.quantity) || 0,
+                            unit_cost: parseFloat(batch.unit_cost) || 0
+                        }));
+                    }
+                    
+                    return itemData;
+                })
+            };
+            
+            console.log('📤 [Supplier Invoice] Submitting invoice data:', {
+                supplier_id: invoiceData.supplier_id,
+                invoice_number: invoiceData.invoice_number,
+                items_count: invoiceData.items.length,
+                items: invoiceData.items.map(item => ({
+                    item_id: item.item_id,
+                    quantity: item.quantity,
+                    has_batches: !!(item.batches && item.batches.length > 0)
+                }))
+            });
+            
+            // Check if we're updating an existing invoice
+            const isEditMode = currentDocument && currentDocument.mode === 'edit' && currentDocument.invoiceId;
+            
+            let result;
+            if (isEditMode) {
+                // Update existing invoice
+                result = await API.purchases.updateInvoice(currentDocument.invoiceId, invoiceData);
+                console.log('✅ [Supplier Invoice] Invoice updated:', result);
+                showToast('Supplier Invoice updated successfully!', 'success');
+            } else {
+                // Create new invoice
+                result = await API.purchases.createInvoice(invoiceData);
+                console.log('✅ [Supplier Invoice] Invoice saved as DRAFT:', result);
+                console.log('📄 [Supplier Invoice] Invoice number:', result?.invoice_number || 'NOT ASSIGNED');
+                
+                // Store invoice ID and number for auto-save
+                if (result && result.id) {
+                    currentDocument.invoiceId = result.id;
+                    currentDocument.status = result.status || 'DRAFT';
+                    currentDocument.invoiceNumber = result.invoice_number; // Store invoice number
+                    currentDocument.mode = 'edit'; // Switch to edit mode after first save
+                }
+                
+                if (result && result.invoice_number) {
+                    showToast(`Supplier Invoice ${result.invoice_number} saved as DRAFT! Click "Batch Invoice" to add stock to inventory.`, 'success');
+                } else {
+                    showToast('Supplier Invoice saved as DRAFT! (Note: Invoice number not assigned - check branch code)', 'warning');
+                }
+            }
         } else {
             showToast('Credit notes not yet implemented', 'info');
             return;
         }
-        
-        showToast(`${documentType === 'order' ? 'Purchase Order' : 'Purchase Invoice'} saved successfully!`, 'success');
         
         // Reset state
         documentItems = [];
@@ -1282,19 +1825,41 @@ async function savePurchaseDocument(event, documentType) {
         transactionItemsTable = null;
         isSavingDocument = false; // Reset flag
         
-        // Navigate back
+        // Navigate back and refresh data
         if (documentType === 'order') {
             await loadPurchaseSubPage('orders');
-        } else {
+            // Refresh orders list
+            await fetchAndRenderPurchaseOrdersData();
+        } else if (documentType === 'invoice') {
+            // Navigate to invoices page
             await loadPurchaseSubPage('invoices');
+            // Explicitly refresh invoices list to ensure new invoice appears
+            await fetchAndRenderSupplierInvoicesData();
         }
     } catch (error) {
-        console.error('Error saving purchase document:', error);
-        showToast(error.message || 'Error saving document', 'error');
+        console.error('❌ Error saving purchase document:', error);
+        console.error('Error details:', {
+            message: error.message,
+            status: error.status,
+            data: error.data
+        });
+        
+        // Show detailed error message
+        let errorMessage = error.message || 'Error saving document';
+        if (error.data && error.data.detail) {
+            if (typeof error.data.detail === 'string') {
+                errorMessage = error.data.detail;
+            } else if (Array.isArray(error.data.detail)) {
+                errorMessage = error.data.detail.map(e => e.msg || e.loc?.join('.') + ': ' + e.msg).join(', ');
+            }
+        }
+        
+        showToast(errorMessage, 'error');
         isSavingDocument = false; // Reset flag on error
         if (submitButton) {
+            const buttonText = documentType === 'order' ? 'Save Purchase Order' : 'Save & Add Stock';
             submitButton.disabled = false;
-            submitButton.innerHTML = '<i class="fas fa-save"></i> Save Purchase Order';
+            submitButton.innerHTML = `<i class="fas fa-save"></i> ${buttonText}`;
         }
     }
 }
@@ -1587,6 +2152,19 @@ async function deletePurchaseOrder(orderId) {
         return;
     }
     
+    // First check if order is PENDING
+    try {
+        const order = await API.purchases.getOrder(orderId);
+        if (order.status !== 'PENDING') {
+            showToast(`Cannot delete order with status ${order.status}. Only PENDING orders can be deleted.`, 'error');
+            return;
+        }
+    } catch (error) {
+        console.error('Error checking order status:', error);
+        showToast('Error checking order status', 'error');
+        return;
+    }
+    
     if (!confirm('Are you sure you want to delete this purchase order? This action cannot be undone.')) {
         return;
     }
@@ -1598,11 +2176,21 @@ async function deletePurchaseOrder(orderId) {
         await API.purchases.deleteOrder(orderId);
         showToast('Purchase order deleted successfully!', 'success');
         
+        // Clear auto-save timeout if any
+        clearTimeout(window.autoSaveOrderTimeout);
+        
         // Reset flag
         isDeletingOrder = false;
         
-        // Refresh the orders list
-        await fetchAndRenderPurchaseOrdersData();
+        // If we're on the edit page, navigate back to orders list
+        if (currentDocument && currentDocument.id === orderId) {
+            currentDocument = null;
+            documentItems = [];
+            await loadPurchaseSubPage('orders');
+        } else {
+            // Refresh the orders list
+            await fetchAndRenderPurchaseOrdersData();
+        }
         
         // If modal is open, close it
         const modal = document.getElementById('modalOverlay');
@@ -1772,6 +2360,155 @@ function updatePurchaseSubNavActiveState() {
     });
 }
 
+// View/Edit Supplier Invoice - Navigate to create page (seamless edit experience)
+async function viewSupplierInvoice(invoiceId) {
+    try {
+        const invoice = await API.purchases.getInvoice(invoiceId);
+        const isDraft = invoice.status === 'DRAFT';
+        
+        if (!isDraft) {
+            // For BATCHED invoices, show read-only view with payment update option
+            showToast('This invoice is already batched. Only payment can be updated.', 'info');
+            // TODO: Could show a read-only view or payment update modal
+            return;
+        }
+        
+        // For DRAFT invoices, navigate to edit page (same as create page)
+        currentDocument = { 
+            type: 'invoice', 
+            invoiceId: invoiceId, 
+            mode: 'edit',
+            invoiceData: invoice  // Store invoice data to populate form
+        };
+        
+        // Navigate to create page (will load as edit mode)
+        await loadPurchaseSubPage('create-invoice');
+    } catch (error) {
+        console.error('Error loading supplier invoice:', error);
+        showToast(error.message || 'Error loading invoice', 'error');
+    }
+}
+
+// Edit Supplier Invoice (only DRAFT) - Same as view, navigates to create page
+async function editSupplierInvoice(invoiceId) {
+    await viewSupplierInvoice(invoiceId);
+}
+
+// Delete Supplier Invoice (only DRAFT)
+async function deleteSupplierInvoice(invoiceId) {
+    // First check if invoice is DRAFT
+    try {
+        const invoice = await API.purchases.getInvoice(invoiceId);
+        if (invoice.status !== 'DRAFT') {
+            showToast(`Cannot delete invoice with status ${invoice.status}. Only DRAFT invoices can be deleted.`, 'error');
+            return;
+        }
+    } catch (error) {
+        console.error('Error checking invoice status:', error);
+        showToast('Error checking invoice status', 'error');
+        return;
+    }
+    
+    if (!confirm('Are you sure you want to delete this invoice? This action cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        await API.purchases.deleteInvoice(invoiceId);
+        showToast('Invoice deleted successfully', 'success');
+        
+        // Clear auto-save timeout if any
+        clearTimeout(window.autoSaveTimeout);
+        
+        // If we're on the edit page, navigate back to invoices list
+        if (currentDocument && currentDocument.mode === 'edit' && currentDocument.invoiceId === invoiceId) {
+            currentDocument = null;
+            documentItems = [];
+            await loadPurchaseSubPage('invoices');
+        } else {
+            // Refresh invoices list
+            await fetchAndRenderSupplierInvoicesData();
+        }
+    } catch (error) {
+        console.error('Error deleting invoice:', error);
+        showToast(error.message || 'Error deleting invoice', 'error');
+    }
+}
+
+// Auto-save invoice when changes occur
+async function autoSaveInvoice() {
+    if (!currentDocument || !currentDocument.invoiceId || !currentDocument.invoiceData) {
+        return;
+    }
+    
+    const invoiceData = currentDocument.invoiceData;
+    if (invoiceData.status !== 'DRAFT') {
+        return; // Only auto-save DRAFT invoices
+    }
+    
+    const form = document.getElementById('purchaseInvoiceForm');
+    if (!form) {
+        return;
+    }
+    
+    // Prevent auto-save if manual save is in progress
+    if (isSavingDocument) {
+        return;
+    }
+    
+    const formData = new FormData(form);
+    const items = transactionItemsTable ? transactionItemsTable.getItems() : [];
+    
+    if (items.length === 0) {
+        return; // Don't auto-save empty invoices
+    }
+    
+    try {
+        const supplierId = formData.get('supplier_id');
+        if (!supplierId) {
+            return; // Don't auto-save without supplier
+        }
+        
+        const invoiceUpdateData = {
+            company_id: CONFIG.COMPANY_ID,
+            branch_id: CONFIG.BRANCH_ID,
+            supplier_id: supplierId,
+            supplier_invoice_number: formData.get('supplier_invoice_number') || null,
+            reference: formData.get('reference') || null,
+            invoice_date: formData.get('document_date') || new Date().toISOString().split('T')[0],
+            linked_grn_id: formData.get('linked_grn_id') || null,
+            vat_rate: parseFloat(formData.get('vat_rate')) || 16.00,
+            items: items.map(item => {
+                const itemData = {
+                    item_id: item.item_id,
+                    unit_name: item.unit_name,
+                    quantity: item.quantity,
+                    unit_cost_exclusive: item.unit_price,
+                    vat_rate: item.tax_percent || 16.00
+                };
+                
+                if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
+                    itemData.batches = item.batches.map(batch => ({
+                        batch_number: batch.batch_number || '',
+                        expiry_date: batch.expiry_date || null,
+                        quantity: parseFloat(batch.quantity) || 0,
+                        unit_cost: parseFloat(batch.unit_cost) || 0
+                    }));
+                }
+                
+                return itemData;
+            })
+        };
+        
+        await API.purchases.updateInvoice(currentDocument.invoiceId, invoiceUpdateData);
+        console.log('✅ [Auto-save] Invoice updated automatically');
+        // Don't show toast for auto-save to avoid annoying the user
+    } catch (error) {
+        console.error('❌ [Auto-save] Error auto-saving invoice:', error);
+        // Don't show error toast for auto-save failures
+    }
+}
+
 // Show create supplier modal
 function showCreateSupplierModal() {
     const content = `
@@ -1861,6 +2598,51 @@ if (typeof window !== 'undefined') {
     window.switchPurchaseSubPage = switchPurchaseSubPage;
 }
 
+// Batch supplier invoice (add stock to inventory)
+async function batchSupplierInvoice(invoiceId) {
+    if (!confirm('Are you sure you want to batch this invoice? This will add stock to inventory and cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        const result = await API.purchases.batchInvoice(invoiceId);
+        showToast('Invoice batched successfully! Stock has been added to inventory.', 'success');
+        // Reload invoices list
+        await fetchAndRenderSupplierInvoicesData();
+    } catch (error) {
+        console.error('Error batching invoice:', error);
+        showToast(error.message || 'Error batching invoice', 'error');
+    }
+}
+
+// Update invoice payment
+async function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
+    const amountPaid = prompt(`Enter amount paid:\n\nTotal: ${formatCurrency(totalAmount)}\nCurrent Paid: ${formatCurrency(currentPaid)}\nBalance: ${formatCurrency(totalAmount - currentPaid)}`, currentPaid);
+    
+    if (amountPaid === null) return; // User cancelled
+    
+    const paid = parseFloat(amountPaid);
+    if (isNaN(paid) || paid < 0) {
+        showToast('Invalid amount', 'error');
+        return;
+    }
+    
+    if (paid > totalAmount) {
+        showToast('Amount paid cannot exceed total amount', 'error');
+        return;
+    }
+    
+    try {
+        const result = await API.purchases.updateInvoicePayment(invoiceId, paid);
+        showToast('Payment updated successfully!', 'success');
+        // Reload invoices list
+        await fetchAndRenderSupplierInvoicesData();
+    } catch (error) {
+        console.error('Error updating payment:', error);
+        showToast(error.message || 'Error updating payment', 'error');
+    }
+}
+
 // Export functions to window IMMEDIATELY
 // Export as functions are defined (not waiting for IIFE at end)
 if (typeof window !== 'undefined') {
@@ -1869,8 +2651,15 @@ if (typeof window !== 'undefined') {
     window.loadPurchaseSubPage = loadPurchaseSubPage;
     window.switchPurchaseSubPage = switchPurchaseSubPage;
     window.createNewPurchaseOrder = createNewPurchaseOrder;
-    window.createNewPurchaseInvoice = createNewPurchaseInvoice;
+    window.createNewSupplierInvoice = createNewSupplierInvoice;
+    window.createNewPurchaseInvoice = createNewSupplierInvoice; // Backward compatibility
     window.createNewCreditNote = createNewCreditNote;
+    window.batchSupplierInvoice = batchSupplierInvoice;
+    window.updateInvoicePayment = updateInvoicePayment;
+    window.viewSupplierInvoice = viewSupplierInvoice;
+    window.editSupplierInvoice = editSupplierInvoice;
+    window.deleteSupplierInvoice = deleteSupplierInvoice;
+    window.autoSaveInvoice = autoSaveInvoice;
     window.updatePurchaseSubNavActiveState = updatePurchaseSubNavActiveState;
     window.showCreateSupplierModal = showCreateSupplierModal;
     window.createSupplier = createSupplier;
@@ -1886,14 +2675,18 @@ if (typeof window !== 'undefined') {
     window.viewPurchaseDocument = viewPurchaseDocument;
     window.editPurchaseDocument = editPurchaseDocument;
     window.deletePurchaseOrder = deletePurchaseOrder;
+    window.autoSavePurchaseOrder = autoSavePurchaseOrder;
+    window.autoSavePurchaseOrder = autoSavePurchaseOrder;
     window.updatePurchaseOrder = updatePurchaseOrder;
     window.printPurchaseOrder = printPurchaseOrder;
     // New Page-Shell First pattern functions
     window.fetchAndRenderPurchaseOrdersData = fetchAndRenderPurchaseOrdersData;
-    window.fetchAndRenderPurchaseInvoicesData = fetchAndRenderPurchaseInvoicesData;
+    window.fetchAndRenderSupplierInvoicesData = fetchAndRenderSupplierInvoicesData;
+    window.fetchAndRenderPurchaseInvoicesData = fetchAndRenderSupplierInvoicesData; // Backward compatibility
     window.fetchAndRenderCreditNotesData = fetchAndRenderCreditNotesData;
     window.renderPurchaseOrdersTableBody = renderPurchaseOrdersTableBody;
-    window.renderPurchaseInvoicesTableBody = renderPurchaseInvoicesTableBody;
+    window.renderSupplierInvoicesTableBody = renderSupplierInvoicesTableBody;
+    window.renderPurchaseInvoicesTableBody = renderSupplierInvoicesTableBody; // Backward compatibility
     window.renderCreditNotesTableBody = renderCreditNotesTableBody;
     window.searchSuppliersInline = searchSuppliersInline;
     window.handleSupplierSearchFocus = handleSupplierSearchFocus;
@@ -1901,6 +2694,71 @@ if (typeof window !== 'undefined') {
     window.selectSupplier = selectSupplier;
     window.renderCreatePurchaseOrderPage = renderCreatePurchaseOrderPage;
     window.initializeTransactionItemsTable = initializeTransactionItemsTable;
+    
+    // Document zoom functionality (works for all transaction documents)
+    function zoomDocumentView(action, cardId = 'purchaseOrderDocumentCard', zoomLevelId = 'documentZoomLevel') {
+        const card = document.getElementById(cardId);
+        if (!card) return;
+        
+        let currentZoom = parseFloat(card.style.transform.replace('scale(', '').replace(')', '')) || 1;
+        const zoomStep = 0.1;
+        const minZoom = 0.5;
+        const maxZoom = 1.5;
+        
+        if (action === 'in') {
+            currentZoom = Math.min(currentZoom + zoomStep, maxZoom);
+        } else if (action === 'out') {
+            currentZoom = Math.max(currentZoom - zoomStep, minZoom);
+        } else if (action === 'reset') {
+            currentZoom = 1;
+        }
+        
+        card.style.transform = `scale(${currentZoom})`;
+        const zoomLevelEl = document.getElementById(zoomLevelId);
+        if (zoomLevelEl) {
+            zoomLevelEl.textContent = Math.round(currentZoom * 100) + '%';
+        }
+        
+        // Store zoom level
+        window.documentZoomLevel = currentZoom;
+    }
+    
+    // Mouse wheel zoom (Ctrl + Scroll) - works for all document cards
+    document.addEventListener('wheel', (e) => {
+        if (e.ctrlKey || e.metaKey) {
+            // Check for Purchase Order card
+            let card = document.getElementById('purchaseOrderDocumentCard');
+            let zoomLevelId = 'documentZoomLevel';
+            
+            // If not found, check for Supplier Invoice card
+            if (!card || card.offsetParent === null) {
+                card = document.getElementById('supplierInvoiceDocumentCard');
+                zoomLevelId = 'supplierInvoiceZoomLevel';
+            }
+            
+            if (card && card.offsetParent !== null) { // Check if element is visible
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? 'out' : 'in';
+                zoomDocumentView(delta, card.id, zoomLevelId);
+            }
+        }
+    }, { passive: false });
+    
+    function setupDocumentZoom(cardId = 'purchaseOrderDocumentCard', zoomLevelId = 'documentZoomLevel') {
+        // Initialize zoom level display
+        const zoomLevelEl = document.getElementById(zoomLevelId);
+        if (zoomLevelEl) {
+            zoomLevelEl.textContent = '100%';
+        }
+        // Reset zoom on page load
+        const card = document.getElementById(cardId);
+        if (card) {
+            card.style.transform = 'scale(1)';
+        }
+    }
+    
+    // Export zoom function
+    window.zoomDocumentView = zoomDocumentView;
     
     console.log('✓ Purchases functions exported to window');
 }
@@ -2086,6 +2944,403 @@ function editSupplier(supplierId) {
     showToast('Supplier editing coming soon', 'info');
 }
 
+// =====================================================
+// ORDER BOOK PAGE
+// =====================================================
+
+let orderBookEntries = [];
+let selectedOrderBookEntries = new Set();
+
+// Render Order Book Page (Page-Shell-First Pattern)
+async function renderOrderBookPage() {
+    console.log('renderOrderBookPage() called');
+    const page = document.getElementById('purchases');
+    if (!page) return;
+    
+    // Render shell first
+    renderOrderBookShell();
+    
+    // Then fetch and render data
+    await fetchAndRenderOrderBookData();
+}
+
+function renderOrderBookShell() {
+    const page = document.getElementById('purchases');
+    if (!page) return;
+    
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0; font-size: 1.5rem;">
+                    <i class="fas fa-clipboard-list"></i> Daily Order Book
+                </h3>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn btn-outline" onclick="if(window.autoGenerateOrderBook) window.autoGenerateOrderBook()">
+                        <i class="fas fa-magic"></i> Auto-Generate
+                    </button>
+                    <button class="btn btn-primary" id="createPOFromBookBtn" onclick="if(window.createPurchaseOrderFromSelected) window.createPurchaseOrderFromSelected()" disabled>
+                        <i class="fas fa-shopping-cart"></i> Create Purchase Order
+                    </button>
+                </div>
+            </div>
+            
+            <div class="card-body" style="padding: 1.5rem;">
+                <div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                    <input type="text" 
+                           class="form-input" 
+                           id="orderBookSearchInput" 
+                           placeholder="Search items..."
+                           onkeyup="if(window.filterOrderBookEntries) window.filterOrderBookEntries()"
+                           style="flex: 1; max-width: 400px;">
+                    <button class="btn btn-outline" onclick="if(window.selectAllOrderBookEntries) window.selectAllOrderBookEntries()">
+                        <i class="fas fa-check-square"></i> Select All
+                    </button>
+                    <button class="btn btn-outline" onclick="if(window.deselectAllOrderBookEntries) window.deselectAllOrderBookEntries()">
+                        <i class="fas fa-square"></i> Deselect All
+                    </button>
+                </div>
+                
+                <div class="table-container" style="max-height: calc(100vh - 400px); overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 20;">
+                            <tr>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); width: 40px;">
+                                    <input type="checkbox" id="selectAllCheckbox" onchange="if(window.toggleSelectAllOrderBook) window.toggleSelectAllOrderBook(this.checked)">
+                                </th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">SKU</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Current Stock</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Qty Needed</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Unit</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Supplier</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Reason</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: center;">Priority</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: center;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="orderBookTableBody">
+                            <tr>
+                                <td colspan="10" style="padding: 3rem; text-align: center;">
+                                    <div class="spinner" style="margin: 0 auto 1rem;"></div>
+                                    <p style="color: var(--text-secondary);">Loading order book entries...</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+async function fetchAndRenderOrderBookData() {
+    try {
+        if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
+            const tbody = document.getElementById('orderBookTableBody');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="10" style="padding: 2rem; text-align: center; color: var(--text-secondary);">Please configure Company and Branch in Settings</td></tr>';
+            }
+            return;
+        }
+        
+        const entries = await API.orderBook.list(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, 'PENDING');
+        orderBookEntries = entries;
+        renderOrderBookTable();
+    } catch (error) {
+        console.error('Error loading order book entries:', error);
+        const tbody = document.getElementById('orderBookTableBody');
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="10" style="padding: 2rem; text-align: center; color: var(--danger-color);">Error loading order book: ${error.message}</td></tr>`;
+        }
+    }
+}
+
+function renderOrderBookTable() {
+    const tbody = document.getElementById('orderBookTableBody');
+    if (!tbody) return;
+    
+    if (orderBookEntries.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="10" style="padding: 3rem; text-align: center; color: var(--text-secondary);">
+                    <i class="fas fa-clipboard-list" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
+                    <p style="font-size: 1.1rem;">No order book entries</p>
+                    <p style="font-size: 0.875rem;">Click "Auto-Generate" to create entries based on stock thresholds</p>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    tbody.innerHTML = orderBookEntries.map(entry => `
+        <tr data-entry-id="${entry.id}">
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                <input type="checkbox" 
+                       class="order-book-checkbox" 
+                       data-entry-id="${entry.id}"
+                       onchange="if(window.toggleOrderBookEntrySelection) window.toggleOrderBookEntrySelection('${entry.id}', this.checked)">
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                <strong>${escapeHtml(entry.item_name || 'Unknown')}</strong>
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                <code>${escapeHtml(entry.item_sku || '—')}</code>
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: right;">
+                <span style="color: ${entry.current_stock <= 0 ? 'var(--danger-color)' : 'var(--text-color)'};">
+                    ${entry.current_stock || 0}
+                </span>
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: right;">
+                <strong>${parseFloat(entry.quantity_needed)}</strong>
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                ${escapeHtml(entry.unit_name)}
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                ${escapeHtml(entry.supplier_name || '—')}
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                <span class="badge badge-info">${escapeHtml(entry.reason)}</span>
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: center;">
+                <span class="badge ${entry.priority >= 8 ? 'badge-danger' : entry.priority >= 5 ? 'badge-warning' : 'badge-info'}">
+                    ${entry.priority}
+                </span>
+            </td>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: center;">
+                <button class="btn btn-outline btn-sm" onclick="if(window.editOrderBookEntry) window.editOrderBookEntry('${entry.id}')" title="Edit">
+                    <i class="fas fa-edit"></i>
+                </button>
+                <button class="btn btn-outline btn-sm" onclick="if(window.deleteOrderBookEntry) window.deleteOrderBookEntry('${entry.id}')" title="Delete">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </td>
+        </tr>
+    `).join('');
+    
+    updateCreatePOButtonState();
+}
+
+function toggleOrderBookEntrySelection(entryId, checked) {
+    if (checked) {
+        selectedOrderBookEntries.add(entryId);
+    } else {
+        selectedOrderBookEntries.delete(entryId);
+    }
+    updateCreatePOButtonState();
+}
+
+function selectAllOrderBookEntries() {
+    orderBookEntries.forEach(entry => {
+        selectedOrderBookEntries.add(entry.id);
+        const checkbox = document.querySelector(`.order-book-checkbox[data-entry-id="${entry.id}"]`);
+        if (checkbox) checkbox.checked = true;
+    });
+    updateCreatePOButtonState();
+}
+
+function deselectAllOrderBookEntries() {
+    selectedOrderBookEntries.clear();
+    document.querySelectorAll('.order-book-checkbox').forEach(cb => cb.checked = false);
+    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+    if (selectAllCheckbox) selectAllCheckbox.checked = false;
+    updateCreatePOButtonState();
+}
+
+function toggleSelectAllOrderBook(checked) {
+    if (checked) {
+        selectAllOrderBookEntries();
+    } else {
+        deselectAllOrderBookEntries();
+    }
+}
+
+function updateCreatePOButtonState() {
+    const btn = document.getElementById('createPOFromBookBtn');
+    if (btn) {
+        btn.disabled = selectedOrderBookEntries.size === 0;
+    }
+}
+
+async function autoGenerateOrderBook() {
+    try {
+        if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
+            showToast('Please configure Company and Branch', 'warning');
+            return;
+        }
+        
+        showToast('Auto-generating order book entries...', 'info');
+        const result = await API.orderBook.autoGenerate(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID);
+        showToast(`Created ${result.entries_created} order book entries`, 'success');
+        await fetchAndRenderOrderBookData();
+    } catch (error) {
+        console.error('Error auto-generating order book:', error);
+        showToast(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function createPurchaseOrderFromSelected() {
+    if (selectedOrderBookEntries.size === 0) {
+        showToast('Please select at least one entry', 'warning');
+        return;
+    }
+    
+    // Get suppliers for selected entries
+    const selectedEntries = orderBookEntries.filter(e => selectedOrderBookEntries.has(e.id));
+    const suppliers = [...new Set(selectedEntries.map(e => e.supplier_id).filter(Boolean))];
+    
+    if (suppliers.length > 1) {
+        showToast('All selected entries must have the same supplier', 'warning');
+        return;
+    }
+    
+    // Show modal to select supplier and enter details
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3>Create Purchase Order from Order Book</h3>
+                <button class="modal-close" onclick="this.closest('.modal').remove()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom: 1rem;">
+                    <label>Supplier *</label>
+                    <select id="poSupplierSelect" class="form-input" required>
+                        <option value="">Select Supplier</option>
+                    </select>
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <label>Order Date *</label>
+                    <input type="date" id="poOrderDate" class="form-input" value="${new Date().toISOString().split('T')[0]}" required>
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <label>Reference</label>
+                    <input type="text" id="poReference" class="form-input" placeholder="Optional reference">
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <label>Notes</label>
+                    <textarea id="poNotes" class="form-input" rows="3" placeholder="Optional notes"></textarea>
+                </div>
+                <div style="margin-top: 1.5rem; display: flex; gap: 0.5rem; justify-content: flex-end;">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Cancel</button>
+                    <button class="btn btn-primary" onclick="if(window.confirmCreatePOFromBook) window.confirmCreatePOFromBook()">Create Purchase Order</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    
+    // Load suppliers
+    try {
+        const suppliersList = await API.suppliers.list(CONFIG.COMPANY_ID);
+        const select = document.getElementById('poSupplierSelect');
+        suppliersList.forEach(supplier => {
+            const option = document.createElement('option');
+            option.value = supplier.id;
+            option.textContent = supplier.name;
+            if (suppliers.length === 1 && supplier.id === suppliers[0]) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error loading suppliers:', error);
+    }
+}
+
+async function confirmCreatePOFromBook() {
+    try {
+        const supplierId = document.getElementById('poSupplierSelect').value;
+        const orderDate = document.getElementById('poOrderDate').value;
+        const reference = document.getElementById('poReference').value;
+        const notes = document.getElementById('poNotes').value;
+        
+        if (!supplierId || !orderDate) {
+            showToast('Please fill in all required fields', 'warning');
+            return;
+        }
+        
+        if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID || !CONFIG.USER_ID) {
+            showToast('Configuration error: Missing company, branch, or user ID', 'error');
+            return;
+        }
+        
+        const entryIds = Array.from(selectedOrderBookEntries);
+        const result = await API.orderBook.createPurchaseOrder(
+            { entry_ids: entryIds, supplier_id: supplierId, order_date: orderDate, reference, notes },
+            CONFIG.COMPANY_ID,
+            CONFIG.BRANCH_ID,
+            CONFIG.USER_ID
+        );
+        
+        // Close modal
+        document.querySelector('.modal').remove();
+        
+        showToast(`Purchase Order ${result.order_number} created successfully!`, 'success');
+        
+        // Clear selection and refresh
+        selectedOrderBookEntries.clear();
+        await fetchAndRenderOrderBookData();
+        
+        // Navigate to purchase orders page
+        await loadPurchaseSubPage('orders');
+    } catch (error) {
+        console.error('Error creating purchase order:', error);
+        showToast(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function editOrderBookEntry(entryId) {
+    const entry = orderBookEntries.find(e => e.id === entryId);
+    if (!entry) return;
+    
+    // TODO: Implement edit modal
+    showToast('Edit functionality coming soon', 'info');
+}
+
+async function deleteOrderBookEntry(entryId) {
+    if (!confirm('Are you sure you want to remove this entry from the order book?')) {
+        return;
+    }
+    
+    try {
+        await API.orderBook.delete(entryId);
+        showToast('Entry removed from order book', 'success');
+        await fetchAndRenderOrderBookData();
+    } catch (error) {
+        console.error('Error deleting order book entry:', error);
+        showToast(`Error: ${error.message}`, 'error');
+    }
+}
+
+function filterOrderBookEntries() {
+    const searchTerm = document.getElementById('orderBookSearchInput')?.value.toLowerCase() || '';
+    const rows = document.querySelectorAll('#orderBookTableBody tr[data-entry-id]');
+    
+    rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(searchTerm) ? '' : 'none';
+    });
+}
+
+// Export order book functions
+if (typeof window !== 'undefined') {
+    window.renderOrderBookPage = renderOrderBookPage;
+    window.fetchAndRenderOrderBookData = fetchAndRenderOrderBookData;
+    window.toggleOrderBookEntrySelection = toggleOrderBookEntrySelection;
+    window.selectAllOrderBookEntries = selectAllOrderBookEntries;
+    window.deselectAllOrderBookEntries = deselectAllOrderBookEntries;
+    window.toggleSelectAllOrderBook = toggleSelectAllOrderBook;
+    window.autoGenerateOrderBook = autoGenerateOrderBook;
+    window.createPurchaseOrderFromSelected = createPurchaseOrderFromSelected;
+    window.confirmCreatePOFromBook = confirmCreatePOFromBook;
+    window.editOrderBookEntry = editOrderBookEntry;
+    window.deleteOrderBookEntry = deleteOrderBookEntry;
+    window.filterOrderBookEntries = filterOrderBookEntries;
+}
+
 // Verify exports at end of file (after all exports are done)
 if (typeof window !== 'undefined') {
     // This runs after the main export block at line 1827-1867
@@ -2093,4 +3348,5 @@ if (typeof window !== 'undefined') {
     console.log('  - window.loadPurchases:', typeof window.loadPurchases);
     console.log('  - window.createNewPurchaseOrder:', typeof window.createNewPurchaseOrder);
     console.log('  - window.loadPurchaseSubPage:', typeof window.loadPurchaseSubPage);
+    console.log('  - window.renderOrderBookPage:', typeof window.renderOrderBookPage);
 }

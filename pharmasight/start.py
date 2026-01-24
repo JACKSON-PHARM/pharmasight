@@ -71,18 +71,46 @@ def start_backend(project_root, venv_python):
         stderr=subprocess.STDOUT  # Merge stderr with stdout
     )
 
-def start_frontend(project_root):
+def start_frontend(project_root, port=3000):
     """Start the frontend HTTP server with SPA routing"""
     print_colored("🎨 Starting Frontend Server (SPA routing enabled)...", Colors.YELLOW)
     
     frontend_dir = project_root / "frontend"
     spa_server = frontend_dir / "spa_server.py"
     
+    # Check if port is in use and try to free it
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    result = sock.connect_ex(('127.0.0.1', port))
+    sock.close()
+    
+    if result == 0:
+        # Port is in use, try to find and kill the process
+        print_colored(f"⚠️  Port {port} is in use. Attempting to free it...", Colors.YELLOW)
+        try:
+            import subprocess as sp
+            # Find process using the port (Windows)
+            result = sp.run(['netstat', '-ano'], capture_output=True, text=True)
+            for line in result.stdout.split('\n'):
+                if f':{port}' in line and 'LISTENING' in line:
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        pid = parts[-1]
+                        try:
+                            sp.run(['taskkill', '/F', '/PID', pid], capture_output=True)
+                            print_colored(f"✅ Freed port {port} (killed process {pid})", Colors.GREEN)
+                            time.sleep(1)  # Wait a moment for port to be released
+                        except:
+                            pass
+        except:
+            print_colored(f"⚠️  Could not free port {port}. Trying alternative port 3001...", Colors.YELLOW)
+            port = 3001
+    
     # Start SPA-enabled HTTP server
     cmd = [
         sys.executable,
         str(spa_server),
-        "3000"
+        str(port)
     ]
     
     # IMPORTANT: Do NOT capture stdout/stderr here.

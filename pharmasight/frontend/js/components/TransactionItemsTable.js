@@ -47,6 +47,8 @@
         instances.set(this.instanceId, this);
         
         this.mode = options.mode || 'purchase';
+        this.context = options.context || null; // 'purchase_order' for PO-specific fields
+        this.canEdit = options.canEdit !== undefined ? options.canEdit : true; // Edit permission
         this.itemsSource = options.items || options.itemsSource || [];
         this.priceType = options.priceType || (this.mode === 'sale' ? 'sale_price' : 'purchase_price');
         this.onItemsChange = options.onItemsChange || null;
@@ -60,15 +62,43 @@
         this.activeSearchRow = null;
         this.inputDebounceTimeout = null; // For debouncing input events
         
-        // Always add one empty row for new item entry
-        if (this.items.length === 0) {
+        // Always ensure there's at least one empty row for adding new items
+        // Check if the last item is empty, if not, add one
+        const hasEmptyRow = this.items.length > 0 && 
+            (!this.items[this.items.length - 1].item_id && 
+             !this.items[this.items.length - 1].item_name);
+        
+        if (this.items.length === 0 || !hasEmptyRow) {
             this.items.push(this.createEmptyItem());
         }
         
         // Render
         this.render();
         this.attachEventListeners();
+        
+        // Auto-focus on first ITEM NAME field after render
+        this.autoFocusFirstItemField();
     }
+    
+    /**
+     * Auto-focus on the first row's ITEM input field
+     */
+    TransactionItemsTable.prototype.autoFocusFirstItemField = function() {
+        // Use setTimeout to ensure DOM is fully rendered
+        setTimeout(() => {
+            // Find the first row's ITEM search input (first column)
+            const firstItemInput = document.querySelector(
+                `#${this.instanceId}_tbody tr[data-item-index="0"] .item-search-input`
+            );
+            if (firstItemInput) {
+                firstItemInput.focus();
+                // Place cursor at end if there's any text
+                if (firstItemInput.value) {
+                    firstItemInput.setSelectionRange(firstItemInput.value.length, firstItemInput.value.length);
+                }
+            }
+        }, 200); // Increased delay to ensure DOM is ready
+    };
     
     /**
      * Create empty item row
@@ -85,6 +115,7 @@
             discount_percent: 0,
             tax_percent: 0,
             total: 0,
+            available_stock: null, // Available stock in selected unit (for sales mode)
             is_empty: true
         };
     };
@@ -94,20 +125,30 @@
      */
     TransactionItemsTable.prototype.normalizeItems = function(items) {
         if (!Array.isArray(items)) return [];
-        return items.map(item => ({
-            item_id: item.item_id || item.id || null,
-            item_name: item.item_name || item.name || '',
-            item_sku: item.item_sku || item.sku || '',
-            item_code: item.item_code || item.code || '',
-            unit_name: item.unit_name || item.unit || '',
-            quantity: item.quantity || 1,
-            unit_price: item.unit_price || item.price || 0,
-            purchase_price: item.purchase_price || 0, // Store purchase price for margin calculation
-            discount_percent: item.discount_percent || 0,
-            tax_percent: item.tax_percent || 0,
-            total: item.total || 0,
-            is_empty: false
-        }));
+        return items.map(item => {
+            const normalized = {
+                item_id: item.item_id || item.id || null,
+                item_name: item.item_name || item.name || '',
+                item_sku: item.item_sku || item.sku || '',
+                item_code: item.item_code || item.code || '',
+                unit_name: item.unit_name || item.unit || '',
+                quantity: item.quantity || 1,
+                unit_price: item.unit_price || item.price || 0,
+                purchase_price: item.purchase_price || 0, // Store purchase price for margin calculation
+                discount_percent: item.discount_percent || 0,
+                tax_percent: item.tax_percent || 0,
+                total: item.total || 0,
+                available_stock: typeof item.available_stock === 'number' ? item.available_stock : null,
+                is_empty: false
+            };
+            // Calculate nett and vat_amount for normalized items
+            const subtotal = (normalized.quantity || 0) * (normalized.unit_price || 0);
+            const discount = subtotal * ((normalized.discount_percent || 0) / 100);
+            normalized.nett = subtotal - discount;
+            normalized.vat_amount = normalized.nett * ((normalized.tax_percent || 0) / 100);
+            normalized.total = normalized.nett + normalized.vat_amount;
+            return normalized;
+        });
     };
     
     /**
@@ -139,19 +180,21 @@
         const escapeHtml = this.getEscapeHtml();
         
         let html = `
-            <div class="transaction-items-table-container" data-instance-id="${this.instanceId}">
-                <table style="width: 100%; border-collapse: collapse; background: white;">
+           <div class="transaction-items-table-container" data-instance-id="${this.instanceId}" style="position: relative;">
+               <table style="width: 100%; border-collapse: collapse; background: white;">
                     <thead>
                         <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
-                            <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 30%;">ITEM</th>
-                            <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 10%;">ITEM CODE</th>
-                            <th style="padding: 0.75rem; text-align: center; font-weight: 600; width: 8%;">QTY</th>
-                            <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 8%;">UNIT</th>
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 10%;">PRICE/UNIT</th>
-                            ${this.mode === 'sale' ? '<th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 8%;">MARGIN%</th>' : ''}
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 8%;">DISCOUNT%</th>
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 12%;">AMOUNT</th>
-                            <th style="padding: 0.75rem; text-align: center; font-weight: 600; width: 10%;">ACTIONS</th>
+                           <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 40%; min-width: 250px;">ITEM</th>
+                           <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 12%;">ITEM CODE</th>
+                            <th style="padding: 0.75rem; text-align: center; font-weight: 600; width: 5%;">QTY</th>
+                            <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 7%; min-width: 60px;">UNIT</th>
+                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 9%;">PRICE/UNIT</th>
+                            ${this.mode === 'sale' ? '<th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">MARGIN%</th>' : ''}
+                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">DISCOUNT%</th>
+                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">VAT</th>
+                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 10%;">NETT</th>
+                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 10%;">TOTAL</th>
+                            <th style="padding: 0.75rem; text-align: center; font-weight: 600; width: 4%;">ACTIONS</th>
                         </tr>
                     </thead>
                     <tbody id="${this.instanceId}_tbody">
@@ -162,7 +205,7 @@
             const isSearching = this.activeSearchRow === index;
             html += `
                 <tr data-item-index="${index}" data-row-id="${this.instanceId}_row_${index}">
-                    <td style="padding: 0.25rem; position: relative;">
+                    <td style="padding: 0.25rem; position: relative; min-width: 250px;">
                         <input type="text" 
                                class="form-input item-search-input" 
                                id="${this.instanceId}_item_${index}"
@@ -170,40 +213,52 @@
                                placeholder="Type item name or code..."
                                autocomplete="off"
                                data-row="${index}"
-                               style="width: 100%; border: ${isSearching ? '2px solid var(--primary-color, #007bff)' : '1px solid var(--border-color, #dee2e6)'}; padding: 0.5rem;"
-                               ${item.item_id ? 'readonly' : ''}>
-                        <div id="${this.instanceId}_suggestions_${index}" 
-                             class="item-suggestions-dropdown" 
-                             style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--border-color, #dee2e6); border-radius: 0.25rem; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; max-height: 300px; overflow-y: auto; margin-top: 2px;">
+                               style="width: 100%; box-sizing: border-box; border: ${isSearching ? '2px solid var(--primary-color, #007bff)' : '1px solid var(--border-color, #dee2e6)'}; padding: 0.6rem; font-size: 0.9rem; min-width: 250px;"
+                               ${item.item_id ? 'readonly' : ''}
+                               ${!this.canEdit ? 'disabled' : ''}>
+                    </td>
+                    <td style="padding: 0.25rem;">
+                        <input type="text" 
+                               class="form-input" 
+                               value="${item.item_code || item.item_sku || ''}" 
+                               placeholder="Code"
+                               readonly
+                               style="width: 100%; padding: 0.5rem; box-sizing: border-box; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);"
+                               data-row="${index}"
+                               data-field="item_code">
+                    </td>
+                    <td style="padding: 0.25rem;">
+                        <div style="display: flex; flex-direction: column; gap: 0.15rem;">
+                            <input type="number" 
+                                   class="form-input qty-input" 
+                                   value="${item.quantity || 1}" 
+                                   step="0.01" 
+                                   min="0.01"
+                                   style="width: 100%; box-sizing: border-box; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
+                                   data-row="${index}"
+                                   data-field="quantity"
+                                   ${!this.canEdit ? 'disabled' : ''}>
+                            ${this.mode === 'sale' && typeof item.available_stock === 'number' ? (() => {
+                                const stock = item.available_stock;
+                                let color = 'var(--success-color, #16a34a)';
+                                if (stock <= 0) {
+                                    color = 'var(--danger-color, #dc2626)';
+                                } else if (stock > 0 && stock < 5) {
+                                    color = 'var(--warning-color, #d97706)';
+                                }
+                                return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; font-weight: 500; color: ${color};">
+                                    Available: ${this.getFormatNumber()(stock)}
+                                </span>`;
+                            })() : ''}
                         </div>
                     </td>
                     <td style="padding: 0.25rem;">
                         <input type="text" 
                                class="form-input" 
-                               value="${escapeHtml(item.item_code || item.item_sku || '')}" 
-                               placeholder="Code"
-                               readonly
-                               style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);"
-                               data-row="${index}"
-                               data-field="item_code">
-                    </td>
-                    <td style="padding: 0.25rem;">
-                        <input type="number" 
-                               class="form-input qty-input" 
-                               value="${item.quantity || 1}" 
-                               step="0.01" 
-                               min="0.01"
-                               style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
-                               data-row="${index}"
-                               data-field="quantity">
-                    </td>
-                    <td style="padding: 0.25rem;">
-                        <input type="text" 
-                               class="form-input" 
-                               value="${escapeHtml(item.unit_name || '')}" 
+                               value="${item.unit_name || ''}" 
                                placeholder="Unit"
                                readonly
-                               style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);"
+                               style="width: 100%; box-sizing: border-box; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);"
                                data-row="${index}"
                                data-field="unit_name">
                     </td>
@@ -213,9 +268,10 @@
                                value="${item.unit_price || 0}" 
                                step="0.01" 
                                min="0"
-                               style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
+                               style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
                                data-row="${index}"
-                               data-field="unit_price">
+                               data-field="unit_price"
+                               ${!this.canEdit ? 'disabled' : ''}>
                     </td>
                     ${this.mode === 'sale' ? `
                     <td style="padding: 0.25rem; text-align: right;">
@@ -233,34 +289,69 @@
                                step="0.01" 
                                min="0"
                                max="100"
-                               style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
+                               style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
                                data-row="${index}"
-                               data-field="discount_percent">
+                               data-field="discount_percent"
+                               ${!this.canEdit ? 'disabled' : ''}>
+                    </td>
+                    <td style="padding: 0.25rem; text-align: right;">
+                        <div style="display: flex; flex-direction: column; gap: 0.1rem;">
+                            <span class="vat-percent-display" data-row="${index}" style="font-size: 0.75rem; color: var(--text-secondary, #666);">
+                                ${(item.tax_percent || 0).toFixed(1)}%
+                            </span>
+                            <span class="vat-amount-display" data-row="${index}" style="font-weight: 500;">
+                                ${formatCurrency(this.calculateVATAmount(item))}
+                            </span>
+                        </div>
+                    </td>
+                    <td style="padding: 0.25rem; text-align: right; font-weight: 600;">
+                        <span class="item-nett" data-row="${index}">${formatCurrency(this.calculateNett(item))}</span>
                     </td>
                     <td style="padding: 0.25rem; text-align: right; font-weight: 600;">
                         <span class="item-total" data-row="${index}">${formatCurrency(item.total || 0)}</span>
                     </td>
                     <td style="padding: 0.25rem; text-align: center;">
-                        ${item.is_empty ? '' : `
-                            <button type="button" 
-                                    class="btn btn-outline btn-sm remove-item-btn" 
-                                    data-row="${index}"
-                                    title="Remove item"
-                                    style="padding: 0.25rem 0.5rem; font-size: 0.875rem;">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        `}
+                        <div style="display: flex; gap: 0.25rem; justify-content: center; align-items: center;">
+                            ${this.mode === 'purchase' && item.item_id ? `
+                                <button type="button" 
+                                        class="btn btn-outline btn-sm manage-batches-btn" 
+                                        data-row="${index}"
+                                        data-item-id="${item.item_id}"
+                                        data-item-name="${escapeHtml(item.item_name)}"
+                                        data-quantity="${item.quantity || 0}"
+                                        data-unit-name="${escapeHtml(item.unit_name || '')}"
+                                        data-unit-cost="${item.unit_price || 0}"
+                                        title="Manage Batches"
+                                        style="padding: 0.25rem 0.5rem; font-size: 0.875rem;">
+                                    <i class="fas fa-boxes"></i>
+                                </button>
+                            ` : ''}
+                            ${item.is_empty ? '' : `
+                                <button type="button" 
+                                        class="btn btn-outline btn-sm remove-item-btn" 
+                                        data-row="${index}"
+                                        title="Remove item"
+                                        style="padding: 0.25rem 0.5rem; font-size: 0.875rem;"
+                                        ${!this.canEdit ? 'disabled' : ''}>
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            `}
+                        </div>
                     </td>
                 </tr>
             `;
         });
         
+        const summary = this.calculateSummary();
+        
         html += `
                     </tbody>
                     <tfoot>
                         <tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;">
-                            <td colspan="6" style="padding: 0.75rem; text-align: right;">Total:</td>
-                            <td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total">${formatCurrency(total)}</td>
+                            <td colspan="${this.mode === 'sale' ? '7' : '6'}" style="padding: 0.75rem; text-align: right;">Net:</td>
+                            <td style="padding: 0.75rem; text-align: right;" id="${this.instanceId}_vat_total">${formatCurrency(summary.vat)}</td>
+                            <td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_nett_total">${formatCurrency(summary.nett)}</td>
+                            <td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total">${formatCurrency(summary.total)}</td>
                             <td></td>
                         </tr>
                     </tfoot>
@@ -338,6 +429,15 @@
                 const row = parseInt(e.target.closest('.remove-item-btn').dataset.row);
                 this.removeItem(row);
             }
+            // Manage batches button
+            if (e.target.closest('.manage-batches-btn')) {
+                const btn = e.target.closest('.manage-batches-btn');
+                const rowIndex = parseInt(btn.dataset.row);
+                const item = this.items[rowIndex];
+                if (item && item.item_id) {
+                    this.openBatchDistributionModal(rowIndex, item);
+                }
+            }
         });
         
         // Click outside to close suggestions
@@ -373,10 +473,10 @@
         this.activeSearchRow = rowIndex;
         this.showSuggestions(rowIndex, [{ type: 'loading', message: 'Searching...' }]);
         
-        // Debounce search
+        // OPTIMIZED: Reduced debounce time for faster response (150ms instead of 300ms)
         this.searchTimeout = setTimeout(() => {
             this.performItemSearch(queryTrimmed, rowIndex);
-        }, 300);
+        }, 150);
     };
     
     /**
@@ -414,13 +514,34 @@
         this.searchAbortController = new AbortController();
         
         try {
-            console.log('TransactionItemsTable: Searching items with query:', query, 'company_id:', config.COMPANY_ID, 'branch_id:', config.BRANCH_ID);
-            // Include branch_id for pricing calculation
-            const searchParams = { q: query, company_id: config.COMPANY_ID, limit: 10 };
-            if (config.BRANCH_ID) {
-                searchParams.branch_id = config.BRANCH_ID;
+            // OPTIMIZED: Check cache first (transaction documents use includePricing=true)
+            const cache = window.searchCache || null;
+            let items = null;
+            const includePricing = true;
+            
+            if (cache) {
+                items = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 10);
+                if (items !== null && items !== undefined) {
+                    console.log('TransactionItemsTable: Using cached results for:', query);
+                    if (items.length === 0) {
+                        this.showSuggestions(rowIndex, [
+                            { type: 'create', query: query, message: `Create new item: "${query}"` }
+                        ]);
+                    } else {
+                        this.showSuggestions(rowIndex, items.map(item => ({ type: 'item', ...item })));
+                    }
+                    return;
+                }
             }
-            const items = await api.items.search(query, config.COMPANY_ID, 10, config.BRANCH_ID || null);
+            
+            console.log('TransactionItemsTable: Searching items with query:', query, 'company_id:', config.COMPANY_ID, 'branch_id:', config.BRANCH_ID, 'context:', this.context);
+            items = await api.items.search(query, config.COMPANY_ID, 10, config.BRANCH_ID || null, includePricing, this.context);
+            
+            // Cache the results
+            if (cache && items) {
+                cache.set(query, config.COMPANY_ID, config.BRANCH_ID, 10, items);
+            }
+            
             console.log('TransactionItemsTable: Search returned', items.length, 'items');
             
             if (items.length === 0) {
@@ -453,11 +574,73 @@
     };
     
     /**
-     * Show suggestions dropdown
+     * Show suggestions dropdown (spans full table width)
      */
     TransactionItemsTable.prototype.showSuggestions = function(rowIndex, suggestions) {
-        const dropdown = document.getElementById(`${this.instanceId}_suggestions_${rowIndex}`);
-        if (!dropdown) return;
+        // Create or get dropdown - position it relative to table container, not cell
+        const container = this.mountEl.querySelector(`[data-instance-id="${this.instanceId}"]`);
+        if (!container) return;
+        
+        let dropdown = document.getElementById(`${this.instanceId}_suggestions_${rowIndex}`);
+        if (!dropdown) {
+            // Create dropdown if it doesn't exist
+            dropdown = document.createElement('div');
+            dropdown.id = `${this.instanceId}_suggestions_${rowIndex}`;
+            dropdown.className = 'item-suggestions-dropdown';
+            container.appendChild(dropdown);
+        }
+        
+        // Get the input field to position dropdown below it
+        const input = document.getElementById(`${this.instanceId}_item_${rowIndex}`);
+        if (!input) return;
+        
+        // Calculate position relative to container
+        const containerRect = container.getBoundingClientRect();
+        const inputRect = input.getBoundingClientRect();
+        const relativeTop = inputRect.bottom - containerRect.top + 2;
+        const relativeLeft = 0; // Start from left edge of container
+        
+        // Position dropdown to span full width of table
+        dropdown.style.cssText = `
+            display: block;
+            position: absolute;
+            top: ${relativeTop}px;
+            left: ${relativeLeft}px;
+            width: 100%;
+            background: white;
+            border: 1px solid var(--border-color, #dee2e6);
+            border-radius: 0.25rem;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.25);
+            z-index: 1100;
+            max-height: 500px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            font-size: 0.8rem;
+            line-height: 1.3;
+        `;
+        
+        // Add custom scrollbar styling for better UX
+        if (!document.getElementById('item-dropdown-scrollbar-style')) {
+            const style = document.createElement('style');
+            style.id = 'item-dropdown-scrollbar-style';
+            style.textContent = `
+                .item-suggestions-dropdown::-webkit-scrollbar {
+                    width: 8px;
+                }
+                .item-suggestions-dropdown::-webkit-scrollbar-track {
+                    background: #f1f1f1;
+                    border-radius: 4px;
+                }
+                .item-suggestions-dropdown::-webkit-scrollbar-thumb {
+                    background: #888;
+                    border-radius: 4px;
+                }
+                .item-suggestions-dropdown::-webkit-scrollbar-thumb:hover {
+                    background: #555;
+                }
+            `;
+            document.head.appendChild(style);
+        }
         
         const formatCurrency = this.getFormatCurrency();
         const escapeHtml = this.getEscapeHtml();
@@ -482,47 +665,177 @@
                     <div class="suggestion-item suggestion-create" 
                          data-action="create" 
                          data-query="${escapeHtml(suggestion.query)}"
-                         style="padding: 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6); cursor: pointer; background: #e7f3ff;"
+                         style="padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6); cursor: pointer; background: #e7f3ff; min-height: 2.5rem; display: flex; align-items: center;"
                          onmouseover="this.style.background='#d0e7ff'" 
                          onmouseout="this.style.background='#e7f3ff'">
-                        <i class="fas fa-plus-circle" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
-                        <strong>${escapeHtml(suggestion.message)}</strong>
+                        <i class="fas fa-plus-circle" style="color: var(--primary-color, #007bff); margin-right: 0.5rem; font-size: 0.85rem;"></i>
+                        <strong style="font-size: 0.85rem;">${escapeHtml(suggestion.message)}</strong>
                     </div>
                 `;
             } else if (suggestion.type === 'item') {
                 const salePrice = suggestion.sale_price || 0;
                 const purchasePrice = suggestion.purchase_price || 0;
-                const stock = suggestion.current_stock || 0;
+                const stock = typeof suggestion.current_stock === 'number' ? suggestion.current_stock : (suggestion.stock || 0);
+                const vatRate = typeof suggestion.vat_rate === 'number' ? suggestion.vat_rate : (suggestion.vatRate || 0);
+                const vatCode = suggestion.vat_code || '';
+                const lastSupplier = suggestion.last_supplier || '';
+                const baseUnit = suggestion.base_unit || '';
                 
-                html += `
-                    <div class="suggestion-item suggestion-item-option" 
-                         data-item-id="${suggestion.id}"
-                         data-item-name="${escapeHtml(suggestion.name)}"
-                         data-item-sku="${escapeHtml(suggestion.sku || '')}"
-                         data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
-                         data-unit-name="${escapeHtml(suggestion.base_unit || '')}"
-                         data-sale-price="${salePrice}"
-                         data-purchase-price="${purchasePrice}"
-                         data-stock="${stock}"
-                         style="padding: 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6); cursor: pointer;"
-                         onmouseover="this.style.background='#f8f9fa'" 
-                         onmouseout="this.style.background='white'">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div style="flex: 1;">
-                                <div style="font-weight: 600; margin-bottom: 0.25rem;">${escapeHtml(suggestion.name)}</div>
-                                <div style="font-size: 0.875rem; color: var(--text-secondary, #666);">
-                                    ${escapeHtml(suggestion.sku || suggestion.code || '')} | Stock: ${stock} ${escapeHtml(suggestion.base_unit || '')}
-                                    ${suggestion.last_supplier ? `<br>Last Supplier: <strong>${escapeHtml(suggestion.last_supplier)}</strong>` : ''}
-                                    ${suggestion.last_order_date ? `<br>Last Order: ${new Date(suggestion.last_order_date).toLocaleDateString()}` : ''}
+                // Purchase Order specific fields
+                const lastOrderDate = suggestion.last_order_date || null;
+                const lastSupplyDate = suggestion.last_supply_date || null;
+                const lastUnitCost = suggestion.last_unit_cost || purchasePrice;
+                
+                // Determine which price to show based on mode
+                const displayPrice = this.mode === 'sale' ? salePrice : purchasePrice;
+                const priceLabel = this.mode === 'sale' ? 'Price' : 'Cost';
+                
+                // Build stock display with color coding
+                let stockDisplay = '';
+                if (typeof stock === 'number') {
+                    let stockColor = 'var(--text-secondary, #666)';
+                    if (stock <= 0) {
+                        stockColor = 'var(--danger-color, #dc2626)';
+                    } else if (stock > 0 && stock < 5) {
+                        stockColor = 'var(--warning-color, #d97706)';
+                    } else {
+                        stockColor = 'var(--success-color, #16a34a)';
+                    }
+                    stockDisplay = `<span style="color: ${stockColor}; font-weight: 500;">${this.getFormatNumber()(stock)} ${escapeHtml(baseUnit)}</span>`;
+                } else {
+                    stockDisplay = '<span style="color: var(--text-secondary, #666);">N/A</span>';
+                }
+                
+                // Format dates
+                const formatDate = (dateStr) => {
+                    if (!dateStr) return '—';
+                    try {
+                        const date = new Date(dateStr);
+                        return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+                    } catch (e) {
+                        return '—';
+                    }
+                };
+                
+                // For Purchase Order context, show table format with all fields
+                if (this.context === 'purchase_order') {
+                    html += `
+                        <div class="suggestion-item suggestion-item-option" 
+                             data-item-id="${suggestion.id}"
+                             data-item-name="${escapeHtml(suggestion.name)}"
+                             data-item-sku="${escapeHtml(suggestion.sku || '')}"
+                             data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
+                             data-unit-name="${escapeHtml(baseUnit)}"
+                             data-sale-price="${salePrice}"
+                             data-purchase-price="${lastUnitCost}"
+                             data-vat-rate="${vatRate}"
+                             data-stock="${stock}"
+                             style="padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6); cursor: pointer; min-height: 4rem;"
+                             onmouseover="this.style.background='#f8f9fa'" 
+                             onmouseout="this.style.background='white'">
+                            <div style="display: grid; grid-template-columns: 2.5fr 0.8fr 0.9fr 0.9fr 1fr 1fr; column-gap: 0.5rem; align-items: center; font-size: 0.8rem;">
+                                <div>
+                                    <div style="font-weight: 600; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.1rem;">
+                                        ${escapeHtml(suggestion.name)}
+                                    </div>
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666);">
+                                        ${escapeHtml(suggestion.sku || suggestion.code || '')}
+                                    </div>
+                                </div>
+                                <div style="text-align: center;">
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.1rem;">INS STOCK</div>
+                                    ${stockDisplay}
+                                </div>
+                                <div style="text-align: center;">
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.1rem;">LAST ORDER</div>
+                                    <div style="font-size: 0.75rem;">${formatDate(lastOrderDate)}</div>
+                                </div>
+                                <div style="text-align: center;">
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.1rem;">LAST SUPPLY</div>
+                                    <div style="font-size: 0.75rem;">${formatDate(lastSupplyDate)}</div>
+                                </div>
+                                <div style="text-align: center;">
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.1rem;">LAST SUPPLIER</div>
+                                    <div style="font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(lastSupplier)}">
+                                        ${lastSupplier ? escapeHtml(lastSupplier) : '—'}
+                                    </div>
+                                </div>
+                                <div style="text-align: right;">
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.1rem;">LAST COST</div>
+                                    <div style="font-weight: 600; font-size: 0.85rem; color: var(--primary-color, #007bff);">
+                                        ${formatCurrency(lastUnitCost)}
+                                    </div>
                                 </div>
                             </div>
-                            <div style="text-align: right; margin-left: 1rem;">
-                                <div style="font-size: 0.875rem; color: var(--text-secondary, #666);">Sale: ${formatCurrency(salePrice)}</div>
-                                <div style="font-size: 0.875rem; color: var(--text-secondary, #666);">Purchase: ${formatCurrency(purchasePrice)}</div>
+                        </div>
+                    `;
+                } else {
+                    // Standard display for other contexts
+                    let additionalInfo = '';
+                    if (this.mode === 'purchase') {
+                        if (lastSupplier) {
+                            additionalInfo = `<div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-top: 0.2rem;">
+                                <i class="fas fa-truck" style="margin-right: 0.25rem;"></i>Last Supplier: ${escapeHtml(lastSupplier)}
+                            </div>`;
+                        }
+                    } else if (this.mode === 'sale') {
+                        if (vatRate > 0 || vatCode) {
+                            additionalInfo = `<div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-top: 0.2rem;">
+                                <i class="fas fa-receipt" style="margin-right: 0.25rem;"></i>VAT: ${vatRate.toFixed(1)}% ${vatCode ? `(${escapeHtml(vatCode)})` : ''}
+                            </div>`;
+                        }
+                    }
+                    
+                    html += `
+                        <div class="suggestion-item suggestion-item-option" 
+                             data-item-id="${suggestion.id}"
+                             data-item-name="${escapeHtml(suggestion.name)}"
+                             data-item-sku="${escapeHtml(suggestion.sku || '')}"
+                             data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
+                             data-unit-name="${escapeHtml(baseUnit)}"
+                             data-sale-price="${salePrice}"
+                             data-purchase-price="${this.context === 'purchase_order' ? lastUnitCost : purchasePrice}"
+                             data-vat-rate="${vatRate}"
+                             data-stock="${stock}"
+                             style="padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6); cursor: pointer; min-height: 3rem;"
+                             onmouseover="this.style.background='#f8f9fa'" 
+                             onmouseout="this.style.background='white'">
+                            <div style="display: grid; grid-template-columns: 3fr 1.2fr 1.5fr 1.3fr; column-gap: 0.75rem; align-items: center;">
+                                <div>
+                                    <div style="font-weight: 600; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.15rem;">
+                                        ${escapeHtml(suggestion.name)}
+                                    </div>
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666);">
+                                        ${escapeHtml(suggestion.sku || suggestion.code || '')}
+                                    </div>
+                                    ${additionalInfo}
+                                </div>
+                                <div style="text-align: center;">
+                                    <span style="color: ${typeof stock === 'number' && stock > 0 ? (stock < 5 ? 'var(--warning-color, #d97706)' : 'var(--success-color, #16a34a)') : 'var(--danger-color, #dc2626)'}; font-weight: 500;">Stock: ${typeof stock === 'number' ? this.getFormatNumber()(stock) : 'N/A'} ${escapeHtml(baseUnit)}</span>
+                                </div>
+                                <div style="text-align: right;">
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.15rem;">${priceLabel}:</div>
+                                    <div style="font-weight: 600; font-size: 0.85rem; color: var(--primary-color, #007bff);">
+                                        ${formatCurrency(displayPrice)}
+                                    </div>
+                                    ${this.mode === 'purchase' && purchasePrice > 0 ? `
+                                        <div style="font-size: 0.65rem; color: var(--text-secondary, #666); margin-top: 0.1rem;">
+                                            Last Purchase
+                                        </div>
+                                    ` : ''}
+                                </div>
+                                <div style="text-align: right;">
+                                    ${this.mode === 'sale' && purchasePrice > 0 ? `
+                                        <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.15rem;">Cost:</div>
+                                        <div style="font-size: 0.75rem; color: var(--text-secondary, #666);">
+                                            ${formatCurrency(purchasePrice)}
+                                        </div>
+                                    ` : ''}
+                                </div>
                             </div>
                         </div>
-                    </div>
-                `;
+                    `;
+                }
             }
         });
         
@@ -557,7 +870,10 @@
             purchase_price: parseFloat(suggestionEl.dataset.purchasePrice) || 0, // Store purchase price for margin
             quantity: this.items[rowIndex].quantity || 1,
             discount_percent: 0,
-            tax_percent: 0,
+            tax_percent: suggestionEl.dataset.vatRate ? parseFloat(suggestionEl.dataset.vatRate) || 0 : 0,
+            available_stock: typeof suggestionEl.dataset.stock !== 'undefined'
+                ? parseFloat(suggestionEl.dataset.stock)
+                : null,
             is_empty: false
         };
         
@@ -574,8 +890,13 @@
             if (qtyInput) qtyInput.focus();
         }, 100);
         
-        // Add new empty row if this was the last row
-        if (rowIndex === this.items.length - 1) {
+        // Always ensure there's an empty row at the end for adding new items
+        // Check if the last item is empty, if not, add one
+        const lastItem = this.items[this.items.length - 1];
+        const hasEmptyRow = lastItem && 
+            (!lastItem.item_id && !lastItem.item_name);
+        
+        if (!hasEmptyRow) {
             this.items.push(this.createEmptyItem());
             this.render();
             this.attachEventListeners();
@@ -614,7 +935,31 @@
         if (rowIndex < 0 || rowIndex >= this.items.length) return;
         
         const numValue = parseFloat(value) || 0;
-        this.items[rowIndex][field] = numValue;
+        const item = this.items[rowIndex];
+
+        // Real-time stock validation for quantity in sales mode
+        if (this.mode === 'sale' && field === 'quantity' && typeof item.available_stock === 'number') {
+            if (numValue > item.available_stock) {
+                const clamped = item.available_stock > 0 ? item.available_stock : 0;
+                this.items[rowIndex][field] = clamped;
+
+                // Reflect clamped value in the input
+                const qtyInput = document.querySelector(
+                    `#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .qty-input`
+                );
+                if (qtyInput) {
+                    qtyInput.value = clamped > 0 ? clamped : '';
+                }
+
+                if (typeof window.showToast === 'function') {
+                    window.showToast('Quantity cannot exceed available stock', 'warning');
+                }
+            } else {
+                this.items[rowIndex][field] = numValue;
+            }
+        } else {
+            this.items[rowIndex][field] = numValue;
+        }
         this.recalculateRow(rowIndex);
         this.updateRowDisplay(rowIndex);
         this.updateMarginDisplay(rowIndex); // Update margin when price changes
@@ -650,6 +995,49 @@
         const afterDiscount = subtotal - discount;
         const tax = afterDiscount * ((item.tax_percent || 0) / 100);
         item.total = afterDiscount + tax;
+        // Store nett and vat separately for display
+        item.nett = afterDiscount;
+        item.vat_amount = tax;
+    };
+    
+    /**
+     * Calculate VAT amount for an item
+     */
+    TransactionItemsTable.prototype.calculateVATAmount = function(item) {
+        const subtotal = (item.quantity || 0) * (item.unit_price || 0);
+        const discount = subtotal * ((item.discount_percent || 0) / 100);
+        const afterDiscount = subtotal - discount;
+        return afterDiscount * ((item.tax_percent || 0) / 100);
+    };
+    
+    /**
+     * Calculate Nett (after discount, before VAT) for an item
+     */
+    TransactionItemsTable.prototype.calculateNett = function(item) {
+        const subtotal = (item.quantity || 0) * (item.unit_price || 0);
+        const discount = subtotal * ((item.discount_percent || 0) / 100);
+        return subtotal - discount;
+    };
+    
+    /**
+     * Calculate summary totals (Net, VAT, Total)
+     */
+    TransactionItemsTable.prototype.calculateSummary = function() {
+        let nett = 0;
+        let vat = 0;
+        let total = 0;
+        
+        this.items.forEach(item => {
+            if (item.item_id && !item.is_empty) {
+                const itemNett = this.calculateNett(item);
+                const itemVat = this.calculateVATAmount(item);
+                nett += itemNett;
+                vat += itemVat;
+                total += itemNett + itemVat;
+            }
+        });
+        
+        return { nett, vat, total };
     };
     
     /**
@@ -659,6 +1047,23 @@
         const item = this.items[rowIndex];
         if (!item) return;
         
+        // Update VAT display
+        const vatPercentEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .vat-percent-display`);
+        const vatAmountEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .vat-amount-display`);
+        if (vatPercentEl) {
+            vatPercentEl.textContent = `${(item.tax_percent || 0).toFixed(1)}%`;
+        }
+        if (vatAmountEl) {
+            vatAmountEl.textContent = this.getFormatCurrency()(this.calculateVATAmount(item));
+        }
+        
+        // Update Nett display
+        const nettEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .item-nett`);
+        if (nettEl) {
+            nettEl.textContent = this.getFormatCurrency()(this.calculateNett(item));
+        }
+        
+        // Update Total display
         const totalEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .item-total`);
         if (totalEl) {
             totalEl.textContent = this.getFormatCurrency()(item.total || 0);
@@ -669,17 +1074,22 @@
             this.updateMarginDisplay(rowIndex);
         }
         
+        // Update summary footer
+        const summary = this.calculateSummary();
+        const nettTotalEl = document.getElementById(`${this.instanceId}_nett_total`);
+        const vatTotalEl = document.getElementById(`${this.instanceId}_vat_total`);
         const totalEl2 = document.getElementById(`${this.instanceId}_total`);
-        if (totalEl2) {
-            totalEl2.textContent = this.getFormatCurrency()(this.calculateTotal());
-        }
+        if (nettTotalEl) nettTotalEl.textContent = this.getFormatCurrency()(summary.nett);
+        if (vatTotalEl) vatTotalEl.textContent = this.getFormatCurrency()(summary.vat);
+        if (totalEl2) totalEl2.textContent = this.getFormatCurrency()(summary.total);
     };
     
     /**
-     * Calculate total
+     * Calculate total (inclusive of VAT)
      */
     TransactionItemsTable.prototype.calculateTotal = function() {
-        return this.items.reduce((sum, item) => sum + (item.total || 0), 0);
+        const summary = this.calculateSummary();
+        return summary.total;
     };
     
     /**
@@ -689,8 +1099,11 @@
         if (rowIndex < 0 || rowIndex >= this.items.length) return;
         this.items.splice(rowIndex, 1);
         
-        // Ensure at least one empty row
-        if (this.items.length === 0) {
+        // Always ensure there's at least one empty row for adding new items
+        const hasEmptyRow = this.items.length > 0 && 
+            this.items.some(item => !item.item_id && !item.item_name);
+        
+        if (this.items.length === 0 || !hasEmptyRow) {
             this.items.push(this.createEmptyItem());
         }
         
@@ -787,6 +1200,80 @@
     };
     
     /**
+     * Open batch distribution modal
+     */
+    TransactionItemsTable.prototype.openBatchDistributionModal = async function(rowIndex, item) {
+        if (!item || !item.item_id) {
+            if (typeof showToast === 'function') {
+                showToast('Please select an item first', 'error');
+            }
+            return;
+        }
+        
+        // Get item details to check if batch tracking is required
+        const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : null;
+        const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
+        
+        if (!config || !api) {
+            if (typeof showToast === 'function') {
+                showToast('Configuration error. Please refresh the page.', 'error');
+            }
+            return;
+        }
+        
+        try {
+            // Get item details to check batch tracking requirements
+            let itemDetails = null;
+            try {
+                itemDetails = await api.items.get(item.item_id);
+            } catch (error) {
+                console.warn('Could not fetch item details:', error);
+            }
+            
+            const requiresExpiry = itemDetails?.requires_expiry_tracking || false;
+            const baseUnit = itemDetails?.base_unit || '';
+            
+            // Get existing batches if any (stored in item.batches)
+            const existingBatches = item.batches || [];
+            
+            // Open batch distribution modal
+            if (typeof window.showBatchDistributionModal === 'function') {
+                window.showBatchDistributionModal({
+                    itemIndex: rowIndex,
+                    itemId: item.item_id,
+                    itemName: item.item_name,
+                    totalQuantity: parseFloat(item.quantity) || 0,
+                    unitName: item.unit_name || '',
+                    unitCost: parseFloat(item.unit_price) || 0,
+                    baseUnit: baseUnit,
+                    requiresExpiry: requiresExpiry,
+                    existingBatches: existingBatches
+                });
+                
+                // Set callback for when batches are saved
+                window.onBatchDistributionSave = (savedItemIndex, batches) => {
+                    if (savedItemIndex === rowIndex) {
+                        // Store batches in item
+                        if (!this.items[rowIndex]) return;
+                        this.items[rowIndex].batches = batches;
+                        // Trigger change notification
+                        this.notifyChange();
+                    }
+                };
+            } else {
+                if (typeof showToast === 'function') {
+                    showToast('Batch distribution feature not available', 'error');
+                }
+            }
+        } catch (error) {
+            console.error('Error opening batch distribution modal:', error);
+            if (typeof showToast === 'function') {
+                showToast('Error opening batch distribution: ' + (error.message || 'Unknown error'), 'error');
+            }
+        }
+    };
+    
+    /**
      * Helper functions
      */
     TransactionItemsTable.prototype.getFormatCurrency = function() {
@@ -820,5 +1307,21 @@
     
     // Export to global scope
     window.TransactionItemsTable = TransactionItemsTable;
+    
+    // Auto-focus first input field on page load (DOMContentLoaded)
+    if (typeof document !== 'undefined') {
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(() => {
+                const firstItemInput = document.querySelector('.item-search-input');
+                if (firstItemInput) {
+                    firstItemInput.focus();
+                    // Place cursor at end if there's any text
+                    if (firstItemInput.value) {
+                        firstItemInput.setSelectionRange(firstItemInput.value.length, firstItemInput.value.length);
+                    }
+                }
+            }, 500); // Changed from 100 to 500
+        });
+    }
     
 })();

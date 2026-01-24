@@ -203,6 +203,7 @@
                 <div id="sales" class="page"></div>
                 <div id="purchases" class="page"></div>
                 <div id="inventory" class="page"></div>
+                <div id="stock-take" class="page"></div>
                 <div id="expenses" class="page"></div>
                 <div id="reports" class="page"></div>
                 <div id="settings" class="page"></div>
@@ -285,8 +286,12 @@
     <script src="js/services/app_state.js?v=1"></script>
     <script src="js/services/optimistic_locking.js?v=1"></script>
     <script src="js/utils.js?v=7"></script>
+    <!-- Security Utilities -->
+    <script src="js/utils/password_validation.js?v=1"></script>
+    <script src="js/utils/session_timeout.js?v=1"></script>
+    <script src="js/utils/login_security.js?v=1"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
-    <script src="js/app.js?v=11"></script>
+    <script src="js/app.js?v=17"></script>
     <script src="js/pages/login.js?v=1"></script>
     <script src="js/pages/password_reset.js?v=3"></script>
     <script>
@@ -303,9 +308,24 @@
     <script src="js/pages/dashboard.js?v=5"></script>
     <script src="js/pages/items.js?v=5"></script>
     <script src="js/pages/sales.js?v=5"></script>
+    <script src="js/utils/searchCache.js"></script>
     <script src="js/components/TransactionItemsTable.js"></script>
+    <script src="js/components/batch-distribution.js"></script>
     <script src="js/pages/purchases.js?v=18"></script>
     <script src="js/pages/inventory.js?v=6"></script>
+    <script src="js/pages/stock_take_admin.js?v=1"></script>
+    <script src="js/pages/stock_take_counter.js?v=1"></script>
+    <script src="js/pages/stock_take.js?v=6"></script>
+    <script>
+        // Verify stock_take.js loaded immediately after
+        console.log('[HTML] Checking if stock_take.js loaded...');
+        console.log('[HTML] window.loadStockTake type:', typeof window.loadStockTake);
+        if (typeof window.loadStockTake === 'function') {
+            console.log('[HTML] ✓✓✓ window.loadStockTake is available!');
+        } else {
+            console.error('[HTML] ✗✗✗ window.loadStockTake is NOT available!');
+        }
+    </script>
     <script src="js/pages/settings.js?v=7"></script>
 </body>
 </html>

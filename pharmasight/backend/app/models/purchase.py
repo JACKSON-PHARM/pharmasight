@@ -32,7 +32,7 @@ class GRN(Base):
     items = relationship("GRNItem", back_populates="grn", cascade="all, delete-orphan")
 
     __table_args__ = (
-        {"comment": "GRN updates stock and cost. VAT is handled separately in Purchase Invoice."},
+        {"comment": "GRN updates stock and cost. VAT is handled separately in Supplier Invoice."},
     )
 
 
@@ -56,43 +56,51 @@ class GRNItem(Base):
     item = relationship("Item")
 
 
-class PurchaseInvoice(Base):
-    """Purchase Invoice (VAT Input)"""
-    __tablename__ = "purchase_invoices"
+class SupplierInvoice(Base):
+    """Supplier Invoice (Receiving Document - Adds Stock)"""
+    __tablename__ = "purchase_invoices"  # Keep table name for backward compatibility
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=False)
     invoice_number = Column(String(100), nullable=False)  # Supplier's invoice number
-    pin_number = Column(String(100))  # Supplier's PIN
+    pin_number = Column(String(100))  # Deprecated - kept for backward compatibility
+    reference = Column(String(255))  # Optional reference or comments
     invoice_date = Column(Date, nullable=False)
     linked_grn_id = Column(UUID(as_uuid=True), ForeignKey("grns.id"))
     total_exclusive = Column(Numeric(20, 4), default=0)
     vat_rate = Column(Numeric(5, 2), default=16.00)
     vat_amount = Column(Numeric(20, 4), default=0)
     total_inclusive = Column(Numeric(20, 4), default=0)
+    # Document status: DRAFT (saved but not batched), BATCHED (stock added)
+    status = Column(String(50), default="DRAFT")  # DRAFT, BATCHED
+    # Payment tracking
+    payment_status = Column(String(50), default="UNPAID")  # UNPAID, PARTIAL, PAID
+    amount_paid = Column(Numeric(20, 4), default=0)
+    balance = Column(Numeric(20, 4))  # Calculated: total_inclusive - amount_paid
     created_by = Column(UUID(as_uuid=True), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
     # Relationships
     company = relationship("Company")
     branch = relationship("Branch")
     supplier = relationship("Supplier")
     linked_grn = relationship("GRN")
-    items = relationship("PurchaseInvoiceItem", back_populates="purchase_invoice", cascade="all, delete-orphan")
+    items = relationship("SupplierInvoiceItem", back_populates="supplier_invoice", cascade="all, delete-orphan")
 
     __table_args__ = (
-        {"comment": "VAT input claim. Separate from GRN for KRA compliance."},
+        {"comment": "Supplier Invoice - Receiving document that ADDS STOCK. Can only be reversed by supplier credit note."},
     )
 
 
-class PurchaseInvoiceItem(Base):
-    """Purchase Invoice line items"""
-    __tablename__ = "purchase_invoice_items"
+class SupplierInvoiceItem(Base):
+    """Supplier Invoice line items"""
+    __tablename__ = "purchase_invoice_items"  # Keep table name for backward compatibility
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    purchase_invoice_id = Column(UUID(as_uuid=True), ForeignKey("purchase_invoices.id", ondelete="CASCADE"), nullable=False)
+    purchase_invoice_id = Column(UUID(as_uuid=True), ForeignKey("purchase_invoices.id", ondelete="CASCADE"), nullable=False)  # Keep column name for backward compatibility
     item_id = Column(UUID(as_uuid=True), ForeignKey("items.id"), nullable=False)
     unit_name = Column(String(50), nullable=False)
     quantity = Column(Numeric(20, 4), nullable=False)
@@ -101,10 +109,11 @@ class PurchaseInvoiceItem(Base):
     vat_amount = Column(Numeric(20, 4), default=0)
     line_total_exclusive = Column(Numeric(20, 4), nullable=False)
     line_total_inclusive = Column(Numeric(20, 4), nullable=False)
+    batch_data = Column(Text)  # JSON string storing batch distribution for this item
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     # Relationships
-    purchase_invoice = relationship("PurchaseInvoice", back_populates="items")
+    supplier_invoice = relationship("SupplierInvoice", back_populates="items", foreign_keys=[purchase_invoice_id])
     item = relationship("Item")
 
 

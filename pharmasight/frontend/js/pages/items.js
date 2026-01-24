@@ -1,9 +1,18 @@
 // Items Management Page
 
 let itemsList = [];
+let filteredItemsList = [];
+let itemsSearchTimeout = null;
+let isSearching = false;
 
 async function loadItems() {
     const page = document.getElementById('items');
+    
+    // Check if page element exists (might not exist if on inventory page)
+    if (!page) {
+        console.log('Items page element not found, skipping loadItems()');
+        return;
+    }
     
     if (!CONFIG.COMPANY_ID) {
         page.innerHTML = `
@@ -36,16 +45,27 @@ async function loadItems() {
                     </button>
                 </div>
             </div>
-            <div style="padding: 1rem; border-bottom: 1px solid var(--border-color);">
-                <div class="form-group" style="margin: 0;">
+            <div style="padding: 1rem; border-bottom: 1px solid var(--border-color); display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
+                <div class="form-group" style="margin: 0; flex: 1; min-width: 300px;">
                     <input 
                         type="text" 
                         id="itemsSearchInput" 
                         class="form-input" 
-                        placeholder="Search by name, SKU, or category..." 
+                        placeholder="Search by name, SKU, or category... (Type to search)" 
                         oninput="filterItems()"
-                        style="max-width: 400px;"
+                        style="width: 100%;"
                     >
+                    <small style="color: var(--text-secondary); font-size: 0.875rem; display: block; margin-top: 0.25rem;">
+                        <i class="fas fa-info-circle"></i> Search is optimized for 20,000+ items. Type at least 2 characters.
+                    </small>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn btn-outline" onclick="loadAllItems()" id="loadAllItemsBtn" title="Load all items for management">
+                        <i class="fas fa-list"></i> Load All Items
+                    </button>
+                    <button class="btn btn-outline" onclick="clearItemsView()" id="clearItemsViewBtn" style="display: none;" title="Clear view">
+                        <i class="fas fa-times"></i> Clear
+                    </button>
                 </div>
             </div>
             <div id="itemsTableContainer">
@@ -54,42 +74,252 @@ async function loadItems() {
         </div>
     `;
     
+    // Show initial prompt
+    showItemsPrompt();
+    
+    // Reset lists
+    itemsList = [];
+    filteredItemsList = [];
+}
+
+function showItemsPrompt() {
+    const container = document.getElementById('itemsTableContainer');
+    if (!container) return;
+    
+    container.innerHTML = `
+        <div style="padding: 3rem; text-align: center; color: var(--text-secondary);">
+            <i class="fas fa-boxes" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
+            <p style="font-size: 1.1rem; margin-bottom: 0.5rem; font-weight: 500;">Items Management</p>
+            <p style="font-size: 0.875rem; margin-bottom: 1.5rem;">Use search to find specific items, or click "Load All Items" to browse</p>
+            <div style="display: flex; gap: 1rem; justify-content: center;">
+                <button class="btn btn-outline" onclick="loadAllItems()">
+                    <i class="fas fa-list"></i> Load All Items
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+// Load all items for management (with pagination/limits for performance)
+async function loadAllItems() {
+    const container = document.getElementById('itemsTableContainer');
+    const loadBtn = document.getElementById('loadAllItemsBtn');
+    const clearBtn = document.getElementById('clearItemsViewBtn');
+    
+    if (!container) return;
+    
+    // Show loading state
+    if (loadBtn) {
+        loadBtn.disabled = true;
+        loadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+    }
+    
+    container.innerHTML = `
+        <div style="padding: 2rem; text-align: center;">
+            <div class="spinner" style="margin: 0 auto 1rem;"></div>
+            <p style="color: var(--text-secondary);">Loading items for management...</p>
+        </div>
+    `;
+    
     try {
-        // Load items with overview data (stock, supplier, cost)
+        // Validate company ID
+        if (!CONFIG.COMPANY_ID) {
+            throw new Error('Company ID not configured. Please set up your company in Settings.');
+        }
+        
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(CONFIG.COMPANY_ID)) {
+            throw new Error(`Invalid Company ID format: ${CONFIG.COMPANY_ID}. Please check your settings.`);
+        }
+        
+        // OPTIMIZED: Load items with overview data (includes stock, supplier, etc.)
+        // This is for management, so we need full data
+        // For 20k+ items, we'll load first 500, user can search for more
         itemsList = await API.items.overview(CONFIG.COMPANY_ID, CONFIG.BRANCH_ID);
+        
+        // If we have many items, limit display to first 500 for performance
+        // User can still search for specific items
+        if (itemsList.length > 500) {
+            itemsList = itemsList.slice(0, 500);
+            showToast(`Loaded first 500 items. Use search to find specific items.`, 'info');
+        }
+        
+        filteredItemsList = [];
         renderItemsTable();
+        
+        // Show clear button
+        if (clearBtn) clearBtn.style.display = 'block';
+        if (loadBtn) {
+            loadBtn.disabled = false;
+            loadBtn.innerHTML = '<i class="fas fa-list"></i> Load All Items';
+        }
     } catch (error) {
         console.error('Error loading items:', error);
-        showToast('Error loading items', 'error');
-        document.getElementById('itemsTableContainer').innerHTML = 
-            '<p>Error loading items. Please try again.</p>';
+        showToast('Error loading items: ' + (error.message || 'Failed to load'), 'error');
+        container.innerHTML = `
+            <div style="padding: 2rem; text-align: center; color: var(--danger-color);">
+                <i class="fas fa-exclamation-circle" style="font-size: 2rem; margin-bottom: 1rem;"></i>
+                <p>Error loading items: ${error.message || 'Failed to load'}</p>
+                <button class="btn btn-primary" onclick="loadAllItems()" style="margin-top: 1rem;">
+                    <i class="fas fa-redo"></i> Retry
+                </button>
+            </div>
+        `;
+        if (loadBtn) {
+            loadBtn.disabled = false;
+            loadBtn.innerHTML = '<i class="fas fa-list"></i> Load All Items';
+        }
     }
 }
 
-let filteredItemsList = [];
+function clearItemsView() {
+    itemsList = [];
+    filteredItemsList = [];
+    const searchInput = document.getElementById('itemsSearchInput');
+    if (searchInput) searchInput.value = '';
+    const clearBtn = document.getElementById('clearItemsViewBtn');
+    if (clearBtn) clearBtn.style.display = 'none';
+    showItemsPrompt();
+}
 
-function filterItems() {
-    const searchTerm = document.getElementById('itemsSearchInput')?.value.toLowerCase() || '';
-    if (!searchTerm) {
-        filteredItemsList = [];
-    } else {
-        filteredItemsList = itemsList.filter(item => 
-            (item.name || '').toLowerCase().includes(searchTerm) ||
-            (item.sku || '').toLowerCase().includes(searchTerm) ||
-            (item.category || '').toLowerCase().includes(searchTerm)
-        );
+// OPTIMIZED: Use API search instead of client-side filtering
+async function filterItems() {
+    const searchInput = document.getElementById('itemsSearchInput');
+    if (!searchInput) return;
+    
+    const searchTerm = searchInput.value.trim();
+    const container = document.getElementById('itemsTableContainer');
+    if (!container) return;
+    
+    // Clear previous timeout
+    if (itemsSearchTimeout) {
+        clearTimeout(itemsSearchTimeout);
     }
-    renderItemsTable();
+    
+    // If search is empty, show prompt
+    if (searchTerm.length < 2) {
+        filteredItemsList = [];
+        container.innerHTML = `
+            <div style="padding: 3rem; text-align: center; color: var(--text-secondary);">
+                <i class="fas fa-search" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
+                <p style="font-size: 1.1rem; margin-bottom: 0.5rem;">Search for items to get started</p>
+                <p style="font-size: 0.875rem;">Type at least 2 characters in the search box above to find items</p>
+            </div>
+        `;
+        return;
+    }
+    
+    // Show loading state
+    if (!isSearching) {
+        container.innerHTML = `
+            <div style="padding: 2rem; text-align: center;">
+                <div class="spinner" style="margin: 0 auto 1rem;"></div>
+                <p style="color: var(--text-secondary);">Searching items...</p>
+            </div>
+        `;
+    }
+    
+    // Debounce search (150ms for fast response)
+    itemsSearchTimeout = setTimeout(async () => {
+        isSearching = true;
+        
+        try {
+            // OPTIMIZED: Check cache first
+            const cache = window.searchCache || null;
+            let searchResults = null;
+            
+            if (cache) {
+                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20);
+            }
+            
+            if (!searchResults) {
+                // OPTIMIZED: Use search API (fast, no pricing needed for list view)
+                // Ensure company_id is a valid UUID string
+                if (!CONFIG.COMPANY_ID) {
+                    throw new Error('Company ID not configured. Please set up your company in Settings.');
+                }
+                
+                // Validate UUID format (basic check)
+                const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                if (!uuidRegex.test(CONFIG.COMPANY_ID)) {
+                    throw new Error(`Invalid Company ID format: ${CONFIG.COMPANY_ID}. Please check your settings.`);
+                }
+                
+                try {
+                    // Search API has max limit of 20, use that for performance
+                    searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 20, CONFIG.BRANCH_ID || null, false);
+                } catch (apiError) {
+                    console.error('Search API error:', apiError);
+                    // Check if it's a 422 validation error
+                    if (apiError.status === 422 || apiError.data?.detail) {
+                        const detail = apiError.data?.detail || 'Validation error';
+                        let errorMsg = 'Search validation error';
+                        if (Array.isArray(detail)) {
+                            errorMsg = detail.map(d => d.msg || d.message || JSON.stringify(d)).join(', ');
+                        } else if (typeof detail === 'string') {
+                            errorMsg = detail;
+                        } else if (detail.message) {
+                            errorMsg = detail.message;
+                        }
+                        throw new Error(errorMsg);
+                    }
+                    throw apiError;
+                }
+                
+                // Cache the results
+                if (cache && searchResults) {
+                    cache.set(searchTerm, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20, searchResults);
+                }
+            }
+            
+            // Convert search results to display format
+            // Note: Search results don't have stock info, so we'll show basic info
+            // For full overview with stock, user can click on item
+            filteredItemsList = searchResults.map(item => ({
+                id: item.id,
+                name: item.name,
+                sku: item.sku || '',
+                base_unit: item.base_unit,
+                category: item.category || '',
+                current_stock: null, // Stock not included in search for performance
+                last_supplier: item.last_supplier || '',
+                last_unit_cost: item.purchase_price || null,
+                default_cost: item.price || 0,
+                is_active: item.is_active !== undefined ? item.is_active : true
+            }));
+            
+            renderItemsTable();
+        } catch (error) {
+            console.error('Error searching items:', error);
+            container.innerHTML = `
+                <div style="padding: 2rem; text-align: center; color: var(--danger-color);">
+                    <i class="fas fa-exclamation-circle" style="font-size: 2rem; margin-bottom: 1rem;"></i>
+                    <p>Error searching items: ${error.message || 'Search failed'}</p>
+                </div>
+            `;
+        } finally {
+            isSearching = false;
+        }
+    }, 150);
 }
 
 function renderItemsTable() {
     const container = document.getElementById('itemsTableContainer');
+    if (!container) return;
     
     // Use filtered list if search is active, otherwise use full list
-    const displayList = filteredItemsList.length > 0 || document.getElementById('itemsSearchInput')?.value ? filteredItemsList : itemsList;
+    const searchInput = document.getElementById('itemsSearchInput');
+    const hasActiveSearch = searchInput && searchInput.value.trim().length >= 2;
+    const displayList = hasActiveSearch ? filteredItemsList : itemsList;
     
     if (displayList.length === 0) {
-        container.innerHTML = '<p>No items found. Add your first item to get started.</p>';
+        if (hasActiveSearch) {
+            container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found matching your search.</p>';
+        } else if (itemsList.length === 0) {
+            showItemsPrompt();
+        } else {
+            container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items to display.</p>';
+        }
         return;
     }
     
@@ -147,8 +377,10 @@ function renderItemsTable() {
                 </tbody>
             </table>
         </div>
-        ${filteredItemsList.length > 0 && filteredItemsList.length < itemsList.length 
-            ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${filteredItemsList.length} of ${itemsList.length} items</p>`
+        ${hasActiveSearch && filteredItemsList.length > 0
+            ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${filteredItemsList.length} search result${filteredItemsList.length !== 1 ? 's' : ''}</p>`
+            : itemsList.length > 0 && !hasActiveSearch
+            ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${itemsList.length} item${itemsList.length !== 1 ? 's' : ''}${itemsList.length >= 500 ? ' (first 500 - use search for more)' : ''}</p>`
             : ''}
     `;
 }
@@ -327,6 +559,68 @@ function showAddItemModal() {
                 </div>
             </div>
 
+            <!-- VAT/Tax Classification Section -->
+            <div class="form-section">
+                <div class="form-section-title">
+                    <i class="fas fa-receipt"></i> VAT/Tax Classification
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Is VATable? *</label>
+                        <div style="display: flex; gap: 2rem; margin-top: 0.5rem;">
+                            <label class="checkbox-item">
+                                <input type="radio" name="is_vatable" value="true" checked>
+                                <span>Yes</span>
+                            </label>
+                            <label class="checkbox-item">
+                                <input type="radio" name="is_vatable" value="false">
+                                <span>No</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">VAT Code *</label>
+                        <select class="form-select" name="vat_code" required>
+                            <option value="ZERO_RATED" selected>ZERO_RATED (0%)</option>
+                            <option value="STANDARD">STANDARD (16%)</option>
+                            <option value="EXEMPT">EXEMPT</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">VAT Rate (%)</label>
+                        <input type="number" class="form-input" name="vat_rate" step="0.01" min="0" max="100" value="0" placeholder="0.00">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">0% for zero-rated medicines, 16% for standard-rated items</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Price Includes VAT?</label>
+                        <div style="display: flex; gap: 2rem; margin-top: 0.5rem;">
+                            <label class="checkbox-item">
+                                <input type="radio" name="price_includes_vat" value="true">
+                                <span>Yes</span>
+                            </label>
+                            <label class="checkbox-item">
+                                <input type="radio" name="price_includes_vat" value="false" checked>
+                                <span>No</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Regulatory Information Section -->
+            <div class="form-section">
+                <div class="form-section-title">
+                    <i class="fas fa-certificate"></i> Regulatory Information
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Authorized Marketer</label>
+                    <input type="text" class="form-input" name="authorized_marketer" placeholder="Enter authorized marketer/distributor name">
+                    <small style="color: var(--text-secondary); font-size: 0.85rem;">Name of authorized marketer or distributor for this item</small>
+                </div>
+            </div>
+
             <!-- Unit Conversions (Breaking Bulk) Section -->
             <div class="form-section">
                 <div class="form-section-title">
@@ -399,6 +693,23 @@ function showAddItemModal() {
     
     showModal('New Inventory Item', content, footer);
     unitRowCount = 1; // Reset counter
+    
+    // Auto-update VAT rate when VAT code changes
+    setTimeout(() => {
+        const vatCodeSelect = document.querySelector('#itemForm select[name="vat_code"]');
+        const vatRateInput = document.querySelector('#itemForm input[name="vat_rate"]');
+        
+        if (vatCodeSelect && vatRateInput) {
+            vatCodeSelect.addEventListener('change', (e) => {
+                const vatCode = e.target.value;
+                if (vatCode === 'STANDARD') {
+                    vatRateInput.value = '16.00';
+                } else if (vatCode === 'ZERO_RATED' || vatCode === 'EXEMPT') {
+                    vatRateInput.value = '0.00';
+                }
+            });
+        }
+    }, 100);
 }
 
 let unitRowCount = 1;
@@ -443,15 +754,27 @@ async function saveItem(event) {
         generic_name: formData.get('generic_name') || null,
         sku: formData.get('sku') || null,
         barcode: formData.get('barcode') || null,
-        // Store additional info in category (or extend schema later)
-        // For now, combine category with other metadata
         category: formData.get('category') || null,
         base_unit: formData.get('base_unit'),
         default_cost: parseFloat(formData.get('default_cost') || 0),
+        // VAT/Tax fields
+        is_vatable: formData.get('is_vatable') === 'true',
+        vat_code: formData.get('vat_code') || 'ZERO_RATED',
+        vat_rate: parseFloat(formData.get('vat_rate') || 0),
+        price_includes_vat: formData.get('price_includes_vat') === 'true',
         units: []
     };
     
-    // Collect units
+    // Auto-set VAT rate based on VAT code
+    if (itemData.vat_code === 'STANDARD') {
+        itemData.vat_rate = 16.00;
+    } else if (itemData.vat_code === 'ZERO_RATED') {
+        itemData.vat_rate = 0.00;
+    } else if (itemData.vat_code === 'EXEMPT') {
+        itemData.vat_rate = 0.00;
+    }
+    
+    // Collect units (breaking bulk)
     let index = 0;
     while (formData.get(`unit_name_${index}`)) {
         const unitName = formData.get(`unit_name_${index}`);
@@ -487,15 +810,37 @@ async function saveItem(event) {
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
         }
         
-        await API.items.create(itemData);
+        const createdItem = await API.items.create(itemData);
         showToast('Item created successfully!', 'success');
         closeModal();
         
-        // Reload with delay to allow modal close animation
-        setTimeout(() => {
-            if (window.loadItems) window.loadItems();
-            if (window.loadInventory) window.loadInventory();
-        }, 100);
+        // Check if this was called from a transaction document
+        if (window._transactionItemCreateCallback) {
+            // Format item for TransactionItemsTable
+            const formattedItem = {
+                id: createdItem.id,
+                name: createdItem.name,
+                sku: createdItem.sku || '',
+                code: createdItem.sku || '',
+                base_unit: createdItem.base_unit,
+                sale_price: 0, // Will be calculated by pricing service
+                purchase_price: itemData.default_cost,
+                vat_rate: createdItem.vat_rate || 0,
+                current_stock: 0
+            };
+            // Call the callback to select the item in the transaction table
+            window._transactionItemCreateCallback(formattedItem);
+            // Clean up
+            window._transactionItemCreateCallback = null;
+            window._transactionItemCreateRowIndex = null;
+            window._transactionItemCreateName = null;
+        } else {
+            // Normal flow - reload items list
+            setTimeout(() => {
+                if (window.loadItems) window.loadItems();
+                if (window.loadInventory) window.loadInventory();
+            }, 100);
+        }
     } catch (error) {
         console.error('Error saving item:', error);
         showToast(error.message || 'Error creating item', 'error');
@@ -1164,9 +1509,35 @@ async function updateItem(event, itemId) {
         await API.items.update(itemId, updateData);
         showToast('Item updated successfully!', 'success');
         closeModal();
-        // Reload current page - works for both items.js and inventory.js
-        if (window.loadItems) window.loadItems();
-        if (window.loadInventory) window.loadInventory();
+        
+        // Reload current page - check which page we're on
+        const currentHash = window.location.hash || '';
+        const itemsPage = document.getElementById('items');
+        const inventoryContainer = document.getElementById('itemsTableContainer');
+        
+        if (currentHash.includes('#inventory') || inventoryContainer) {
+            // On inventory page - refresh the items view
+            if (window.loadItemsData) {
+                // Reset to initial state
+                window.loadItemsData();
+            }
+            // Also reload inventory page to refresh everything
+            if (window.loadInventory) {
+                window.loadInventory();
+            }
+        } else if (currentHash.includes('#items') || itemsPage) {
+            // On items page - reload items
+            if (window.loadItems && itemsPage) {
+                window.loadItems();
+            }
+        } else {
+            // Fallback: try to reload inventory first (most common)
+            if (window.loadInventory) {
+                window.loadInventory();
+            } else if (window.loadItems && itemsPage) {
+                window.loadItems();
+            }
+        }
     } catch (error) {
         console.error('Error updating item:', error);
         const errorMsg = error.data?.detail || error.message || 'Error updating item';
@@ -1312,6 +1683,8 @@ window.editItem = editItem;
 window.updateItem = updateItem;
 window.viewItemUnits = viewItemUnits;
 window.filterItems = filterItems;
+window.loadAllItems = loadAllItems;
+window.clearItemsView = clearItemsView;
 // Export unit editing functions (for edit modal)
 window.addEditUnitRow = addEditUnitRow;
 window.removeEditUnitRow = removeEditUnitRow;

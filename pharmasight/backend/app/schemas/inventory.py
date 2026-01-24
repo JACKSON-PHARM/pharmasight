@@ -21,6 +21,12 @@ class InventoryLedgerBase(BaseModel):
     quantity_delta: int = Field(..., description="Positive = add stock, Negative = remove stock (BASE UNITS)")
     unit_cost: Decimal = Field(..., ge=0, description="Cost per base unit")
     total_cost: Decimal = Field(..., ge=0)
+    # Enhanced batch tracking fields
+    batch_cost: Optional[Decimal] = None
+    remaining_quantity: Optional[int] = None
+    is_batch_tracked: Optional[bool] = True
+    parent_batch_id: Optional[UUID] = None
+    split_sequence: Optional[int] = 0
 
 
 class InventoryLedgerCreate(InventoryLedgerBase):

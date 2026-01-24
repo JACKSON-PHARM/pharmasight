@@ -263,18 +263,108 @@ async function updatePassword(newPassword) {
 
 /**
  * Check if user needs to set password
- * Uses persistent password_set flag from user profile in database
+ *
+ * Semantics:
+ * - password_set: true  => user has already set a password via the app
+ * - password_set: false => user has NEVER set a password via the app
+ *
+ * Handles:
+ * - Seeded users (is_pending: false, password_set: false, no invitation_token)
+ * - Invited users (is_pending: true, password_set: false, invitation_token present)
+ * - Ignores password reset flows (handled by password_reset.js)
+ *
+ * @param {Object} user - The user object
+ * @param {string} context - Context: 'login', 'reset', 'normal', 'invitation'
+ * @returns {Promise<boolean>} - True if password setup is needed
  */
-async function needsPasswordSetup(user) {
+async function needsPasswordSetup(user, context = 'login') {
     if (!user) return false;
     
     try {
-        // Fetch user profile from API to get password_set flag
-        const profile = await API.users.get(user.id);
-        // password_set is false if user hasn't set password yet
-        return profile && profile.password_set === false;
+        const localStorageKey = `user_${user.id}_password_set`;
+        const cachedPasswordSet = localStorage.getItem(localStorageKey);
+        const justSetPassword = sessionStorage.getItem('just_set_password') === 'true';
+
+        // If we've explicitly cached that password is set, or we just set it in this session,
+        // trust that and skip remote checks to avoid race conditions.
+        if (cachedPasswordSet === 'true' || justSetPassword) {
+            console.log('[AUTH] Using cached password_set=true / just_set_password flag');
+            return false;
+        }
+
+        // Check URL parameters first to determine flow type
+        const hash = window.location.hash || '';
+        const fullUrl = window.location.href || '';
+        
+        // Parse URL parameters - handle both hash and full URL formats
+        let paramsString = '';
+        if (hash.includes('?')) {
+            paramsString = hash.split('?')[1];
+        } else if (hash.includes('=')) {
+            // Hash might be in root format: #access_token=...&type=recovery
+            paramsString = hash.replace('#', '');
+        } else if (fullUrl.includes('?')) {
+            paramsString = fullUrl.split('?')[1].split('#')[0];
+        }
+        
+        const urlParams = new URLSearchParams(paramsString);
+        const isPasswordReset = urlParams.get('type') === 'recovery' ||
+                              hash.includes('type=recovery') ||
+                              hash.includes('type%3Drecovery') ||
+                              fullUrl.includes('type=recovery');
+        const hasInvitationTokenInUrl = !!urlParams.get('invitation_token') ||
+                                      hash.includes('invitation_token') ||
+                                      fullUrl.includes('invitation_token');
+        
+        // Fetch user profile from API to get persistent flags
+        // Add timestamp param to bypass any intermediate caches
+        const profile = await API.users.get(user.id, { _t: Date.now() });
+        
+        console.log('[AUTH] Password setup check for:', user.email);
+        console.log('[AUTH] Profile:', {
+            password_set: profile?.password_set,
+            is_pending: profile?.is_pending,
+            hasInvitationToken: !!profile?.invitation_token
+        });
+        
+        // Case 1: Password reset flow - handled entirely by password_reset.js
+        // Do NOT treat this as a password-set flow
+        if (isPasswordReset) {
+            console.log('[AUTH] Password reset flow detected - password_set page not required');
+            return false;
+        }
+        
+        // Case 2: User already set password
+        if (profile && profile.password_set === true) {
+            console.log('[AUTH] User already has password set');
+            // Cache for future checks
+            localStorage.setItem(localStorageKey, 'true');
+            return false;
+        }
+        
+        // Case 3: Invited user with invitation token (URL or profile)
+        const hasInvitationToken = hasInvitationTokenInUrl || !!profile?.invitation_token;
+        if (hasInvitationToken) {
+            console.log('[AUTH] Invited user needs password setup');
+            return true;
+        }
+        
+        // Case 4: Seeded user (first login)
+        // is_pending: false, password_set: false, no invitation token
+        if (profile &&
+            profile.is_pending === false &&
+            profile.password_set === false &&
+            !profile.invitation_token) {
+            console.log('[AUTH] Seeded user needs password setup (first login)');
+            return true;
+        }
+        
+        // Case 5: All other cases - no password setup
+        console.log('[AUTH] No password setup required');
+        return false;
+        
     } catch (error) {
-        console.error('Error checking password_set flag:', error);
+        console.error('[AUTH] Error checking password setup:', error);
         // On error, default to not requiring password setup (avoid blocking)
         return false;
     }

@@ -1,5 +1,5 @@
 """
-Purchases API routes (GRN and Purchase Invoices)
+Purchases API routes (GRN and Supplier Invoices)
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, selectinload
@@ -9,13 +9,13 @@ from decimal import Decimal
 from datetime import date
 from app.database import get_db
 from app.models import (
-    GRN, GRNItem, PurchaseInvoice, PurchaseInvoiceItem,
+    GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
     PurchaseOrder, PurchaseOrderItem,
     InventoryLedger, Item, ItemUnit, Supplier, Branch, User
 )
 from app.schemas.purchase import (
     GRNCreate, GRNResponse,
-    PurchaseInvoiceCreate, PurchaseInvoiceResponse,
+    SupplierInvoiceCreate, SupplierInvoiceResponse,
     PurchaseOrderCreate, PurchaseOrderResponse
 )
 from app.services.inventory_service import InventoryService
@@ -47,50 +47,115 @@ def create_grn(grn: GRNCreate, db: Session = Depends(get_db)):
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
         
-        # Convert quantity to base units
-        quantity_base = InventoryService.convert_to_base_units(
-            db, item_data.item_id, float(item_data.quantity), item_data.unit_name
-        )
+        # Get item unit multiplier
+        item_unit = db.query(ItemUnit).filter(
+            ItemUnit.item_id == item_data.item_id,
+            ItemUnit.unit_name == item_data.unit_name
+        ).first()
+        if not item_unit:
+            raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
         
-        # Calculate cost per base unit
-        unit_cost_base = Decimal(str(item_data.unit_cost)) / Decimal(str(
-            db.query(ItemUnit).filter(
-                ItemUnit.item_id == item_data.item_id,
-                ItemUnit.unit_name == item_data.unit_name
-            ).first().multiplier_to_base
-        ))
+        multiplier = Decimal(str(item_unit.multiplier_to_base))
         
-        total_item_cost = Decimal(str(item_data.unit_cost)) * item_data.quantity
-        total_cost += total_item_cost
-        
-        # Create GRN item
-        grn_item = GRNItem(
-            grn_id=None,  # Will be set after GRN creation
-            item_id=item_data.item_id,
-            unit_name=item_data.unit_name,
-            quantity=item_data.quantity,
-            unit_cost=item_data.unit_cost,
-            batch_number=item_data.batch_number,
-            expiry_date=item_data.expiry_date,
-            total_cost=total_item_cost
-        )
-        grn_items.append(grn_item)
-        
-        # Create ledger entry (positive for purchase)
-        ledger_entry = InventoryLedger(
-            company_id=grn.company_id,
-            branch_id=grn.branch_id,
-            item_id=item_data.item_id,
-            batch_number=item_data.batch_number,
-            expiry_date=item_data.expiry_date,
-            transaction_type="PURCHASE",
-            reference_type="grn",
-            quantity_delta=quantity_base,  # Positive
-            unit_cost=unit_cost_base,
-            total_cost=unit_cost_base * quantity_base,
-            created_by=grn.created_by
-        )
-        ledger_entries.append(ledger_entry)
+        # Handle batch distribution: if batches array is provided, use it; otherwise use legacy single batch
+        if item_data.batches and len(item_data.batches) > 0:
+            # Multiple batches per item
+            total_batch_quantity = sum(batch.quantity for batch in item_data.batches)
+            if abs(total_batch_quantity - item_data.quantity) > Decimal("0.01"):  # Allow small rounding differences
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Sum of batch quantities ({total_batch_quantity}) must equal item quantity ({item_data.quantity})"
+                )
+            
+            # Calculate weighted average cost for validation
+            weighted_cost = sum(batch.quantity * batch.unit_cost for batch in item_data.batches) / total_batch_quantity
+            cost_variance = abs(weighted_cost - item_data.unit_cost) / item_data.unit_cost if item_data.unit_cost > 0 else 0
+            if cost_variance > Decimal("0.01"):  # 1% variance allowed
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Weighted average batch cost ({weighted_cost}) differs significantly from item unit cost ({item_data.unit_cost})"
+                )
+            
+            # Create GRN item (with first batch info for legacy compatibility)
+            first_batch = item_data.batches[0]
+            grn_item = GRNItem(
+                grn_id=None,
+                item_id=item_data.item_id,
+                unit_name=item_data.unit_name,
+                quantity=item_data.quantity,
+                unit_cost=item_data.unit_cost,
+                batch_number=first_batch.batch_number,  # Legacy field
+                expiry_date=first_batch.expiry_date,  # Legacy field
+                total_cost=sum(batch.quantity * batch.unit_cost for batch in item_data.batches)
+            )
+            grn_items.append(grn_item)
+            total_cost += grn_item.total_cost
+            
+            # Create ledger entries for each batch
+            for batch_idx, batch in enumerate(item_data.batches):
+                quantity_base = int(float(batch.quantity) * float(multiplier))
+                unit_cost_base = Decimal(str(batch.unit_cost)) / multiplier
+                
+                ledger_entry = InventoryLedger(
+                    company_id=grn.company_id,
+                    branch_id=grn.branch_id,
+                    item_id=item_data.item_id,
+                    batch_number=batch.batch_number,
+                    expiry_date=batch.expiry_date,
+                    transaction_type="PURCHASE",
+                    reference_type="grn",
+                    quantity_delta=quantity_base,
+                    unit_cost=unit_cost_base,
+                    total_cost=unit_cost_base * quantity_base,
+                    batch_cost=unit_cost_base,  # Store batch-specific cost
+                    remaining_quantity=quantity_base,  # Initialize remaining quantity
+                    is_batch_tracked=True,
+                    split_sequence=batch_idx,  # 0 for first batch, 1, 2, 3... for subsequent
+                    created_by=grn.created_by
+                )
+                ledger_entries.append(ledger_entry)
+        else:
+            # Legacy: single batch (backward compatibility)
+            quantity_base = InventoryService.convert_to_base_units(
+                db, item_data.item_id, float(item_data.quantity), item_data.unit_name
+            )
+            
+            unit_cost_base = Decimal(str(item_data.unit_cost)) / multiplier
+            
+            total_item_cost = Decimal(str(item_data.unit_cost)) * item_data.quantity
+            total_cost += total_item_cost
+            
+            # Create GRN item
+            grn_item = GRNItem(
+                grn_id=None,
+                item_id=item_data.item_id,
+                unit_name=item_data.unit_name,
+                quantity=item_data.quantity,
+                unit_cost=item_data.unit_cost,
+                batch_number=item_data.batch_number,
+                expiry_date=item_data.expiry_date,
+                total_cost=total_item_cost
+            )
+            grn_items.append(grn_item)
+            
+            # Create ledger entry (positive for purchase)
+            ledger_entry = InventoryLedger(
+                company_id=grn.company_id,
+                branch_id=grn.branch_id,
+                item_id=item_data.item_id,
+                batch_number=item_data.batch_number,
+                expiry_date=item_data.expiry_date,
+                transaction_type="PURCHASE",
+                reference_type="grn",
+                quantity_delta=quantity_base,
+                unit_cost=unit_cost_base,
+                total_cost=unit_cost_base * quantity_base,
+                batch_cost=unit_cost_base,
+                remaining_quantity=quantity_base,
+                is_batch_tracked=bool(item_data.batch_number),  # Track if batch number provided
+                created_by=grn.created_by
+            )
+            ledger_entries.append(ledger_entry)
     
     # Create GRN
     db_grn = GRN(
@@ -130,26 +195,61 @@ def get_grn(grn_id: UUID, db: Session = Depends(get_db)):
     return grn
 
 
-@router.post("/invoice", response_model=PurchaseInvoiceResponse, status_code=status.HTTP_201_CREATED)
-def create_purchase_invoice(invoice: PurchaseInvoiceCreate, db: Session = Depends(get_db)):
+@router.post("/invoice", response_model=SupplierInvoiceResponse, status_code=status.HTTP_201_CREATED)
+def create_supplier_invoice(invoice: SupplierInvoiceCreate, db: Session = Depends(get_db)):
     """
-    Create Purchase Invoice (VAT Input)
+    Create Supplier Invoice (DRAFT - No Stock Added Yet)
     
-    This is separate from GRN for KRA compliance.
-    Can be linked to a GRN.
+    Saves the invoice as DRAFT. Stock is NOT added until invoice is batched.
+    Use the /invoice/{id}/batch endpoint to add stock to inventory.
+    System document number is ALWAYS auto-generated.
+    Supplier's invoice number (external) is stored in reference field.
     """
+    # ALWAYS auto-generate system document number (internal document number)
+    # Supplier's invoice number is stored separately in reference field
+    invoice_number = DocumentService.get_supplier_invoice_number(
+        db, invoice.company_id, invoice.branch_id
+    )
+    
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
     invoice_items = []
+    # NO ledger entries here - stock is added when batching
     
     for item_data in invoice.items:
-        # Calculate line totals
+        # Get item
+        item = db.query(Item).filter(Item.id == item_data.item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+        
+        # Get item unit multiplier
+        item_unit = db.query(ItemUnit).filter(
+            ItemUnit.item_id == item_data.item_id,
+            ItemUnit.unit_name == item_data.unit_name
+        ).first()
+        if not item_unit:
+            raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
+        
+        multiplier = Decimal(str(item_unit.multiplier_to_base))
+        
+        # Calculate line totals (VAT)
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
         line_vat = line_total_exclusive * item_data.vat_rate / Decimal("100")
         line_total_inclusive = line_total_exclusive + line_vat
         
-        invoice_item = PurchaseInvoiceItem(
-            purchase_invoice_id=None,  # Will be set after invoice creation
+        # Store batch data as JSON for later batching
+        batch_data_json = None
+        if item_data.batches and len(item_data.batches) > 0:
+            import json
+            batch_data_json = json.dumps([{
+                "batch_number": batch.batch_number or "",
+                "expiry_date": batch.expiry_date.isoformat() if batch.expiry_date else None,
+                "quantity": float(batch.quantity),
+                "unit_cost": float(batch.unit_cost)
+            } for batch in item_data.batches])
+        
+        invoice_item = SupplierInvoiceItem(
+            purchase_invoice_id=None,  # Will be set after invoice creation (keep column name for backward compatibility)
             item_id=item_data.item_id,
             unit_name=item_data.unit_name,
             quantity=item_data.quantity,
@@ -157,50 +257,554 @@ def create_purchase_invoice(invoice: PurchaseInvoiceCreate, db: Session = Depend
             vat_rate=item_data.vat_rate,
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
-            line_total_inclusive=line_total_inclusive
+            line_total_inclusive=line_total_inclusive,
+            batch_data=batch_data_json  # Store batch data for later
         )
         invoice_items.append(invoice_item)
         
         total_exclusive += line_total_exclusive
         total_vat += line_vat
+        
+        # NOTE: Stock is NOT added here. It's added when invoice is batched via /invoice/{id}/batch
     
     total_inclusive = total_exclusive + total_vat
+    balance = total_inclusive - (invoice.amount_paid or Decimal("0"))
     
-    # Create invoice
-    db_invoice = PurchaseInvoice(
+    # Create supplier invoice (DRAFT status - no stock added yet)
+    db_invoice = SupplierInvoice(
         company_id=invoice.company_id,
         branch_id=invoice.branch_id,
         supplier_id=invoice.supplier_id,
-        invoice_number=invoice.invoice_number,
-        pin_number=invoice.pin_number,
+        invoice_number=invoice_number,  # System-generated document number (always auto-generated)
+        pin_number=None,  # Deprecated field
+        reference=invoice.supplier_invoice_number or invoice.reference,  # Store supplier's invoice number (external) in reference
         invoice_date=invoice.invoice_date,
         linked_grn_id=invoice.linked_grn_id,
         total_exclusive=total_exclusive,
         vat_rate=invoice.vat_rate,
         vat_amount=total_vat,
         total_inclusive=total_inclusive,
+        status=invoice.status or "DRAFT",  # Save as DRAFT
+        payment_status=invoice.payment_status or "UNPAID",
+        amount_paid=invoice.amount_paid or Decimal("0"),
+        balance=balance,
         created_by=invoice.created_by
     )
     db.add(db_invoice)
     db.flush()
     
-    # Link items
+    # Link items (store batch data in items for later batching)
     for item in invoice_items:
         item.purchase_invoice_id = db_invoice.id
         db.add(item)
+    
+    # NOTE: NO stock ledger entries here - stock is added when batching
     
     db.commit()
     db.refresh(db_invoice)
     return db_invoice
 
 
-@router.get("/invoice/{invoice_id}", response_model=PurchaseInvoiceResponse)
-def get_purchase_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
-    """Get purchase invoice by ID"""
-    invoice = db.query(PurchaseInvoice).filter(PurchaseInvoice.id == invoice_id).first()
+@router.get("/invoice", response_model=List[SupplierInvoiceResponse])
+def list_supplier_invoices(
+    company_id: UUID = Query(..., description="Company ID"),
+    branch_id: Optional[UUID] = Query(None, description="Branch ID"),
+    supplier_id: Optional[UUID] = Query(None, description="Supplier ID"),
+    date_from: Optional[date] = Query(None, description="Filter invoices from this date"),
+    date_to: Optional[date] = Query(None, description="Filter invoices to this date"),
+    db: Session = Depends(get_db)
+):
+    """
+    List supplier invoices with filtering
+    
+    Supplier Invoices are receiving documents that ADD STOCK to inventory.
+    Can only be reversed by supplier credit notes.
+    """
+    query = db.query(SupplierInvoice).filter(SupplierInvoice.company_id == company_id)
+    
+    if branch_id:
+        query = query.filter(SupplierInvoice.branch_id == branch_id)
+    
+    if supplier_id:
+        query = query.filter(SupplierInvoice.supplier_id == supplier_id)
+    
+    if date_from:
+        query = query.filter(SupplierInvoice.invoice_date >= date_from)
+    
+    if date_to:
+        query = query.filter(SupplierInvoice.invoice_date <= date_to)
+    
+    # Order by date descending (newest first)
+    invoices = query.order_by(SupplierInvoice.invoice_date.desc(), SupplierInvoice.created_at.desc()).all()
+    
+    # Load supplier and branch names, and ensure all invoices have document numbers
+    for invoice in invoices:
+        if invoice.supplier:
+            invoice.supplier_name = invoice.supplier.name
+        if invoice.branch:
+            invoice.branch_name = invoice.branch.name
+        # Load created_by user name
+        created_by_user = db.query(User).filter(User.id == invoice.created_by).first()
+        if created_by_user:
+            invoice.created_by_name = created_by_user.full_name or created_by_user.email
+        
+        # Ensure invoice has system document number (SPV{BRANCH}-{N})
+        # Assign if missing or invalid
+        if not invoice.invoice_number or not str(invoice.invoice_number).strip().startswith("SPV"):
+            try:
+                invoice.invoice_number = DocumentService.get_supplier_invoice_number(
+                    db, invoice.company_id, invoice.branch_id
+                )
+                db.commit()  # Commit the assignment
+                # Refresh to get the updated value
+                db.refresh(invoice)
+            except Exception as e:
+                # If branch code is missing, log but don't fail
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Could not assign invoice number to invoice {invoice.id}: {e}")
+                # Try to get branch info for better error message
+                branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
+                if branch and not branch.code:
+                    logger.warning(f"Branch {invoice.branch_id} is missing a code. Please set branch code in settings.")
+                pass
+    
+    return invoices
+
+
+@router.get("/invoice/{invoice_id}", response_model=SupplierInvoiceResponse)
+def get_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
+    """Get supplier invoice by ID with full item details"""
+    # Load invoice with items and item relationships (similar to get_purchase_order)
+    invoice = db.query(SupplierInvoice).options(
+        selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
+    ).filter(SupplierInvoice.id == invoice_id).first()
+    
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    # Load supplier and branch names
+    if invoice.supplier:
+        invoice.supplier_name = invoice.supplier.name
+    if invoice.branch:
+        invoice.branch_name = invoice.branch.name
+    # Load created_by user name
+    created_by_user = db.query(User).filter(User.id == invoice.created_by).first()
+    if created_by_user:
+        invoice.created_by_name = created_by_user.full_name or created_by_user.email
+    
+    # Enhance items with full item details (similar to purchase order response)
+    for invoice_item in invoice.items:
+        if invoice_item.item:
+            # Add item details to invoice_item object (will be serialized by response model)
+            invoice_item.item_code = invoice_item.item.sku or ''
+            invoice_item.item_name = invoice_item.item.name or ''
+            invoice_item.item_category = invoice_item.item.category or ''
+            invoice_item.base_unit = invoice_item.item.base_unit or ''
+        # batch_data is already stored in the database and will be included in response
+    
     return invoice
+
+
+@router.put("/invoice/{invoice_id}", response_model=SupplierInvoiceResponse)
+def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCreate, db: Session = Depends(get_db)):
+    """
+    Update supplier invoice (only if status is DRAFT)
+    
+    Only DRAFT invoices can be updated. BATCHED invoices cannot be updated
+    (stock already added to inventory).
+    
+    This endpoint is called:
+    - When user clicks "Update Invoice" button
+    - Automatically when changes occur (auto-save)
+    """
+    db_invoice = db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).first()
+    if not db_invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if db_invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot update invoice with status {db_invoice.status}. Only DRAFT invoices can be updated. Stock has already been added to inventory."
+        )
+    
+    # Ensure DRAFT has system document number (SPV{BRANCH}-{N}); assign if missing
+    if not db_invoice.invoice_number or not str(db_invoice.invoice_number).strip().startswith("SPV"):
+        try:
+            db_invoice.invoice_number = DocumentService.get_supplier_invoice_number(
+                db, db_invoice.company_id, db_invoice.branch_id
+            )
+        except Exception:
+            pass  # Branch may lack code; keep existing value
+    
+    # Update invoice fields
+    db_invoice.supplier_id = invoice_update.supplier_id
+    db_invoice.invoice_date = invoice_update.invoice_date
+    db_invoice.reference = invoice_update.supplier_invoice_number or invoice_update.reference
+    db_invoice.linked_grn_id = invoice_update.linked_grn_id
+    db_invoice.vat_rate = invoice_update.vat_rate
+    db_invoice.payment_status = invoice_update.payment_status or "UNPAID"
+    db_invoice.amount_paid = invoice_update.amount_paid or Decimal("0")
+    
+    # Recalculate totals
+    total_exclusive = Decimal("0")
+    total_vat = Decimal("0")
+    
+    # Delete existing items
+    db.query(SupplierInvoiceItem).filter(SupplierInvoiceItem.purchase_invoice_id == invoice_id).delete()
+    
+    # Add new items
+    invoice_items = []
+    for item_data in invoice_update.items:
+        # Get item
+        item = db.query(Item).filter(Item.id == item_data.item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+        
+        # Get item unit multiplier
+        item_unit = db.query(ItemUnit).filter(
+            ItemUnit.item_id == item_data.item_id,
+            ItemUnit.unit_name == item_data.unit_name
+        ).first()
+        if not item_unit:
+            raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
+        
+        multiplier = Decimal(str(item_unit.multiplier_to_base))
+        
+        # Calculate line totals (VAT)
+        line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
+        line_vat = line_total_exclusive * item_data.vat_rate / Decimal("100")
+        line_total_inclusive = line_total_exclusive + line_vat
+        
+        # Store batch data as JSON for later batching
+        batch_data_json = None
+        if item_data.batches and len(item_data.batches) > 0:
+            import json
+            batch_data_json = json.dumps([{
+                "batch_number": batch.batch_number or "",
+                "expiry_date": batch.expiry_date.isoformat() if batch.expiry_date else None,
+                "quantity": float(batch.quantity),
+                "unit_cost": float(batch.unit_cost)
+            } for batch in item_data.batches])
+        
+        invoice_item = SupplierInvoiceItem(
+            purchase_invoice_id=invoice_id,
+            item_id=item_data.item_id,
+            unit_name=item_data.unit_name,
+            quantity=item_data.quantity,
+            unit_cost_exclusive=item_data.unit_cost_exclusive,
+            vat_rate=item_data.vat_rate,
+            vat_amount=line_vat,
+            line_total_exclusive=line_total_exclusive,
+            line_total_inclusive=line_total_inclusive,
+            batch_data=batch_data_json  # Store batch data for later
+        )
+        invoice_items.append(invoice_item)
+        db.add(invoice_item)
+        
+        total_exclusive += line_total_exclusive
+        total_vat += line_vat
+    
+    total_inclusive = total_exclusive + total_vat
+    balance = total_inclusive - db_invoice.amount_paid
+    
+    # Update invoice totals
+    db_invoice.total_exclusive = total_exclusive
+    db_invoice.vat_amount = total_vat
+    db_invoice.total_inclusive = total_inclusive
+    db_invoice.balance = balance
+    
+    # Update payment status based on amount paid
+    if db_invoice.amount_paid <= 0:
+        db_invoice.payment_status = "UNPAID"
+    elif db_invoice.amount_paid >= total_inclusive:
+        db_invoice.payment_status = "PAID"
+        db_invoice.balance = Decimal("0")
+    else:
+        db_invoice.payment_status = "PARTIAL"
+    
+    db.commit()
+    db.refresh(db_invoice)
+    
+    # Load relationships for response
+    if db_invoice.supplier:
+        db_invoice.supplier_name = db_invoice.supplier.name
+    if db_invoice.branch:
+        db_invoice.branch_name = db_invoice.branch.name
+    created_by_user = db.query(User).filter(User.id == db_invoice.created_by).first()
+    if created_by_user:
+        db_invoice.created_by_name = created_by_user.full_name or created_by_user.email
+    
+    # Enhance items with full item details
+    for invoice_item in db_invoice.items:
+        if invoice_item.item:
+            invoice_item.item_code = invoice_item.item.sku or ''
+            invoice_item.item_name = invoice_item.item.name or ''
+            invoice_item.item_category = invoice_item.item.category or ''
+            invoice_item.base_unit = invoice_item.item.base_unit or ''
+        # batch_data is already stored in the database and will be included in response
+    
+    return db_invoice
+
+
+@router.post("/invoice/{invoice_id}/batch", response_model=SupplierInvoiceResponse)
+def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
+    """
+    Batch Supplier Invoice - Add Stock to Inventory
+    
+    This endpoint processes a DRAFT invoice and adds stock to inventory based on batch data.
+    Only DRAFT invoices can be batched. Once batched, status changes to BATCHED.
+    Ensures invoice has a system document number (SPV...) before batching; assigns one if missing.
+    """
+    invoice = (
+        db.query(SupplierInvoice)
+        .options(selectinload(SupplierInvoice.items))
+        .filter(SupplierInvoice.id == invoice_id)
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if invoice.status == "BATCHED":
+        raise HTTPException(
+            status_code=400,
+            detail="Invoice is already batched. Stock has already been added to inventory."
+        )
+    
+    if invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot batch invoice with status {invoice.status}. Only DRAFT invoices can be batched."
+        )
+    
+    # Ensure invoice has system document number (SPV{BRANCH}-{N}); assign if missing (e.g. legacy invoices)
+    if not invoice.invoice_number or not str(invoice.invoice_number).strip().startswith("SPV"):
+        try:
+            invoice.invoice_number = DocumentService.get_supplier_invoice_number(
+                db, invoice.company_id, invoice.branch_id
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot batch: could not assign document number. Ensure branch has a code. {e!s}"
+            )
+    
+    if not invoice.items or len(invoice.items) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Invoice has no line items. Add items before batching."
+        )
+    
+    # Process each item and add stock based on batch data
+    ledger_entries = []
+    import json
+    
+    for invoice_item in invoice.items:
+        item = db.query(Item).filter(Item.id == invoice_item.item_id).first()
+        if not item:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item {invoice_item.item_id} not found. Cannot batch."
+            )
+        
+        item_unit = db.query(ItemUnit).filter(
+            ItemUnit.item_id == invoice_item.item_id,
+            ItemUnit.unit_name == invoice_item.unit_name
+        ).first()
+        if not item_unit:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unit '{invoice_item.unit_name}' not found for item {item.name}. Cannot batch."
+            )
+        
+        multiplier = Decimal(str(item_unit.multiplier_to_base))
+        
+        # Parse batch data from JSON
+        if invoice_item.batch_data:
+            try:
+                batches = json.loads(invoice_item.batch_data)
+                # Validate batch quantities sum to item quantity
+                total_batch_quantity = sum(batch.get("quantity", 0) for batch in batches)
+                if abs(total_batch_quantity - float(invoice_item.quantity)) > 0.01:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Sum of batch quantities ({total_batch_quantity}) must equal item quantity ({invoice_item.quantity}) for item {item.name}"
+                    )
+                
+                # Create ledger entries for each batch
+                for batch_idx, batch in enumerate(batches):
+                    from datetime import datetime
+                    expiry_date = None
+                    if batch.get("expiry_date"):
+                        expiry_date = datetime.fromisoformat(batch["expiry_date"]).date()
+                    
+                    quantity_base = int(float(batch["quantity"]) * float(multiplier))
+                    unit_cost_base = Decimal(str(batch["unit_cost"])) / multiplier
+                    
+                    ledger_entry = InventoryLedger(
+                        company_id=invoice.company_id,
+                        branch_id=invoice.branch_id,
+                        item_id=invoice_item.item_id,
+                        batch_number=batch.get("batch_number") or None,
+                        expiry_date=expiry_date,
+                        transaction_type="PURCHASE",
+                        reference_type="purchase_invoice",
+                        quantity_delta=quantity_base,  # Positive = add stock
+                        unit_cost=unit_cost_base,
+                        total_cost=unit_cost_base * quantity_base,
+                        batch_cost=unit_cost_base,
+                        remaining_quantity=quantity_base,
+                        is_batch_tracked=bool(batch.get("batch_number")),
+                        split_sequence=batch_idx,
+                        reference_id=invoice.id,
+                        created_by=invoice.created_by
+                    )
+                    ledger_entries.append(ledger_entry)
+            except json.JSONDecodeError:
+                # If batch_data is invalid JSON, create single entry without batch
+                quantity_base = InventoryService.convert_to_base_units(
+                    db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
+                )
+                unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
+                
+                ledger_entry = InventoryLedger(
+                    company_id=invoice.company_id,
+                    branch_id=invoice.branch_id,
+                    item_id=invoice_item.item_id,
+                    batch_number=None,
+                    expiry_date=None,
+                    transaction_type="PURCHASE",
+                    reference_type="purchase_invoice",
+                    quantity_delta=quantity_base,
+                    unit_cost=unit_cost_base,
+                    total_cost=unit_cost_base * quantity_base,
+                    batch_cost=unit_cost_base,
+                    remaining_quantity=quantity_base,
+                    is_batch_tracked=False,
+                    reference_id=invoice.id,
+                    created_by=invoice.created_by
+                )
+                ledger_entries.append(ledger_entry)
+        else:
+            # No batch data - create single entry
+            quantity_base = InventoryService.convert_to_base_units(
+                db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
+            )
+            unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
+            
+            ledger_entry = InventoryLedger(
+                company_id=invoice.company_id,
+                branch_id=invoice.branch_id,
+                item_id=invoice_item.item_id,
+                batch_number=None,
+                expiry_date=None,
+                transaction_type="PURCHASE",
+                reference_type="purchase_invoice",
+                quantity_delta=quantity_base,
+                unit_cost=unit_cost_base,
+                total_cost=unit_cost_base * quantity_base,
+                batch_cost=unit_cost_base,
+                remaining_quantity=quantity_base,
+                is_batch_tracked=False,
+                reference_id=invoice.id,
+                created_by=invoice.created_by
+            )
+            ledger_entries.append(ledger_entry)
+    
+    # Add all ledger entries
+    for entry in ledger_entries:
+        db.add(entry)
+    
+    # Update invoice status to BATCHED
+    invoice.status = "BATCHED"
+    
+    db.commit()
+    db.refresh(invoice)
+    
+    # Load relationships for response
+    if invoice.supplier:
+        invoice.supplier_name = invoice.supplier.name
+    if invoice.branch:
+        invoice.branch_name = invoice.branch.name
+    created_by_user = db.query(User).filter(User.id == invoice.created_by).first()
+    if created_by_user:
+        invoice.created_by_name = created_by_user.full_name or created_by_user.email
+    
+    return invoice
+
+
+@router.put("/invoice/{invoice_id}/payment", response_model=SupplierInvoiceResponse)
+def update_invoice_payment(
+    invoice_id: UUID,
+    amount_paid: Decimal = Query(..., description="Amount paid to supplier"),
+    db: Session = Depends(get_db)
+):
+    """
+    Update payment information for supplier invoice
+    
+    Updates amount_paid and calculates balance and payment_status.
+    """
+    invoice = db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    invoice.amount_paid = amount_paid
+    invoice.balance = invoice.total_inclusive - amount_paid
+    
+    # Update payment status and mark as complete when fully paid
+    if amount_paid <= 0:
+        invoice.payment_status = "UNPAID"
+    elif amount_paid >= invoice.total_inclusive:
+        invoice.payment_status = "PAID"
+        invoice.balance = Decimal("0")
+        # Mark as complete when fully paid (if already batched)
+        if invoice.status == "BATCHED":
+            # Could add a "COMPLETE" status or keep as BATCHED with PAID status
+            pass
+    else:
+        invoice.payment_status = "PARTIAL"
+    
+    db.commit()
+    db.refresh(invoice)
+    
+    # Load relationships for response
+    if invoice.supplier:
+        invoice.supplier_name = invoice.supplier.name
+    if invoice.branch:
+        invoice.branch_name = invoice.branch.name
+    created_by_user = db.query(User).filter(User.id == invoice.created_by).first()
+    if created_by_user:
+        invoice.created_by_name = created_by_user.full_name or created_by_user.email
+    
+    return invoice
+
+
+@router.delete("/invoice/{invoice_id}", status_code=status.HTTP_200_OK)
+def delete_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
+    """
+    Delete Supplier Invoice (Only if DRAFT status)
+    
+    Only DRAFT invoices can be deleted. BATCHED invoices cannot be deleted
+    (stock already added to inventory).
+    """
+    invoice = db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete invoice with status {invoice.status}. Only DRAFT invoices can be deleted."
+        )
+    
+    # Delete invoice items (cascade should handle this, but explicit is safer)
+    db.query(SupplierInvoiceItem).filter(SupplierInvoiceItem.purchase_invoice_id == invoice_id).delete()
+    
+    # Delete invoice
+    db.delete(invoice)
+    db.commit()
+    
+    return {"message": "Invoice deleted successfully", "deleted": True}
 
 
 # =====================================================
@@ -418,7 +1022,7 @@ def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db:
     return db_order
 
 
-@router.delete("/order/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/order/{order_id}", status_code=status.HTTP_200_OK)
 def delete_purchase_order(order_id: UUID, db: Session = Depends(get_db)):
     """Delete purchase order (only if status is PENDING)"""
     db_order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
@@ -438,5 +1042,5 @@ def delete_purchase_order(order_id: UUID, db: Session = Depends(get_db)):
     db.delete(db_order)
     db.commit()
     
-    return None
+    return {"message": "Purchase order deleted successfully", "deleted": True}
 

@@ -839,12 +839,34 @@ function renderUsersList(page, users, roles, branches, errorMessage, isAdminUser
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Phone</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Role(s)</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Status</th>
+                                    <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Security Status</th>
+                                    <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Failed Attempts</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 ${usersToDisplay.map(user => {
                                     const isDeleted = user.deleted_at !== null && user.deleted_at !== undefined;
+                                    
+                                    // Get security status from LoginSecurity utility
+                                    let securityStatus = 'Active';
+                                    let failedAttempts = 0;
+                                    let isBlocked = false;
+                                    let blockedUntil = null;
+                                    
+                                    if (window.LoginSecurity) {
+                                        const stats = window.LoginSecurity.getUserStats(user.email);
+                                        failedAttempts = stats.attempts || 0;
+                                        isBlocked = stats.blocked || false;
+                                        blockedUntil = stats.blockedUntil;
+                                        
+                                        if (isBlocked && blockedUntil) {
+                                            securityStatus = 'Blocked';
+                                        } else if (failedAttempts > 0) {
+                                            securityStatus = 'Warning';
+                                        }
+                                    }
+                                    
                                     return `
                                     <tr ${isDeleted ? 'style="opacity: 0.6; background-color: var(--bg-secondary);"' : ''}>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
@@ -879,12 +901,29 @@ function renderUsersList(page, users, roles, branches, errorMessage, isAdminUser
                                             }
                                         </td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                                            ${isBlocked 
+                                                ? `<span class="badge badge-danger">Blocked</span>${blockedUntil ? `<br><small style="color: var(--text-secondary); font-size: 0.75rem;">Until: ${new Date(blockedUntil).toLocaleString()}</small>` : ''}`
+                                                : failedAttempts > 0
+                                                ? `<span class="badge badge-warning">Warning (${failedAttempts} attempts)</span>`
+                                                : '<span class="badge badge-success">Active</span>'
+                                            }
+                                        </td>
+                                        <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                                            ${failedAttempts > 0 ? `<span style="color: ${failedAttempts >= 5 ? 'var(--danger-color)' : 'var(--warning-color)'}; font-weight: 600;">${failedAttempts}</span>` : '0'}
+                                        </td>
+                                        <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                                             <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                                                 ${isDeleted ? `
                                                     <button class="btn btn-success btn-sm" onclick="restoreUser('${user.id}', '${escapeHtml(user.email)}')" title="Restore User">
                                                         <i class="fas fa-undo"></i> Restore
                                                     </button>
                                                 ` : `
+                                                    ${isBlocked && isPrimaryAdminUser
+                                                        ? `<button class="btn btn-success btn-sm" onclick="unblockUser('${escapeHtml(user.email)}')" title="Unblock User">
+                                                            <i class="fas fa-unlock"></i> Unblock
+                                                        </button>`
+                                                        : ''
+                                                    }
                                                     ${user.is_pending && !isDeleted && isPrimaryAdminUser
                                                         ? `<button class="btn btn-primary btn-sm" onclick="sendInvitationEmail('${user.id}', '${escapeHtml(user.email)}')" id="send-invite-btn-${user.id}" title="Send Invitation Email">
                                                             <i class="fas fa-paper-plane"></i> Send Invitation
@@ -1608,6 +1647,26 @@ async function restoreUser(userId, email) {
     }
 }
 
+async function unblockUser(email) {
+    if (!window.LoginSecurity) {
+        showToast('Login security utility not available', 'error');
+        return;
+    }
+    
+    if (!confirm(`Are you sure you want to unblock user "${email}"?`)) {
+        return;
+    }
+    
+    try {
+        window.LoginSecurity.unblockUser(email);
+        showToast(`User "${email}" has been unblocked`, 'success');
+        await renderUsersPage();
+    } catch (error) {
+        console.error('Error unblocking user:', error);
+        showToast(error.message || 'Error unblocking user', 'error');
+    }
+}
+
 async function sendInvitationEmail(userId, email) {
     const button = document.getElementById(`send-invite-btn-${userId}`);
     if (!button) return;
@@ -1862,6 +1921,7 @@ function switchSettingsSubPage(subPage) {
     window.restoreUser = restoreUser;
     window.toggleShowDeleted = toggleShowDeleted;
     window.sendInvitationEmail = sendInvitationEmail;
+    window.unblockUser = unblockUser;
         
         // Verify exports
         const exports = {

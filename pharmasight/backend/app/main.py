@@ -41,7 +41,7 @@ async def health_check():
 
 
 # Import and include routers
-from app.api import items_router, sales_router, purchases_router, inventory_router
+from app.api import items_router, sales_router, purchases_router, inventory_router, quotations_router, stock_take_router, order_book_router
 from app.api.company import router as company_router
 from app.api.startup import router as startup_router
 from app.api.invite import router as invite_router
@@ -59,4 +59,7 @@ app.include_router(purchases_router, prefix="/api/purchases", tags=["Purchases"]
 app.include_router(inventory_router, prefix="/api/inventory", tags=["Inventory"])
 app.include_router(suppliers_router, prefix="/api/suppliers", tags=["Suppliers"])
 app.include_router(excel_import_router, prefix="/api/excel", tags=["Excel Import"])
+app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotations"])
+app.include_router(stock_take_router, prefix="/api/stock-take", tags=["Stock Take"])
+app.include_router(order_book_router, prefix="/api/order-book", tags=["Order Book"])
 

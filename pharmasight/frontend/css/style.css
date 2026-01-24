@@ -58,6 +58,19 @@ body {
     flex-shrink: 0;
 }
 
+/* Ensure proper layout switching - prevent hidden layouts from capturing events */
+#authLayout, #appLayout {
+    transition: opacity 0.3s ease;
+}
+
+#authLayout[style*="display: none"],
+#appLayout[style*="display: none"] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
 /* Login Form Styles */
 .login-container {
     width: 100%;
@@ -1232,4 +1245,79 @@ tbody tr:hover {
 .inventory-nav-item i {
     width: 20px;
     text-align: center;
+}
+
+/* Session Timeout Warning Modal */
+.session-timeout-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+.session-timeout-content {
+    background: var(--card-bg);
+    border-radius: 0.75rem;
+    padding: 2.5rem;
+    max-width: 450px;
+    width: 90%;
+    box-shadow: var(--shadow-lg);
+    text-align: center;
+    animation: slideUp 0.3s ease-in-out;
+}
+
+.session-timeout-icon {
+    font-size: 3rem;
+    color: var(--warning-color);
+    margin-bottom: 1rem;
+}
+
+.session-timeout-content h3 {
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+}
+
+.session-timeout-content p {
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+    line-height: 1.6;
+}
+
+.session-timeout-content #sessionCountdown {
+    color: var(--warning-color);
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.session-timeout-content #sessionTimeoutContinue {
+    margin-top: 1.5rem;
+    width: 100%;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(20px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
 }

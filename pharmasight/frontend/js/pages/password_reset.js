@@ -10,7 +10,7 @@ async function loadPasswordReset() {
     console.log('[PASSWORD RESET] Hash:', window.location.hash);
     
     // Ensure auth layout is shown
-    renderAuthLayout();
+    ensureAuthLayout();
     const authLayout = document.getElementById('authLayout');
     if (!authLayout) {
         console.error('[PASSWORD RESET] Auth layout container not found');
@@ -167,9 +167,13 @@ async function renderPasswordUpdateForm(page) {
                     <div class="form-group">
                         <label for="newPassword">New Password</label>
                         <input type="password" id="newPassword" required 
-                               placeholder="At least 4 characters with letters and numbers"
-                               minlength="4" autocomplete="new-password">
+                               placeholder="At least 6 characters (not numbers/letters only, sequential, or common)"
+                               minlength="6" autocomplete="new-password">
+                        <small style="color: var(--text-secondary); margin-top: 0.25rem; display: block;">
+                            Must be at least 6 characters. Cannot be numbers only, letters only, sequential, or common passwords.
+                        </small>
                         <div id="passwordStrength" style="margin-top: 0.5rem; font-size: 0.75rem;"></div>
+                        <div id="passwordResetValidationError" style="color: var(--danger-color); font-size: 0.875rem; margin-top: 0.25rem; display: none;"></div>
                     </div>
                     <div class="form-group">
                         <label for="confirmPassword">Confirm Password</label>
@@ -202,27 +206,56 @@ async function renderPasswordUpdateForm(page) {
     const errorDiv = document.getElementById('updateError');
     const strengthDiv = document.getElementById('passwordStrength');
     
-    // Password strength indicator
-    if (newPasswordInput && strengthDiv) {
+    // Password strength indicator with real-time validation
+    const validationErrorDiv = document.getElementById('passwordResetValidationError');
+    
+    if (newPasswordInput) {
         newPasswordInput.addEventListener('input', () => {
             const password = newPasswordInput.value;
+            
             if (!password) {
-                strengthDiv.textContent = '';
+                if (strengthDiv) strengthDiv.textContent = '';
+                if (validationErrorDiv) validationErrorDiv.style.display = 'none';
                 return;
             }
             
-            const hasNumber = /\d/.test(password);
-            const hasLetter = /[a-zA-Z]/.test(password);
-            
-            if (password.length < 4) {
-                strengthDiv.textContent = 'Too short (min 4 characters)';
-                strengthDiv.style.color = 'var(--danger-color)';
-            } else if (!hasNumber || !hasLetter) {
-                strengthDiv.textContent = 'Must include both letters and numbers';
-                strengthDiv.style.color = 'var(--danger-color)';
+            // Use PasswordValidation if available
+            if (window.PasswordValidation) {
+                const error = window.PasswordValidation.validateRealTime(password);
+                if (error) {
+                    if (validationErrorDiv) {
+                        validationErrorDiv.textContent = error;
+                        validationErrorDiv.style.display = 'block';
+                    }
+                    if (strengthDiv) {
+                        strengthDiv.textContent = '';
+                    }
+                    newPasswordInput.style.borderColor = 'var(--danger-color)';
+                } else {
+                    if (validationErrorDiv) validationErrorDiv.style.display = 'none';
+                    if (strengthDiv) {
+                        strengthDiv.textContent = 'Password strength: Good';
+                        strengthDiv.style.color = 'var(--success-color)';
+                    }
+                    newPasswordInput.style.borderColor = '';
+                }
             } else {
-                strengthDiv.textContent = 'Password strength: Good';
-                strengthDiv.style.color = 'var(--success-color)';
+                // Fallback validation
+                const hasNumber = /\d/.test(password);
+                const hasLetter = /[a-zA-Z]/.test(password);
+                
+                if (strengthDiv) {
+                    if (password.length < 6) {
+                        strengthDiv.textContent = 'Too short (min 6 characters)';
+                        strengthDiv.style.color = 'var(--danger-color)';
+                    } else if (!hasNumber || !hasLetter) {
+                        strengthDiv.textContent = 'Must include both letters and numbers';
+                        strengthDiv.style.color = 'var(--danger-color)';
+                    } else {
+                        strengthDiv.textContent = 'Password strength: Good';
+                        strengthDiv.style.color = 'var(--success-color)';
+                    }
+                }
             }
         });
     }
@@ -240,23 +273,33 @@ async function renderPasswordUpdateForm(page) {
                 errorDiv.textContent = '';
             }
             
-            // Validation
+            // Validation using PasswordValidation utility
             if (newPassword !== confirmPassword) {
                 showError('Passwords do not match');
                 return;
             }
             
-            if (newPassword.length < 4) {
-                showError('Password must be at least 4 characters');
-                return;
-            }
-            
-            const hasNumber = /\d/.test(newPassword);
-            const hasLetter = /[a-zA-Z]/.test(newPassword);
-            
-            if (!hasNumber || !hasLetter) {
-                showError('Password must include both letters and numbers');
-                return;
+            // Use PasswordValidation if available, otherwise fallback to basic validation
+            if (window.PasswordValidation) {
+                const validation = window.PasswordValidation.validate(newPassword);
+                if (!validation.valid) {
+                    showError(validation.errors[0] || 'Password validation failed');
+                    return;
+                }
+            } else {
+                // Fallback validation
+                if (newPassword.length < 6) {
+                    showError('Password must be at least 6 characters long');
+                    return;
+                }
+                
+                const hasNumber = /\d/.test(newPassword);
+                const hasLetter = /[a-zA-Z]/.test(newPassword);
+                
+                if (!hasNumber || !hasLetter) {
+                    showError('Password must include both letters and numbers');
+                    return;
+                }
             }
             
             // Show loading
@@ -362,8 +405,17 @@ async function renderPasswordUpdateForm(page) {
     }
 }
 
-// Helper functions (should be in your global scope)
-function renderAuthLayout() {
+// Helper functions
+// NOTE: We intentionally DO NOT override the global renderAuthLayout from app.js.
+// This function delegates to the main layout helper when available to keep
+// layout state (layoutRendered) consistent across the app.
+function ensureAuthLayout() {
+    if (typeof window.renderAuthLayout === 'function') {
+        window.renderAuthLayout();
+        return;
+    }
+    
+    // Fallback: minimal layout toggle if app.js renderAuthLayout is not yet defined
     const authLayout = document.getElementById('authLayout');
     const appLayout = document.getElementById('appLayout');
     
@@ -376,6 +428,7 @@ function renderAuthLayout() {
         appLayout.style.display = 'none';
     }
 }
+// Helper functions (should be in your global scope)
 
 function showToast(message, type = 'info') {
     // Your toast implementation

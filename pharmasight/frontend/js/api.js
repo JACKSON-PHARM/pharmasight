@@ -135,9 +135,10 @@ const API = {
 
     // Items
     items: {
-        search: (q, companyId, limit = 10, branchId = null) => {
-            const params = { q, company_id: companyId, limit };
+        search: (q, companyId, limit = 10, branchId = null, includePricing = false, context = null) => {
+            const params = { q, company_id: companyId, limit, include_pricing: includePricing };
             if (branchId) params.branch_id = branchId;
+            if (context) params.context = context;
             return api.get(`${CONFIG.API_ENDPOINTS.items}/search`, params);
         },
         list: (companyId, options = {}) => {
@@ -202,8 +203,43 @@ const API = {
         getInvoice: (invoiceId) => api.get(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`),
         getBranchInvoices: (branchId) => 
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/invoices`),
+        updateInvoice: (invoiceId, data) => 
+            api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
+        deleteInvoice: (invoiceId) => 
+            api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`),
+        batchInvoice: (invoiceId, batchedBy) => 
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/batch?batched_by=${batchedBy}`, null),
+        // Split payments
+        addPayment: (invoiceId, payment) => 
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/payments`, payment),
+        getPayments: (invoiceId) => 
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/payments`),
+        deletePayment: (paymentId) => 
+            api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/payments/${paymentId}`),
+        convertToQuotation: (invoiceId) => 
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/convert-to-quotation`, null),
     },
 
+    // Quotations (sales documents that do not affect stock)
+    quotations: {
+        create: (data) => api.post('/api/quotations', data),
+        get: (quotationId) => api.get(`/api/quotations/${quotationId}`),
+        listByBranch: (branchId) => api.get(`/api/quotations/branch/${branchId}`),
+        update: (quotationId, data) => api.put(`/api/quotations/${quotationId}`, data),
+        delete: (quotationId) => api.delete(`/api/quotations/${quotationId}`),
+        convertToInvoice: (quotationId, data = {}) => 
+            api.post(`/api/quotations/${quotationId}/convert-to-invoice`, data),
+    },
+
+    // Inventory
+    inventory: {
+        getStock: (itemId, branchId) => api.get(`/api/inventory/stock/${itemId}/${branchId}`),
+        getAvailability: (itemId, branchId) => api.get(`/api/inventory/availability/${itemId}/${branchId}`),
+        getBatches: (itemId, branchId) => api.get(`/api/inventory/batches/${itemId}/${branchId}`),
+        allocateFEFO: (itemId, branchId, quantity, unitName) => 
+            api.post(`/api/inventory/allocate-fefo?item_id=${itemId}&branch_id=${branchId}&quantity=${quantity}&unit_name=${encodeURIComponent(unitName)}`, null),
+    },
+    
     // Purchases
     purchases: {
         createGRN: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/grn`, data),
@@ -211,6 +247,14 @@ const API = {
         createInvoice: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice`, data),
         getInvoice: (invoiceId) => 
             api.get(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`),
+        updateInvoice: (invoiceId, data) => 
+            api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`, data),
+        deleteInvoice: (invoiceId) => 
+            api.delete(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`),
+        batchInvoice: (invoiceId) => 
+            api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/batch`, null),
+        updateInvoicePayment: (invoiceId, amountPaid) => 
+            api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/payment?amount_paid=${amountPaid}`, null),
         // Purchase Orders
         createOrder: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/order`, data),
         listOrders: (params) => {
@@ -225,10 +269,13 @@ const API = {
         getOrder: (orderId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
         updateOrder: (orderId, data) => api.put(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`, data),
         deleteOrder: (orderId) => api.delete(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
-        listInvoices: (companyId, branchId) => {
-            const params = { company_id: companyId };
-            if (branchId) params.branch_id = branchId;
-            const queryString = new URLSearchParams(params);
+        listInvoices: (params) => {
+            const queryString = new URLSearchParams();
+            Object.keys(params).forEach(key => {
+                if (params[key] !== null && params[key] !== undefined) {
+                    queryString.append(key, params[key]);
+                }
+            });
             return api.get(`${CONFIG.API_ENDPOINTS.purchases}/invoice?${queryString.toString()}`);
         },
     },
@@ -267,7 +314,11 @@ const API = {
     // User Management
     users: {
         list: (includeDeleted = false) => api.get('/api/users', { include_deleted: includeDeleted }),
-        get: (userId) => api.get(`/api/users/${userId}`),
+        /**
+         * Get user profile
+         * Optional params are passed as query string (e.g. cache busters like {_t: Date.now()})
+         */
+        get: (userId, params = {}) => api.get(`/api/users/${userId}`, params),
         create: (data) => api.post('/api/users', data),
         update: (userId, data) => api.put(`/api/users/${userId}`, data),
         activate: (userId, isActive) => api.post(`/api/users/${userId}/activate`, { is_active: isActive }),
@@ -276,6 +327,95 @@ const API = {
         sendInvitation: (userId) => api.post(`/api/users/${userId}/send-invitation`, null),
         assignRole: (userId, roleData) => api.post(`/api/users/${userId}/roles`, roleData),
         listRoles: () => api.get('/api/users/roles'),
+    },
+    
+    // Stock Take (Multi-User)
+    stockTake: {
+        // Sessions
+        createSession: (data, createdBy) => api.post(`/api/stock-take/sessions?created_by=${createdBy}`, data),
+        listSessions: (branchId = null, statusFilter = null) => {
+            const params = {};
+            if (branchId) params.branch_id = branchId;
+            if (statusFilter) params.status_filter = statusFilter;
+            return api.get('/api/stock-take/sessions', params);
+        },
+        getSession: (sessionId) => api.get(`/api/stock-take/sessions/${sessionId}`),
+        getSessionByCode: (sessionCode) => api.get(`/api/stock-take/sessions/code/${sessionCode}`),
+        updateSession: (sessionId, data, userId) => api.put(`/api/stock-take/sessions/${sessionId}?user_id=${userId}`, data),
+        startSession: (sessionId, userId) => api.post(`/api/stock-take/sessions/${sessionId}/start?user_id=${userId}`, null),
+        
+        // Counts
+        createCount: (data, countedBy) => api.post(`/api/stock-take/counts?counted_by=${countedBy}`, data),
+        listCounts: (sessionId, counterId = null) => {
+            const params = {};
+            if (counterId) params.counter_id = counterId;
+            return api.get(`/api/stock-take/sessions/${sessionId}/counts`, params);
+        },
+        
+        // Locks
+        lockItem: (data, counterId) => api.post(`/api/stock-take/locks?counter_id=${counterId}`, data),
+        listLocks: (sessionId) => api.get(`/api/stock-take/sessions/${sessionId}/locks`),
+        
+        // Progress
+        getProgress: (sessionId) => api.get(`/api/stock-take/sessions/${sessionId}/progress`),
+        
+        // Join
+        joinSession: (sessionCode, userId) => api.post(`/api/stock-take/sessions/join?user_id=${userId}`, { session_code: sessionCode }),
+    },
+    
+    // Order Book
+    orderBook: {
+        // List entries
+        list: (branchId, companyId, statusFilter = null) => {
+            const params = { branch_id: branchId, company_id: companyId };
+            if (statusFilter) params.status_filter = statusFilter;
+            return api.get('/api/order-book', params);
+        },
+        
+        // Create entry
+        create: (data, companyId, branchId, createdBy) => {
+            const queryParams = new URLSearchParams({
+                company_id: companyId,
+                branch_id: branchId,
+                created_by: createdBy
+            });
+            return api.post(`/api/order-book?${queryParams}`, data);
+        },
+        
+        // Bulk create
+        bulkCreate: (data, companyId, branchId, createdBy) => {
+            const queryParams = new URLSearchParams({
+                company_id: companyId,
+                branch_id: branchId,
+                created_by: createdBy
+            });
+            return api.post(`/api/order-book/bulk?${queryParams}`, data);
+        },
+        
+        // Update entry
+        update: (entryId, data) => api.put(`/api/order-book/${entryId}`, data),
+        
+        // Delete entry
+        delete: (entryId) => api.delete(`/api/order-book/${entryId}`),
+        
+        // Auto-generate
+        autoGenerate: (branchId, companyId) => api.post('/api/order-book/auto-generate', { branch_id: branchId, company_id: companyId }),
+        
+        // Create purchase order from selected entries
+        createPurchaseOrder: (data, companyId, branchId, createdBy) => {
+            const queryParams = new URLSearchParams({
+                company_id: companyId,
+                branch_id: branchId,
+                created_by: createdBy
+            });
+            return api.post(`/api/order-book/create-purchase-order?${queryParams}`, data);
+        },
+        
+        // Get history
+        getHistory: (branchId, companyId, limit = 100) => {
+            const params = { branch_id: branchId, company_id: companyId, limit };
+            return api.get('/api/order-book/history', params);
+        },
     },
 };
 

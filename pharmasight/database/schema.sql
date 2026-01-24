@@ -618,6 +618,7 @@ BEGIN
             WHEN 'GRN' THEN p_prefix := 'GRN';
             WHEN 'CREDIT_NOTE' THEN p_prefix := 'CN';    -- Credit Note
             WHEN 'PAYMENT' THEN p_prefix := 'PAY';
+            WHEN 'SUPPLIER_INVOICE' THEN p_prefix := 'SUP-INV';  -- Supplier Invoice
             ELSE p_prefix := p_document_type;
         END CASE;
     END IF;

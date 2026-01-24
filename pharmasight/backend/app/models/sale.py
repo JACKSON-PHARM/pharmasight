@@ -1,7 +1,7 @@
 """
 Sales models (KRA Compliant)
 """
-from sqlalchemy import Column, String, Numeric, Date, ForeignKey, Text
+from sqlalchemy import Column, String, Numeric, Date, ForeignKey, Text, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -21,13 +21,22 @@ class SalesInvoice(Base):
     invoice_date = Column(Date, nullable=False)
     customer_name = Column(String(255))
     customer_pin = Column(String(50))
-    payment_mode = Column(String(50), nullable=False)  # cash, mpesa, credit, bank
+    customer_phone = Column(String(50), nullable=True)  # Required for credit payment mode (nullable for backward compatibility)
+    payment_mode = Column(String(50), nullable=False)  # cash, mpesa, credit, bank (legacy - kept for backward compatibility)
     payment_status = Column(String(50), default="PAID")  # PAID, PARTIAL, CREDIT
     total_exclusive = Column(Numeric(20, 4), default=0)
     vat_rate = Column(Numeric(5, 2), default=16.00)
     vat_amount = Column(Numeric(20, 4), default=0)
     discount_amount = Column(Numeric(20, 4), default=0)
     total_inclusive = Column(Numeric(20, 4), default=0)
+    # Document status: DRAFT (editable), BATCHED (committed, ready for payment), PAID (payment collected), CANCELLED
+    status = Column(String(20), default="DRAFT", nullable=True)  # DRAFT, BATCHED, PAID, CANCELLED (nullable for backward compatibility)
+    batched = Column(Boolean, default=False, nullable=True)
+    batched_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    batched_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    cashier_approved = Column(Boolean, default=False, nullable=True)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(TIMESTAMP(timezone=True), nullable=True)
     created_by = Column(UUID(as_uuid=True), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -37,6 +46,7 @@ class SalesInvoice(Base):
     branch = relationship("Branch")
     items = relationship("SalesInvoiceItem", back_populates="sales_invoice", cascade="all, delete-orphan")
     payments = relationship("Payment", back_populates="sales_invoice", cascade="all, delete-orphan")
+    invoice_payments = relationship("InvoicePayment", back_populates="sales_invoice", cascade="all, delete-orphan")
     credit_notes = relationship("CreditNote", back_populates="original_invoice")
 
     __table_args__ = (
@@ -62,6 +72,9 @@ class SalesInvoiceItem(Base):
     line_total_exclusive = Column(Numeric(20, 4), nullable=False)
     line_total_inclusive = Column(Numeric(20, 4), nullable=False)
     unit_cost_used = Column(Numeric(20, 4))  # For margin calculation
+    # Cached item details for display (snapshot at time of sale)
+    item_name = Column(String(255), nullable=True)
+    item_code = Column(String(100), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     # Relationships
@@ -145,3 +158,83 @@ class CreditNoteItem(Base):
     item = relationship("Item")
     batch_ledger_entry = relationship("InventoryLedger", foreign_keys=[batch_id])
 
+
+class Quotation(Base):
+    """Sales Quotation (Non-stock-affecting document)"""
+    __tablename__ = "quotations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    quotation_no = Column(String(100), nullable=False)  # Sequential
+    quotation_date = Column(Date, nullable=False)
+    customer_name = Column(String(255))
+    customer_pin = Column(String(50))
+    reference = Column(String(255))  # Optional reference number
+    notes = Column(Text)  # Additional notes
+    status = Column(String(50), default="draft")  # draft, sent, accepted, converted, cancelled
+    total_exclusive = Column(Numeric(20, 4), default=0)
+    vat_rate = Column(Numeric(5, 2), default=16.00)
+    vat_amount = Column(Numeric(20, 4), default=0)
+    discount_amount = Column(Numeric(20, 4), default=0)
+    total_inclusive = Column(Numeric(20, 4), default=0)
+    converted_to_invoice_id = Column(UUID(as_uuid=True), ForeignKey("sales_invoices.id"), nullable=True)  # If converted
+    created_by = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+    valid_until = Column(Date, nullable=True)  # Quotation expiry date
+
+    # Relationships
+    company = relationship("Company")
+    branch = relationship("Branch")
+    items = relationship("QuotationItem", back_populates="quotation", cascade="all, delete-orphan")
+    converted_invoice = relationship("SalesInvoice", foreign_keys=[converted_to_invoice_id])
+
+    __table_args__ = (
+        {"comment": "Sales quotation - does not affect inventory. Can be converted to invoice."},
+    )
+
+
+class QuotationItem(Base):
+    """Quotation line items"""
+    __tablename__ = "quotation_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    quotation_id = Column(UUID(as_uuid=True), ForeignKey("quotations.id", ondelete="CASCADE"), nullable=False)
+    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id"), nullable=False)
+    unit_name = Column(String(50), nullable=False)
+    quantity = Column(Numeric(20, 4), nullable=False)  # In sale unit
+    unit_price_exclusive = Column(Numeric(20, 4), nullable=False)
+    discount_percent = Column(Numeric(5, 2), default=0)
+    discount_amount = Column(Numeric(20, 4), default=0)
+    vat_rate = Column(Numeric(5, 2), default=16.00)
+    vat_amount = Column(Numeric(20, 4), default=0)
+    line_total_exclusive = Column(Numeric(20, 4), nullable=False)
+    line_total_inclusive = Column(Numeric(20, 4), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    # Relationships
+    quotation = relationship("Quotation", back_populates="items")
+    item = relationship("Item")
+
+
+class InvoicePayment(Base):
+    """Split Payment Tracking for Sales Invoices"""
+    __tablename__ = "invoice_payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("sales_invoices.id", ondelete="CASCADE"), nullable=False)
+    payment_mode = Column(String(20), nullable=False)  # 'cash', 'mpesa', 'card', 'credit', 'insurance'
+    amount = Column(Numeric(15, 4), nullable=False, default=0)
+    payment_reference = Column(String(100))  # M-Pesa code, transaction ID, etc.
+    paid_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    paid_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    # Relationships
+    sales_invoice = relationship("SalesInvoice", back_populates="invoice_payments")
+    user = relationship("User", foreign_keys=[paid_by])
+
+    __table_args__ = (
+        {"comment": "Split payment tracking for sales invoices. Supports multiple payment modes per invoice."},
+    )
