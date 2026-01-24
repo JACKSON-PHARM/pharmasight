@@ -1,7 +1,9 @@
 // PharmaSight Configuration
-
+// Use relative URL when served from same origin (e.g. Render); localhost => explicit API URL for local dev.
 const CONFIG = {
-    API_BASE_URL: 'http://localhost:8000',
+    API_BASE_URL: (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+        ? ''
+        : 'http://localhost:8000',
     // Supabase Configuration
     // Get these from: https://supabase.com/dashboard/project/kwvkkbofubsjiwqlqakt/settings/api
     SUPABASE_URL: 'https://kwvkkbofubsjiwqlqakt.supabase.co',  // Your Project URL

@@ -1,9 +1,19 @@
 """
 PharmaSight - Main FastAPI Application
 """
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
 from app.config import settings
+
+# Frontend directory (pharmasight/frontend, relative to backend/app)
+_BACKEND_APP = Path(__file__).resolve().parent
+_BACKEND = _BACKEND_APP.parent
+_FRONTEND_DIR = _BACKEND.parent / "frontend"
 
 # Create FastAPI app
 app = FastAPI(
@@ -22,16 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "name": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "status": "running",
-    }
 
 
 @app.get("/health")
@@ -62,4 +62,18 @@ app.include_router(excel_import_router, prefix="/api/excel", tags=["Excel Import
 app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotations"])
 app.include_router(stock_take_router, prefix="/api/stock-take", tags=["Stock Take"])
 app.include_router(order_book_router, prefix="/api/order-book", tags=["Order Book"])
+
+# Serve frontend static files and SPA
+if _FRONTEND_DIR.is_dir():
+    app.mount("/css", StaticFiles(directory=str(_FRONTEND_DIR / "css")), name="css")
+    app.mount("/js", StaticFiles(directory=str(_FRONTEND_DIR / "js")), name="js")
+    _index_path = _FRONTEND_DIR / "index.html"
+
+    @app.get("/")
+    async def root():
+        return FileResponse(_index_path, media_type="text/html")
+
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        return FileResponse(_index_path, media_type="text/html")
 
