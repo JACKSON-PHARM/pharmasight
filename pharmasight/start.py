@@ -72,23 +72,27 @@ def start_backend(project_root, venv_python):
     )
 
 def start_frontend(project_root):
-    """Start the frontend HTTP server"""
-    print_colored("🎨 Starting Frontend Server...", Colors.YELLOW)
+    """Start the frontend HTTP server with SPA routing"""
+    print_colored("🎨 Starting Frontend Server (SPA routing enabled)...", Colors.YELLOW)
     
     frontend_dir = project_root / "frontend"
+    spa_server = frontend_dir / "spa_server.py"
     
-    # Start Python HTTP server
+    # Start SPA-enabled HTTP server
     cmd = [
         sys.executable,
-        "-m", "http.server",
+        str(spa_server),
         "3000"
     ]
     
+    # IMPORTANT: Do NOT capture stdout/stderr here.
+    # We want any errors (e.g. port in use, syntax errors) to be visible
+    # directly in the console, otherwise start.py only shows an exit code.
     return subprocess.Popen(
         cmd,
         cwd=str(frontend_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+        stdout=None,              # Show frontend logs in the main console
+        stderr=subprocess.STDOUT  # Merge stderr with stdout
     )
 
 def main():

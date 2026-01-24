@@ -459,6 +459,7 @@ COMMENT ON TABLE document_sequences IS 'Document numbering sequences are BRANCH-
 
 -- Insert Default Roles
 INSERT INTO user_roles (role_name, description) VALUES
+    ('Super Admin', 'Full system access with all permissions - can manage users and roles'),
     ('admin', 'Full system access'),
     ('pharmacist', 'Can sell, purchase, view reports'),
     ('cashier', 'Can sell only'),
@@ -469,6 +470,121 @@ ON CONFLICT (role_name) DO NOTHING;
 -- =====================================================
 -- HELPER FUNCTIONS
 -- =====================================================
+
+-- Function to ensure first user gets Super Admin role
+-- This should be called after a user is created or when setting up the first admin
+CREATE OR REPLACE FUNCTION ensure_first_user_is_super_admin()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_user_count INTEGER;
+    v_super_admin_role_id UUID;
+    v_first_branch_id UUID;
+BEGIN
+    -- Count existing users (excluding soft-deleted)
+    SELECT COUNT(*) INTO v_user_count
+    FROM users
+    WHERE deleted_at IS NULL AND id != NEW.id;
+    
+    -- If this is the first user, assign Super Admin role
+    IF v_user_count = 0 THEN
+        -- Get Super Admin role ID
+        SELECT id INTO v_super_admin_role_id
+        FROM user_roles
+        WHERE role_name = 'Super Admin'
+        LIMIT 1;
+        
+        -- If Super Admin role exists and we have at least one branch
+        IF v_super_admin_role_id IS NOT NULL THEN
+            -- Get the first branch (if exists)
+            SELECT id INTO v_first_branch_id
+            FROM branches
+            ORDER BY created_at ASC
+            LIMIT 1;
+            
+            -- If branch exists, assign Super Admin role to first branch
+            IF v_first_branch_id IS NOT NULL THEN
+                -- Check if assignment already exists
+                IF NOT EXISTS (
+                    SELECT 1 FROM user_branch_roles
+                    WHERE user_id = NEW.id
+                    AND branch_id = v_first_branch_id
+                    AND role_id = v_super_admin_role_id
+                ) THEN
+                    INSERT INTO user_branch_roles (user_id, branch_id, role_id)
+                    VALUES (NEW.id, v_first_branch_id, v_super_admin_role_id);
+                END IF;
+            END IF;
+        END IF;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger to automatically assign Super Admin to first user
+DROP TRIGGER IF EXISTS trigger_ensure_first_user_super_admin ON users;
+CREATE TRIGGER trigger_ensure_first_user_super_admin
+    AFTER INSERT ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION ensure_first_user_is_super_admin();
+
+-- Manual function to promote existing first user to Super Admin (run this if needed)
+CREATE OR REPLACE FUNCTION promote_first_user_to_super_admin()
+RETURNS VOID AS $$
+DECLARE
+    v_first_user_id UUID;
+    v_super_admin_role_id UUID;
+    v_first_branch_id UUID;
+BEGIN
+    -- Get the first user (by creation date, excluding soft-deleted)
+    SELECT id INTO v_first_user_id
+    FROM users
+    WHERE deleted_at IS NULL
+    ORDER BY created_at ASC
+    LIMIT 1;
+    
+    IF v_first_user_id IS NULL THEN
+        RAISE NOTICE 'No users found';
+        RETURN;
+    END IF;
+    
+    -- Get Super Admin role
+    SELECT id INTO v_super_admin_role_id
+    FROM user_roles
+    WHERE role_name = 'Super Admin'
+    LIMIT 1;
+    
+    IF v_super_admin_role_id IS NULL THEN
+        RAISE NOTICE 'Super Admin role not found';
+        RETURN;
+    END IF;
+    
+    -- Get first branch
+    SELECT id INTO v_first_branch_id
+    FROM branches
+    ORDER BY created_at ASC
+    LIMIT 1;
+    
+    IF v_first_branch_id IS NULL THEN
+        RAISE NOTICE 'No branches found - cannot assign role. Please create a branch first.';
+        RETURN;
+    END IF;
+    
+    -- Assign Super Admin role if not already assigned
+    IF NOT EXISTS (
+        SELECT 1 FROM user_branch_roles
+        WHERE user_id = v_first_user_id
+        AND branch_id = v_first_branch_id
+        AND role_id = v_super_admin_role_id
+    ) THEN
+        INSERT INTO user_branch_roles (user_id, branch_id, role_id)
+        VALUES (v_first_user_id, v_first_branch_id, v_super_admin_role_id);
+        RAISE NOTICE 'Promoted first user to Super Admin';
+    ELSE
+        RAISE NOTICE 'First user already has Super Admin role';
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
 
 -- Function to get next document number (SIMPLIFIED FORMAT)
 CREATE OR REPLACE FUNCTION get_next_document_number(

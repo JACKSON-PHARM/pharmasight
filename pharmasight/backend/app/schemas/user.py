@@ -81,6 +81,7 @@ class UserResponse(BaseModel):
     is_pending: bool
     password_set: bool
     invitation_code: Optional[str] = None  # Show invitation code if pending
+    deleted_at: Optional[datetime] = None  # Soft delete timestamp
     branch_roles: List[UserBranchRoleResponse] = []  # List of branch-role assignments
     created_at: datetime
     updated_at: datetime

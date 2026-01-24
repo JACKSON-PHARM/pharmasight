@@ -1,42 +1,39 @@
 /**
- * Supabase Authentication Service
+ * Supabase Authentication Service (Legacy)
  * 
- * Handles all authentication operations using Supabase Auth.
- * This service NEVER stores passwords - all auth is handled by Supabase.
+ * DEPRECATED: This module is kept for backward compatibility.
+ * New code should use AuthBootstrap service instead.
+ * All Supabase client access now goes through the shared supabase_client.js module.
  */
-
-// Supabase client (will be initialized from config)
-let supabaseClient = null;
 
 /**
- * Initialize Supabase client
+ * Initialize Supabase client (legacy wrapper)
+ * @deprecated Use window.getSupabaseClient() or window.SupabaseClient.get() instead
  */
 function initSupabase() {
-    if (typeof supabase === 'undefined') {
-        console.error('Supabase JS library not loaded. Add <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>');
-        return null;
+    // Use shared client module
+    if (typeof window !== 'undefined' && window.getSupabaseClient) {
+        return window.getSupabaseClient();
     }
-    
-    const supabaseUrl = CONFIG.SUPABASE_URL || '';
-    const supabaseAnonKey = CONFIG.SUPABASE_ANON_KEY || '';
-    
-    if (!supabaseUrl || !supabaseAnonKey) {
-        console.error('Supabase URL or Anon Key not configured');
-        return null;
+    console.warn('[AUTH LEGACY] Supabase client module not available');
+    return null;
+}
+
+/**
+ * Get Supabase client (direct access to shared module)
+ */
+function getClient() {
+    if (typeof window !== 'undefined' && window.initSupabaseClient) {
+        return window.initSupabaseClient();
     }
-    
-    supabaseClient = supabase.createClient(supabaseUrl, supabaseAnonKey);
-    return supabaseClient;
+    return null;
 }
 
 /**
  * Get current authenticated user
  */
 async function getCurrentUser() {
-    if (!supabaseClient) {
-        initSupabase();
-    }
-    
+    const supabaseClient = getClient();
     if (!supabaseClient) {
         return null;
     }
@@ -58,10 +55,7 @@ async function getCurrentUser() {
  * Get current session
  */
 async function getCurrentSession() {
-    if (!supabaseClient) {
-        initSupabase();
-    }
-    
+    const supabaseClient = getClient();
     if (!supabaseClient) {
         return null;
     }
@@ -83,12 +77,9 @@ async function getCurrentSession() {
  * Sign in with email and password
  */
 async function signIn(email, password) {
+    const supabaseClient = getClient();
     if (!supabaseClient) {
-        initSupabase();
-    }
-    
-    if (!supabaseClient) {
-        throw new Error('Supabase client not initialized');
+        throw new Error('Supabase client not available');
     }
     
     try {
@@ -112,10 +103,7 @@ async function signIn(email, password) {
  * Sign out
  */
 async function signOut() {
-    if (!supabaseClient) {
-        initSupabase();
-    }
-    
+    const supabaseClient = getClient();
     if (!supabaseClient) {
         return;
     }
@@ -210,10 +198,7 @@ async function shouldRedirectToSetup() {
  * Listen for auth state changes
  */
 function onAuthStateChange(callback) {
-    if (!supabaseClient) {
-        initSupabase();
-    }
-    
+    const supabaseClient = getClient();
     if (!supabaseClient) {
         return null;
     }

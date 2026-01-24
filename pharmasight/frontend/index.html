@@ -10,7 +10,43 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
-    <div class="app-container">
+    <!-- Auth Layout Container (Unauthenticated routes only) -->
+    <div id="authLayout" style="display: none;">
+        <!-- Auth pages (login, password-set, etc.) will be rendered here -->
+        <!-- Login Page -->
+        <div id="login" class="page">
+            <div class="login-container">
+                <div class="login-card">
+                    <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                    <h2>Sign In</h2>
+                    <form id="loginForm">
+                        <div class="form-group">
+                            <label for="loginEmail">Email</label>
+                            <input type="email" id="loginEmail" required placeholder="your@email.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="loginPassword">Password</label>
+                            <input type="password" id="loginPassword" required placeholder="••••••••">
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-block">
+                            <i class="fas fa-sign-in-alt"></i> Sign In
+                        </button>
+                    </form>
+                    <div id="loginError" class="error-message" style="display: none;"></div>
+                    <div class="login-links">
+                        <a href="#password-reset">Forgot Password?</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="setup" class="page"></div>
+        <div id="invite" class="page"></div>
+        <div id="password-set" class="page"></div>
+        <div id="password-reset" class="page"></div>
+    </div>
+    
+    <!-- App Layout Container (Authenticated routes only) -->
+    <div class="app-container" id="appLayout" style="display: none;">
         <!-- Sidebar Navigation -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
@@ -72,6 +108,9 @@
                     <i class="fas fa-user-circle"></i>
                     <span id="username">Admin</span>
                 </div>
+                <button class="btn btn-link btn-sm" id="logoutBtn" onclick="if(window.globalLogout) window.globalLogout()" style="width: 100%; margin-top: 0.5rem; color: var(--text-secondary); text-decoration: none;">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </button>
             </div>
         </aside>
 
@@ -105,6 +144,9 @@
                     </button>
                     <button class="btn btn-primary" id="newPurchaseBtn" style="display: none;">
                         <i class="fas fa-plus"></i> New Purchase
+                    </button>
+                    <button class="btn btn-secondary" id="logoutBtnTop" onclick="if(window.globalLogout) window.globalLogout()" title="Logout">
+                        <i class="fas fa-sign-out-alt"></i> Logout
                     </button>
                 </div>
             </header>
@@ -157,41 +199,18 @@
                     </div>
                 </div>
 
-                <!-- Login Page -->
-                <div id="login" class="page">
-                    <div class="login-container">
-                        <div class="login-card">
-                            <h1><i class="fas fa-pills"></i> PharmaSight</h1>
-                            <h2>Sign In</h2>
-                            <form id="loginForm">
-                                <div class="form-group">
-                                    <label for="loginEmail">Email</label>
-                                    <input type="email" id="loginEmail" required placeholder="your@email.com">
-                                </div>
-                                <div class="form-group">
-                                    <label for="loginPassword">Password</label>
-                                    <input type="password" id="loginPassword" required placeholder="••••••••">
-                                </div>
-                                <button type="submit" class="btn btn-primary btn-block">
-                                    <i class="fas fa-sign-in-alt"></i> Sign In
-                                </button>
-                            </form>
-                            <div id="loginError" class="error-message" style="display: none;"></div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Other pages will be loaded dynamically -->
-                <div id="setup" class="page"></div>
                 <div id="sales" class="page"></div>
                 <div id="purchases" class="page"></div>
                 <div id="inventory" class="page"></div>
                 <div id="expenses" class="page"></div>
                 <div id="reports" class="page"></div>
                 <div id="settings" class="page"></div>
+                <div id="branch-select" class="page"></div>
             </div>
         </main>
     </div>
+    <!-- End App Layout Container -->
 
     <!-- Modals -->
     <div id="modalOverlay" class="modal-overlay" style="display: none;">
@@ -205,6 +224,20 @@
 
     <!-- Cache busting: Add ?v=timestamp to force reload during development -->
     <script>
+        // Early invite detection - handle /invite path before 404
+        (function() {
+            const pathname = window.location.pathname;
+            const hash = window.location.hash || '';
+            
+            // If path is /invite, redirect to hash-based routing
+            if (pathname === '/invite' || pathname === '/invite/') {
+                console.log('[INVITE] Redirecting /invite path to hash routing');
+                // Preserve the hash (access_token) and redirect to root
+                window.location.replace(window.location.origin + '/' + hash);
+                return;
+            }
+        })();
+        
         // Diagnostic script - runs first to catch errors
         console.log('🔍 PharmaSight: Starting initialization...');
         console.log('🔍 Window location:', window.location.href);
@@ -242,10 +275,30 @@
     </script>
     <script src="js/config.js?v=7"></script>
     <script src="js/api.js?v=7"></script>
-    <script src="js/auth.js?v=1"></script>
+    <!-- Global Supabase Client (must load before auth modules) -->
+    <script src="js/services/supabase_client.js?v=1"></script>
+    <!-- Legacy auth (backward compatibility) -->
+    <script src="js/auth.js?v=2"></script>
+    <!-- New architecture services (depends on supabase_client) -->
+    <script src="js/services/auth_bootstrap.js?v=2"></script>
+    <script src="js/services/branch_context.js?v=1"></script>
+    <script src="js/services/app_state.js?v=1"></script>
+    <script src="js/services/optimistic_locking.js?v=1"></script>
     <script src="js/utils.js?v=7"></script>
-    <script src="js/app.js?v=8"></script>
+    <!-- Bump version to force browser to load latest app.js after routing fixes -->
+    <script src="js/app.js?v=11"></script>
     <script src="js/pages/login.js?v=1"></script>
+    <script src="js/pages/password_reset.js?v=3"></script>
+    <script>
+        // Test: Verify password_reset.js loaded
+        if (typeof window.loadPasswordReset === 'function') {
+            console.log('✅ TEST: window.loadPasswordReset is defined');
+        } else {
+            console.error('❌ TEST: window.loadPasswordReset is NOT defined!');
+        }
+    </script>
+    <script src="js/pages/password_set.js?v=1"></script>
+    <script src="js/pages/branch_select.js?v=1"></script>
     <script src="js/pages/setup.js?v=7"></script>
     <script src="js/pages/dashboard.js?v=5"></script>
     <script src="js/pages/items.js?v=5"></script>
@@ -253,7 +306,7 @@
     <script src="js/components/TransactionItemsTable.js"></script>
     <script src="js/pages/purchases.js?v=18"></script>
     <script src="js/pages/inventory.js?v=6"></script>
-    <script src="js/pages/settings.js?v=5"></script>
+    <script src="js/pages/settings.js?v=7"></script>
 </body>
 </html>
 

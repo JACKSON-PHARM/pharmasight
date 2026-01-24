@@ -6,7 +6,7 @@ Admin-only endpoints for managing organization users.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 from typing import List
 from uuid import UUID
 import secrets
@@ -20,6 +20,10 @@ from app.schemas.user import (
     UserRoleResponse, UserActivateRequest, UserRoleUpdate,
     InvitationResponse
 )
+from app.services.invite_service import InviteService
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -114,6 +118,7 @@ def list_users(
             is_pending=user.is_pending if user.is_pending else False,
             password_set=user.password_set if user.password_set else False,
             invitation_code=user.invitation_code if user.is_pending else None,
+            deleted_at=user.deleted_at,
             branch_roles=branch_roles,
             created_at=user.created_at,
             updated_at=user.updated_at
@@ -164,6 +169,7 @@ def get_user(user_id: UUID, db: Session = Depends(get_db)):
         is_pending=user.is_pending if user.is_pending else False,
         password_set=user.password_set if user.password_set else False,
         invitation_code=user.invitation_code if user.is_pending else None,
+        deleted_at=user.deleted_at,
         branch_roles=branch_roles,
         created_at=user.created_at,
         updated_at=user.updated_at
@@ -183,15 +189,29 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
     User is created as inactive/pending with invitation code.
     Returns invitation token and code for user setup.
     """
-    # Check if user with email already exists
-    existing_user = db.query(User).filter(
-        and_(User.email == user_data.email, User.deleted_at.is_(None))
-    ).first()
-    if existing_user:
+    # Normalize email (lowercase, trim)
+    normalized_email = user_data.email.lower().strip()
+    if not normalized_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"User with email {user_data.email} already exists"
+            detail="Email address is required"
         )
+    
+    # Check if user with email already exists (case-insensitive, including soft-deleted)
+    existing_user = db.query(User).filter(
+        func.lower(func.trim(User.email)) == normalized_email
+    ).first()
+    if existing_user:
+        if existing_user.deleted_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"User with email {user_data.email} already exists. Please use a different email address."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"User with email {user_data.email} was previously deleted. Please contact an administrator to restore this account."
+            )
     
     # Generate unique invitation token and code
     invitation_token = generate_invitation_token()
@@ -212,7 +232,7 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
     
     new_user = User(
         id=temp_user_id,  # Temporary ID - will be updated when user sets password via Supabase Auth
-        email=user_data.email,
+        email=normalized_email,  # Use normalized email
         full_name=user_data.full_name,
         phone=user_data.phone,
         is_active=False,  # Inactive until password is set
@@ -222,8 +242,22 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
         invitation_code=invitation_code
     )
     
-    db.add(new_user)
-    db.flush()  # Get the ID
+    try:
+        db.add(new_user)
+        db.flush()  # Get the ID
+    except Exception as e:
+        db.rollback()
+        # Check if it's a duplicate email error
+        if "duplicate key value violates unique constraint" in str(e).lower() and "email" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"User with email {user_data.email} already exists. Please use a different email address."
+            )
+        # Re-raise other errors
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating user: {str(e)}"
+        )
     
     # Get or create role
     role = get_role_by_name(user_data.role_name, db)
@@ -247,8 +281,38 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
     
+    # Send invitation email via Supabase Auth
+    email_sent = False
+    email_error = None
+    try:
+        # Create user in Supabase Auth and send invite email
+        invite_result = InviteService.invite_admin_user(
+            email=normalized_email,  # Use normalized email
+            full_name=user_data.full_name,
+            redirect_to=f"/invite?token={invitation_token}"
+        )
+        
+        if invite_result.get("success"):
+            email_sent = True
+            # Note: Supabase Auth user_id will be linked when user sets password
+            # For now, we use a temporary UUID and link it later
+            logger.info(f"Invitation email sent to {user_data.email}")
+        else:
+            email_error = invite_result.get("error", "Unknown error")
+            logger.warning(f"Failed to send invitation email: {email_error}")
+    except Exception as e:
+        email_error = str(e)
+        logger.error(f"Error sending invitation email: {email_error}")
+        # Don't fail the user creation if email fails - user can still use invitation code
+    
     # Build invitation link (frontend URL with token)
     invitation_link = f"/invite?token={invitation_token}"
+    
+    message = f"User created successfully. Invitation code: {invitation_code}"
+    if email_sent:
+        message += " Invitation email sent."
+    elif email_error:
+        message += f" Note: Email could not be sent ({email_error}). User can still use the invitation code."
     
     return InvitationResponse(
         user_id=new_user.id,
@@ -256,7 +320,7 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
         invitation_token=invitation_token,
         invitation_code=invitation_code,
         invitation_link=invitation_link,
-        message=f"User created successfully. Invitation code: {invitation_code}"
+        message=message
     )
 
 
@@ -321,6 +385,73 @@ def delete_user(user_id: UUID, db: Session = Depends(get_db)):
     db.commit()
     
     return {"success": True, "message": "User deleted successfully"}
+
+
+@router.post("/users/{user_id}/restore", response_model=UserResponse, status_code=status.HTTP_200_OK)
+def restore_user(user_id: UUID, db: Session = Depends(get_db)):
+    """
+    Restore a soft-deleted user
+    
+    Removes the deleted_at timestamp to restore the user.
+    User will need to be activated separately if needed.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user.deleted_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not deleted and cannot be restored"
+        )
+    
+    # Restore user
+    user.deleted_at = None
+    
+    db.commit()
+    db.refresh(user)
+    
+    # Get branch roles with details
+    branch_roles_query = db.query(
+        UserBranchRole,
+        UserRole.role_name,
+        Branch.name.label('branch_name')
+    ).join(
+        UserRole, UserBranchRole.role_id == UserRole.id
+    ).join(
+        Branch, UserBranchRole.branch_id == Branch.id
+    ).filter(
+        UserBranchRole.user_id == user.id
+    ).all()
+    
+    branch_roles = []
+    for ubr, role_name, branch_name in branch_roles_query:
+        from app.schemas.user import UserBranchRoleResponse
+        branch_roles.append(UserBranchRoleResponse(
+            id=ubr.id,
+            user_id=ubr.user_id,
+            branch_id=ubr.branch_id,
+            role_id=ubr.role_id,
+            role_name=role_name,
+            branch_name=branch_name,
+            created_at=ubr.created_at
+        ))
+    
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        phone=user.phone,
+        is_active=user.is_active,
+        is_pending=user.is_pending if user.is_pending else False,
+        password_set=user.password_set if user.password_set else False,
+        invitation_code=user.invitation_code if user.is_pending else None,
+        deleted_at=user.deleted_at,
+        branch_roles=branch_roles,
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
 
 
 @router.post("/users/{user_id}/roles", response_model=UserResponse)

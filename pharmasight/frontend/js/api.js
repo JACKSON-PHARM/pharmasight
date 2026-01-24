@@ -272,6 +272,8 @@ const API = {
         update: (userId, data) => api.put(`/api/users/${userId}`, data),
         activate: (userId, isActive) => api.post(`/api/users/${userId}/activate`, { is_active: isActive }),
         delete: (userId) => api.delete(`/api/users/${userId}`),
+        restore: (userId) => api.post(`/api/users/${userId}/restore`, null),
+        sendInvitation: (userId) => api.post(`/api/users/${userId}/send-invitation`, null),
         assignRole: (userId, roleData) => api.post(`/api/users/${userId}/roles`, roleData),
         listRoles: () => api.get('/api/users/roles'),
     },

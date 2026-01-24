@@ -51,11 +51,11 @@ pause
 
 # Function to start frontend
 function Start-Frontend {
-    Write-Host "🎨 Starting Frontend Server..." -ForegroundColor Yellow
+    Write-Host "🎨 Starting Frontend Server (SPA routing enabled)..." -ForegroundColor Yellow
     
     $frontendScript = @"
 cd '$projectRoot\frontend'
-python -m http.server 3000
+python spa_server.py 3000
 pause
 "@
     

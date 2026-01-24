@@ -37,6 +37,169 @@ body {
     min-height: 100vh;
 }
 
+/* Auth Layout (Unauthenticated) */
+#authLayout {
+    height: 100vh;
+    min-height: 100vh;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bg-color);
+    position: relative;
+}
+
+#authLayout .page {
+    width: 100%;
+    height: 100%;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+/* Login Form Styles */
+.login-container {
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    background-color: var(--bg-color);
+}
+
+.login-card {
+    width: 100%;
+    max-width: 400px;
+    background: var(--card-bg);
+    border-radius: 0.75rem;
+    padding: 2.5rem;
+    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--border-color);
+}
+
+.login-card h1 {
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+}
+
+.login-card h1 i {
+    color: var(--primary-color);
+    font-size: 2rem;
+}
+
+.login-card h2 {
+    font-size: 1.5rem;
+    margin-bottom: 2rem;
+    color: var(--text-primary);
+    text-align: center;
+    font-weight: 600;
+}
+
+.login-card .form-group {
+    margin-bottom: 1.5rem;
+}
+
+.login-card .form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+    font-weight: 500;
+    font-size: 0.875rem;
+}
+
+.login-card .form-group input {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    font-size: 1rem;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    background-color: white;
+    color: var(--text-primary);
+}
+
+.login-card .form-group input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.login-card .form-group input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.6;
+}
+
+.login-card .btn-block {
+    width: 100%;
+    justify-content: center;
+    padding: 0.875rem 1.5rem;
+    font-size: 1rem;
+    margin-top: 1rem;
+}
+
+.login-card .error-message {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    background-color: rgba(239, 68, 68, 0.1);
+    border: 1px solid var(--danger-color);
+    border-radius: 0.5rem;
+    color: var(--danger-color);
+    font-size: 0.875rem;
+    text-align: center;
+}
+
+.login-links {
+    margin-top: 1.5rem;
+    text-align: center;
+}
+
+.login-links a {
+    color: var(--primary-color);
+    text-decoration: none;
+    font-size: 0.875rem;
+    transition: color 0.2s;
+}
+
+.login-links a:hover {
+    color: var(--primary-dark);
+    text-decoration: underline;
+}
+
+/* Success Message Styles */
+.success-message {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    background-color: rgba(16, 185, 129, 0.1);
+    border: 1px solid var(--success-color);
+    border-radius: 0.5rem;
+    color: var(--success-color);
+    font-size: 0.875rem;
+    text-align: center;
+}
+
+.success-message i {
+    margin-right: 0.5rem;
+}
+
+.success-message p {
+    margin: 0.25rem 0;
+}
+
+/* App Layout (Authenticated) */
+#appLayout {
+    display: flex;
+    min-height: 100vh;
+    width: 100%;
+}
+
 /* Sidebar */
 .sidebar {
     width: 260px;

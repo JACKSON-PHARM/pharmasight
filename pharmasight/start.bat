@@ -31,8 +31,8 @@ start "PharmaSight Backend" cmd /k "cd /d %~dp0 && set PYTHONPATH=%~dp0backend &
 
 timeout /t 3 /nobreak >nul
 
-echo [INFO] Starting Frontend Server on http://localhost:3000
-start "PharmaSight Frontend" cmd /k "cd /d %~dp0frontend && python -m http.server 3000"
+echo [INFO] Starting Frontend Server on http://localhost:3000 (SPA routing enabled)
+start "PharmaSight Frontend" cmd /k "cd /d %~dp0frontend && python spa_server.py 3000"
 
 echo.
 echo ============================================
