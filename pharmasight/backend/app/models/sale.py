@@ -24,6 +24,7 @@ class SalesInvoice(Base):
     customer_phone = Column(String(50), nullable=True)  # Required for credit payment mode (nullable for backward compatibility)
     payment_mode = Column(String(50), nullable=False)  # cash, mpesa, credit, bank (legacy - kept for backward compatibility)
     payment_status = Column(String(50), default="PAID")  # PAID, PARTIAL, CREDIT
+    sales_type = Column(String(20), default="RETAIL")  # RETAIL (customers) or WHOLESALE (pharmacies)
     total_exclusive = Column(Numeric(20, 4), default=0)
     vat_rate = Column(Numeric(5, 2), default=16.00)
     vat_amount = Column(Numeric(20, 4), default=0)

@@ -1,7 +1,9 @@
 """
-Item schemas for request/response validation
+Item schemas for request/response validation.
+3-tier UNIT system: supplier_unit (what we buy), wholesale_unit (what pharmacies buy),
+retail_unit (what customers buy), pack_size (retail units per packet).
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
@@ -38,25 +40,41 @@ class ItemUnitResponse(ItemUnitBase):
 
 
 class ItemBase(BaseModel):
-    """Item base schema"""
+    """Item base schema with 3-tier UNIT system"""
     name: str = Field(..., min_length=1, max_length=255)
     generic_name: Optional[str] = None
     sku: Optional[str] = None
     barcode: Optional[str] = None
     category: Optional[str] = None
-    base_unit: str = Field(..., description="Base unit (tablet, ml, gram, etc.)")
+    base_unit: Optional[str] = Field(None, description="Legacy: base unit; default = retail_unit")
     default_cost: float = Field(default=0, ge=0)
-    # VAT Classification (Kenya Pharmacy Context)
+    # 3-TIER UNIT SYSTEM
+    supplier_unit: str = Field(default="packet", description="What we buy: packet, box, bottle")
+    wholesale_unit: str = Field(default="packet", description="What pharmacies buy")
+    retail_unit: str = Field(default="tablet", description="What customers buy: tablet, capsule, ml, gram")
+    pack_size: int = Field(default=1, ge=1, description="Retail units per supplier/wholesale unit")
+    can_break_bulk: bool = Field(default=False, description="Can we sell individual retail units? (requires pack_size > 1)")
+    purchase_price_per_supplier_unit: float = Field(default=0, ge=0, description="Cost per supplier unit")
+    wholesale_price_per_wholesale_unit: float = Field(default=0, ge=0, description="Sell price per wholesale unit")
+    retail_price_per_retail_unit: float = Field(default=0, ge=0, description="Sell price per retail unit")
+    # VAT
+    vat_category: str = Field(default="ZERO_RATED", description="ZERO_RATED | STANDARD_RATED")
+    vat_rate: float = Field(default=0, ge=0, le=100, description="0 or 16")
+    price_includes_vat: bool = Field(default=False, description="Is price inclusive of VAT?")
     is_vatable: Optional[bool] = Field(default=True, description="Is this item VATable?")
-    vat_rate: Optional[float] = Field(default=0, ge=0, le=100, description="VAT rate: 0 for zero-rated, 16 for standard-rated")
-    vat_code: Optional[str] = Field(default=None, description="VAT code: ZERO_RATED | STANDARD | EXEMPT")
-    price_includes_vat: Optional[bool] = Field(default=False, description="Is price inclusive of VAT?")
+    vat_code: Optional[str] = Field(default=None, description="ZERO_RATED | STANDARD | EXEMPT")
 
 
 class ItemCreate(ItemBase):
-    """Create item request"""
+    """Create item request with 3-tier units"""
     company_id: UUID
-    units: List[ItemUnitCreate] = Field(default_factory=list, description="Unit conversions")
+    units: List[ItemUnitCreate] = Field(default_factory=list, description="Unit conversions (optional; derived from 3-tier if empty)")
+
+    @model_validator(mode="after")
+    def validate_break_bulk_pack_size(self):
+        if self.can_break_bulk and self.pack_size < 2:
+            raise ValueError("Breakable items must have pack_size > 1 (e.g. 30 tablets per packet)")
+        return self
 
 
 class ItemsBulkCreate(BaseModel):
@@ -78,28 +96,53 @@ class ItemUpdate(BaseModel):
     vat_rate: Optional[float] = Field(None, ge=0, le=100)
     vat_code: Optional[str] = None
     price_includes_vat: Optional[bool] = None
+    vat_category: Optional[str] = None
     is_active: Optional[bool] = None
+    supplier_unit: Optional[str] = None
+    wholesale_unit: Optional[str] = None
+    retail_unit: Optional[str] = None
+    pack_size: Optional[int] = Field(None, ge=1)
+    can_break_bulk: Optional[bool] = None
+    purchase_price_per_supplier_unit: Optional[float] = Field(None, ge=0)
+    wholesale_price_per_wholesale_unit: Optional[float] = Field(None, ge=0)
+    retail_price_per_retail_unit: Optional[float] = Field(None, ge=0)
     units: Optional[List[ItemUnitUpdate]] = Field(None, description="Unit conversions (optional, only if modifying units)")
 
 
 class ItemResponse(ItemBase):
-    """Item response"""
+    """Item response with 3-tier unit fields"""
     id: UUID
     company_id: UUID
     is_active: bool
     created_at: datetime
     updated_at: datetime
     units: List[ItemUnitResponse] = []
+    requires_batch_tracking: Optional[bool] = None
+    requires_expiry_tracking: Optional[bool] = None
 
     class Config:
         from_attributes = True
 
 
 class ItemPricingBase(BaseModel):
-    """Item pricing base schema"""
-    markup_percent: Optional[float] = Field(None, ge=0, description="Markup percentage")
+    """Item pricing base schema with 3-tier pricing support"""
+    markup_percent: Optional[float] = Field(None, ge=0, description="Markup percentage (legacy, for backward compatibility)")
     min_margin_percent: Optional[float] = Field(None, ge=0, description="Minimum margin percentage")
     rounding_rule: Optional[str] = Field(None, description="Rounding rule (nearest_1, nearest_5, nearest_10)")
+    
+    # 3-Tier Pricing System
+    # Tier 1: Supplier/Wholesale Purchase Price
+    supplier_unit: Optional[str] = Field(None, description="Unit for supplier price (e.g., piece, box, carton)")
+    supplier_price_per_unit: Optional[float] = Field(None, ge=0, description="Purchase price per supplier_unit")
+    
+    # Tier 2: Wholesale Sale Price
+    wholesale_unit: Optional[str] = Field(None, description="Unit for wholesale price (e.g., piece, box, carton)")
+    wholesale_price_per_unit: Optional[float] = Field(None, ge=0, description="Wholesale sale price per wholesale_unit")
+    
+    # Tier 3: Retail Sale Price
+    retail_unit: Optional[str] = Field(None, description="Unit for retail price (e.g., piece, box, carton)")
+    retail_price_per_unit: Optional[float] = Field(None, ge=0, description="Retail sale price per retail_unit")
+    online_store_price_per_unit: Optional[float] = Field(None, ge=0, description="Online store price per retail_unit (optional)")
 
 
 class ItemPricingCreate(ItemPricingBase):

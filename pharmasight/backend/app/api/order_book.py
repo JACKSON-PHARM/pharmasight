@@ -137,9 +137,9 @@ def create_order_book_entry(
         # Update existing entry
         existing_entry.quantity_needed = entry.quantity_needed
         existing_entry.unit_name = entry.unit_name
-        existing_entry.reason = entry.reason
-        existing_entry.source_reference_type = entry.source_reference_type
-        existing_entry.source_reference_id = entry.source_reference_id
+        existing_entry.reason = entry.reason or "MANUAL_ADD"  # Default to MANUAL_ADD for manual entries
+        existing_entry.source_reference_type = None  # Not used - simplified to just reason + created_by
+        existing_entry.source_reference_id = None  # Not used
         existing_entry.notes = entry.notes
         existing_entry.priority = entry.priority
         if entry.supplier_id:
@@ -185,6 +185,8 @@ def create_order_book_entry(
         return OrderBookEntryResponse(**entry_dict)
     else:
         # Create new entry
+        # For manual entries, use MANUAL_ADD reason and clear source_reference fields
+        reason = entry.reason or "MANUAL_ADD"
         db_entry = DailyOrderBook(
             company_id=company_id,
             branch_id=branch_id,
@@ -192,9 +194,9 @@ def create_order_book_entry(
             supplier_id=entry.supplier_id,
             quantity_needed=entry.quantity_needed,
             unit_name=entry.unit_name,
-            reason=entry.reason,
-            source_reference_type=entry.source_reference_type,
-            source_reference_id=entry.source_reference_id,
+            reason=reason,
+            source_reference_type=None,  # Not used - simplified to just reason + created_by
+            source_reference_id=None,  # Not used
             notes=entry.notes,
             priority=entry.priority,
             status="PENDING",
@@ -279,7 +281,9 @@ def bulk_create_order_book_entries(
             supplier_id=bulk_data.supplier_id,
             quantity_needed=Decimal("1"),  # Default to 1, user can update
             unit_name=item.base_unit,
-            reason=bulk_data.reason,
+            reason=bulk_data.reason or "MANUAL_ADD",
+            source_reference_type=None,  # Not used - simplified to just reason + created_by
+            source_reference_id=None,  # Not used
             notes=bulk_data.notes,
             priority=5,
             status="PENDING",

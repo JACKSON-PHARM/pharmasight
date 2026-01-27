@@ -50,6 +50,7 @@ class SalesInvoiceBase(BaseModel):
     customer_phone: Optional[str] = None  # Required if payment_mode is 'credit'
     payment_mode: str = Field(default="cash", description="cash, mpesa, credit, bank (legacy - use invoice_payments for split payments)")
     payment_status: str = Field(default="UNPAID", description="UNPAID, PARTIAL, PAID")
+    sales_type: str = Field(default="RETAIL", description="RETAIL (customers) or WHOLESALE (pharmacies)")
     status: Optional[str] = Field(default="DRAFT", description="DRAFT, BATCHED, PAID, CANCELLED")
     discount_amount: Decimal = Field(default=0, ge=0)
 
@@ -79,6 +80,7 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     vat_rate: Decimal
     vat_amount: Decimal
     total_inclusive: Decimal
+    sales_type: Optional[str] = "RETAIL"
     status: Optional[str] = "DRAFT"  # Optional for backward compatibility
     batched: Optional[bool] = False
     batched_by: Optional[UUID] = None

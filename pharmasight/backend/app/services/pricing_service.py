@@ -154,7 +154,8 @@ class PricingService:
         item_id: UUID,
         branch_id: UUID,
         company_id: UUID,
-        unit_name: str
+        unit_name: str,
+        tier: str = "retail"
     ) -> Optional[Dict]:
         """
         Calculate recommended selling price for item
@@ -164,6 +165,7 @@ class PricingService:
             branch_id: Branch ID
             company_id: Company ID
             unit_name: Sale unit (tablet, box, etc.)
+            tier: Pricing tier to use ('supplier', 'wholesale', or 'retail'). Defaults to 'retail'
         
         Returns:
             Dict with:
@@ -173,7 +175,93 @@ class PricingService:
             - margin_percent
             - batch_reference (batch info if FEFO)
             - base_unit_price (per base unit)
+            - pricing_tier (which tier was used)
+            - pricing_unit (unit for the tier price)
         """
+        # First, try to get 3-tier pricing
+        tier_pricing = PricingService.get_price_for_tier(db, item_id, tier, unit_name)
+        
+        if tier_pricing:
+            # Use 3-tier pricing if available
+            if "converted_price" in tier_pricing:
+                # Price was converted to requested unit
+                recommended_unit_price = Decimal(str(tier_pricing["converted_price"]))
+                pricing_unit = tier_pricing["converted_unit"]
+            else:
+                # Price is in original unit, need to convert
+                item_unit = db.query(ItemUnit).filter(
+                    and_(
+                        ItemUnit.item_id == item_id,
+                        ItemUnit.unit_name == unit_name
+                    )
+                ).first()
+                
+                if not item_unit:
+                    raise ValueError(f"Unit '{unit_name}' not found for item {item_id}")
+                
+                # Get source unit multiplier
+                source_unit = db.query(ItemUnit).filter(
+                    and_(
+                        ItemUnit.item_id == item_id,
+                        ItemUnit.unit_name == tier_pricing["unit"]
+                    )
+                ).first()
+                
+                if source_unit:
+                    source_mult = Decimal(str(source_unit.multiplier_to_base))
+                    target_mult = Decimal(str(item_unit.multiplier_to_base))
+                    # Convert: price_per_target = price_per_source * (source_mult / target_mult)
+                    recommended_unit_price = Decimal(str(tier_pricing["price"])) * (source_mult / target_mult)
+                else:
+                    # Fallback: assume same unit
+                    recommended_unit_price = Decimal(str(tier_pricing["price"]))
+                
+                pricing_unit = unit_name
+            
+            # Get cost for margin calculation
+            unit_cost = PricingService.get_item_cost(db, item_id, branch_id, use_fefo=True)
+            if not unit_cost:
+                unit_cost = Decimal("0")
+            
+            # Calculate base unit price from recommended price
+            item_unit = db.query(ItemUnit).filter(
+                and_(
+                    ItemUnit.item_id == item_id,
+                    ItemUnit.unit_name == unit_name
+                )
+            ).first()
+            
+            if item_unit:
+                multiplier = Decimal(str(item_unit.multiplier_to_base))
+                base_unit_price = recommended_unit_price / multiplier if multiplier > 0 else recommended_unit_price
+            else:
+                base_unit_price = recommended_unit_price
+            
+            # Calculate margin
+            margin_percent = ((base_unit_price - unit_cost) / unit_cost * Decimal("100")) if unit_cost > 0 else Decimal("0")
+            
+            # Get batch reference (FEFO)
+            batches = InventoryService.get_stock_by_batch(db, item_id, branch_id)
+            batch_reference = None
+            if batches and len(batches) > 0:
+                batch_reference = {
+                    "batch_number": batches[0].get("batch_number"),
+                    "expiry_date": batches[0].get("expiry_date")
+                }
+            
+            return {
+                "recommended_unit_price": recommended_unit_price,
+                "unit_cost_used": unit_cost,
+                "markup_percent": None,  # Not applicable for fixed 3-tier pricing
+                "margin_percent": margin_percent,
+                "batch_reference": batch_reference,
+                "base_unit_price": base_unit_price,
+                "rounding_rule": None,  # Not applicable for fixed 3-tier pricing
+                "pricing_tier": tier,
+                "pricing_unit": pricing_unit
+            }
+        
+        # Fallback to legacy markup-based pricing if 3-tier not available
         # Get unit multiplier
         item_unit = db.query(ItemUnit).filter(
             and_(
@@ -226,7 +314,9 @@ class PricingService:
             "margin_percent": margin_percent,
             "batch_reference": batch_reference,
             "base_unit_price": base_unit_price,
-            "rounding_rule": rounding_rule
+            "rounding_rule": rounding_rule,
+            "pricing_tier": None,  # Legacy pricing
+            "pricing_unit": unit_name
         }
 
     @staticmethod
@@ -257,3 +347,121 @@ class PricingService:
             "is_low_margin": is_low_margin
         }
 
+    @staticmethod
+    def get_3tier_pricing(
+        db: Session,
+        item_id: UUID
+    ) -> Optional[Dict]:
+        """
+        Get 3-tier pricing for an item (from Item model, not ItemPricing)
+        
+        Returns:
+            Dict with:
+            - supplier_price: {price, unit}
+            - wholesale_price: {price, unit}
+            - retail_price: {price, unit}
+        """
+        item = db.query(Item).filter(Item.id == item_id).first()
+        
+        if not item:
+            return None
+        
+        result = {}
+        
+        # Tier 1: Supplier Price (from Item model)
+        if hasattr(item, 'purchase_price_per_supplier_unit') and item.purchase_price_per_supplier_unit:
+            result["supplier_price"] = {
+                "price": float(item.purchase_price_per_supplier_unit),
+                "unit": getattr(item, 'supplier_unit', None) or "piece"
+            }
+        
+        # Tier 2: Wholesale Price (from Item model)
+        if hasattr(item, 'wholesale_price_per_wholesale_unit') and item.wholesale_price_per_wholesale_unit:
+            result["wholesale_price"] = {
+                "price": float(item.wholesale_price_per_wholesale_unit),
+                "unit": getattr(item, 'wholesale_unit', None) or "piece"
+            }
+        
+        # Tier 3: Retail Price (from Item model)
+        if hasattr(item, 'retail_price_per_retail_unit') and item.retail_price_per_retail_unit:
+            result["retail_price"] = {
+                "price": float(item.retail_price_per_retail_unit),
+                "unit": getattr(item, 'retail_unit', None) or item.base_unit or "piece"
+            }
+        
+        return result if result else None
+
+    @staticmethod
+    def get_price_for_tier(
+        db: Session,
+        item_id: UUID,
+        tier: str,
+        unit_name: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Get price for a specific tier (supplier, wholesale, retail) from Item model
+        
+        Args:
+            item_id: Item ID
+            tier: 'supplier', 'wholesale', or 'retail'
+            unit_name: Optional unit name to convert price to
+        
+        Returns:
+            Dict with price, unit, and optionally converted_price if unit_name provided
+        """
+        item = db.query(Item).filter(Item.id == item_id).first()
+        
+        if not item:
+            return None
+        
+        tier = tier.lower()
+        price_data = None
+        
+        # Get price from Item model (not ItemPricing)
+        if tier == "supplier" and hasattr(item, 'purchase_price_per_supplier_unit') and item.purchase_price_per_supplier_unit:
+            price_data = {
+                "price": float(item.purchase_price_per_supplier_unit),
+                "unit": getattr(item, 'supplier_unit', None) or "piece"
+            }
+        elif tier == "wholesale" and hasattr(item, 'wholesale_price_per_wholesale_unit') and item.wholesale_price_per_wholesale_unit:
+            price_data = {
+                "price": float(item.wholesale_price_per_wholesale_unit),
+                "unit": getattr(item, 'wholesale_unit', None) or "piece"
+            }
+        elif tier == "retail" and hasattr(item, 'retail_price_per_retail_unit') and item.retail_price_per_retail_unit:
+            price_data = {
+                "price": float(item.retail_price_per_retail_unit),
+                "unit": getattr(item, 'retail_unit', None) or item.base_unit or "piece"
+            }
+        
+        if not price_data:
+            return None
+        
+        # If unit_name is provided and different, convert the price
+        if unit_name and unit_name != price_data["unit"]:
+            # Get item units for conversion
+            item = db.query(Item).filter(Item.id == item_id).first()
+            if item:
+                source_unit = db.query(ItemUnit).filter(
+                    and_(
+                        ItemUnit.item_id == item_id,
+                        ItemUnit.unit_name == price_data["unit"]
+                    )
+                ).first()
+                
+                target_unit = db.query(ItemUnit).filter(
+                    and_(
+                        ItemUnit.item_id == item_id,
+                        ItemUnit.unit_name == unit_name
+                    )
+                ).first()
+                
+                if source_unit and target_unit:
+                    # Convert: price_per_target_unit = price_per_source_unit * (source_multiplier / target_multiplier)
+                    source_mult = Decimal(str(source_unit.multiplier_to_base))
+                    target_mult = Decimal(str(target_unit.multiplier_to_base))
+                    converted_price = Decimal(str(price_data["price"])) * (source_mult / target_mult)
+                    price_data["converted_price"] = float(converted_price)
+                    price_data["converted_unit"] = unit_name
+        
+        return price_data

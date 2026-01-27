@@ -27,9 +27,16 @@ async function loadDashboard() {
         }
         
         // Load stock summary
-        if (CONFIG.BRANCH_ID) {
-            const stock = await API.inventory.getAllStock(CONFIG.BRANCH_ID);
-            // Calculate total value (simplified)
+        if (CONFIG.BRANCH_ID && API.inventory && typeof API.inventory.getAllStock === 'function') {
+            try {
+                const stock = await API.inventory.getAllStock(CONFIG.BRANCH_ID);
+                // Calculate total value (simplified)
+                document.getElementById('totalStock').textContent = formatCurrency(0);
+            } catch (error) {
+                console.warn('Failed to load stock summary:', error);
+                document.getElementById('totalStock').textContent = formatCurrency(0);
+            }
+        } else {
             document.getElementById('totalStock').textContent = formatCurrency(0);
         }
         

@@ -38,13 +38,12 @@ class APIClient {
         try {
             const response = await fetch(url, config);
             clearTimeout(timeoutId);
-            
-            // Try to parse JSON, but handle non-JSON responses
+
+            const text = await response.text();
             let data;
             try {
-                data = await response.json();
+                data = text ? JSON.parse(text) : {};
             } catch (parseError) {
-                const text = await response.text();
                 throw new Error(`Server error (${response.status}): ${text.substring(0, 200)}`);
             }
 
@@ -161,6 +160,7 @@ const API = {
         bulkCreate: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/bulk`, data, { timeout: 300000 }), // 5 minute timeout for bulk
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),
         delete: (itemId) => api.delete(`${CONFIG.API_ENDPOINTS.items}/${itemId}`),
+        hasTransactions: (itemId, branchId) => api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/has-transactions`, { branch_id: branchId }),
         getRecommendedPrice: (itemId, branchId, companyId, unitName) => 
             api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/recommended-price`, {
                 branch_id: branchId,
@@ -302,12 +302,15 @@ const API = {
                 formData.append('force_mode', forceMode);
             }
             // For FormData, don't set Content-Type - browser will set it with boundary
+            // Short timeout - job starts immediately, progress tracked separately
             return api.request('/api/excel/import', {
                 method: 'POST',
                 body: formData,
-                headers: {} // Let browser set Content-Type for FormData
+                headers: {}, // Let browser set Content-Type for FormData
+                timeout: 30000 // 30 seconds to start job
             });
         },
+        getProgress: (jobId) => api.get(`/api/excel/import/${jobId}/progress`),
         getMode: (companyId) => api.get(`/api/excel/mode/${companyId}`),
     },
     
@@ -354,13 +357,62 @@ const API = {
         
         // Locks
         lockItem: (data, counterId) => api.post(`/api/stock-take/locks?counter_id=${counterId}`, data),
+        unlockItem: (itemId, counterId) => api.delete(`/api/stock-take/locks?item_id=${itemId}&counter_id=${counterId}`),
         listLocks: (sessionId) => api.get(`/api/stock-take/sessions/${sessionId}/locks`),
         
-        // Progress
-        getProgress: (sessionId) => api.get(`/api/stock-take/sessions/${sessionId}/progress`),
+        // Progress (legacy - session-based)
+        getSessionProgress: (sessionId) => api.get(`/api/stock-take/sessions/${sessionId}/progress`),
         
-        // Join
-        joinSession: (sessionCode, userId) => api.post(`/api/stock-take/sessions/join?user_id=${userId}`, { session_code: sessionCode }),
+        // Branch Stock Take (Automatic Participation)
+        getBranchStatus: (branchId) => {
+            // Add cache busting timestamp to force fresh check
+            const timestamp = new Date().getTime();
+            return api.get(`/api/stock-take/branch/${branchId}/status?t=${timestamp}`);
+        },
+        isBranchInStockTake: (branchId) => api.get(`/api/stock-take/branch/${branchId}/status`).then(r => r.inStockTake || false).catch(() => false),
+        hasDraftDocuments: (branchId) => {
+            // Add cache busting timestamp to force fresh check
+            const timestamp = new Date().getTime();
+            return api.get(`/api/stock-take/branch/${branchId}/has-drafts?t=${timestamp}`);
+        },
+        startForBranch: (branchId, userId) => {
+            const queryParams = userId ? `?user_id=${userId}` : '';
+            return api.post(`/api/stock-take/branch/${branchId}/start${queryParams}`, null);
+        },
+        saveCount: (data, userId) => {
+            // Add user_id to query params
+            const queryParams = userId ? `?counted_by=${userId}` : '';
+            return api.post(`/api/stock-take/counts${queryParams}`, data);
+        },
+        getMyCounts: (branchId, userId) => api.get(`/api/stock-take/branch/${branchId}/my-counts`, { user_id: userId }),
+        getProgress: (branchId) => api.get(`/api/stock-take/branch/${branchId}/progress`),
+        completeForBranch: (branchId, userId) => {
+            const queryParams = userId ? `?user_id=${userId}` : '';
+            return api.post(`/api/stock-take/branch/${branchId}/complete${queryParams}`, null);
+        },
+        cancelForBranch: (branchId, userId) => {
+            const queryParams = userId ? `?user_id=${userId}` : '';
+            return api.post(`/api/stock-take/branch/${branchId}/cancel${queryParams}`, null);
+        },
+        getCount: (countId) => api.get(`/api/stock-take/counts/${countId}`),
+        updateCount: (countId, data, userId) => {
+            const queryParams = userId ? `?user_id=${userId}` : '';
+            return api.put(`/api/stock-take/counts/${countId}${queryParams}`, data);
+        },
+        deleteCount: (countId, userId) => {
+            const queryParams = userId ? `?user_id=${userId}` : '';
+            return api.delete(`/api/stock-take/counts/${countId}${queryParams}`);
+        },
+        getShelves: (branchId) => api.get(`/api/stock-take/branch/${branchId}/shelves`),
+        getShelfCounts: (branchId, shelfName) => api.get(`/api/stock-take/branch/${branchId}/shelves/${encodeURIComponent(shelfName)}/counts`),
+        approveShelf: (branchId, shelfName, userId) => {
+            const queryParams = userId ? `?user_id=${userId}` : '';
+            return api.post(`/api/stock-take/branch/${branchId}/shelves/${encodeURIComponent(shelfName)}/approve${queryParams}`, null);
+        },
+        rejectShelf: (branchId, shelfName, userId, reason) => {
+            const queryParams = userId ? `?user_id=${userId}` : '';
+            return api.post(`/api/stock-take/branch/${branchId}/shelves/${encodeURIComponent(shelfName)}/reject${queryParams}`, { reason });
+        },
     },
     
     // Order Book

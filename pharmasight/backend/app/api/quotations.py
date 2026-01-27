@@ -2,14 +2,17 @@
 Quotations API routes
 Quotations are non-stock-affecting sales documents that can be converted to invoices
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List
 from uuid import UUID
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime
 from app.database import get_db
+
+logger = logging.getLogger(__name__)
 from app.models import (
     Quotation, QuotationItem, SalesInvoice, SalesInvoiceItem,
     Item, ItemUnit, InventoryLedger
@@ -23,6 +26,7 @@ from app.schemas.sale import (
 from app.services.pricing_service import PricingService
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
+from app.services.order_book_service import OrderBookService
 
 router = APIRouter()
 
@@ -150,7 +154,10 @@ def get_quotation(quotation_id: UUID, db: Session = Depends(get_db)):
 @router.get("/branch/{branch_id}", response_model=List[QuotationResponse])
 def get_branch_quotations(branch_id: UUID, db: Session = Depends(get_db)):
     """Get all quotations for a branch"""
-    quotations = db.query(Quotation).filter(
+    from sqlalchemy.orm import selectinload
+    quotations = db.query(Quotation).options(
+        selectinload(Quotation.items)
+    ).filter(
         Quotation.branch_id == branch_id
     ).order_by(Quotation.quotation_date.desc()).all()
     return quotations
@@ -470,6 +477,29 @@ def convert_quotation_to_invoice(
     quotation.status = "converted"
     quotation.converted_to_invoice_id = db_invoice.id
     
+    # Set invoice status to BATCHED since stock has been reduced
+    db_invoice.status = "BATCHED"
+    db_invoice.batched = True
+    db_invoice.batched_by = quotation.created_by
+    db_invoice.batched_at = datetime.utcnow()
+    
     db.commit()
+    
+    # After stock is reduced, check if items should be added to order book
+    # Only BATCHED invoices trigger order book (process_sale_for_order_book checks this)
+    try:
+        order_book_entries = OrderBookService.process_sale_for_order_book(
+            db=db,
+            company_id=db_invoice.company_id,
+            branch_id=db_invoice.branch_id,
+            invoice_id=db_invoice.id,
+            user_id=quotation.created_by
+        )
+        if order_book_entries:
+            logger.info(f"✅ Auto-added {len(order_book_entries)} items to order book from converted quotation {quotation_id}")
+    except Exception as e:
+        logger.error(f"Error processing order book after quotation conversion: {e}", exc_info=True)
+        # Don't fail the conversion if order book check fails
+    
     db.refresh(db_invoice)
     return db_invoice

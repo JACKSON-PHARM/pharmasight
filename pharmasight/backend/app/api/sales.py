@@ -20,6 +20,7 @@ from app.schemas.sale import (
 from app.services.inventory_service import InventoryService
 from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
+from app.services.order_book_service import OrderBookService
 
 router = APIRouter()
 
@@ -93,13 +94,17 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
             )
         
         # Get recommended price if not provided
+        # Use appropriate tier based on sales_type
+        sales_type = getattr(invoice, 'sales_type', 'RETAIL') or 'RETAIL'
+        pricing_tier = 'wholesale' if sales_type == 'WHOLESALE' else 'retail'
+        
         unit_price = item_data.unit_price_exclusive
         unit_cost_used = None
         
         if not unit_price:
             price_info = PricingService.calculate_recommended_price(
                 db, item_data.item_id, invoice.branch_id,
-                invoice.company_id, item_data.unit_name
+                invoice.company_id, item_data.unit_name, tier=pricing_tier
             )
             if price_info:
                 unit_price = price_info["recommended_unit_price"]
@@ -165,6 +170,7 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
         'customer_pin': invoice.customer_pin,
         'payment_mode': invoice.payment_mode,
         'payment_status': invoice.payment_status or "UNPAID",
+        'sales_type': getattr(invoice, 'sales_type', 'RETAIL') or 'RETAIL',
         'status': invoice.status or "DRAFT",  # Save as DRAFT
         'total_exclusive': total_exclusive,
         'vat_rate': invoice_vat_rate,
@@ -233,8 +239,11 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
 @router.get("/branch/{branch_id}/invoices", response_model=List[SalesInvoiceResponse])
 def get_branch_invoices(branch_id: UUID, db: Session = Depends(get_db)):
     """Get all invoices for a branch"""
+    from sqlalchemy.orm import selectinload
     try:
-        invoices = db.query(SalesInvoice).filter(
+        invoices = db.query(SalesInvoice).options(
+            selectinload(SalesInvoice.items)
+        ).filter(
             SalesInvoice.branch_id == branch_id
         ).order_by(SalesInvoice.invoice_date.desc()).all()
     except Exception as e:
@@ -457,6 +466,22 @@ def batch_sales_invoice(invoice_id: UUID, batched_by: UUID, db: Session = Depend
         db.add(entry)
     
     db.commit()
+    
+    # After stock is reduced, check if items should be added to order book
+    try:
+        order_book_entries = OrderBookService.process_sale_for_order_book(
+            db=db,
+            company_id=invoice.company_id,
+            branch_id=invoice.branch_id,
+            invoice_id=invoice.id,
+            user_id=batched_by
+        )
+        if order_book_entries:
+            logger.info(f"✅ Auto-added {len(order_book_entries)} items to order book from invoice {invoice_id}")
+    except Exception as e:
+        logger.error(f"Error processing order book after sale: {e}", exc_info=True)
+        # Don't fail the sale if order book check fails
+    
     db.refresh(invoice)
     return invoice
 

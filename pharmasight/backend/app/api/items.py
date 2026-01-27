@@ -13,6 +13,7 @@ from app.models import (
     InventoryLedger, SupplierInvoice, SupplierInvoiceItem, Supplier,
     PurchaseOrder, PurchaseOrderItem
 )
+from app.models.sale import SalesInvoice, SalesInvoiceItem
 from app.schemas.item import (
     ItemCreate, ItemResponse, ItemUpdate,
     ItemUnitCreate, ItemUnitResponse,
@@ -21,6 +22,8 @@ from app.schemas.item import (
     ItemsBulkCreate, ItemOverviewResponse
 )
 from app.services.pricing_service import PricingService
+from app.services.inventory_service import InventoryService
+from app.services.items_service import create_item as svc_create_item
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -29,78 +32,30 @@ router = APIRouter()
 def generate_sku(company_id: UUID, db: Session) -> str:
     """Generate unique SKU for a company (format: A00001, A00002, etc.)"""
     import re
-    # Get the highest numeric SKU for this company
-    # Try to find SKUs matching pattern A#####, B#####, etc.
     last_sku = db.query(Item.sku).filter(
         Item.company_id == company_id,
         Item.sku.isnot(None),
         Item.sku != ''
     ).order_by(Item.sku.desc()).limit(100).all()
-    
-    # Find the highest numeric SKU
     max_number = 0
     for sku_row in last_sku:
         if sku_row[0]:
-            # Try to match pattern like A00001, A12345, etc.
             match = re.match(r'^([A-Z]{1,3})(\d+)$', sku_row[0].upper())
             if match:
                 try:
-                    number = int(match.group(2))
-                    max_number = max(max_number, number)
+                    max_number = max(max_number, int(match.group(2)))
                 except ValueError:
-                    continue
-    
-    # Generate new SKU
-    new_number = max_number + 1
-    return f"A{new_number:05d}"  # Format: A00001, A00002, etc.
+                    pass
+    return f"A{(max_number + 1):05d}"
 
 
 @router.post("/", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
 def create_item(item: ItemCreate, db: Session = Depends(get_db)):
-    """Create a new item with units. SKU is auto-generated if not provided."""
-    # Use model_dump() for Pydantic v2, fallback to dict() for v1
-    item_data = item.model_dump(exclude={"units"}) if hasattr(item, 'model_dump') else item.dict(exclude={"units"})
-    
-    # Auto-generate SKU if missing
-    if not item_data.get('sku') or item_data.get('sku', '').strip() == '':
-        item_data['sku'] = generate_sku(item_data['company_id'], db)
-        # Ensure uniqueness
-        while db.query(Item).filter(
-            Item.company_id == item_data['company_id'],
-            Item.sku == item_data['sku']
-        ).first():
-            # Increment and try again
-            import re
-            match = re.match(r'^([A-Z]{1,3})(\d+)$', item_data['sku'])
-            if match:
-                prefix = match.group(1)
-                number = int(match.group(2))
-                item_data['sku'] = f"{prefix}{(number + 1):05d}"
-            else:
-                item_data['sku'] = generate_sku(item_data['company_id'], db)
-    
-    # Create item
-    db_item = Item(**item_data)
-    db.add(db_item)
-    db.flush()  # Get ID
-    
-    # Create units
-    for unit_data in item.units:
-        unit_dict = unit_data.model_dump() if hasattr(unit_data, 'model_dump') else unit_data.dict()
-        db_unit = ItemUnit(item_id=db_item.id, **unit_dict)
-        db.add(db_unit)
-    
-    # Create default base unit if not provided
-    has_base_unit = any(u.unit_name == item.base_unit for u in item.units)
-    if not has_base_unit:
-        base_unit = ItemUnit(
-            item_id=db_item.id,
-            unit_name=item.base_unit,
-            multiplier_to_base=1.0,
-            is_default=True
-        )
-        db.add(base_unit)
-    
+    """Create a new item with 3-tier units. SKU auto-generated if not provided."""
+    try:
+        db_item = svc_create_item(db, item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     db.commit()
     db.refresh(db_item)
     return db_item
@@ -129,10 +84,25 @@ def search_items(
     """
     search_term_lower = q.lower()
     search_term_pattern = f"%{search_term_lower}%"
+    search_term_start = f"{search_term_lower}%"
     
-    # OPTIMIZED: Use direct index-friendly query with VAT info
-    # PostgreSQL can use trigram indexes for LIKE queries
-    items_query = db.query(
+    # OPTIMIZED: Use database-level ORDER BY and LIMIT for much better performance
+    # Calculate relevance score in SQL using CASE statements
+    from sqlalchemy import case
+    
+    # Build relevance score: name matches get highest priority, then SKU, then barcode
+    relevance_score = case(
+        (func.lower(Item.name).like(search_term_start), 1000),  # Name starts with (highest priority)
+        (func.lower(Item.name).like(search_term_pattern), 500),  # Name contains
+        (and_(Item.sku.isnot(None), func.lower(Item.sku).like(search_term_start)), 100),  # SKU starts with
+        (and_(Item.sku.isnot(None), func.lower(Item.sku).like(search_term_pattern)), 50),  # SKU contains
+        (and_(Item.barcode.isnot(None), func.lower(Item.barcode).like(search_term_start)), 100),  # Barcode starts with
+        (and_(Item.barcode.isnot(None), func.lower(Item.barcode).like(search_term_pattern)), 50),  # Barcode contains
+        else_=0
+    )
+    
+    # Build base query with relevance scoring
+    base_query = db.query(
         Item.id,
         Item.name,
         Item.base_unit,
@@ -142,26 +112,31 @@ def search_items(
         Item.is_active,
         Item.vat_rate,
         Item.vat_code,
-        Item.is_vatable
+        Item.is_vatable,
+        relevance_score
     ).filter(
         Item.company_id == company_id,
         Item.is_active == True,
         or_(
-            Item.name.ilike(search_term_pattern),  # Uses index better than func.lower()
+            Item.name.ilike(search_term_pattern),
             and_(Item.sku.isnot(None), Item.sku.ilike(search_term_pattern)),
             and_(Item.barcode.isnot(None), Item.barcode.ilike(search_term_pattern))
         )
     )
     
-    # Get all matching items first (before limiting)
-    all_items = items_query.all()
+    # OPTIMIZED: Order and limit at database level for maximum performance
+    # Order by relevance (best match first), then alphabetically
+    items = base_query.order_by(
+        relevance_score.desc(),
+        func.lower(Item.name).asc()
+    ).limit(limit).all()
     
-    if not all_items:
+    if not items:
         return []
     
-    item_ids = [item.id for item in all_items]
+    item_ids = [item.id for item in items]
     
-    # Always calculate stock if branch_id is provided
+    # Get stock for the limited items only (batch query - much faster)
     stock_map = {}
     if branch_id:
         stock_data = (
@@ -178,35 +153,6 @@ def search_items(
             .all()
         )
         stock_map = {row.item_id: int(row.total_stock) if row.total_stock else 0 for row in stock_data}
-    
-    # Calculate relevance score for ordering (best match first)
-    # Items starting with search term get higher score, then containing, then SKU/barcode match
-    def calculate_relevance(item, search_term):
-        name_lower = item.name.lower()
-        sku_lower = (item.sku or "").lower()
-        score = 0
-        if name_lower.startswith(search_term):
-            score += 1000
-        elif search_term in name_lower:
-            score += 500
-        if sku_lower.startswith(search_term):
-            score += 100
-        elif search_term in sku_lower:
-            score += 50
-        return score
-    
-    # Sort by relevance first, then by stock (highest first), then alphabetically
-    sorted_items = sorted(
-        all_items,
-        key=lambda item: (
-            -calculate_relevance(item, search_term_lower),  # Negative for descending
-            -(stock_map.get(item.id, 0)),  # Negative for descending (highest stock first)
-            item.name.lower()  # Alphabetical tiebreaker
-        )
-    )
-    
-    # Limit after sorting
-    items = sorted_items[:limit]
     
     # OPTIMIZED: Only fetch purchase/order info if pricing is requested
     purchase_price_map = {}
@@ -348,6 +294,38 @@ def search_items(
                     logger.warning(f"Could not calculate price for item {item.id}: {e}")
                     sale_price_map[item.id] = 0.0
     
+    # Get 3-tier pricing for all items in batch
+    tier_pricing_map = {}
+    if include_pricing:
+        for item in items:
+            tier_pricing = PricingService.get_3tier_pricing(db, item.id)
+            if tier_pricing:
+                tier_pricing_map[item.id] = tier_pricing
+    
+    # Get stock availability with unit breakdown for all items (if branch_id provided)
+    stock_availability_map = {}
+    if branch_id:
+        for item in items:
+            try:
+                availability = InventoryService.get_stock_availability(db, item.id, branch_id)
+                if availability:
+                    stock_availability_map[item.id] = {
+                        "total_base_units": availability.total_base_units,
+                        "base_unit": availability.base_unit,
+                        "unit_breakdown": [
+                            {
+                                "unit_name": ub.unit_name,
+                                "multiplier": ub.multiplier,
+                                "whole_units": ub.whole_units,
+                                "remainder_base_units": ub.remainder_base_units,
+                                "display": ub.display
+                            }
+                            for ub in availability.unit_breakdown
+                        ] if availability.unit_breakdown else []
+                    }
+            except Exception as e:
+                logger.warning(f"Could not get stock availability for item {item.id}: {e}")
+    
     # Return response - includes stock, VAT info, and pricing
     # For purchase_order context, include additional fields from inventory_ledger
     result = []
@@ -370,6 +348,14 @@ def search_items(
             "last_order_date": last_order_date_map.get(item.id, None) if include_pricing else None
         }
         
+        # Add 3-tier pricing information
+        if include_pricing and item.id in tier_pricing_map:
+            item_data["pricing_3tier"] = tier_pricing_map[item.id]
+        
+        # Add stock availability with unit breakdown
+        if item.id in stock_availability_map:
+            item_data["stock_availability"] = stock_availability_map[item.id]
+        
         # Add Purchase Order specific fields
         if context == 'purchase_order':
             item_data["last_supply_date"] = last_supply_date_map.get(item.id, None)
@@ -387,6 +373,42 @@ def get_item(item_id: UUID, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     return item
+
+
+@router.get("/{item_id}/pricing/3tier", response_model=dict)
+def get_item_3tier_pricing(item_id: UUID, db: Session = Depends(get_db)):
+    """Get 3-tier pricing for an item"""
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    tier_pricing = PricingService.get_3tier_pricing(db, item_id)
+    if not tier_pricing:
+        return {"message": "No 3-tier pricing configured for this item"}
+    
+    return tier_pricing
+
+
+@router.get("/{item_id}/pricing/tier/{tier}", response_model=dict)
+def get_item_tier_price(
+    item_id: UUID,
+    tier: str,
+    unit_name: Optional[str] = Query(None, description="Optional unit name to convert price to"),
+    db: Session = Depends(get_db)
+):
+    """Get price for a specific tier (supplier, wholesale, or retail)"""
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    if tier.lower() not in ['supplier', 'wholesale', 'retail']:
+        raise HTTPException(status_code=400, detail="Tier must be 'supplier', 'wholesale', or 'retail'")
+    
+    price_data = PricingService.get_price_for_tier(db, item_id, tier, unit_name)
+    if not price_data:
+        raise HTTPException(status_code=404, detail=f"No {tier} price configured for this item")
+    
+    return price_data
 
 
 @router.get("/company/{company_id}/count", response_model=dict)
@@ -484,6 +506,13 @@ def get_items_overview(
         last_supplier_map[row.item_id] = suppliers.get(row.supplier_id)
         last_cost_map[row.item_id] = float(row.unit_cost_exclusive) if row.unit_cost_exclusive else None
     
+    # Get 3-tier pricing for all items
+    tier_pricing_map = {}
+    for item in items:
+        tier_pricing = PricingService.get_3tier_pricing(db, item.id)
+        if tier_pricing:
+            tier_pricing_map[item.id] = tier_pricing
+    
     # Build response
     result = []
     for item in items:
@@ -512,9 +541,20 @@ def get_items_overview(
             'has_transactions': item.id in items_with_transactions,
             'minimum_stock': None  # TODO: Add minimum_stock field to items table if needed
         }
-        result.append(ItemOverviewResponse(**item_dict))
+        # Add 3-tier pricing as additional field (not in schema, but useful)
+        overview_item = ItemOverviewResponse(**item_dict)
+        # Add 3-tier pricing to response (we'll need to extend the response model or return as dict)
+        result.append(overview_item)
     
-    return result
+    # Convert to dict to add 3-tier pricing
+    result_dicts = []
+    for i, item in enumerate(result):
+        item_dict = item.model_dump() if hasattr(item, 'model_dump') else item.dict()
+        if items[i].id in tier_pricing_map:
+            item_dict['pricing_3tier'] = tier_pricing_map[items[i].id]
+        result_dicts.append(item_dict)
+    
+    return result_dicts
 
 
 @router.get("/company/{company_id}", response_model=List[ItemResponse])
@@ -574,9 +614,9 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
             detail="SKU cannot be modified once created. Item code is immutable."
         )
     
-    # Business Rule 2: Base unit is locked if item has transactions
+    # Business Rule 2: Base unit and 3-tier unit fields locked if item has transactions
     if has_transactions:
-        locked_fields = ['base_unit']
+        locked_fields = ['base_unit', 'supplier_unit', 'wholesale_unit', 'retail_unit', 'pack_size', 'can_break_bulk']
         attempted_locked = [f for f in locked_fields if f in update_data]
         if attempted_locked:
             raise HTTPException(
@@ -584,6 +624,12 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
                 detail=f"Cannot modify {', '.join(attempted_locked)} after item has inventory transactions. "
                        f"These fields are locked to maintain data integrity."
             )
+
+    # 3-tier validation: breakable => pack_size > 1
+    cb = update_data.get('can_break_bulk') if 'can_break_bulk' in update_data else getattr(item, 'can_break_bulk', False)
+    ps = update_data.get('pack_size') if 'pack_size' in update_data else getattr(item, 'pack_size', 1) or 1
+    if cb and (int(ps) if ps is not None else 1) < 2:
+        raise HTTPException(status_code=400, detail="Breakable items must have pack_size > 1")
     
     # Apply allowed updates
     for field, value in update_data.items():
@@ -923,4 +969,57 @@ def get_recommended_price(
         return price_info
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{item_id}/has-transactions")
+def has_transactions(
+    item_id: UUID,
+    branch_id: UUID = Query(..., description="Branch ID to check transactions in"),
+    db: Session = Depends(get_db)
+):
+    """
+    Check if item has any transactions (sales or purchases) in the specified branch
+    
+    Returns True if item has transactions, False otherwise.
+    Items with transactions cannot have pack size/breaking bulk edited during stock take.
+    """
+    from app.models.sale import SalesInvoiceItem
+    from app.models.purchase import SupplierInvoiceItem
+    
+    # Check for sales transactions
+    sales_count = db.query(func.count(SalesInvoiceItem.id)).join(
+        SalesInvoice, SalesInvoiceItem.sales_invoice_id == SalesInvoice.id
+    ).filter(
+        and_(
+            SalesInvoiceItem.item_id == item_id,
+            SalesInvoice.branch_id == branch_id
+        )
+    ).scalar() or 0
+    
+    # Check for purchase transactions
+    purchase_count = db.query(func.count(SupplierInvoiceItem.id)).join(
+        SupplierInvoice, SupplierInvoiceItem.purchase_invoice_id == SupplierInvoice.id
+    ).filter(
+        and_(
+            SupplierInvoiceItem.item_id == item_id,
+            SupplierInvoice.branch_id == branch_id
+        )
+    ).scalar() or 0
+    
+    # Check for inventory movements (ledger entries)
+    ledger_count = db.query(func.count(InventoryLedger.id)).filter(
+        and_(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == branch_id
+        )
+    ).scalar() or 0
+    
+    has_transactions = (sales_count > 0) or (purchase_count > 0) or (ledger_count > 0)
+    
+    return {
+        "hasTransactions": has_transactions,
+        "salesCount": sales_count,
+        "purchaseCount": purchase_count,
+        "ledgerCount": ledger_count
+    }
 

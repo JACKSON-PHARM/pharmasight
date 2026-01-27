@@ -681,7 +681,17 @@ async function renderCreateSalesInvoicePage() {
                                        placeholder="Phone number (required for credit)">
                             </div>
                         </div>
-                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-top: 1rem;">
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem;">
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="font-weight: 600;">Sales Type *</label>
+                                <select class="form-select" name="sales_type" id="salesTypeSelect" onchange="handleSalesTypeChange()">
+                                    <option value="RETAIL" ${invoiceData?.sales_type === 'RETAIL' || !invoiceData?.sales_type ? 'selected' : ''}>Retail (Customers)</option>
+                                    <option value="WHOLESALE" ${invoiceData?.sales_type === 'WHOLESALE' ? 'selected' : ''}>Wholesale (Pharmacies)</option>
+                                </select>
+                                <small style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem; display: block;">
+                                    <i class="fas fa-info-circle"></i> Retail uses retail price per tablet, Wholesale uses wholesale price per packet
+                                </small>
+                            </div>
                             <div class="form-group" style="margin: 0;">
                                 <label class="form-label" style="font-weight: 600;">Payment Mode *</label>
                                 <select class="form-select" name="payment_mode" id="paymentModeSelect" onchange="handlePaymentModeChange()">
@@ -758,6 +768,18 @@ async function renderCreateSalesInvoicePage() {
 }
 
 // Handle payment mode change - validate credit requirements
+function handleSalesTypeChange() {
+    const salesTypeSelect = document.getElementById('salesTypeSelect');
+    if (!salesTypeSelect) return;
+    
+    const salesType = salesTypeSelect.value;
+    // When sales type changes, prices should be recalculated
+    // The TransactionItemsTable will fetch new prices when items are added/updated
+    if (window.salesInvoiceItemsTable && typeof window.salesInvoiceItemsTable.refreshPrices === 'function') {
+        window.salesInvoiceItemsTable.refreshPrices();
+    }
+}
+
 function handlePaymentModeChange() {
     const paymentModeSelect = document.getElementById('paymentModeSelect');
     const customerNameInput = document.querySelector('input[name="customer_name"]');
@@ -987,6 +1009,7 @@ async function saveSalesInvoice(event) {
         customer_pin: formData.get('customer_pin') || null,
         customer_phone: formData.get('customer_phone') || null,
         payment_mode: formData.get('payment_mode') || 'cash',
+        sales_type: formData.get('sales_type') || 'RETAIL',
             payment_status: 'UNPAID',  // Always start as UNPAID (will be PAID after payment collection)
             status: 'DRAFT',  // Save as DRAFT (will be BATCHED when committed)
             discount_amount: 0,  // TODO: Add discount field if needed
@@ -1940,6 +1963,7 @@ async function processSale() {
         invoice_date: new Date().toISOString().split('T')[0],
         payment_mode: 'cash',
         payment_status: 'PAID',
+        sales_type: 'RETAIL',  // POS defaults to retail
         discount_amount: 0,
         items: cart.map(item => ({
             item_id: item.item_id,
@@ -2708,5 +2732,6 @@ if (typeof window !== 'undefined') {
     window.submitSplitPayment = submitSplitPayment;
     window.convertSalesInvoiceToQuotation = convertSalesInvoiceToQuotation;
     window.handlePaymentModeChange = handlePaymentModeChange;
+    window.handleSalesTypeChange = handleSalesTypeChange;
     window.printQuotation = printQuotation;
 }

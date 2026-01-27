@@ -387,7 +387,7 @@ document.addEventListener('DOMContentLoaded', async () => {
  */
 function initializeHashRouting() {
     // Listen for hash changes (browser back/forward, direct navigation)
-    window.addEventListener('hashchange', () => {
+    window.addEventListener('hashchange', async () => {
         // If we're in the middle of a password reset recovery flow, ignore hash changes
         if (window.__PASSWORD_RESET_TOKEN_PRESENT === true) {
             console.log('[HASH ROUTING] Password reset flow active, ignoring hashchange event');
@@ -436,6 +436,13 @@ function initializeHashRouting() {
                 // No branch selected, redirect to branch selection
                 loadPage('branch-select');
                 return;
+            }
+            
+            // PHASE 2: Check if branch is in stock take mode and redirect if needed
+            if (branch && CONFIG.BRANCH_ID && hash !== 'stock-take' && hash !== 'branch-select' && hash !== 'setup') {
+                if (await checkAndRedirectToStockTake()) {
+                    return; // Redirected to stock take, don't load requested page
+                }
             }
         }
         
@@ -842,8 +849,13 @@ window.handleBranchSelected = async function() {
     if (user) {
         await updateStatusBar(user);
     }
-    // Reset currentScreen and navigate to dashboard
+    // Reset currentScreen
     currentScreen = null;
+    
+    // PHASE 2: Check if branch is in stock take mode and auto-redirect
+    if (CONFIG.BRANCH_ID && await checkAndRedirectToStockTake()) {
+        return; // Block further navigation - user is now in stock take
+    }
     
     // Force route to dashboard now that a branch is selected so that
     // the branch-select page does not persist and the dashboard metrics
@@ -856,6 +868,40 @@ window.handleBranchSelected = async function() {
     
     await startAppFlow();
 };
+
+/**
+ * Check if current branch is in stock take mode and redirect if needed
+ * Returns true if redirected, false otherwise
+ */
+async function checkAndRedirectToStockTake() {
+    if (!CONFIG.BRANCH_ID || !API || !API.stockTake) {
+        return false;
+    }
+    
+    try {
+        const branchStatus = await API.stockTake.getBranchStatus(CONFIG.BRANCH_ID);
+        if (branchStatus && branchStatus.inStockTake && window.location.hash !== '#stock-take') {
+            console.log('[STOCK TAKE] Branch is in stock take mode, redirecting...');
+            window.location.hash = '#stock-take';
+            return true;
+        }
+    } catch (error) {
+        console.warn('[STOCK TAKE] Error checking branch status:', error);
+        // Fallback: check for active sessions
+        try {
+            const sessions = await API.stockTake.listSessions(CONFIG.BRANCH_ID, 'ACTIVE');
+            if (sessions && sessions.length > 0 && window.location.hash !== '#stock-take') {
+                console.log('[STOCK TAKE] Active session found, redirecting...');
+                window.location.hash = '#stock-take';
+                return true;
+            }
+        } catch (e) {
+            console.warn('[STOCK TAKE] Error checking sessions:', e);
+        }
+    }
+    
+    return false;
+}
 
 // Sub-navigation definitions
 window.subNavItems = {
@@ -1147,9 +1193,48 @@ function initializeMenuToggle() {
     }
 }
 
+// Check if navigation is allowed (block during stock take)
+async function canNavigateTo(page) {
+    // Skip check for these pages
+    const allowedPages = ['stock-take', 'branch-select', 'login', 'logout', 'settings', 'password-reset', 'password-set', 'setup', 'invite'];
+    if (allowedPages.includes(page)) {
+        return true;
+    }
+    
+    // Check if branch is in stock take mode
+    try {
+        if (CONFIG.BRANCH_ID && API && API.stockTake) {
+            const inStockTake = await API.stockTake.isBranchInStockTake(CONFIG.BRANCH_ID);
+            if (inStockTake) {
+                // Block navigation, redirect to stock take
+                if (window.showToast) {
+                    window.showToast('Cannot access this page during stock take', 'warning');
+                } else if (window.showNotification) {
+                    window.showNotification('Cannot access this page during stock take', 'warning');
+                } else {
+                    alert('Cannot access this page during stock take');
+                }
+                window.location.hash = '#stock-take';
+                return false;
+            }
+        }
+    } catch (error) {
+        console.error('[NAV] Stock take check error:', error);
+        // Allow navigation if check fails
+    }
+    
+    return true;
+}
+
 // Load page
-function loadPage(pageName) {
+async function loadPage(pageName) {
     console.log('📄 Loading page:', pageName);
+    
+    // Check navigation blocking
+    if (!(await canNavigateTo(pageName))) {
+        return; // Navigation blocked
+    }
+    
     currentPage = pageName;
     
     // BEFORE loading any page, check if this is a password reset link
@@ -1538,65 +1623,76 @@ function loadPage(pageName) {
                 console.error('loadInventory function not found on window object');
             }
             break;
-        case 'stock-take':
+        case 'stock-take': {
             console.log('[ROUTER] Loading stock-take page...');
-            // Wait for function to be available (script might still be loading)
-            if (typeof window.loadStockTake === 'function') {
-                console.log('[ROUTER] Calling window.loadStockTake()');
-                window.loadStockTake();
-            } else {
-                console.warn('[ROUTER] loadStockTake not yet available, waiting for script to load...');
-                // Retry mechanism - wait for script to load
-                let retryCount = 0;
-                const maxRetries = 50; // Check up to 50 times
-                const retryInterval = 100; // Check every 100ms (total max wait: 5 seconds)
-                
-                const checkInterval = setInterval(() => {
-                    retryCount++;
-                    
-                    if (typeof window.loadStockTake === 'function') {
-                        console.log(`✅ [ROUTER] loadStockTake now available after ${retryCount * retryInterval}ms, calling it`);
-                        clearInterval(checkInterval);
-                        try {
-                            window.loadStockTake();
-                        } catch (error) {
-                            console.error('[ROUTER] Error calling loadStockTake:', error);
-                            const page = document.getElementById('stock-take');
-                            if (page) {
-                                page.innerHTML = `
-                                    <div class="card">
-                                        <div class="alert alert-danger">
-                                            <i class="fas fa-exclamation-circle"></i>
-                                            <p>Error loading stock take page: ${error.message}</p>
-                                        </div>
-                                    </div>
-                                `;
-                            }
-                        }
-                    } else if (retryCount >= maxRetries) {
-                        console.error(`❌ [ROUTER] loadStockTake not defined after ${maxRetries * retryInterval}ms (${maxRetries} attempts)`);
-                        clearInterval(checkInterval);
-                        
-                        // Show error message
-                        const page = document.getElementById('stock-take');
-                        if (page) {
-                            page.innerHTML = `
-                                <div class="card">
-                                    <div class="alert alert-danger">
-                                        <i class="fas fa-exclamation-circle"></i>
-                                        <h3>Stock Take Page Not Available</h3>
-                                        <p>The stock take functionality could not be loaded. Please refresh the page.</p>
-                                        <p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 1rem;">
-                                            If the problem persists, check the browser console (F12) for errors.
-                                        </p>
-                                    </div>
-                                </div>
-                            `;
-                        }
+            const runStockTake = () => {
+                if (typeof window.loadStockTake !== 'function') return false;
+                try {
+                    window.loadStockTake();
+                    return true;
+                } catch (e) {
+                    console.error('[ROUTER] Error calling loadStockTake:', e);
+                    const page = document.getElementById('stock-take');
+                    if (page) {
+                        page.innerHTML = `<div class="card"><div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i><p>Error loading stock take: ${e.message}</p></div></div>`;
                     }
-                }, retryInterval);
-            }
+                    return true;
+                }
+            };
+            if (runStockTake()) break;
+            console.warn('[ROUTER] loadStockTake not yet available, waiting for script...');
+            let retryCount = 0;
+            const maxRetries = 50;
+            const retryInterval = 100;
+            let dynamicLoadTried = false;
+            const showError = () => {
+                const page = document.getElementById('stock-take');
+                if (page) {
+                    page.innerHTML = `
+                        <div class="card">
+                            <div class="alert alert-danger">
+                                <i class="fas fa-exclamation-circle"></i>
+                                <h3>Stock Take Page Not Available</h3>
+                                <p>The stock take functionality could not be loaded. Please refresh the page.</p>
+                                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 1rem;">
+                                    If the problem persists, check the browser console (F12) for errors.
+                                </p>
+                            </div>
+                        </div>
+                    `;
+                }
+            };
+            const checkInterval = setInterval(() => {
+                retryCount++;
+                if (runStockTake()) {
+                    clearInterval(checkInterval);
+                    return;
+                }
+                if (retryCount >= maxRetries) {
+                    clearInterval(checkInterval);
+                    if (!dynamicLoadTried) {
+                        dynamicLoadTried = true;
+                        console.warn('[ROUTER] Trying dynamic load of stock_take.js...');
+                        const script = document.createElement('script');
+                        script.src = 'js/pages/stock_take.js?v=' + (Date.now() % 100000);
+                        script.onload = () => {
+                            if (runStockTake()) return;
+                            console.error('[ROUTER] loadStockTake still not defined after dynamic load');
+                            showError();
+                        };
+                        script.onerror = () => {
+                            console.error('[ROUTER] Failed to load stock_take.js dynamically');
+                            showError();
+                        };
+                        document.body.appendChild(script);
+                    } else {
+                        console.error('[ROUTER] loadStockTake not defined after retries and dynamic load');
+                        showError();
+                    }
+                }
+            }, retryInterval);
             break;
+        }
         case 'settings':
             console.log('[ROUTER] Loading settings page, subPage:', subPage);
             if (typeof window.loadSettings === 'function') {

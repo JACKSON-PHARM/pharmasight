@@ -1,7 +1,7 @@
 """
 Item and Unit models
 """
-from sqlalchemy import Column, String, Boolean, Numeric, ForeignKey
+from sqlalchemy import Column, String, Boolean, Numeric, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -21,15 +21,25 @@ class Item(Base):
     sku = Column(String(100))
     barcode = Column(String(100))
     category = Column(String(100))
-    base_unit = Column(String(50), nullable=False)  # tablet, ml, gram, etc.
+    base_unit = Column(String(50), nullable=False)  # tablet, ml, gram, etc. (legacy: = retail_unit)
     default_cost = Column(Numeric(20, 4), default=0)
     # VAT Classification (Kenya Pharmacy Context)
-    # Most medicines are zero-rated (0%), some items/services are standard-rated (16%)
     is_vatable = Column(Boolean, default=True)
     vat_rate = Column(Numeric(5, 2), default=0)  # 0 for zero-rated, 16 for standard-rated
     vat_code = Column(String(50))  # ZERO_RATED | STANDARD | EXEMPT
     price_includes_vat = Column(Boolean, default=False)
+    vat_category = Column(String(20), default="ZERO_RATED")  # ZERO_RATED | STANDARD_RATED
     is_active = Column(Boolean, default=True)
+    # 3-TIER UNIT SYSTEM
+    supplier_unit = Column(String(50), default="piece")   # What we buy: packet, box, bottle
+    wholesale_unit = Column(String(50), default="piece")  # What pharmacies buy
+    retail_unit = Column(String(50), default="piece")     # What customers buy: tablet, capsule, ml, gram
+    pack_size = Column(Integer, nullable=False, default=1)  # Retail units per supplier/wholesale unit
+    can_break_bulk = Column(Boolean, nullable=False, default=True)  # Can sell individual retail units?
+    # PRICING WITH CLEAR UNIT ATTRIBUTION (on items)
+    purchase_price_per_supplier_unit = Column(Numeric(15, 2), default=0)   # Cost per supplier unit
+    wholesale_price_per_wholesale_unit = Column(Numeric(15, 2), default=0) # Sell per wholesale unit
+    retail_price_per_retail_unit = Column(Numeric(15, 2), default=0)       # Sell per retail unit
     # Batch and expiry tracking
     requires_batch_tracking = Column(Boolean, default=False)  # Whether item requires batch tracking
     requires_expiry_tracking = Column(Boolean, default=False)  # Whether item requires expiry date tracking
@@ -62,7 +72,7 @@ class ItemUnit(Base):
 
 
 class ItemPricing(Base):
-    """Item-specific pricing rules"""
+    """Item-specific pricing rules with 3-tier pricing support"""
     __tablename__ = "item_pricing"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -70,6 +80,11 @@ class ItemPricing(Base):
     markup_percent = Column(Numeric(10, 2))
     min_margin_percent = Column(Numeric(10, 2))
     rounding_rule = Column(String(50))  # nearest_1, nearest_5, nearest_10
+    
+    # NOTE: 3-tier pricing fields (supplier_unit, wholesale_unit, retail_unit, etc.) 
+    # are now on the items table, NOT item_pricing table.
+    # This table only stores markup_percent, min_margin_percent, and rounding_rule.
+    
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

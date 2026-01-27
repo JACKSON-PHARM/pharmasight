@@ -754,6 +754,29 @@ async function loadPurchaseDocuments(documentType = 'order') {
     }
 }
 
+// Clear date filters to show all invoices (used when navigating from stock take)
+function clearPurchaseDateFilters() {
+    console.log('[PURCHASES] Clearing date filters to show all invoices');
+    const dateFromEl = document.getElementById('filterDateFrom');
+    const dateToEl = document.getElementById('filterDateTo');
+    if (dateFromEl) {
+        dateFromEl.value = '';
+        console.log('[PURCHASES] Cleared dateFrom filter');
+    }
+    if (dateToEl) {
+        dateToEl.value = '';
+        console.log('[PURCHASES] Cleared dateTo filter');
+    }
+    
+    // Reload invoices without date filters
+    if (currentPurchaseSubPage === 'invoices') {
+        console.log('[PURCHASES] Reloading invoices without date filters');
+        setTimeout(() => {
+            fetchAndRenderSupplierInvoicesData();
+        }, 300);
+    }
+}
+
 // Filter documents (uses new pattern - only updates tbody)
 function filterPurchaseDocuments() {
     const searchTerm = document.getElementById('purchaseSearchInput')?.value.toLowerCase() || '';
@@ -2683,6 +2706,7 @@ if (typeof window !== 'undefined') {
     window.fetchAndRenderPurchaseOrdersData = fetchAndRenderPurchaseOrdersData;
     window.fetchAndRenderSupplierInvoicesData = fetchAndRenderSupplierInvoicesData;
     window.fetchAndRenderPurchaseInvoicesData = fetchAndRenderSupplierInvoicesData; // Backward compatibility
+    window.clearPurchaseDateFilters = clearPurchaseDateFilters;
     window.fetchAndRenderCreditNotesData = fetchAndRenderCreditNotesData;
     window.renderPurchaseOrdersTableBody = renderPurchaseOrdersTableBody;
     window.renderSupplierInvoicesTableBody = renderSupplierInvoicesTableBody;

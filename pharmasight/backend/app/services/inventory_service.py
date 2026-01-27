@@ -294,3 +294,27 @@ class InventoryService:
         
         return (available_base >= required_base, available_base, required_base)
 
+    @staticmethod
+    def get_stock_display(
+        db: Session,
+        item_id: UUID,
+        branch_id: UUID
+    ) -> str:
+        """
+        Get stock display using 3-tier units: "X packets + Y tablets" or "X packets (Z tablets)" or "Y tablets".
+        Stock is tracked in retail units (base units). Uses supplier_unit, retail_unit, pack_size when present.
+        """
+        item = db.query(Item).filter(Item.id == item_id).first()
+        if not item:
+            return "0"
+        total_retail = InventoryService.get_current_stock(db, item_id, branch_id)
+        supplier_unit = getattr(item, "supplier_unit", None) or "piece"
+        retail_unit = getattr(item, "retail_unit", None) or item.base_unit
+        pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
+        full_packets = total_retail // pack_size
+        partial_units = total_retail % pack_size
+        if full_packets > 0 and partial_units > 0:
+            return f"{full_packets} {supplier_unit} + {partial_units} {retail_unit}"
+        if full_packets > 0:
+            return f"{full_packets} {supplier_unit} ({full_packets * pack_size} {retail_unit})"
+        return f"{partial_units} {retail_unit}"

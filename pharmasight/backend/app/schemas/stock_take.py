@@ -68,6 +68,16 @@ class StockTakeCountCreate(BaseModel):
     notes: Optional[str] = None
 
 
+class StockTakeCountBranchCreate(BaseModel):
+    """Schema for creating a stock take count (branch-based, automatic participation)"""
+    branch_id: UUID
+    item_id: UUID
+    counted_quantity: int = Field(..., description="Counted quantity in base units")
+    shelf_location: Optional[str] = None
+    notes: Optional[str] = None
+    item_updates: Optional[dict] = None  # For pack_size, breaking_bulk_unit updates
+
+
 class StockTakeCountResponse(BaseModel):
     """Schema for stock take count response"""
     id: UUID

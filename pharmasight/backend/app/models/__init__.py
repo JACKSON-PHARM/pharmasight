@@ -17,6 +17,7 @@ from .sale import SalesInvoice, SalesInvoiceItem, Payment, CreditNote, CreditNot
 from .settings import DocumentSequence, CompanySetting
 from .stock_take import StockTakeSession, StockTakeCount, StockTakeCounterLock, StockTakeAdjustment
 from .order_book import DailyOrderBook, OrderBookHistory
+from .import_job import ImportJob
 
 __all__ = [
     "Base",
@@ -55,4 +56,5 @@ __all__ = [
     "StockTakeAdjustment",
     "DailyOrderBook",
     "OrderBookHistory",
+    "ImportJob",
 ]

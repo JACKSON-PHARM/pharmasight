@@ -189,7 +189,10 @@ def create_grn(grn: GRNCreate, db: Session = Depends(get_db)):
 @router.get("/grn/{grn_id}", response_model=GRNResponse)
 def get_grn(grn_id: UUID, db: Session = Depends(get_db)):
     """Get GRN by ID"""
-    grn = db.query(GRN).filter(GRN.id == grn_id).first()
+    # Eagerly load items relationship to avoid lazy loading issues
+    grn = db.query(GRN).options(
+        selectinload(GRN.items)
+    ).filter(GRN.id == grn_id).first()
     if not grn:
         raise HTTPException(status_code=404, detail="GRN not found")
     return grn
@@ -335,7 +338,10 @@ def list_supplier_invoices(
         query = query.filter(SupplierInvoice.invoice_date <= date_to)
     
     # Order by date descending (newest first)
-    invoices = query.order_by(SupplierInvoice.invoice_date.desc(), SupplierInvoice.created_at.desc()).all()
+    # Eagerly load items relationship to avoid lazy loading issues
+    invoices = query.options(
+        selectinload(SupplierInvoice.items)
+    ).order_by(SupplierInvoice.invoice_date.desc(), SupplierInvoice.created_at.desc()).all()
     
     # Load supplier and branch names, and ensure all invoices have document numbers
     for invoice in invoices:
@@ -916,7 +922,10 @@ def list_purchase_orders(
         query = query.filter(PurchaseOrder.status == status)
     
     # Order by date descending (newest first)
-    orders = query.order_by(PurchaseOrder.order_date.desc(), PurchaseOrder.created_at.desc()).all()
+    # Eagerly load items relationship to avoid lazy loading issues
+    orders = query.options(
+        selectinload(PurchaseOrder.items)
+    ).order_by(PurchaseOrder.order_date.desc(), PurchaseOrder.created_at.desc()).all()
     
     # Load supplier, branch, and user names
     for order in orders:

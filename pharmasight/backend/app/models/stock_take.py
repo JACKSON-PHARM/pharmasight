@@ -1,7 +1,7 @@
 """
 Stock Take models for multi-user stock take sessions
 """
-from sqlalchemy import Column, String, Boolean, ForeignKey, Text, Integer, CheckConstraint, ARRAY
+from sqlalchemy import Column, String, Boolean, ForeignKey, Text, Integer, CheckConstraint, ARRAY, Date, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -54,6 +54,8 @@ class StockTakeCount(Base):
     
     Stores individual counts entered by counters.
     Multiple counters can count the same item.
+    Each count is associated with a shelf location (required).
+    Supports batch tracking and unit selection.
     """
     __tablename__ = "stock_take_counts"
 
@@ -61,11 +63,19 @@ class StockTakeCount(Base):
     session_id = Column(UUID(as_uuid=True), ForeignKey("stock_take_sessions.id", ondelete="CASCADE"), nullable=False)
     item_id = Column(UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
     counted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    shelf_location = Column(String(100), nullable=True)
-    counted_quantity = Column(Integer, nullable=False)  # In base units
+    shelf_location = Column(String(100), nullable=False)  # REQUIRED: Shelf name where count was performed
+    batch_number = Column(String(200), nullable=True)  # Batch number (if item requires batch tracking)
+    expiry_date = Column(Date, nullable=True)  # Expiry date (if item requires expiry tracking)
+    unit_name = Column(String(50), nullable=True)  # Unit used for counting (e.g., PACKET, TABLET)
+    quantity_in_unit = Column(Numeric(20, 4), nullable=True)  # Quantity in selected unit (before conversion)
+    counted_quantity = Column(Integer, nullable=False)  # In base units (after unit conversion)
     system_quantity = Column(Integer, nullable=False)  # System stock at time of count (base units)
     variance = Column(Integer, nullable=False)  # counted_quantity - system_quantity
     notes = Column(Text)
+    verification_status = Column(String(20), default='PENDING', nullable=False)  # PENDING, APPROVED, REJECTED
+    verified_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)  # User who verified
+    verified_at = Column(TIMESTAMP(timezone=True), nullable=True)  # When verified
+    rejection_reason = Column(Text, nullable=True)  # Reason for rejection
     counted_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
@@ -73,8 +83,13 @@ class StockTakeCount(Base):
     session = relationship("StockTakeSession", back_populates="counts")
     item = relationship("Item")
     counter = relationship("User", foreign_keys=[counted_by])
+    verifier = relationship("User", foreign_keys=[verified_by])
 
     __table_args__ = (
+        CheckConstraint(
+            "verification_status IN ('PENDING', 'APPROVED', 'REJECTED')",
+            name="valid_verification_status"
+        ),
         {"comment": "Individual counts entered by counters. Multiple counters can count same item."},
     )
 

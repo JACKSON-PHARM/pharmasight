@@ -333,9 +333,11 @@ function renderItemsTable() {
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Base Unit</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Category</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Current Stock</th>
+                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Supplier Price</th>
+                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Wholesale Price</th>
+                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Retail Price</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Last Supplier</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Last Unit Cost</th>
-                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Default Cost</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Status</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Actions</th>
                     </tr>
@@ -344,20 +346,48 @@ function renderItemsTable() {
                     ${displayList.map(item => {
                         const isLowStock = item.minimum_stock !== null && item.current_stock !== null && item.current_stock < item.minimum_stock;
                         const rowClass = isLowStock ? 'style="background-color: #fff3cd;"' : '';
+                        
+                        // Extract 3-tier pricing
+                        const pricing3tier = item.pricing_3tier || {};
+                        const supplierPrice = pricing3tier.supplier_price;
+                        const wholesalePrice = pricing3tier.wholesale_price;
+                        const retailPrice = pricing3tier.retail_price;
+                        
+                        // Format stock display (packets + individual units)
+                        let stockDisplay = '—';
+                        if (item.stock_availability && item.stock_availability.unit_breakdown && item.stock_availability.unit_breakdown.length > 0) {
+                            // Use unit breakdown for better display (e.g., "8 boxes + 40 tablets")
+                            const display = item.stock_availability.unit_breakdown[0].display;
+                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${display}</strong>`;
+                        } else if (item.current_stock !== null && item.current_stock !== undefined) {
+                            // Fallback to simple number display
+                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${formatNumber(item.current_stock)} ${item.base_unit}</strong>`;
+                        }
+                        
                         return `
                         <tr ${rowClass}>
                             <td>${escapeHtml(item.name)}</td>
                             <td><code>${escapeHtml(item.sku || '—')}</code></td>
                             <td>${escapeHtml(item.base_unit)}</td>
                             <td>${escapeHtml(item.category || '—')}</td>
+                            <td>${stockDisplay}</td>
                             <td>
-                                ${item.current_stock !== null && item.current_stock !== undefined 
-                                    ? `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${formatNumber(item.current_stock)} ${item.base_unit}</strong>`
+                                ${supplierPrice 
+                                    ? `<strong>${formatCurrency(supplierPrice.price)}</strong><br><small style="color: var(--text-secondary);">per ${supplierPrice.unit}</small>`
+                                    : '—'}
+                            </td>
+                            <td>
+                                ${wholesalePrice 
+                                    ? `<strong>${formatCurrency(wholesalePrice.price)}</strong><br><small style="color: var(--text-secondary);">per ${wholesalePrice.unit}</small>`
+                                    : '—'}
+                            </td>
+                            <td>
+                                ${retailPrice 
+                                    ? `<strong style="color: #28a745;">${formatCurrency(retailPrice.price)}</strong><br><small style="color: var(--text-secondary);">per ${retailPrice.unit}</small>`
                                     : '—'}
                             </td>
                             <td>${escapeHtml(item.last_supplier || '—')}</td>
                             <td>${item.last_unit_cost !== null && item.last_unit_cost !== undefined ? formatCurrency(item.last_unit_cost) : '—'}</td>
-                            <td>${formatCurrency(item.default_cost || 0)}</td>
                             <td>
                                 <span class="badge ${item.is_active ? 'badge-success' : 'badge-danger'}">
                                     ${item.is_active ? 'Active' : 'Inactive'}
@@ -465,6 +495,63 @@ function showAddItemModal() {
                 </div>
             </div>
 
+            <!-- 3-Tier Unit System -->
+            <div class="form-section">
+                <div class="form-section-title">
+                    <i class="fas fa-layer-group"></i> 3-Tier Unit System
+                </div>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                    Supplier buys in <strong>packets</strong> → Pharmacy buys in <strong>packets</strong> → Customer buys in <strong>tablets</strong>. Stock displayed as &quot;5 packets + 25 tablets&quot;.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Supplier Unit (what you buy) *</label>
+                        <select class="form-select" name="supplier_unit" required>
+                            <option value="packet" selected>Packet</option>
+                            <option value="box">Box</option>
+                            <option value="bottle">Bottle</option>
+                            <option value="tube">Tube</option>
+                            <option value="piece">Piece</option>
+                            <option value="carton">Carton</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Wholesale Unit (what pharmacies buy) *</label>
+                        <select class="form-select" name="wholesale_unit" required>
+                            <option value="packet" selected>Packet</option>
+                            <option value="box">Box</option>
+                            <option value="bottle">Bottle</option>
+                            <option value="piece">Piece</option>
+                            <option value="carton">Carton</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Retail Unit (what customers buy) *</label>
+                        <select class="form-select" name="retail_unit" required>
+                            <option value="tablet" selected>Tablet</option>
+                            <option value="capsule">Capsule</option>
+                            <option value="ml">ML</option>
+                            <option value="gram">Gram</option>
+                            <option value="piece">Piece</option>
+                            <option value="sachet">Sachet</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Pack Size (retail units per packet) *</label>
+                        <input type="number" class="form-input" name="pack_size" min="1" value="30" required placeholder="e.g. 30">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">e.g. 30 tablets per packet</small>
+                    </div>
+                    <div class="form-group" style="display: flex; align-items: flex-end; padding-bottom: 0.5rem;">
+                        <label class="checkbox-item">
+                            <input type="checkbox" name="can_break_bulk" id="can_break_bulk" checked>
+                            <span>Can break bulk (sell individual units)</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
             <!-- Item Specifications Section -->
             <div class="form-section">
                 <div class="form-section-title">
@@ -472,7 +559,7 @@ function showAddItemModal() {
                 </div>
                 <div class="form-group">
                     <label class="form-label">Ingredients/Composition</label>
-                    <textarea class="form-textarea" name="ingredients" rows="3" placeholder="Enter active ingredients and composition"></textarea>
+                    <textarea class="form-textarea" name="ingredients" rows="2" placeholder="Enter active ingredients and composition"></textarea>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
@@ -480,8 +567,8 @@ function showAddItemModal() {
                         <input type="text" class="form-input" name="strength" placeholder="Enter strength">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Base Unit/Unit Measure *</label>
-                        <select class="form-select" name="base_unit" required>
+                        <label class="form-label">Base Unit (legacy, default = retail unit)</label>
+                        <select class="form-select" name="base_unit">
                             <option value="tablet">Tablet</option>
                             <option value="capsule">Capsule</option>
                             <option value="ml">ML (Milliliter)</option>
@@ -495,15 +582,9 @@ function showAddItemModal() {
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label class="form-label">Pack Size</label>
-                        <input type="text" class="form-input" name="pack_size" placeholder="Enter pack size">
-                    </div>
-                    <div class="form-group">
                         <label class="form-label">Standard Pack</label>
                         <input type="text" class="form-input" name="std_pack" placeholder="Standard packaging unit">
                     </div>
-                </div>
-                <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">Main Formulation</label>
                         <select class="form-select" name="formulation">
@@ -548,25 +629,59 @@ function showAddItemModal() {
                 </div>
             </div>
 
-            <!-- Pricing Section -->
+            <!-- Pricing (3-tier unit attribution) -->
             <div class="form-section">
                 <div class="form-section-title">
-                    <i class="fas fa-dollar-sign"></i> Pricing
+                    <i class="fas fa-dollar-sign"></i> Pricing (per unit)
+                </div>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                    Each price is per unit: purchase per <strong>supplier unit</strong>, wholesale per <strong>wholesale unit</strong>, retail per <strong>retail unit</strong>.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Purchase price per supplier unit</label>
+                        <input type="number" class="form-input" name="purchase_price_per_supplier_unit" step="0.01" min="0" value="0" placeholder="0.00">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">e.g. cost per packet</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Wholesale price per wholesale unit</label>
+                        <input type="number" class="form-input" name="wholesale_price_per_wholesale_unit" step="0.01" min="0" value="0" placeholder="0.00">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">e.g. price per packet to pharmacies</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Retail price per retail unit</label>
+                        <input type="number" class="form-input" name="retail_price_per_retail_unit" step="0.01" min="0" value="0" placeholder="0.00">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">e.g. price per tablet to customers</small>
+                    </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Default Cost per Base Unit</label>
+                    <label class="form-label">Default cost (legacy, per base unit)</label>
                     <input type="number" class="form-input" name="default_cost" step="0.01" min="0" value="0" placeholder="0.00">
                 </div>
             </div>
 
-            <!-- VAT/Tax Classification Section -->
+            <!-- VAT/Tax Classification -->
             <div class="form-section">
                 <div class="form-section-title">
-                    <i class="fas fa-receipt"></i> VAT/Tax Classification
+                    <i class="fas fa-receipt"></i> VAT Classification
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label class="form-label">Is VATable? *</label>
+                        <label class="form-label">VAT Category *</label>
+                        <select class="form-select" name="vat_category" id="vat_category_select" required>
+                            <option value="ZERO_RATED" selected>Zero Rated (0%) – Medicines</option>
+                            <option value="STANDARD_RATED">Standard Rated (16%) – Non-medical</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">VAT Rate (%)</label>
+                        <input type="number" class="form-input" name="vat_rate" id="vat_rate_input" step="0.01" min="0" max="100" value="0" placeholder="0.00">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">0% zero-rated, 16% standard-rated</small>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Is VATable?</label>
                         <div style="display: flex; gap: 2rem; margin-top: 0.5rem;">
                             <label class="checkbox-item">
                                 <input type="radio" name="is_vatable" value="true" checked>
@@ -579,22 +694,7 @@ function showAddItemModal() {
                         </div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">VAT Code *</label>
-                        <select class="form-select" name="vat_code" required>
-                            <option value="ZERO_RATED" selected>ZERO_RATED (0%)</option>
-                            <option value="STANDARD">STANDARD (16%)</option>
-                            <option value="EXEMPT">EXEMPT</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">VAT Rate (%)</label>
-                        <input type="number" class="form-input" name="vat_rate" step="0.01" min="0" max="100" value="0" placeholder="0.00">
-                        <small style="color: var(--text-secondary); font-size: 0.85rem;">0% for zero-rated medicines, 16% for standard-rated items</small>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Price Includes VAT?</label>
+                        <label class="form-label">Price includes VAT?</label>
                         <div style="display: flex; gap: 2rem; margin-top: 0.5rem;">
                             <label class="checkbox-item">
                                 <input type="radio" name="price_includes_vat" value="true">
@@ -694,19 +794,13 @@ function showAddItemModal() {
     showModal('New Inventory Item', content, footer);
     unitRowCount = 1; // Reset counter
     
-    // Auto-update VAT rate when VAT code changes
+    // Auto-update VAT rate when VAT category changes
     setTimeout(() => {
-        const vatCodeSelect = document.querySelector('#itemForm select[name="vat_code"]');
-        const vatRateInput = document.querySelector('#itemForm input[name="vat_rate"]');
-        
-        if (vatCodeSelect && vatRateInput) {
-            vatCodeSelect.addEventListener('change', (e) => {
-                const vatCode = e.target.value;
-                if (vatCode === 'STANDARD') {
-                    vatRateInput.value = '16.00';
-                } else if (vatCode === 'ZERO_RATED' || vatCode === 'EXEMPT') {
-                    vatRateInput.value = '0.00';
-                }
+        const vatCat = document.querySelector('#itemForm select[name="vat_category"]');
+        const vatRate = document.querySelector('#itemForm input[name="vat_rate"]');
+        if (vatCat && vatRate) {
+            vatCat.addEventListener('change', (e) => {
+                vatRate.value = e.target.value === 'STANDARD_RATED' ? '16.00' : '0.00';
             });
         }
     }, 100);
@@ -747,7 +841,10 @@ async function saveItem(event) {
     const form = event.target;
     const formData = new FormData(form);
     
-    // Build item data - map fields to our schema
+    const packSize = parseInt(formData.get('pack_size') || '1', 10) || 1;
+    const canBreakBulk = formData.get('can_break_bulk') === 'on';
+
+    // Build item data with 3-tier unit system
     const itemData = {
         company_id: CONFIG.COMPANY_ID,
         name: formData.get('name'),
@@ -755,32 +852,33 @@ async function saveItem(event) {
         sku: formData.get('sku') || null,
         barcode: formData.get('barcode') || null,
         category: formData.get('category') || null,
-        base_unit: formData.get('base_unit'),
+        base_unit: formData.get('base_unit') || formData.get('retail_unit') || 'tablet',
         default_cost: parseFloat(formData.get('default_cost') || 0),
-        // VAT/Tax fields
-        is_vatable: formData.get('is_vatable') === 'true',
-        vat_code: formData.get('vat_code') || 'ZERO_RATED',
+        supplier_unit: formData.get('supplier_unit') || 'packet',
+        wholesale_unit: formData.get('wholesale_unit') || 'packet',
+        retail_unit: formData.get('retail_unit') || 'tablet',
+        pack_size: packSize,
+        can_break_bulk: canBreakBulk,
+        purchase_price_per_supplier_unit: parseFloat(formData.get('purchase_price_per_supplier_unit') || 0),
+        wholesale_price_per_wholesale_unit: parseFloat(formData.get('wholesale_price_per_wholesale_unit') || 0),
+        retail_price_per_retail_unit: parseFloat(formData.get('retail_price_per_retail_unit') || 0),
+        vat_category: formData.get('vat_category') || 'ZERO_RATED',
+        vat_code: formData.get('vat_category') || 'ZERO_RATED',
         vat_rate: parseFloat(formData.get('vat_rate') || 0),
         price_includes_vat: formData.get('price_includes_vat') === 'true',
+        is_vatable: formData.get('is_vatable') === 'true',
         units: []
     };
-    
-    // Auto-set VAT rate based on VAT code
-    if (itemData.vat_code === 'STANDARD') {
-        itemData.vat_rate = 16.00;
-    } else if (itemData.vat_code === 'ZERO_RATED') {
-        itemData.vat_rate = 0.00;
-    } else if (itemData.vat_code === 'EXEMPT') {
-        itemData.vat_rate = 0.00;
-    }
-    
-    // Collect units (breaking bulk)
+
+    if (itemData.vat_category === 'STANDARD_RATED') itemData.vat_rate = 16;
+    else if (itemData.vat_category === 'ZERO_RATED') itemData.vat_rate = 0;
+
+    // Optional unit rows (breaking bulk); when empty, backend derives from 3-tier
     let index = 0;
     while (formData.get(`unit_name_${index}`)) {
         const unitName = formData.get(`unit_name_${index}`);
         const multiplier = parseFloat(formData.get(`multiplier_${index}`));
         const isDefault = formData.get(`is_default_${index}`) === 'on';
-        
         if (unitName && multiplier) {
             itemData.units.push({
                 unit_name: unitName,
@@ -790,10 +888,8 @@ async function saveItem(event) {
         }
         index++;
     }
-    
-    // Ensure base unit is included
     const hasBaseUnit = itemData.units.some(u => u.unit_name === itemData.base_unit);
-    if (!hasBaseUnit) {
+    if (itemData.units.length && !hasBaseUnit) {
         itemData.units.push({
             unit_name: itemData.base_unit,
             multiplier_to_base: 1.0,
@@ -1069,64 +1165,152 @@ async function importExcelFile() {
     // Set importing flag
     isImporting = true;
     
-    // Add progress indicator
+    // Add progress indicator with progress bar
     let progressHTML = `
         <div id="importProgress" style="margin-top: 1rem; padding: 1rem; background: var(--bg-secondary); border-radius: 4px;">
-            <div id="importStatus" style="font-size: 0.875rem; color: var(--text-secondary);">
-                <i class="fas fa-spinner fa-spin"></i> Uploading and processing Excel file...
+            <div id="importStatus" style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                <i class="fas fa-spinner fa-spin"></i> <span id="importStatusText">Uploading and processing Excel file...</span>
+            </div>
+            <div style="width: 100%; background: var(--border-color); border-radius: 4px; height: 8px; overflow: hidden;">
+                <div id="importProgressBar" style="width: 0%; height: 100%; background: var(--primary-color); transition: width 0.3s ease;"></div>
+            </div>
+            <div id="importProgressText" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.25rem; text-align: center;">
+                0%
             </div>
         </div>
     `;
     modalBody.insertAdjacentHTML('beforeend', progressHTML);
     
+    // Progress update function
+    const updateProgress = (percent, statusText) => {
+        const progressBar = document.getElementById('importProgressBar');
+        const progressText = document.getElementById('importProgressText');
+        const statusTextEl = document.getElementById('importStatusText');
+        if (progressBar) progressBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+        if (progressText) progressText.textContent = `${Math.round(percent)}%`;
+        if (statusTextEl && statusText) statusTextEl.textContent = statusText;
+    };
+    
+    // Simulate progress (since we can't get real-time updates without WebSocket)
+    let progressPercent = 0;
+    let progressInterval = null;
+    let startTime = Date.now();
+    let lastUpdateTime = startTime;
+    
     importBtn.disabled = true;
     importBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Importing...';
+    
+    // Poll for progress instead of simulating
+    let pollInterval = null;
+    let jobId = null;
     
     try {
         // Check import mode first
         const modeInfo = await API.excel.getMode(CONFIG.COMPANY_ID);
-        const statusEl = document.getElementById('importStatus');
-        if (statusEl) {
-            statusEl.innerHTML = `<i class="fas fa-info-circle"></i> Mode: ${modeInfo.mode} ${modeInfo.has_live_transactions ? '(Live transactions detected - non-destructive)' : '(No live transactions - authoritative reset allowed)'}`;
-        }
+        updateProgress(5, `Mode: ${modeInfo.mode} - Starting import...`);
         
-        // Upload file to backend
-        const result = await API.excel.import(
+        // Upload file to backend - returns job_id immediately
+        updateProgress(10, 'Uploading file to server...');
+        const startResult = await API.excel.import(
             excelFile,
             CONFIG.COMPANY_ID,
             CONFIG.BRANCH_ID,
             CONFIG.USER_ID
         );
         
-        // Show results
-        const stats = result.stats || {};
-        let message = `Import completed in ${result.mode} mode. `;
-        message += `Items: ${stats.items_created || 0} created`;
-        if (stats.items_updated) message += `, ${stats.items_updated} updated`;
-        if (stats.items_skipped) message += `, ${stats.items_skipped} skipped`;
-        if (stats.opening_balances_created) message += ` | Opening balances: ${stats.opening_balances_created} created`;
-        if (stats.suppliers_created) message += ` | Suppliers: ${stats.suppliers_created} created`;
-        
-        if (stats.errors && stats.errors.length > 0) {
-            console.warn('Import errors:', stats.errors);
-            message += ` | ${stats.errors.length} errors (check console)`;
+        if (!startResult.job_id) {
+            throw new Error('Failed to start import job');
         }
         
-        showToast(message, result.success ? 'success' : 'warning');
-        closeModal();
-        loadItems();
+        jobId = startResult.job_id;
+        updateProgress(15, 'Import started - Processing in background...');
+        
+        // Poll for progress every 2 seconds
+        pollInterval = setInterval(async () => {
+            try {
+                const progress = await API.excel.getProgress(jobId);
+                
+                // Update progress bar with real data
+                const progressPct = progress.progress_percent || 0;
+                const status = progress.status;
+                const processed = progress.processed_rows || 0;
+                const total = progress.total_rows || 0;
+                
+                // Format elapsed time
+                const elapsed = (Date.now() - startTime) / 1000;
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = Math.floor(elapsed % 60);
+                const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+                
+                if (status === 'processing' || status === 'pending') {
+                    updateProgress(
+                        progressPct,
+                        `Processing ${processed}/${total} items... (${timeStr} elapsed)`
+                    );
+                } else if (status === 'completed') {
+                    clearInterval(pollInterval);
+                    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+                    updateProgress(100, `Import completed in ${totalTime} seconds!`);
+                    
+                    // Show results
+                    const stats = progress.stats || {};
+                    let message = `Import completed successfully. `;
+                    message += `Items: ${stats.items_created || 0} created`;
+                    if (stats.items_updated) message += `, ${stats.items_updated} updated`;
+                    if (stats.items_skipped) message += `, ${stats.items_skipped} skipped`;
+                    if (stats.opening_balances_created) message += ` | Opening balances: ${stats.opening_balances_created} created`;
+                    if (stats.suppliers_created) message += ` | Suppliers: ${stats.suppliers_created} created`;
+                    
+                    if (stats.errors && stats.errors.length > 0) {
+                        console.warn('Import errors:', stats.errors);
+                        message += ` | ${stats.errors.length} errors (check console)`;
+                    }
+                    
+                    showToast(message, 'success');
+                    
+                    // Wait a moment to show completion, then close
+                    setTimeout(() => {
+                        closeModal();
+                        loadItems();
+                    }, 2000);
+                    
+                } else if (status === 'failed') {
+                    clearInterval(pollInterval);
+                    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+                    const errorMsg = progress.error_message || 'Unknown error';
+                    updateProgress(0, `Import failed after ${totalTime} seconds`);
+                    showToast(`Import failed: ${errorMsg}`, 'error');
+                }
+            } catch (pollError) {
+                console.error('Error polling progress:', pollError);
+                // Don't stop polling on individual errors, just log
+            }
+        }, 2000); // Poll every 2 seconds
         
     } catch (error) {
         console.error('Excel import error:', error);
+        if (pollInterval) clearInterval(pollInterval);
+        const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
         const statusEl = document.getElementById('importStatus');
+        const statusTextEl = document.getElementById('importStatusText');
         if (statusEl) {
             statusEl.innerHTML = `<span style="color: var(--danger-color);"><i class="fas fa-exclamation-triangle"></i> Error: ${error.message}</span>`;
         }
+        if (statusTextEl) {
+            statusTextEl.textContent = `Error: ${error.message} (after ${totalTime}s)`;
+        }
+        updateProgress(0, `Import failed after ${totalTime} seconds`);
         showToast(`Import failed: ${error.message}`, 'error');
     } finally {
+        // Cleanup on error (success cleanup happens in poll callback)
+        if (pollInterval && !jobId) {
+            clearInterval(pollInterval);
+        }
         isImporting = false;
-        importBtn.disabled = false;
-        importBtn.innerHTML = '<i class="fas fa-upload"></i> Import Items';
+        if (importBtn && !jobId) {
+            importBtn.disabled = false;
+            importBtn.innerHTML = '<i class="fas fa-upload"></i> Import Items';
+        }
     }
 }
 
