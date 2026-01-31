@@ -29,6 +29,9 @@ pytz==2023.3
 pandas>=2.0.0
 openpyxl>=3.1.0
 
+# PDF (stock take recording template)
+reportlab>=4.0.0
+
 # Development
 pytest==7.4.3
 pytest-asyncio==0.21.1

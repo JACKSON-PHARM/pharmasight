@@ -6,7 +6,7 @@ Handles the complete company setup flow.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.services.startup_service import StartupService
 from app.services.invite_service import InviteService
 from app.schemas.startup import StartupRequest, StartupResponse
@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 @router.post("/startup", response_model=StartupResponse, status_code=status.HTTP_201_CREATED)
-def initialize_company(startup: StartupRequest, db: Session = Depends(get_db)):
+def initialize_company(startup: StartupRequest, db: Session = Depends(get_tenant_db)):
     """
     Complete company initialization
     
@@ -86,7 +86,7 @@ def initialize_company(startup: StartupRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/startup/status")
-def get_startup_status(db: Session = Depends(get_db)):
+def get_startup_status(db: Session = Depends(get_tenant_db)):
     """
     Check if company has been initialized
     

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.models import Item, Branch
 from app.schemas.inventory import StockBalance, StockAvailability, BatchStock
 from app.services.inventory_service import InventoryService
@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.get("/stock/{item_id}/{branch_id}", response_model=dict)
-def get_current_stock(item_id: UUID, branch_id: UUID, db: Session = Depends(get_db)):
+def get_current_stock(item_id: UUID, branch_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get current stock balance for an item"""
     stock = InventoryService.get_current_stock(db, item_id, branch_id)
     return {
@@ -26,7 +26,7 @@ def get_current_stock(item_id: UUID, branch_id: UUID, db: Session = Depends(get_
 
 
 @router.get("/availability/{item_id}/{branch_id}", response_model=StockAvailability)
-def get_stock_availability(item_id: UUID, branch_id: UUID, db: Session = Depends(get_db)):
+def get_stock_availability(item_id: UUID, branch_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get stock availability with unit breakdown and batch breakdown"""
     availability = InventoryService.get_stock_availability(db, item_id, branch_id)
     if not availability:
@@ -35,7 +35,7 @@ def get_stock_availability(item_id: UUID, branch_id: UUID, db: Session = Depends
 
 
 @router.get("/batches/{item_id}/{branch_id}", response_model=List[dict])
-def get_stock_by_batch(item_id: UUID, branch_id: UUID, db: Session = Depends(get_db)):
+def get_stock_by_batch(item_id: UUID, branch_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get stock breakdown by batch (FEFO order)"""
     batches = InventoryService.get_stock_by_batch(db, item_id, branch_id)
     return batches
@@ -47,7 +47,7 @@ def allocate_stock_fefo(
     branch_id: UUID,
     quantity: float,
     unit_name: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """Allocate stock using FEFO"""
     try:
@@ -71,7 +71,7 @@ def check_stock_availability(
     branch_id: UUID,
     quantity: float,
     unit_name: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """Check if stock is available"""
     try:
@@ -89,7 +89,7 @@ def check_stock_availability(
 
 
 @router.get("/branch/{branch_id}/all", response_model=List[dict])
-def get_all_stock(branch_id: UUID, db: Session = Depends(get_db)):
+def get_all_stock(branch_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get stock for all items in a branch (OPTIMIZED - no N+1 queries)"""
     # Get all items for the branch's company
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
@@ -134,7 +134,7 @@ def get_all_stock(branch_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/branch/{branch_id}/overview", response_model=List[dict])
-def get_all_stock_overview(branch_id: UUID, db: Session = Depends(get_db)):
+def get_all_stock_overview(branch_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Get stock overview for all items with availability details (OPTIMIZED - single query)
     Returns stock with unit breakdown for efficient display

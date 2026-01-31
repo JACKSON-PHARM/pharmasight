@@ -2,6 +2,10 @@
 
 // Show toast notification
 function showToast(message, type = 'info') {
+    // Error noise reduction: suppress error toasts during navigation transition
+    if (window.__suppressToasts === true && type === 'error') {
+        return;
+    }
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
@@ -24,6 +28,46 @@ function showToast(message, type = 'info') {
     setTimeout(() => {
         toast.style.animation = 'slideOut 0.3s ease';
         setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// Show notification (alias for showToast, or use a simple alert/console for admin panel)
+function showNotification(message, type = 'info') {
+    if (window.__suppressToasts === true && type === 'error') {
+        return;
+    }
+    // Try to use showToast if toast container exists
+    const container = document.getElementById('toastContainer');
+    if (container) {
+        showToast(message, type);
+        return;
+    }
+    
+    // Fallback: create a simple notification
+    console.log(`[${type.toUpperCase()}] ${message}`);
+    
+    // Create a simple notification element if no toast container
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        background: ${type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : '#007bff'};
+        color: white;
+        border-radius: 4px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        z-index: 10000;
+        font-size: 14px;
+        max-width: 300px;
+    `;
+    notification.textContent = message;
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        notification.style.opacity = '0';
+        notification.style.transition = 'opacity 0.3s';
+        setTimeout(() => notification.remove(), 300);
     }, 3000);
 }
 
@@ -60,18 +104,19 @@ function formatDateTime(date) {
     });
 }
 
-// Show modal
+// Show modal (no-op if modal elements not present, e.g. on admin.html)
 function showModal(title, content, footer = '', modalClass = '') {
     const overlay = document.getElementById('modalOverlay');
     const modal = document.getElementById('modal');
-    
+    if (!overlay || !modal) return;
+
     // Add class if provided
     if (modalClass) {
         modal.classList.add(modalClass);
     } else {
         modal.classList.remove('modal-large');
     }
-    
+
     modal.innerHTML = `
         <div class="modal-header">
             <h3 class="modal-title">${title}</h3>
@@ -84,24 +129,26 @@ function showModal(title, content, footer = '', modalClass = '') {
         </div>
         ${footer ? `<div class="modal-footer">${footer}</div>` : ''}
     `;
-    
+
     overlay.style.display = 'flex';
 }
 
-// Close modal
+// Close modal (no-op if overlay not present)
 function closeModal() {
     const overlay = document.getElementById('modalOverlay');
-    overlay.style.display = 'none';
+    if (overlay) overlay.style.display = 'none';
 }
 
-// Close modal on overlay click
+// Close modal on overlay click (only when overlay exists, e.g. on main app pages)
 document.addEventListener('DOMContentLoaded', () => {
     const overlay = document.getElementById('modalOverlay');
-    overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) {
-            closeModal();
-        }
-    });
+    if (overlay) {
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) {
+                closeModal();
+            }
+        });
+    }
 });
 
 // Debounce function
@@ -158,3 +205,14 @@ function setLoading(element, isLoading) {
     }
 }
 
+// Make functions available globally (for script tag usage)
+// Note: This file is loaded as a regular script tag, not a module
+// So we don't use export statements here
+if (typeof window !== 'undefined') {
+    window.showNotification = showNotification;
+    window.showToast = showToast;
+    window.formatCurrency = formatCurrency;
+    window.formatDate = formatDate;
+    window.formatDateTime = formatDateTime;
+    window.debounce = debounce;
+}

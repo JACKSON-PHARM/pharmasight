@@ -11,8 +11,8 @@ async function loadSetup() {
     console.log('Loading setup wizard...');
     console.log('Current CONFIG:', { COMPANY_ID: CONFIG.COMPANY_ID, BRANCH_ID: CONFIG.BRANCH_ID });
     
-    // Check authentication - user must be logged in
-    const user = await Auth.getCurrentUser();
+    // Check authentication - user must be logged in (use AuthBootstrap for tenant + legacy)
+    const user = (typeof AuthBootstrap !== 'undefined' && AuthBootstrap.getCurrentUser) ? AuthBootstrap.getCurrentUser() : (typeof Auth !== 'undefined' && Auth.getCurrentUser) ? await Auth.getCurrentUser() : null;
     if (!user) {
         console.log('User not authenticated, redirecting to login');
         loadPage('login');
@@ -23,8 +23,8 @@ async function loadSetup() {
     setupData.admin_user = {
         id: user.id,
         email: user.email,
-        full_name: user.user_metadata?.full_name || '',
-        phone: user.user_metadata?.phone || ''
+        full_name: (user.user_metadata && user.user_metadata.full_name) || user.full_name || '',
+        phone: (user.user_metadata && user.user_metadata.phone) || user.phone || ''
     };
     
     // Check if already configured in localStorage

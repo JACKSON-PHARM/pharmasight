@@ -7,7 +7,7 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.models import (
     GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
     PurchaseOrder, PurchaseOrderItem,
@@ -25,7 +25,7 @@ router = APIRouter()
 
 
 @router.post("/grn", response_model=GRNResponse, status_code=status.HTTP_201_CREATED)
-def create_grn(grn: GRNCreate, db: Session = Depends(get_db)):
+def create_grn(grn: GRNCreate, db: Session = Depends(get_tenant_db)):
     """
     Create GRN (Goods Received Note)
     
@@ -187,7 +187,7 @@ def create_grn(grn: GRNCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/grn/{grn_id}", response_model=GRNResponse)
-def get_grn(grn_id: UUID, db: Session = Depends(get_db)):
+def get_grn(grn_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get GRN by ID"""
     # Eagerly load items relationship to avoid lazy loading issues
     grn = db.query(GRN).options(
@@ -199,7 +199,7 @@ def get_grn(grn_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/invoice", response_model=SupplierInvoiceResponse, status_code=status.HTTP_201_CREATED)
-def create_supplier_invoice(invoice: SupplierInvoiceCreate, db: Session = Depends(get_db)):
+def create_supplier_invoice(invoice: SupplierInvoiceCreate, db: Session = Depends(get_tenant_db)):
     """
     Create Supplier Invoice (DRAFT - No Stock Added Yet)
     
@@ -315,7 +315,7 @@ def list_supplier_invoices(
     supplier_id: Optional[UUID] = Query(None, description="Supplier ID"),
     date_from: Optional[date] = Query(None, description="Filter invoices from this date"),
     date_to: Optional[date] = Query(None, description="Filter invoices to this date"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     List supplier invoices with filtering
@@ -379,7 +379,7 @@ def list_supplier_invoices(
 
 
 @router.get("/invoice/{invoice_id}", response_model=SupplierInvoiceResponse)
-def get_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
+def get_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get supplier invoice by ID with full item details"""
     # Load invoice with items and item relationships (similar to get_purchase_order)
     invoice = db.query(SupplierInvoice).options(
@@ -413,7 +413,7 @@ def get_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.put("/invoice/{invoice_id}", response_model=SupplierInvoiceResponse)
-def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCreate, db: Session = Depends(get_db)):
+def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCreate, db: Session = Depends(get_tenant_db)):
     """
     Update supplier invoice (only if status is DRAFT)
     
@@ -554,7 +554,7 @@ def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCre
 
 
 @router.post("/invoice/{invoice_id}/batch", response_model=SupplierInvoiceResponse)
-def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
+def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Batch Supplier Invoice - Add Stock to Inventory
     
@@ -743,7 +743,7 @@ def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
 def update_invoice_payment(
     invoice_id: UUID,
     amount_paid: Decimal = Query(..., description="Amount paid to supplier"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Update payment information for supplier invoice
@@ -786,7 +786,7 @@ def update_invoice_payment(
 
 
 @router.delete("/invoice/{invoice_id}", status_code=status.HTTP_200_OK)
-def delete_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
+def delete_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Delete Supplier Invoice (Only if DRAFT status)
     
@@ -818,7 +818,7 @@ def delete_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
 # =====================================================
 
 @router.post("/order", response_model=PurchaseOrderResponse, status_code=status.HTTP_201_CREATED)
-def create_purchase_order(order: PurchaseOrderCreate, db: Session = Depends(get_db)):
+def create_purchase_order(order: PurchaseOrderCreate, db: Session = Depends(get_tenant_db)):
     """
     Create Purchase Order
     
@@ -892,7 +892,7 @@ def list_purchase_orders(
     date_from: Optional[date] = Query(None, description="Filter orders from this date"),
     date_to: Optional[date] = Query(None, description="Filter orders to this date"),
     status: Optional[str] = Query(None, description="Filter by status (PENDING, APPROVED, RECEIVED, CANCELLED)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     List purchase orders with filtering
@@ -942,7 +942,7 @@ def list_purchase_orders(
 
 
 @router.get("/order/{order_id}", response_model=PurchaseOrderResponse)
-def get_purchase_order(order_id: UUID, db: Session = Depends(get_db)):
+def get_purchase_order(order_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get purchase order by ID with full item details"""
     # Load order with items and item relationships
     order = db.query(PurchaseOrder).options(
@@ -976,7 +976,7 @@ def get_purchase_order(order_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.put("/order/{order_id}", response_model=PurchaseOrderResponse)
-def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db: Session = Depends(get_db)):
+def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db: Session = Depends(get_tenant_db)):
     """Update purchase order (only if status is PENDING)"""
     db_order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not db_order:
@@ -1032,7 +1032,7 @@ def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db:
 
 
 @router.delete("/order/{order_id}", status_code=status.HTTP_200_OK)
-def delete_purchase_order(order_id: UUID, db: Session = Depends(get_db)):
+def delete_purchase_order(order_id: UUID, db: Session = Depends(get_tenant_db)):
     """Delete purchase order (only if status is PENDING)"""
     db_order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not db_order:

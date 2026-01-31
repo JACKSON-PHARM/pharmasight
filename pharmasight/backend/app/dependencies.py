@@ -1,0 +1,146 @@
+"""
+Tenant resolution and DB dependencies for database-per-tenant architecture.
+
+Authority: DATABASE_PER_TENANT_IMPLEMENTATION_PLAN.md and architecture context.
+- Master DB: tenant management only. Never users, companies, branches, items.
+- Tenant DB: one per tenant; full app schema. Data isolated per tenant.
+- Legacy/default DB: current DATABASE_URL. No tenant header → use this.
+"""
+import threading
+from contextlib import contextmanager
+from typing import Generator, Optional
+from uuid import UUID
+
+from fastapi import Request, Depends, HTTPException, status
+from sqlalchemy import create_engine, pool
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.config import settings
+from app.database import SessionLocal
+from app.database_master import get_master_db
+from app.models.tenant import Tenant
+
+# -----------------------------------------------------------------------------
+# Tenant engine pool (Step 2)
+# One engine + session factory per tenant database_url. Legacy uses existing
+# app DB (SessionLocal); never store legacy URL in pool.
+# -----------------------------------------------------------------------------
+_tenant_engines: dict[str, object] = {}
+_tenant_sessions: dict[str, sessionmaker] = {}
+_pool_lock = threading.Lock()
+
+
+def _session_factory_for_url(database_url: str) -> sessionmaker:
+    """Get or create session factory for a tenant database_url. Thread-safe."""
+    with _pool_lock:
+        if database_url not in _tenant_sessions:
+            engine = create_engine(
+                database_url,
+                poolclass=pool.QueuePool,
+                pool_size=5,
+                max_overflow=10,
+                pool_pre_ping=True,
+                pool_recycle=3600,
+                connect_args={
+                    "connect_timeout": 10,
+                    "options": "-c statement_timeout=120000",
+                },
+                echo=settings.DEBUG,
+            )
+            _tenant_engines[database_url] = engine
+            _tenant_sessions[database_url] = sessionmaker(
+                autocommit=False, autoflush=False, bind=engine
+            )
+        return _tenant_sessions[database_url]
+
+
+def get_tenant_from_header(
+    request: Request,
+    db: Session = Depends(get_master_db),
+) -> Optional[Tenant]:
+    """
+    Resolve tenant from X-Tenant-Subdomain or X-Tenant-ID header.
+
+    Uses MASTER DB only (tenants table). No app/tenant data read here.
+
+    - No header → None (default/legacy DB).
+    - Header present, tenant not found → 404.
+    - Header present, tenant found but no database_url → 503 (not provisioned).
+    - Header present, tenant found with database_url → Tenant.
+    """
+    subdomain = request.headers.get("X-Tenant-Subdomain")
+    tenant_id_raw = request.headers.get("X-Tenant-ID")
+
+    if not subdomain and not tenant_id_raw:
+        return None
+
+    tenant = None
+    if tenant_id_raw:
+        try:
+            uid = UUID(str(tenant_id_raw).strip())
+            tenant = db.query(Tenant).filter(Tenant.id == uid).first()
+        except (ValueError, TypeError):
+            pass
+    if not tenant and subdomain:
+        tenant = db.query(Tenant).filter(Tenant.subdomain == str(subdomain).strip()).first()
+
+    if not tenant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found",
+        )
+    if not tenant.database_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tenant database not provisioned",
+        )
+    return tenant
+
+
+def get_tenant_db(
+    tenant: Optional[Tenant] = Depends(get_tenant_from_header),
+) -> Generator[Session, None, None]:
+    """
+    Yield a DB session for tenant-scoped app data (users, company, branches, items, etc.).
+
+    - No tenant (no header) → LEGACY/DEFAULT DB (current DATABASE_URL). Same as get_db.
+    - Tenant resolved → TENANT DB (tenant.database_url). Isolated per tenant.
+
+    Uses MASTER only for resolution; this session is never master.
+    """
+    if tenant is None:
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+        return
+
+    factory = _session_factory_for_url(tenant.database_url)
+    db = factory()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def tenant_db_session(tenant: Tenant) -> Generator[Session, None, None]:
+    """
+    Context manager: yield a DB session for a given tenant's database.
+
+    Use for token-based flows (e.g. onboarding) where tenant comes from token, not header.
+    - Raises HTTPException 503 if tenant.database_url is missing (not provisioned).
+    - Yields session for TENANT DB only. Caller uses it for users, company, etc.
+    """
+    if not tenant.database_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tenant database not provisioned",
+        )
+    factory = _session_factory_for_url(tenant.database_url)
+    db = factory()
+    try:
+        yield db
+    finally:
+        db.close()

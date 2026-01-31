@@ -1,21 +1,35 @@
 ========================================
 RENDER ENVIRONMENT VARIABLES - COPY & PASTE
 ========================================
-Copy each section below and paste into Render Dashboard → Environment Variables
+Option A: same project for master + legacy. Copy each section below into
+Render Dashboard → Environment Variables.
 
 ========================================
-VARIABLE 1: DATABASE_URL
+VARIABLE 1: MASTER_DATABASE_URL (Option A: same as DATABASE_URL)
+========================================
+KEY:
+MASTER_DATABASE_URL
+
+VALUE:
+postgresql://postgres:YOUR_DB_PASSWORD@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+
+(Use the same Postgres URI as DATABASE_URL. Direct connection, not pooler.)
+
+MARK AS SECRET: YES (click lock icon)
+
+========================================
+VARIABLE 2: DATABASE_URL
 ========================================
 KEY:
 DATABASE_URL
 
 VALUE:
-postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+postgresql://postgres:YOUR_DB_PASSWORD@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
 
-MARK AS SECRET: YES (click lock icon 🔒)
+MARK AS SECRET: YES (click lock icon)
 
 ========================================
-VARIABLE 2: DEBUG
+VARIABLE 3: DEBUG
 ========================================
 KEY:
 DEBUG
@@ -26,7 +40,7 @@ False
 MARK AS SECRET: NO
 
 ========================================
-VARIABLE 3: SECRET_KEY
+VARIABLE 4: SECRET_KEY
 ========================================
 KEY:
 SECRET_KEY
@@ -42,7 +56,7 @@ Or run: python generate-secret-key.py
 MARK AS SECRET: YES (click lock icon 🔒)
 
 ========================================
-VARIABLE 4: CORS_ORIGINS
+VARIABLE 5: CORS_ORIGINS
 ========================================
 KEY:
 CORS_ORIGINS
@@ -65,13 +79,25 @@ python generate-secret-key.py
 Copy the output and use as SECRET_KEY value above.
 
 ========================================
+ALSO REQUIRED (Option A – legacy Supabase Auth)
+========================================
+Add these from the same project (kwvkkbofubsjiwqlqakt):
+- SUPABASE_URL (Project URL)
+- SUPABASE_KEY (anon key)
+- SUPABASE_SERVICE_ROLE_KEY (service_role key)
+- APP_PUBLIC_URL (your frontend URL, e.g. https://your-app.onrender.com)
+
+See ENV_SETUP.txt or OPTION_A_SETUP.md.
+
+========================================
 INSTRUCTIONS
 ========================================
 1. Go to Render Dashboard → Your Service → Environment
 2. Click "Add Environment Variable" for each variable above
-3. Copy KEY and VALUE exactly as shown
-4. Mark DATABASE_URL and SECRET_KEY as Secret (lock icon)
-5. Save and redeploy
+3. Copy KEY and VALUE exactly as shown (replace YOUR_DB_PASSWORD)
+4. Mark MASTER_DATABASE_URL, DATABASE_URL, and SECRET_KEY as Secret (lock icon)
+5. Add SUPABASE_* and APP_PUBLIC_URL as above
+6. Save and redeploy
 
 ========================================
 

@@ -6,6 +6,12 @@ let isNavigatingFromAuth = false; // Prevent redirect loops
 let currentScreen = null; // Track current screen to prevent duplicate navigation
 let layoutRendered = false; // Track which layout is rendered
 
+// Lifecycle: single app readiness gate – no page rendering or hash routing until auth + branch settle
+window.appReady = false;
+// Page load de-duplication: prevent concurrent loadPage and re-loads of same page
+let loadPageInProgress = false;
+let lastLoadedPage = null; // Last page that completed loading (used to skip duplicate hashchange loads)
+
 /**
  * Check if user is authenticated
  * Single source of truth for auth state
@@ -145,12 +151,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.log('🚨 [EARLY CHECK] PASSWORD RESET TOKEN DETECTED - NOT modifying hash (Supabase needs root format)');
     }
     
-    // Hide loading indicator if it exists
-    const loadingIndicator = document.getElementById('appLoading');
-    if (loadingIndicator) {
-        loadingIndicator.style.display = 'none';
-    }
-    
+    // Keep loading indicator visible until appReady (set after auth + branch settle and first page is determined)
+    // Do NOT hide appLoading here – prevents flicker before layout is decided
+
     // Hide all layouts initially
     const authLayout = document.getElementById('authLayout');
     const appLayout = document.getElementById('appLayout');
@@ -217,7 +220,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.error('[PASSWORD RESET] ❌ window.loadPasswordReset is not defined – falling back to loadPage(\"password-reset\")');
             loadPage('password-reset');
         }
-        
+        window.appReady = true;
+        const loadingIndicator = document.getElementById('appLoading');
+        if (loadingIndicator) loadingIndicator.style.display = 'none';
         return; // CRITICAL: Stop here, don't continue with normal auth flow
     }
     
@@ -226,6 +231,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.log('[INVITE] Detected invite link');
         await renderInviteHandler();
         return; // Don't continue with normal auth flow
+    }
+    
+    // Tenant invite setup: ?token=... must show set-password page, not login
+    const search = window.location.search || '';
+    const hasTenantInviteToken = search.includes('token=');
+    const routeBaseFromHash = (window.location.hash || '').replace('#', '').split('?')[0];
+    if (hasTenantInviteToken && routeBaseFromHash !== 'tenant-invite-setup') {
+        console.log('[INIT] Tenant invite token in URL but hash is not tenant-invite-setup, redirecting...');
+        const u = window.location;
+        const baseUrl = u.origin + (u.pathname || '/') + (u.search || '');
+        window.location.replace(baseUrl + '#tenant-invite-setup');
+        return;
     }
     
     try {
@@ -286,8 +303,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.location.hash = '#login';
                 window.history.replaceState(null, '', window.location.href.split('#')[0] + '#login');
             }
+            // Tenant invite: ?token= means set-password page, not login
+            if (route === 'login' && (window.location.search || '').includes('token=')) {
+                route = 'tenant-invite-setup';
+                window.location.hash = '#tenant-invite-setup';
+                window.history.replaceState(null, '', (window.location.href.split('#')[0] || window.location.origin + (window.location.pathname || '/') + (window.location.search || '')) + '#tenant-invite-setup');
+            }
             loadPage(route);
-            
+            // Lifecycle: app ready for auth layout – allow hash routing and hide loading
+            window.appReady = true;
+            const loadingIndicator = document.getElementById('appLoading');
+            if (loadingIndicator) loadingIndicator.style.display = 'none';
+
         } else {
             // AUTHENTICATED: Render App Layout (full shell with sidebar, top bar)
             console.log('[AUTH GATE] User authenticated, rendering App Layout');
@@ -376,6 +403,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Fallback to auth layout
         renderAuthLayout();
         loadPage('login');
+        window.appReady = true;
+        const loadingIndicator = document.getElementById('appLoading');
+        if (loadingIndicator) loadingIndicator.style.display = 'none';
     }
     
     console.log('✅ App initialization complete');
@@ -388,6 +418,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 function initializeHashRouting() {
     // Listen for hash changes (browser back/forward, direct navigation)
     window.addEventListener('hashchange', async () => {
+        // Lifecycle: ignore hash routing until app has finished bootstrap (auth + branch)
+        if (window.appReady !== true) {
+            console.log('[HASH ROUTING] App not ready, ignoring hashchange');
+            return;
+        }
         // If we're in the middle of a password reset recovery flow, ignore hash changes
         if (window.__PASSWORD_RESET_TOKEN_PRESENT === true) {
             console.log('[HASH ROUTING] Password reset flow active, ignoring hashchange event');
@@ -395,12 +430,18 @@ function initializeHashRouting() {
         }
 
         const hash = window.location.hash.replace('#', '') || 'dashboard';
+        const routeBase = hash.split('?')[0] || hash;
+        // De-duplication: do not re-load the same page (avoids double load on hashchange)
+        if (routeBase === lastLoadedPage) {
+            console.log('[HASH ROUTING] Same page as current, skipping load:', routeBase);
+            return;
+        }
         console.log('[HASH ROUTING] Hash changed to:', hash);
         
         // Check authentication FIRST before any routing
         const authenticated = isAuthenticated();
-        const authRoutes = ['login', 'password-set', 'password-reset', 'reset-password'];
-        const isAuthRoute = authRoutes.includes(hash);
+        const authRoutes = ['login', 'password-set', 'password-reset', 'reset-password', 'tenant-invite-setup'];
+        const isAuthRoute = authRoutes.includes(routeBase);
         
         // CRITICAL: If not authenticated and trying to access app route, force login immediately
         if (!authenticated && !isAuthRoute) {
@@ -424,8 +465,14 @@ function initializeHashRouting() {
             return;
         }
         
-        if (isAuthRoute || hash === 'setup' || hash === 'invite') {
-            loadPage(hash);
+        if (isAuthRoute || routeBase === 'setup' || routeBase === 'invite') {
+            let pageToLoad = routeBase;
+            if (pageToLoad === 'login' && (window.location.search || '').includes('token=')) {
+                pageToLoad = 'tenant-invite-setup';
+                window.location.hash = '#tenant-invite-setup';
+                window.history.replaceState(null, '', (window.location.href.split('#')[0] || '') + '#tenant-invite-setup');
+            }
+            loadPage(pageToLoad);
             return;
         }
         
@@ -499,6 +546,9 @@ async function renderInviteHandler() {
             
             if (error || !data?.session) {
                 console.error('[INVITE] Invalid or expired invitation link:', error);
+                window.appReady = true;
+                const loadingIndicator = document.getElementById('appLoading');
+                if (loadingIndicator) loadingIndicator.style.display = 'none';
                 if (invitePage) {
                     invitePage.innerHTML = `
                         <div style="display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; gap: 1rem; padding: 2rem;">
@@ -534,6 +584,9 @@ async function renderInviteHandler() {
         }
     } catch (error) {
         console.error('[INVITE] Error handling invite:', error);
+        window.appReady = true;
+        const loadingIndicator = document.getElementById('appLoading');
+        if (loadingIndicator) loadingIndicator.style.display = 'none';
         if (invitePage) {
             invitePage.innerHTML = `
                 <div style="display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; gap: 1rem; padding: 2rem;">
@@ -599,6 +652,18 @@ async function startAppFlow() {
         const user = AuthBootstrap.getCurrentUser();
         
         if (!user) {
+            const routeBase = (window.location.hash || '').replace('#', '').split('?')[0];
+            const hasToken = (window.location.search || '').includes('token=');
+            if (routeBase === 'tenant-invite-setup' && hasToken) {
+                if (currentScreen !== 'tenant-invite-setup') {
+                    console.log('👤 Tenant invite setup (set password) – loading page...');
+                    currentScreen = 'tenant-invite-setup';
+                    renderAuthLayout();
+                    loadPage('tenant-invite-setup');
+                }
+                isInitializing = false;
+                return;
+            }
             // Not authenticated - show login
             if (currentScreen !== 'login') {
                 console.log('👤 User not authenticated, showing login page...');
@@ -717,8 +782,19 @@ async function startAppFlow() {
         }
         
         // Check if branch is selected and validate access
-        const branch = BranchContext.getBranch();
-        
+        let branch = BranchContext.getBranch();
+        // After setup wizard we have CONFIG.BRANCH_ID but BranchContext may be empty - restore from API
+        if (!branch && CONFIG.BRANCH_ID && API && typeof API.branch.get === 'function') {
+            try {
+                const fetched = await API.branch.get(CONFIG.BRANCH_ID);
+                if (fetched) {
+                    BranchContext.setBranch(fetched);
+                    branch = fetched;
+                }
+            } catch (e) {
+                console.warn('Could not restore branch from CONFIG:', e);
+            }
+        }
         if (!branch) {
             // No branch selected - show branch selection
             if (currentScreen !== 'branch-select') {
@@ -765,6 +841,12 @@ async function startAppFlow() {
         }
     } finally {
         isInitializing = false;
+        // Lifecycle: app ready for app layout – allow hash routing and hide loading
+        if (layoutRendered === 'app') {
+            window.appReady = true;
+            const loadingIndicator = document.getElementById('appLoading');
+            if (loadingIndicator) loadingIndicator.style.display = 'none';
+        }
     }
 }
 
@@ -794,10 +876,11 @@ function updateUserUI(user) {
         return; // Don't update UI elements that don't exist in auth layout
     }
     
-    // Update username display
+    // Update username display (prefer username over email for tenant users)
     const usernameSpan = document.getElementById('username');
     if (usernameSpan) {
-        usernameSpan.textContent = user?.email || user?.user_metadata?.full_name || 'User';
+        const displayName = (user?.user_metadata?.username) || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_username')) || user?.email || user?.user_metadata?.full_name || 'User';
+        usernameSpan.textContent = displayName;
     }
     
     // Show/hide sidebar and logout button (only in app layout)
@@ -1196,7 +1279,7 @@ function initializeMenuToggle() {
 // Check if navigation is allowed (block during stock take)
 async function canNavigateTo(page) {
     // Skip check for these pages
-    const allowedPages = ['stock-take', 'branch-select', 'login', 'logout', 'settings', 'password-reset', 'password-set', 'setup', 'invite'];
+    const allowedPages = ['stock-take', 'branch-select', 'login', 'logout', 'settings', 'password-reset', 'password-set', 'setup', 'invite', 'tenant-invite-setup'];
     if (allowedPages.includes(page)) {
         return true;
     }
@@ -1228,6 +1311,16 @@ async function canNavigateTo(page) {
 
 // Load page
 async function loadPage(pageName) {
+    // De-duplication: prevent concurrent loadPage calls
+    if (loadPageInProgress) {
+        console.log('[LOAD PAGE] Already in progress, skipping:', pageName);
+        return;
+    }
+    loadPageInProgress = true;
+    // Error noise reduction: suppress error toasts during navigation transition
+    window.__suppressToasts = true;
+
+    try {
     console.log('📄 Loading page:', pageName);
     
     // Check navigation blocking
@@ -1254,8 +1347,8 @@ async function loadPage(pageName) {
         console.log('✅ [ROUTER] Forced pageName to password-reset');
     }
     
-    // Check if this is an auth route
-    const authRoutes = ['login', 'password-set', 'password-reset', 'reset-password'];
+    // Check if this is an auth route (setup lives in auth layout so it must be treated as auth page for correct visibility)
+    const authRoutes = ['login', 'password-set', 'password-reset', 'reset-password', 'tenant-invite-setup', 'setup'];
     const isAuthPage = authRoutes.includes(pageName);
     const authenticated = isAuthenticated();
     
@@ -1283,15 +1376,17 @@ async function loadPage(pageName) {
     // ENFORCE LAYOUT ISOLATION: Auth pages must use Auth Layout
     // EXCEPTION: Allow password-reset page even when authenticated if it's a recovery token
     // EXCEPTION: Allow password-set page even when authenticated (for new invited users)
-    // GUARD: Do NOT redirect away from branch-select route - user must select branch manually
+    // GUARD: Do NOT redirect away from branch-select or setup - user must select branch or complete company setup
     const hashRoute = currentHash.replace('#', '').split('?')[0];
     const isOnBranchSelectRoute = hashRoute === 'branch-select';
     const isPasswordSetPage = pageName === 'password-set';
-    if (isAuthPage && authenticated && !isPasswordResetFlow && !isPasswordSetPage && layoutRendered !== 'auth' && !isOnBranchSelectRoute) {
+    const isSetupPage = pageName === 'setup';
+    if (isAuthPage && authenticated && !isPasswordResetFlow && !isPasswordSetPage && !isSetupPage && layoutRendered !== 'auth' && !isOnBranchSelectRoute) {
         console.warn('[ROUTING] Auth page requested but user is authenticated, redirecting to dashboard...');
         // Don't load auth pages in app layout - redirect to dashboard
         // UNLESS it's a password reset flow with recovery token
         // UNLESS it's password-set page (new users need to set password)
+        // UNLESS it's setup page (first user must complete company + branch)
         // UNLESS user is on branch-select route (must allow user to select branch)
         pageName = 'dashboard';
         currentPage = 'dashboard';
@@ -1335,8 +1430,8 @@ async function loadPage(pageName) {
     let mainPage = pageName;
     let subPage = null;
     // Pages that should NOT be split into main/sub by the '-' character
-    // (includes auth pages and special app pages like 'branch-select', 'stock-take')
-    const authPages = ['password-reset', 'password-set', 'reset-password', 'branch-select', 'stock-take'];
+    // (includes auth pages and special app pages like 'branch-select', 'stock-take', 'setup')
+    const authPages = ['password-reset', 'password-set', 'reset-password', 'branch-select', 'stock-take', 'tenant-invite-setup', 'setup'];
     if (pageName.includes('-') && !authPages.includes(pageName)) {
         const parts = pageName.split('-');
         mainPage = parts[0];
@@ -1508,6 +1603,10 @@ async function loadPage(pageName) {
     // Update currentScreen tracking
     currentScreen = mainPage;
     
+    // Smooth transition: show loading overlay until target page is ready (in scope for finally)
+    const pageLoadOverlay = document.getElementById('pageLoadOverlay');
+    if (pageLoadOverlay) pageLoadOverlay.style.display = 'flex';
+    
     // Load page content (use mainPage for switch)
     switch(mainPage) {
         case 'invite':
@@ -1518,11 +1617,9 @@ async function loadPage(pageName) {
             if (layoutRendered !== 'auth') {
                 renderAuthLayout();
             }
-            // CRITICAL: Ensure login page element exists in auth layout before calling loader
             const authLayoutForLogin = document.getElementById('authLayout');
             let loginPageEl = document.getElementById('login');
             if (!loginPageEl && authLayoutForLogin) {
-                // Create login page element in auth layout if it doesn't exist
                 if (!authLayoutForLogin.querySelector('#login')) {
                     const loginDiv = document.createElement('div');
                     loginDiv.id = 'login';
@@ -1531,7 +1628,6 @@ async function loadPage(pageName) {
                     loginPageEl = loginDiv;
                 }
             }
-            // Now call the loader which will populate the element
             if (window.loadLogin) {
                 window.loadLogin();
             } else {
@@ -1540,6 +1636,9 @@ async function loadPage(pageName) {
             break;
         case 'password-set':
             if (window.loadPasswordSet) window.loadPasswordSet();
+            break;
+        case 'tenant-invite-setup':
+            if (window.loadTenantInviteSetup) window.loadTenantInviteSetup();
             break;
         case 'password-reset':
             // Wait for loadPasswordReset to be available (handles race condition)
@@ -1710,6 +1809,47 @@ async function loadPage(pageName) {
             }
             break;
     }
+    lastLoadedPage = (typeof mainPage !== 'undefined' ? mainPage : currentPage);
+    } catch (moduleError) {
+        console.error('[LOAD PAGE] Module load error:', mainPage, moduleError);
+        const pageEl = document.getElementById(mainPage);
+        if (pageEl) {
+            pageEl.innerHTML = '<div class="card" style="padding: 1.5rem;"><p><strong>Error loading this page.</strong> Please refresh or try again.</p><p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.5rem;">If the problem persists, check the browser console (F12).</p></div>';
+            pageEl.style.display = 'block';
+            pageEl.style.visibility = 'visible';
+        }
+        lastLoadedPage = (typeof mainPage !== 'undefined' ? mainPage : currentPage);
+    } finally {
+        if (pageLoadOverlay) pageLoadOverlay.style.display = 'none';
+        loadPageInProgress = false;
+        window.__suppressToasts = false;
+    }
+}
+
+/**
+ * Resolve display name for current user: prefer username over email.
+ * If not in localStorage, fetches from API (users list by email) and caches.
+ */
+async function resolveUserDisplayName(user) {
+    if (!user) return 'Not Logged In';
+    const fromMeta = user.user_metadata?.username;
+    const fromStorage = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_username');
+    if (fromMeta || fromStorage) return fromMeta || fromStorage;
+    // Fetch from API when we have email but no cached username (e.g. page refresh, existing session)
+    if (user.email && typeof API !== 'undefined' && API.users && typeof API.users.list === 'function') {
+        try {
+            const res = await API.users.list();
+            const match = (res.users || []).find(u => (u.email || '').toLowerCase() === (user.email || '').toLowerCase());
+            if (match && (match.username || match.full_name)) {
+                const name = match.username || match.full_name;
+                if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_username', name);
+                return name;
+            }
+        } catch (e) {
+            console.warn('[StatusBar] Could not resolve username from API:', e);
+        }
+    }
+    return user.email || user.user_metadata?.full_name || 'User';
 }
 
 /**
@@ -1726,27 +1866,35 @@ async function updateStatusBar(user) {
         return;
     }
     
-    // Update user
-    if (user) {
-        statusUser.textContent = user.email || user.user_metadata?.full_name || 'User';
-    } else {
-        statusUser.textContent = 'Not Logged In';
-    }
+    // Update user (show username instead of email for tenant users)
+    const displayName = await resolveUserDisplayName(user);
+    statusUser.textContent = displayName;
+    // Keep sidebar #username in sync (nav bar)
+    const usernameSpan = document.getElementById('username');
+    if (usernameSpan) usernameSpan.textContent = displayName;
     
-    // Update company
+    // Update company (client's company name) and sidebar title
     if (CONFIG.COMPANY_ID) {
         try {
             const company = await API.company.get(CONFIG.COMPANY_ID);
-            statusCompany.textContent = company.name || 'Unknown Company';
+            const companyName = company.name || 'Unknown Company';
+            statusCompany.textContent = companyName;
             statusCompany.classList.remove('status-warning');
+            // Sidebar title: show client company name instead of app name
+            const sidebarTitle = document.querySelector('.sidebar-title');
+            if (sidebarTitle) sidebarTitle.textContent = companyName;
         } catch (error) {
             console.error('Error loading company:', error);
             statusCompany.textContent = 'Company Not Found';
             statusCompany.classList.add('status-warning');
+            const sidebarTitle = document.querySelector('.sidebar-title');
+            if (sidebarTitle) sidebarTitle.textContent = 'PharmaSight';
         }
     } else {
         statusCompany.textContent = 'Not Set';
         statusCompany.classList.add('status-warning');
+        const sidebarTitle = document.querySelector('.sidebar-title');
+        if (sidebarTitle) sidebarTitle.textContent = 'PharmaSight';
     }
     
     // Update branch

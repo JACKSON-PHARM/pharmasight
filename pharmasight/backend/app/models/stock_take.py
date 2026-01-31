@@ -22,7 +22,7 @@ class StockTakeSession(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
-    session_code = Column(String(10), unique=True, nullable=False)  # e.g., "ST-MAR25A"
+    session_code = Column(String(20), unique=True, nullable=False)  # e.g., "ST-MAR25A"; DB may be VARCHAR(10) until migration
     status = Column(String(50), nullable=False, default='DRAFT')  # DRAFT, ACTIVE, PAUSED, COMPLETED, CANCELLED
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     allowed_counters = Column(ARRAY(UUID(as_uuid=True)), default=[], nullable=False)  # Array of user IDs

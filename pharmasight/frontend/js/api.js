@@ -35,6 +35,15 @@ class APIClient {
             config.headers = { ...config.headers, ...options.headers };
         }
 
+        // Tenant context (database-per-tenant): send X-Tenant-Subdomain for app APIs when set.
+        // Skip for /api/admin/* (master-only). No header → legacy DB.
+        try {
+            var sub = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain');
+            if (sub && endpoint.indexOf('/api/admin/') !== 0) {
+                config.headers['X-Tenant-Subdomain'] = sub;
+            }
+        } catch (_) {}
+
         try {
             const response = await fetch(url, config);
             clearTimeout(timeoutId);
@@ -65,9 +74,13 @@ class APIClient {
                 throw error;
             }
             
-            // Handle abort (timeout)
+            // Preserve AbortError so callers can detect cancelled requests (e.g. item search)
             if (error.name === 'AbortError') {
-                throw new Error(`Request timed out after ${timeoutMs/1000} seconds. Is the backend server running on ${this.baseURL}?`);
+                // If we created the controller (no external signal), treat as timeout
+                if (!options.signal) {
+                    throw new Error(`Request timed out after ${timeoutMs/1000} seconds. Is the backend server running on ${this.baseURL}?`);
+                }
+                throw error;
             }
             
             // Handle network errors, CORS errors, etc.
@@ -76,10 +89,10 @@ class APIClient {
         }
     }
 
-    get(endpoint, params = {}) {
+    get(endpoint, params = {}, requestOptions = {}) {
         const queryString = new URLSearchParams(params).toString();
         const url = queryString ? `${endpoint}?${queryString}` : endpoint;
-        return this.request(url, { method: 'GET' });
+        return this.request(url, { method: 'GET', ...requestOptions });
     }
 
     post(endpoint, data, options = {}) {
@@ -93,6 +106,13 @@ class APIClient {
     put(endpoint, data) {
         return this.request(endpoint, {
             method: 'PUT',
+            body: data,
+        });
+    }
+
+    patch(endpoint, data) {
+        return this.request(endpoint, {
+            method: 'PATCH',
             body: data,
         });
     }
@@ -118,12 +138,23 @@ const API = {
         getSetupStatus: (userId) => api.get('/api/setup/status', { user_id: userId }),
         markSetupComplete: (userId) => api.post(`/api/invite/mark-setup-complete?user_id=${userId}`, null),
     },
+    tenantInviteSetup: {
+        validateToken: (token) => api.get(`/api/onboarding/validate-token/${encodeURIComponent(token)}`),
+        complete: (data) => api.post('/api/onboarding/complete-tenant-invite', data),
+    },
     // Company & Branch
     company: {
         list: () => api.get('/api/companies'),
         get: (companyId) => api.get(`/api/companies/${companyId}`),
         create: (data) => api.post('/api/companies', data),
         update: (companyId, data) => api.put(`/api/companies/${companyId}`, data),
+        uploadLogo: (companyId, file) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            return api.post(`/api/companies/${companyId}/logo`, formData, {
+                headers: {} // Let browser set Content-Type with boundary
+            });
+        },
     },
     branch: {
         list: (companyId) => api.get(`/api/branches/company/${companyId}`),
@@ -134,11 +165,11 @@ const API = {
 
     // Items
     items: {
-        search: (q, companyId, limit = 10, branchId = null, includePricing = false, context = null) => {
+        search: (q, companyId, limit = 10, branchId = null, includePricing = false, context = null, requestOptions = {}) => {
             const params = { q, company_id: companyId, limit, include_pricing: includePricing };
             if (branchId) params.branch_id = branchId;
             if (context) params.context = context;
-            return api.get(`${CONFIG.API_ENDPOINTS.items}/search`, params);
+            return api.get(`${CONFIG.API_ENDPOINTS.items}/search`, params, requestOptions);
         },
         list: (companyId, options = {}) => {
             const params = new URLSearchParams();
@@ -413,6 +444,33 @@ const API = {
             const queryParams = userId ? `?user_id=${userId}` : '';
             return api.post(`/api/stock-take/branch/${branchId}/shelves/${encodeURIComponent(shelfName)}/reject${queryParams}`, { reason });
         },
+        /** Download A4 PDF recording template (Item Name, Wholesale/Retail Units, Expiry, Batch; placeholders: Shelf, Counted By, Verified By, Keyed In By). */
+        downloadTemplatePdf: async () => {
+            const url = `${api.baseURL}/api/stock-take/template/pdf`;
+            const headers = {};
+            try {
+                const sub = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain');
+                if (sub) headers['X-Tenant-Subdomain'] = sub;
+            } catch (_) {}
+            const res = await fetch(url, { method: 'GET', headers, credentials: 'include' });
+            if (!res.ok) {
+                let msg = 'Failed to download template';
+                try {
+                    const text = await res.text();
+                    let data;
+                    try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                    const detail = data.detail;
+                    if (detail) msg += ': ' + (typeof detail === 'string' ? detail : (detail.msg || JSON.stringify(detail)));
+                } catch (_) {}
+                throw new Error(msg);
+            }
+            const blob = await res.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'stock-take-recording-sheet.pdf';
+            a.click();
+            URL.revokeObjectURL(a.href);
+        },
     },
     
     // Order Book
@@ -467,6 +525,40 @@ const API = {
         getHistory: (branchId, companyId, limit = 100) => {
             const params = { branch_id: branchId, company_id: companyId, limit };
             return api.get('/api/order-book/history', params);
+        },
+    },
+    // Authentication
+    auth: {
+        usernameLogin: (data) => api.post('/api/auth/username-login', data),
+    },
+    // Admin Authentication
+    adminAuth: {
+        login: (data) => api.post('/api/admin/auth/login', data),
+        verify: (token) => api.get('/api/admin/auth/verify', { token }),
+    },
+    // Admin - Tenant Management
+    admin: {
+        tenants: {
+            list: (params = {}) => api.get('/api/admin/tenants', params),
+            get: (tenantId) => api.get(`/api/admin/tenants/${tenantId}`),
+            create: (data) => api.post('/api/admin/tenants', data),
+            update: (tenantId, data) => api.patch(`/api/admin/tenants/${tenantId}`, data),
+            delete: (tenantId) => api.delete(`/api/admin/tenants/${tenantId}`),
+            initializeStatus: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/initialize-status`),
+            initialize: (tenantId, data) => api.post(`/api/admin/tenants/${tenantId}/initialize`, data),
+            invites: {
+                create: (tenantId, data) => api.post(`/api/admin/tenants/${tenantId}/invites`, { expires_in_days: 7, send_email: true, ...data }),
+                list: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/invites`),
+            },
+            subscription: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/subscription`),
+            modules: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/modules`),
+        },
+        plans: {
+            list: () => api.get('/api/admin/plans'),
+        },
+        migrations: {
+            run: (data) => api.post('/api/admin/migrations/run', data),
+            status: () => api.get('/api/admin/migrations/status'),
         },
     },
 };

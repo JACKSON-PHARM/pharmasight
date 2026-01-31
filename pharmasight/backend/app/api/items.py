@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc
 from typing import List, Optional
 from uuid import UUID
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.models import (
     Item, ItemUnit, ItemPricing, CompanyPricingDefault,
     InventoryLedger, SupplierInvoice, SupplierInvoiceItem, Supplier,
@@ -50,7 +50,7 @@ def generate_sku(company_id: UUID, db: Session) -> str:
 
 
 @router.post("/", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
-def create_item(item: ItemCreate, db: Session = Depends(get_db)):
+def create_item(item: ItemCreate, db: Session = Depends(get_tenant_db)):
     """Create a new item with 3-tier units. SKU auto-generated if not provided."""
     try:
         db_item = svc_create_item(db, item)
@@ -69,7 +69,7 @@ def search_items(
     limit: int = Query(10, ge=1, le=20, description="Maximum results"),
     include_pricing: bool = Query(False, description="Include pricing info (slower)"),
     context: Optional[str] = Query(None, description="Context: 'purchase_order' for PO-specific fields"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Optimized item search endpoint for ERP-style inline search.
@@ -367,7 +367,7 @@ def search_items(
 
 
 @router.get("/{item_id}", response_model=ItemResponse)
-def get_item(item_id: UUID, db: Session = Depends(get_db)):
+def get_item(item_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get item by ID"""
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
@@ -376,7 +376,7 @@ def get_item(item_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{item_id}/pricing/3tier", response_model=dict)
-def get_item_3tier_pricing(item_id: UUID, db: Session = Depends(get_db)):
+def get_item_3tier_pricing(item_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get 3-tier pricing for an item"""
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
@@ -394,7 +394,7 @@ def get_item_tier_price(
     item_id: UUID,
     tier: str,
     unit_name: Optional[str] = Query(None, description="Optional unit name to convert price to"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """Get price for a specific tier (supplier, wholesale, or retail)"""
     item = db.query(Item).filter(Item.id == item_id).first()
@@ -412,7 +412,7 @@ def get_item_tier_price(
 
 
 @router.get("/company/{company_id}/count", response_model=dict)
-def get_items_count(company_id: UUID, db: Session = Depends(get_db)):
+def get_items_count(company_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get count of items for a company (fast, no data loading)"""
     count = db.query(Item).filter(Item.company_id == company_id).count()
     return {"count": count}
@@ -422,7 +422,7 @@ def get_items_count(company_id: UUID, db: Session = Depends(get_db)):
 def get_items_overview(
     company_id: UUID,
     branch_id: Optional[UUID] = Query(None, description="Branch ID for stock calculation (optional)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Get items with overview data (stock, supplier, cost) - OPTIMIZED
@@ -560,7 +560,7 @@ def get_items_overview(
 @router.get("/company/{company_id}", response_model=List[ItemResponse])
 def get_items_by_company(
     company_id: UUID, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     limit: Optional[int] = Query(None, ge=1, le=1000, description="Maximum number of items to return"),
     offset: Optional[int] = Query(0, ge=0, description="Number of items to skip"),
     include_units: bool = Query(True, description="Include item units in response")
@@ -588,7 +588,7 @@ def get_items_by_company(
 
 
 @router.put("/{item_id}", response_model=ItemResponse)
-def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(get_db)):
+def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(get_tenant_db)):
     """
     Update item with strict business rules:
     - SKU is immutable (never editable)
@@ -680,7 +680,7 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
 
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_item(item_id: UUID, db: Session = Depends(get_db)):
+def delete_item(item_id: UUID, db: Session = Depends(get_tenant_db)):
     """Soft delete item (set is_active=False)"""
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
@@ -692,7 +692,7 @@ def delete_item(item_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/bulk", response_model=dict, status_code=status.HTTP_201_CREATED)
-def bulk_create_items(bulk_data: ItemsBulkCreate, db: Session = Depends(get_db)):
+def bulk_create_items(bulk_data: ItemsBulkCreate, db: Session = Depends(get_tenant_db)):
     """
     Bulk create items (for Excel import) - OPTIMIZED with duplicate detection
     
@@ -957,7 +957,7 @@ def get_recommended_price(
     branch_id: UUID,
     company_id: UUID,
     unit_name: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """Get recommended selling price for item"""
     try:
@@ -975,7 +975,7 @@ def get_recommended_price(
 def has_transactions(
     item_id: UUID,
     branch_id: UUID = Query(..., description="Branch ID to check transactions in"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Check if item has any transactions (sales or purchases) in the specified branch

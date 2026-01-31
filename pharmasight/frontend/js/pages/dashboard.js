@@ -1,7 +1,25 @@
 // Dashboard Page
 
 async function loadDashboard() {
+    // Strict page ownership: only run dashboard logic when dashboard is the active page
+    const active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
+    if (active !== 'dashboard') {
+        return;
+    }
     const page = document.getElementById('dashboard');
+    if (!page) return;
+    // Skip items/company API when no company (avoids /api/items/company/null and 422)
+    if (!CONFIG.COMPANY_ID) {
+        const ti = document.getElementById('totalItems');
+        if (ti) ti.textContent = '0';
+        const ts = document.getElementById('totalStock');
+        if (ts) ts.textContent = formatCurrency(0);
+        const td = document.getElementById('todaySales');
+        if (td) td.textContent = '0';
+        const ex = document.getElementById('expiringItems');
+        if (ex) ex.textContent = '0';
+        return;
+    }
     
     // Load stats
     try {
@@ -42,7 +60,11 @@ async function loadDashboard() {
         
     } catch (error) {
         console.error('Error loading dashboard:', error);
-        showToast('Error loading dashboard data', 'error');
+        // Only surface toast when user is already on dashboard (avoid noise during navigation)
+        const active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
+        if (active === 'dashboard' && typeof showToast === 'function') {
+            showToast('Error loading dashboard data', 'error');
+        }
     }
 }
 

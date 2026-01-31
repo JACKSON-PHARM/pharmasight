@@ -7,7 +7,7 @@ from sqlalchemy import func
 from typing import List
 from uuid import UUID
 from decimal import Decimal
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
     Item, ItemUnit, InvoicePayment
@@ -26,7 +26,7 @@ router = APIRouter()
 
 
 @router.post("/invoice", response_model=SalesInvoiceResponse, status_code=status.HTTP_201_CREATED)
-def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_db)):
+def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_tenant_db)):
     """
     Create a sales invoice as DRAFT
     
@@ -199,7 +199,7 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
 
 
 @router.get("/invoice/{invoice_id}", response_model=SalesInvoiceResponse)
-def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
+def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get sales invoice by ID with full item details"""
     from sqlalchemy.orm import selectinload
     # Load invoice with items and item relationships
@@ -237,7 +237,7 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/branch/{branch_id}/invoices", response_model=List[SalesInvoiceResponse])
-def get_branch_invoices(branch_id: UUID, db: Session = Depends(get_db)):
+def get_branch_invoices(branch_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get all invoices for a branch"""
     from sqlalchemy.orm import selectinload
     try:
@@ -299,7 +299,7 @@ def get_branch_invoices(branch_id: UUID, db: Session = Depends(get_db)):
 def update_sales_invoice(
     invoice_id: UUID,
     invoice_update: SalesInvoiceUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Update sales invoice (only if status is DRAFT)
@@ -363,7 +363,7 @@ def update_sales_invoice(
 
 
 @router.post("/invoice/{invoice_id}/batch", response_model=SalesInvoiceResponse)
-def batch_sales_invoice(invoice_id: UUID, batched_by: UUID, db: Session = Depends(get_db)):
+def batch_sales_invoice(invoice_id: UUID, batched_by: UUID, db: Session = Depends(get_tenant_db)):
     """
     Batch Sales Invoice - Reduce Stock from Inventory
     
@@ -487,7 +487,7 @@ def batch_sales_invoice(invoice_id: UUID, batched_by: UUID, db: Session = Depend
 
 
 @router.delete("/invoice/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_sales_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
+def delete_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Delete sales invoice (only if status is DRAFT)
     
@@ -516,7 +516,7 @@ def delete_sales_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
 def add_invoice_payment(
     invoice_id: UUID,
     payment: InvoicePaymentCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Add a split payment to a sales invoice
@@ -574,7 +574,7 @@ def add_invoice_payment(
 
 
 @router.get("/invoice/{invoice_id}/payments", response_model=List[InvoicePaymentResponse])
-def get_invoice_payments(invoice_id: UUID, db: Session = Depends(get_db)):
+def get_invoice_payments(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get all payments for a sales invoice"""
     payments = db.query(InvoicePayment).filter(
         InvoicePayment.invoice_id == invoice_id
@@ -583,7 +583,7 @@ def get_invoice_payments(invoice_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.delete("/invoice/payments/{payment_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_invoice_payment(payment_id: UUID, db: Session = Depends(get_db)):
+def delete_invoice_payment(payment_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Delete a payment from an invoice
     
@@ -624,7 +624,7 @@ def delete_invoice_payment(payment_id: UUID, db: Session = Depends(get_db)):
 # =====================================================
 
 @router.post("/invoice/{invoice_id}/convert-to-quotation", response_model=dict, status_code=status.HTTP_201_CREATED)
-def convert_sales_invoice_to_quotation(invoice_id: UUID, db: Session = Depends(get_db)):
+def convert_sales_invoice_to_quotation(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Convert a DRAFT sales invoice to a quotation
     

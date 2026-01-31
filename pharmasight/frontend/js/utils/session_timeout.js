@@ -42,16 +42,25 @@ const SessionTimeout = {
     },
     
     /**
-     * Setup event listeners for user activity
+     * Setup event listeners for user activity.
+     * keypress is excluded for item-search-input so typing in search does not reset the session timer.
      */
     setupActivityListeners() {
-        const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart', 'click'];
+        const events = ['mousedown', 'mousemove', 'scroll', 'touchstart', 'click'];
         
         events.forEach(event => {
             document.addEventListener(event, () => {
                 this.resetTimer();
             }, { passive: true });
         });
+        
+        // keypress: reset only for meaningful input (not item search field)
+        document.addEventListener('keypress', (e) => {
+            if (e.target && e.target.closest && e.target.closest('.item-search-input')) {
+                return; // Do not reset session timer on item search keystrokes
+            }
+            this.resetTimer();
+        }, { passive: true });
         
         console.log('[SESSION TIMEOUT] Activity listeners registered');
     },

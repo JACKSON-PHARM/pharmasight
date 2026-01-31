@@ -12,7 +12,7 @@ from uuid import UUID
 import secrets
 import hashlib
 from datetime import datetime
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.models.user import User, UserRole, UserBranchRole
 from app.models.company import Branch
 from app.schemas.user import (
@@ -21,6 +21,7 @@ from app.schemas.user import (
     InvitationResponse
 )
 from app.services.invite_service import InviteService
+from app.utils.username_generator import generate_username_from_name
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def get_role_by_name(role_name: str, db: Session) -> UserRole:
 
 
 @router.get("/users/roles", response_model=List[UserRoleResponse])
-def list_roles(db: Session = Depends(get_db)):
+def list_roles(db: Session = Depends(get_tenant_db)):
     """
     List all available roles
     
@@ -64,7 +65,7 @@ def list_roles(db: Session = Depends(get_db)):
 @router.get("/users", response_model=UserListResponse)
 def list_users(
     include_deleted: bool = Query(False, description="Include soft-deleted users"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     List all users in the organization
@@ -112,6 +113,7 @@ def list_users(
         user_responses.append(UserResponse(
             id=user.id,
             email=user.email,
+            username=getattr(user, 'username', None),
             full_name=user.full_name,
             phone=user.phone,
             is_active=user.is_active,
@@ -128,7 +130,7 @@ def list_users(
 
 
 @router.get("/users/{user_id}", response_model=UserResponse)
-def get_user(user_id: UUID, db: Session = Depends(get_db)):
+def get_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get user by ID with role information"""
     user = db.query(User).filter(User.id == user_id).first()
     if not user or user.deleted_at is not None:
@@ -163,6 +165,7 @@ def get_user(user_id: UUID, db: Session = Depends(get_db)):
     return UserResponse(
         id=user.id,
         email=user.email,
+        username=getattr(user, 'username', None),
         full_name=user.full_name,
         phone=user.phone,
         is_active=user.is_active,
@@ -177,7 +180,7 @@ def get_user(user_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/users", response_model=InvitationResponse, status_code=status.HTTP_201_CREATED)
-def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
+def create_user(user_data: UserCreate, db: Session = Depends(get_tenant_db)):
     """
     Create a new user (Admin-only)
     
@@ -197,6 +200,27 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
             detail="Email address is required"
         )
     
+    # Generate username if not provided
+    if user_data.username:
+        normalized_username = user_data.username.lower().strip()
+    elif user_data.full_name:
+        # Auto-generate username from full_name
+        try:
+            normalized_username = generate_username_from_name(
+                user_data.full_name,
+                db_session=db
+            ).lower()
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot generate username: {str(e)}. Please provide a username or full_name."
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either username or full_name is required to create a user"
+        )
+    
     # Check if user with email already exists (case-insensitive, including soft-deleted)
     existing_user = db.query(User).filter(
         func.lower(func.trim(User.email)) == normalized_email
@@ -212,6 +236,16 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"User with email {user_data.email} was previously deleted. Please contact an administrator to restore this account."
             )
+    
+    # Check if username already exists
+    existing_username = db.query(User).filter(
+        func.lower(func.trim(User.username)) == normalized_username
+    ).first()
+    if existing_username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Username '{user_data.username}' is already taken. Please choose a different username."
+        )
     
     # Generate unique invitation token and code
     invitation_token = generate_invitation_token()
@@ -233,6 +267,7 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
     new_user = User(
         id=temp_user_id,  # Temporary ID - will be updated when user sets password via Supabase Auth
         email=normalized_email,  # Use normalized email
+        username=normalized_username,  # Username for login
         full_name=user_data.full_name,
         phone=user_data.phone,
         is_active=False,  # Inactive until password is set
@@ -247,12 +282,19 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
         db.flush()  # Get the ID
     except Exception as e:
         db.rollback()
-        # Check if it's a duplicate email error
-        if "duplicate key value violates unique constraint" in str(e).lower() and "email" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"User with email {user_data.email} already exists. Please use a different email address."
-            )
+        # Check if it's a duplicate email or username error
+        error_str = str(e).lower()
+        if "duplicate key value violates unique constraint" in error_str:
+            if "email" in error_str:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"User with email {user_data.email} already exists. Please use a different email address."
+                )
+            elif "username" in error_str:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Username '{user_data.username}' is already taken. Please choose a different username."
+                )
         # Re-raise other errors
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -317,6 +359,7 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
     return InvitationResponse(
         user_id=new_user.id,
         email=new_user.email,
+        username=normalized_username,  # Include generated username
         invitation_token=invitation_token,
         invitation_code=invitation_code,
         invitation_link=invitation_link,
@@ -325,7 +368,7 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/users/{user_id}", response_model=UserResponse)
-def update_user(user_id: UUID, user_update: UserUpdate, db: Session = Depends(get_db)):
+def update_user(user_id: UUID, user_update: UserUpdate, db: Session = Depends(get_tenant_db)):
     """Update user details (full_name, phone, is_active)"""
     user = db.query(User).filter(
         and_(User.id == user_id, User.deleted_at.is_(None))
@@ -347,7 +390,7 @@ def update_user(user_id: UUID, user_update: UserUpdate, db: Session = Depends(ge
 
 
 @router.patch("/users/{user_id}/activate", response_model=UserResponse)
-def activate_user(user_id: UUID, activate_data: UserActivateRequest, db: Session = Depends(get_db)):
+def activate_user(user_id: UUID, activate_data: UserActivateRequest, db: Session = Depends(get_tenant_db)):
     """Activate or deactivate a user"""
     user = db.query(User).filter(
         and_(User.id == user_id, User.deleted_at.is_(None))
@@ -364,7 +407,7 @@ def activate_user(user_id: UUID, activate_data: UserActivateRequest, db: Session
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_200_OK)
-def delete_user(user_id: UUID, db: Session = Depends(get_db)):
+def delete_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Soft delete a user
     
@@ -388,7 +431,7 @@ def delete_user(user_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/users/{user_id}/restore", response_model=UserResponse, status_code=status.HTTP_200_OK)
-def restore_user(user_id: UUID, db: Session = Depends(get_db)):
+def restore_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Restore a soft-deleted user
     
@@ -458,7 +501,7 @@ def restore_user(user_id: UUID, db: Session = Depends(get_db)):
 def assign_role(
     user_id: UUID,
     role_data: UserRoleUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Assign or update user role for a branch

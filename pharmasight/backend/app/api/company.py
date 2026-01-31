@@ -1,11 +1,14 @@
 """
 Company and Branch API routes
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
-from app.database import get_db
+import os
+import shutil
+from pathlib import Path
+from app.dependencies import get_tenant_db
 from app.models.company import Company, Branch
 from app.schemas.company import (
     CompanyCreate, CompanyResponse, CompanyUpdate,
@@ -14,10 +17,14 @@ from app.schemas.company import (
 
 router = APIRouter()
 
+# Logo upload directory
+UPLOAD_DIR = Path("uploads/logos")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # Company endpoints
 @router.post("/companies", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
-def create_company(company: CompanyCreate, db: Session = Depends(get_db)):
+def create_company(company: CompanyCreate, db: Session = Depends(get_tenant_db)):
     """
     Create a new company
     
@@ -69,14 +76,14 @@ def create_company(company: CompanyCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/companies", response_model=List[CompanyResponse])
-def get_companies(db: Session = Depends(get_db)):
+def get_companies(db: Session = Depends(get_tenant_db)):
     """Get all companies"""
     companies = db.query(Company).all()
     return companies
 
 
 @router.get("/companies/{company_id}", response_model=CompanyResponse)
-def get_company(company_id: UUID, db: Session = Depends(get_db)):
+def get_company(company_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get company by ID"""
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
@@ -85,7 +92,7 @@ def get_company(company_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.put("/companies/{company_id}", response_model=CompanyResponse)
-def update_company(company_id: UUID, company_update: CompanyUpdate, db: Session = Depends(get_db)):
+def update_company(company_id: UUID, company_update: CompanyUpdate, db: Session = Depends(get_tenant_db)):
     """Update company"""
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
@@ -100,9 +107,73 @@ def update_company(company_id: UUID, company_update: CompanyUpdate, db: Session 
     return company
 
 
+@router.post("/companies/{company_id}/logo", response_model=CompanyResponse)
+async def upload_company_logo(
+    company_id: UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_tenant_db)
+):
+    """
+    Upload company logo
+    
+    Accepts image files (PNG, JPG, JPEG, GIF, WEBP)
+    Returns the company with updated logo_url
+    """
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    
+    # Validate file type
+    allowed_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
+    # Validate file size (max 5MB)
+    file_content = await file.read()
+    if len(file_content) > 5 * 1024 * 1024:  # 5MB
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File too large. Maximum size is 5MB"
+        )
+    
+    try:
+        # Generate unique filename
+        filename = f"{company_id}_{int(os.urandom(4).hex(), 16)}{file_ext}"
+        file_path = UPLOAD_DIR / filename
+        
+        # Save file
+        with open(file_path, "wb") as buffer:
+            buffer.write(file_content)
+        
+        # Generate URL (relative path for now, can be absolute URL in production)
+        # In production, you might want to use S3, Cloudinary, or similar
+        logo_url = f"/uploads/logos/{filename}"
+        
+        # Update company
+        company.logo_url = logo_url
+        db.commit()
+        db.refresh(company)
+        
+        return company
+        
+    except Exception as e:
+        db.rollback()
+        # Clean up file if database update fails
+        if file_path.exists():
+            file_path.unlink()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading logo: {str(e)}"
+        )
+
+
 # Branch endpoints
 @router.post("/branches", response_model=BranchResponse, status_code=status.HTTP_201_CREATED)
-def create_branch(branch: BranchCreate, db: Session = Depends(get_db)):
+def create_branch(branch: BranchCreate, db: Session = Depends(get_tenant_db)):
     """
     Create a new branch
     
@@ -143,14 +214,14 @@ def create_branch(branch: BranchCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/branches/company/{company_id}", response_model=List[BranchResponse])
-def get_branches_by_company(company_id: UUID, db: Session = Depends(get_db)):
+def get_branches_by_company(company_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get all branches for a company"""
     branches = db.query(Branch).filter(Branch.company_id == company_id).all()
     return branches
 
 
 @router.get("/branches/{branch_id}", response_model=BranchResponse)
-def get_branch(branch_id: UUID, db: Session = Depends(get_db)):
+def get_branch(branch_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get branch by ID"""
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
@@ -159,7 +230,7 @@ def get_branch(branch_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.put("/branches/{branch_id}", response_model=BranchResponse)
-def update_branch(branch_id: UUID, branch_update: BranchUpdate, db: Session = Depends(get_db)):
+def update_branch(branch_id: UUID, branch_update: BranchUpdate, db: Session = Depends(get_tenant_db)):
     """Update branch"""
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:

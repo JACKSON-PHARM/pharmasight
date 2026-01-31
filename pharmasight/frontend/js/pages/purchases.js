@@ -2167,6 +2167,17 @@ async function updatePurchaseOrder(event, orderId) {
     }
 }
 
+// Auto-save purchase order (called from onItemsChange debounce) – no toast on success to avoid noise
+async function autoSavePurchaseOrder() {
+    if (!currentDocument || !currentDocument.id || currentDocument.type !== 'order' || currentDocument.status !== 'PENDING') {
+        return;
+    }
+    const form = document.getElementById('purchaseDocumentForm');
+    if (!form) return;
+    const syntheticEvent = { preventDefault: function() {}, target: form };
+    await updatePurchaseOrder(syntheticEvent, currentDocument.id);
+}
+
 // Delete purchase order
 async function deletePurchaseOrder(orderId) {
     // Prevent duplicate delete operations

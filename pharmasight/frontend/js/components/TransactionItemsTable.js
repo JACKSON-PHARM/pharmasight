@@ -60,7 +60,10 @@
         this.searchTimeout = null;
         this.searchAbortController = null;
         this.activeSearchRow = null;
+        this.activeSelectedItemRow = null; // Row showing "selected item" dropdown (details / search different / view full)
         this.inputDebounceTimeout = null; // For debouncing input events
+        this._searchId = 0; // Incremented per search; used to ignore stale responses
+        this._searchDebounceMs = 250; // Debounce so requests fire only after user pauses typing
         
         // Always ensure there's at least one empty row for adding new items
         // Check if the last item is empty, if not, add one
@@ -207,14 +210,14 @@
                 <tr data-item-index="${index}" data-row-id="${this.instanceId}_row_${index}">
                     <td style="padding: 0.25rem; position: relative; min-width: 250px;">
                         <input type="text" 
-                               class="form-input item-search-input" 
+                               class="form-input item-search-input ${item.item_id ? 'item-selected' : ''}" 
                                id="${this.instanceId}_item_${index}"
-                               value="${escapeHtml(item.item_name)}" 
+                               value="${escapeHtml(item.item_name || '')}" 
                                placeholder="Type item name or code..."
                                autocomplete="off"
                                data-row="${index}"
+                               data-item-id="${item.item_id || ''}"
                                style="width: 100%; box-sizing: border-box; border: ${isSearching ? '2px solid var(--primary-color, #007bff)' : '1px solid var(--border-color, #dee2e6)'}; padding: 0.6rem; font-size: 0.9rem; min-width: 250px;"
-                               ${item.item_id ? 'readonly' : ''}
                                ${!this.canEdit ? 'disabled' : ''}>
                     </td>
                     <td style="padding: 0.25rem;">
@@ -253,14 +256,12 @@
                         </div>
                     </td>
                     <td style="padding: 0.25rem;">
-                        <input type="text" 
-                               class="form-input" 
-                               value="${item.unit_name || ''}" 
-                               placeholder="Unit"
-                               readonly
-                               style="width: 100%; box-sizing: border-box; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);"
-                               data-row="${index}"
-                               data-field="unit_name">
+                        ${item.item_id && (item.available_units && item.available_units.length) ? (() => {
+                            const units = item.available_units;
+                            let opts = units.map(u => `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${escapeHtml(String(u.multiplier_to_base || 1))}" ${(item.unit_name || '') === (u.unit_name || '') ? 'selected' : ''}>${escapeHtml(u.unit_name || '')}</option>`).join('');
+                            if (!opts) opts = `<option value="${escapeHtml(item.unit_name || '')}">${escapeHtml(item.unit_name || '')}</option>`;
+                            return `<select class="form-input unit-select" data-row="${index}" data-field="unit_name" style="width: 100%; box-sizing: border-box; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" ${!this.canEdit ? 'disabled' : ''}>${opts}</select>`;
+                        })() : `<input type="text" class="form-input unit-display" value="${escapeHtml(item.unit_name || '')}" placeholder="Unit" readonly style="width: 100%; box-sizing: border-box; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="unit_name">`}
                     </td>
                     <td style="padding: 0.25rem;">
                         <input type="number" 
@@ -373,12 +374,46 @@
         tbody.addEventListener('input', (e) => {
             if (e.target.classList.contains('item-search-input')) {
                 const row = parseInt(e.target.dataset.row);
+                const item = this.items[row];
+                // If row had a selected item and user is typing, clear selection and run search
+                if (item && item.item_id) {
+                    this.clearRowSelection(row);
+                    e.target.dataset.itemId = '';
+                    e.target.classList.remove('item-selected');
+                }
                 this.handleItemSearch(e.target.value, row);
+            }
+        });
+        
+        // When focusing item field with a selected item, show details dropdown (not search)
+        tbody.addEventListener('focus', (e) => {
+            if (e.target.classList.contains('item-search-input')) {
+                const row = parseInt(e.target.dataset.row);
+                const item = this.items[row];
+                if (item && item.item_id) {
+                    e.preventDefault();
+                    this.showSelectedItemDropdown(row);
+                    return;
+                }
+            }
+        }, true);
+        
+        tbody.addEventListener('click', (e) => {
+            if (e.target.classList.contains('item-search-input')) {
+                const row = parseInt(e.target.dataset.row);
+                const item = this.items[row];
+                if (item && item.item_id) {
+                    this.showSelectedItemDropdown(row);
+                }
             }
         });
         
         tbody.addEventListener('keydown', (e) => {
             if (e.target.classList.contains('item-search-input')) {
+                if (e.key === 'Escape') {
+                    this.closeSelectedItemDropdown();
+                    this.closeSuggestions();
+                }
                 this.handleItemSearchKeydown(e, parseInt(e.target.dataset.row));
             } else if (e.target.classList.contains('qty-input') || 
                        e.target.classList.contains('price-input') || 
@@ -392,7 +427,7 @@
             }
         });
         
-        // Quantity, price, discount change handlers (on blur/enter)
+        // Quantity, price, discount, unit change handlers (on blur/enter/change)
         tbody.addEventListener('change', (e) => {
             if (e.target.classList.contains('qty-input') || 
                 e.target.classList.contains('price-input') || 
@@ -400,6 +435,13 @@
                 const row = parseInt(e.target.dataset.row);
                 const field = e.target.dataset.field;
                 this.handleFieldChange(row, field, e.target.value);
+            }
+            if (e.target.classList.contains('unit-select')) {
+                const row = parseInt(e.target.dataset.row);
+                const opt = e.target.options[e.target.selectedIndex];
+                const unitName = e.target.value;
+                const multiplier = opt ? parseFloat(opt.dataset.multiplier) || 1 : 1;
+                this.handleUnitChange(row, unitName, multiplier);
             }
         });
         
@@ -440,26 +482,37 @@
             }
         });
         
-        // Click outside to close suggestions
+        // Click outside to close suggestions and selected-item dropdown
         document.addEventListener('click', (e) => {
             if (!e.target.closest(`[data-instance-id="${this.instanceId}"]`)) {
                 this.closeSuggestions();
+                this.closeSelectedItemDropdown();
             }
         });
+        
+        // Load available units for rows that have item_id but no units yet (e.g. loaded from server)
+        for (let i = 0; i < this.items.length; i++) {
+            if (this.items[i].item_id && !(this.items[i].available_units && this.items[i].available_units.length)) {
+                this.loadUnitsForRow(i);
+            }
+        }
     };
     
     /**
-     * Handle item search
+     * Handle item search.
+     * Debounced (~250ms) so requests fire only after user pauses typing.
+     * Cancels in-flight request when new query is entered. Stale responses are ignored.
      */
     TransactionItemsTable.prototype.handleItemSearch = function(query, rowIndex) {
         const queryTrimmed = query.trim();
         
-        // Clear previous timeout
+        // Clear previous debounce timeout so we only fire after user pauses
         if (this.searchTimeout) {
             clearTimeout(this.searchTimeout);
+            this.searchTimeout = null;
         }
         
-        // Abort previous request
+        // Abort in-flight request when new query is entered (cancellation)
         if (this.searchAbortController) {
             this.searchAbortController.abort();
         }
@@ -469,106 +522,97 @@
             return;
         }
         
-        // Show loading
-        this.activeSearchRow = rowIndex;
-        this.showSuggestions(rowIndex, [{ type: 'loading', message: 'Searching...' }]);
+        // Show cached results immediately when cache hit (no request, no loading)
+        const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
+        const cache = (typeof window !== 'undefined' && window.searchCache) ? window.searchCache : null;
+        if (config && cache) {
+            const cached = cache.get(queryTrimmed, config.COMPANY_ID, config.BRANCH_ID, 10);
+            if (cached !== null && cached !== undefined) {
+                this.activeSearchRow = rowIndex;
+                if (cached.length === 0) {
+                    this.showSuggestions(rowIndex, [{ type: 'create', query: queryTrimmed, message: 'Create new item: "' + queryTrimmed + '"' }]);
+                } else {
+                    this.showSuggestions(rowIndex, cached.map(item => ({ type: 'item', ...item })));
+                }
+                return;
+            }
+        }
         
-        // OPTIMIZED: Reduced debounce time for faster response (150ms instead of 300ms)
+        // Debounce: only fire request and show loading after user pauses typing
         this.searchTimeout = setTimeout(() => {
+            this.searchTimeout = null;
+            this.activeSearchRow = rowIndex;
+            this.showSuggestions(rowIndex, [{ type: 'loading', message: 'Searching...' }]);
             this.performItemSearch(queryTrimmed, rowIndex);
-        }, 150);
+        }, this._searchDebounceMs);
     };
     
     /**
-     * Perform item search via API
+     * Perform item search via API.
+     * Uses AbortController so in-flight request can be cancelled when user types again.
+     * Only updates dropdown if response still matches current input (stale-response guard).
      */
     TransactionItemsTable.prototype.performItemSearch = async function(query, rowIndex) {
-        // Check for CONFIG and API availability
-        // Try both window.CONFIG and global CONFIG
         const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
         
         if (!config || !config.COMPANY_ID) {
-            console.warn('TransactionItemsTable: CONFIG.COMPANY_ID not available', {
-                hasWindow: typeof window !== 'undefined',
-                hasWindowConfig: typeof window !== 'undefined' && !!window.CONFIG,
-                hasGlobalConfig: typeof CONFIG !== 'undefined',
-                companyId: config ? config.COMPANY_ID : null
-            });
-            this.showSuggestions(rowIndex, [{ 
-                type: 'error', 
-                message: 'Configuration error. Please set Company ID in Settings.' 
-            }]);
+            this.showSuggestions(rowIndex, [{ type: 'error', message: 'Configuration error. Please set Company ID in Settings.' }]);
             return;
         }
         
         const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
         if (!api || !api.items || !api.items.search) {
-            console.warn('TransactionItemsTable: API.items.search not available');
-            this.showSuggestions(rowIndex, [{ 
-                type: 'error', 
-                message: 'API not available. Please refresh the page.' 
-            }]);
+            this.showSuggestions(rowIndex, [{ type: 'error', message: 'API not available. Please refresh the page.' }]);
             return;
         }
         
+        // New controller for this request; abort() called when next search starts
         this.searchAbortController = new AbortController();
+        const signal = this.searchAbortController.signal;
+        const searchId = ++this._searchId; // Stale-response guard: only apply if still latest
+        
+        const applyResults = (suggestions) => {
+            if (searchId !== this._searchId) return; // Stale: user typed again, ignore
+            const input = document.getElementById(`${this.instanceId}_item_${rowIndex}`);
+            if (input && input.value.trim() !== query) return; // Input changed, ignore
+            this.showSuggestions(rowIndex, suggestions);
+        };
         
         try {
-            // OPTIMIZED: Check cache first (transaction documents use includePricing=true)
-            const cache = window.searchCache || null;
-            let items = null;
+            const cache = (typeof window !== 'undefined' && window.searchCache) ? window.searchCache : null;
             const includePricing = true;
             
             if (cache) {
-                items = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 10);
-                if (items !== null && items !== undefined) {
-                    console.log('TransactionItemsTable: Using cached results for:', query);
-                    if (items.length === 0) {
-                        this.showSuggestions(rowIndex, [
-                            { type: 'create', query: query, message: `Create new item: "${query}"` }
-                        ]);
+                const cached = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 10);
+                if (cached !== null && cached !== undefined) {
+                    if (cached.length === 0) {
+                        applyResults([{ type: 'create', query: query, message: 'Create new item: "' + query + '"' }]);
                     } else {
-                        this.showSuggestions(rowIndex, items.map(item => ({ type: 'item', ...item })));
+                        applyResults(cached.map(item => ({ type: 'item', ...item })));
                     }
                     return;
                 }
             }
             
-            console.log('TransactionItemsTable: Searching items with query:', query, 'company_id:', config.COMPANY_ID, 'branch_id:', config.BRANCH_ID, 'context:', this.context);
-            items = await api.items.search(query, config.COMPANY_ID, 10, config.BRANCH_ID || null, includePricing, this.context);
+            const requestOptions = signal ? { signal } : {};
+            const items = await api.items.search(query, config.COMPANY_ID, 10, config.BRANCH_ID || null, includePricing, this.context, requestOptions);
             
-            // Cache the results
             if (cache && items) {
                 cache.set(query, config.COMPANY_ID, config.BRANCH_ID, 10, items);
             }
             
-            console.log('TransactionItemsTable: Search returned', items.length, 'items');
-            
+            if (searchId !== this._searchId) return;
             if (items.length === 0) {
-                // Show "Create Item" option
-                this.showSuggestions(rowIndex, [
-                    { 
-                        type: 'create', 
-                        query: query,
-                        message: `Create new item: "${query}"`
-                    }
-                ]);
+                applyResults([{ type: 'create', query: query, message: 'Create new item: "' + query + '"' }]);
             } else {
-                // Show search results
-                this.showSuggestions(rowIndex, items.map(item => ({
-                    type: 'item',
-                    ...item
-                })));
+                applyResults(items.map(item => ({ type: 'item', ...item })));
             }
         } catch (error) {
-            console.error('Item search error:', error);
-            this.showSuggestions(rowIndex, [
+            if (error.name === 'AbortError') return; // Cancelled, do nothing
+            if (searchId !== this._searchId) return;
+            applyResults([
                 { type: 'error', message: error.message || 'Search failed' },
-                { 
-                    type: 'create', 
-                    query: query,
-                    message: `Create new item: "${query}"`
-                }
+                { type: 'create', query: query, message: 'Create new item: "' + query + '"' }
             ]);
         }
     };
@@ -874,7 +918,9 @@
             available_stock: typeof suggestionEl.dataset.stock !== 'undefined'
                 ? parseFloat(suggestionEl.dataset.stock)
                 : null,
-            is_empty: false
+            is_empty: false,
+            available_units: null, // Populated below from API
+            unit_multiplier: 1
         };
         
         // Update item
@@ -883,6 +929,9 @@
         this.closeSuggestions();
         this.render();
         this.attachEventListeners();
+        
+        // Fetch full item to get available units for unit dropdown
+        this.loadUnitsForRow(rowIndex);
         
         // Focus on quantity field
         setTimeout(() => {
@@ -1119,6 +1168,187 @@
         const dropdowns = document.querySelectorAll(`[id^="${this.instanceId}_suggestions_"]`);
         dropdowns.forEach(d => d.style.display = 'none');
         this.activeSearchRow = null;
+    };
+    
+    /**
+     * Clear row selection (for "Search for different item") – keep quantity 1, clear item and unit
+     */
+    TransactionItemsTable.prototype.clearRowSelection = function(rowIndex) {
+        if (rowIndex < 0 || rowIndex >= this.items.length) return;
+        const prev = this.items[rowIndex];
+        this.items[rowIndex] = this.createEmptyItem();
+        this.items[rowIndex].quantity = prev.quantity || 1;
+        this.closeSelectedItemDropdown();
+        this.render();
+        this.attachEventListeners();
+        const input = document.getElementById(`${this.instanceId}_item_${rowIndex}`);
+        if (input) {
+            input.focus();
+            input.value = '';
+        }
+        this.notifyChange();
+    };
+    
+    /**
+     * Show dropdown for already-selected item: details, "Search for different item", "View full item details"
+     */
+    TransactionItemsTable.prototype.showSelectedItemDropdown = function(rowIndex) {
+        const item = this.items[rowIndex];
+        if (!item || !item.item_id) return;
+        
+        this.closeSuggestions();
+        const container = this.mountEl.querySelector(`[data-instance-id="${this.instanceId}"]`);
+        if (!container) return;
+        
+        let dropdown = document.getElementById(`${this.instanceId}_selected_${rowIndex}`);
+        if (!dropdown) {
+            dropdown = document.createElement('div');
+            dropdown.id = `${this.instanceId}_selected_${rowIndex}`;
+            dropdown.className = 'item-suggestions-dropdown selected-item-dropdown';
+            container.appendChild(dropdown);
+        }
+        
+        const input = document.getElementById(`${this.instanceId}_item_${rowIndex}`);
+        if (!input) return;
+        const containerRect = container.getBoundingClientRect();
+        const inputRect = input.getBoundingClientRect();
+        const relativeTop = inputRect.bottom - containerRect.top + 2;
+        dropdown.style.cssText = `
+            display: block; position: absolute; top: ${relativeTop}px; left: 0; width: 100%;
+            background: white; border: 1px solid var(--border-color, #dee2e6); border-radius: 0.25rem;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.25); z-index: 1100; max-height: 320px; overflow-y: auto;
+            font-size: 0.8rem; line-height: 1.3;
+        `;
+        
+        const formatCurrency = this.getFormatCurrency();
+        const escapeHtml = this.getEscapeHtml();
+        const code = item.item_code || item.item_sku || '';
+        const stock = typeof item.available_stock === 'number' ? this.getFormatNumber()(item.available_stock) : 'N/A';
+        const price = formatCurrency(item.unit_price || 0);
+        const vat = (item.tax_percent || 0).toFixed(1) + '%';
+        
+        dropdown.innerHTML = `
+            <div class="selected-item-details" style="padding: 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6);">
+                <div style="font-weight: 600; margin-bottom: 0.35rem;">${escapeHtml(item.item_name || '')}</div>
+                <div style="color: var(--text-secondary, #666); font-size: 0.8rem;">
+                    Code: ${escapeHtml(code)} &nbsp;|&nbsp; Stock: ${stock} &nbsp;|&nbsp; Price: ${price} &nbsp;|&nbsp; VAT: ${vat}
+                </div>
+            </div>
+            <div class="suggestion-item selected-item-action" data-action="search-different" data-row="${rowIndex}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center; border-bottom: 1px solid var(--border-color, #dee2e6);" onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='white'">
+                <i class="fas fa-search" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
+                <span>Search for different item</span>
+            </div>
+            <div class="suggestion-item selected-item-action" data-action="view-details" data-row="${rowIndex}" data-item-id="${item.item_id}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center;" onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='white'">
+                <i class="fas fa-external-link-alt" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
+                <span>View full item details</span>
+            </div>
+        `;
+        
+        this.activeSelectedItemRow = rowIndex;
+        
+        dropdown.querySelectorAll('.selected-item-action').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const action = el.dataset.action;
+                const r = parseInt(el.dataset.row);
+                this.closeSelectedItemDropdown();
+                if (action === 'search-different') {
+                    this.clearRowSelection(r);
+                } else if (action === 'view-details' && el.dataset.itemId) {
+                    if (typeof window.loadPage === 'function') {
+                        window.location.hash = '#items';
+                        window.loadPage('items');
+                    } else {
+                        window.location.hash = '#items';
+                    }
+                }
+            });
+        });
+    };
+    
+    /**
+     * Close selected-item dropdown
+     */
+    TransactionItemsTable.prototype.closeSelectedItemDropdown = function() {
+        const dropdowns = document.querySelectorAll(`[id^="${this.instanceId}_selected_"]`);
+        dropdowns.forEach(d => { d.style.display = 'none'; });
+        this.activeSelectedItemRow = null;
+    };
+    
+    /**
+     * Load available units for a row (from API) and re-render unit cell
+     */
+    TransactionItemsTable.prototype.loadUnitsForRow = async function(rowIndex) {
+        const item = this.items[rowIndex];
+        if (!item || !item.item_id) return;
+        const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
+        if (!api || !api.items || !api.items.get) return;
+        try {
+            const full = await api.items.get(item.item_id);
+            const units = full.units && full.units.length ? full.units : [{ unit_name: full.base_unit || item.unit_name || 'unit', multiplier_to_base: 1 }];
+            item.available_units = units;
+            const currentUnit = item.unit_name || (units[0] && units[0].unit_name) || '';
+            const currentU = units.find(u => (u.unit_name || '') === currentUnit);
+            item.unit_multiplier = currentU ? (parseFloat(currentU.multiplier_to_base) || 1) : 1;
+            this.updateRowUnitSelect(rowIndex);
+        } catch (err) {
+            console.warn('TransactionItemsTable: could not load units for item', item.item_id, err);
+            item.available_units = [{ unit_name: item.unit_name || 'unit', multiplier_to_base: 1 }];
+            item.unit_multiplier = 1;
+            this.updateRowUnitSelect(rowIndex);
+        }
+    };
+    
+    /**
+     * Update only the unit cell for a row (avoid full re-render)
+     */
+    TransactionItemsTable.prototype.updateRowUnitSelect = function(rowIndex) {
+        const row = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"]`);
+        if (!row) return;
+        const item = this.items[rowIndex];
+        if (!item || !item.available_units || !item.available_units.length) return;
+        const cell = row.querySelector('td:nth-child(4)'); // UNIT column
+        if (!cell) return;
+        const escapeHtml = this.getEscapeHtml();
+        const units = item.available_units;
+        let opts = units.map(u => {
+            const sel = (item.unit_name || '') === (u.unit_name || '') ? ' selected' : '';
+            return `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${escapeHtml(String(u.multiplier_to_base || 1))}"${sel}>${escapeHtml(u.unit_name || '')}</option>`;
+        }).join('');
+        const select = document.createElement('select');
+        select.className = 'form-input unit-select';
+        select.dataset.row = String(rowIndex);
+        select.dataset.field = 'unit_name';
+        select.style.cssText = 'width: 100%; box-sizing: border-box; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);';
+        if (!this.canEdit) select.disabled = true;
+        select.innerHTML = opts;
+        select.addEventListener('change', (e) => {
+            const opt = e.target.options[e.target.selectedIndex];
+            this.handleUnitChange(rowIndex, e.target.value, opt ? parseFloat(opt.dataset.multiplier) || 1 : 1);
+        });
+        cell.innerHTML = '';
+        cell.appendChild(select);
+    };
+    
+    /**
+     * Handle unit change: recalc unit_price from multiplier, update quantity if needed, recalc row
+     */
+    TransactionItemsTable.prototype.handleUnitChange = function(rowIndex, unitName, newMultiplier) {
+        if (rowIndex < 0 || rowIndex >= this.items.length) return;
+        const item = this.items[rowIndex];
+        if (!item) return;
+        const oldMult = item.unit_multiplier || 1;
+        item.unit_name = unitName;
+        item.unit_multiplier = newMultiplier;
+        // Recalculate unit price when unit changes (price per base * multiplier ratio)
+        if (oldMult > 0 && newMultiplier > 0) {
+            const basePrice = (item.unit_price || 0) / oldMult;
+            item.unit_price = basePrice * newMultiplier;
+        }
+        this.recalculateRow(rowIndex);
+        this.updateRowDisplay(rowIndex);
+        this.updateMarginDisplay(rowIndex);
+        this.notifyChange();
     };
     
     /**

@@ -6,7 +6,7 @@ This endpoint requires admin privileges and uses Supabase Service Role Key.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.services.invite_service import InviteService
 from app.services.startup_service import StartupService
 from app.schemas.invite import (
@@ -117,7 +117,7 @@ def mark_setup_complete(user_id: UUID = Query(..., description="Supabase Auth us
 @router.get("/setup/status", response_model=SetupStatusResponse)
 def get_setup_status(
     user_id: UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Check if user needs to complete company setup

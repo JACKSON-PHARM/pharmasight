@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PharmaSight - Admin Dashboard</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        .admin-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .admin-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        .admin-header-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .filters input, .filters select {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .filters input {
+            flex: 1;
+            min-width: 200px;
+        }
+        .table-container {
+            overflow-x: auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        th {
+            background: #f5f5f5;
+            font-weight: 600;
+        }
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge-warning { background: #ffc107; color: #000; }
+        .badge-success { background: #28a745; color: #fff; }
+        .badge-danger { background: #dc3545; color: #fff; }
+        .badge-secondary { background: #6c757d; color: #fff; }
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 20px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-sm { padding: 4px 8px; font-size: 12px; }
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 500px;
+            width: 90%;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="admin-container">
+        <div class="admin-header">
+            <h1>Tenant Management</h1>
+            <div class="admin-header-actions">
+                <button id="create-tenant-btn" class="btn btn-primary">Create New Tenant</button>
+                <button id="logout-btn" class="btn btn-danger">Logout</button>
+            </div>
+        </div>
+        
+        <div class="filters">
+            <input 
+                type="text" 
+                id="tenant-search" 
+                placeholder="Search by name, subdomain, or email..."
+            >
+            <select id="status-filter">
+                <option value="">All Statuses</option>
+                <option value="trial">Trial</option>
+                <option value="active">Active</option>
+                <option value="suspended">Suspended</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="past_due">Past Due</option>
+            </select>
+        </div>
+        
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Company Name</th>
+                        <th>Subdomain</th>
+                        <th>Admin Email</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="tenants-table-body">
+                    <tr>
+                        <td colspan="6" class="text-center">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="pagination">
+            <button id="prev-page" class="btn btn-secondary" disabled>Previous</button>
+            <span id="page-info">Page 1 of 1</span>
+            <button id="next-page" class="btn btn-secondary" disabled>Next</button>
+        </div>
+    </div>
+    
+    <!-- Load required scripts first -->
+    <script src="/js/config.js"></script>
+    <script src="/js/api.js"></script>
+    <script src="/js/utils.js"></script>
+    
+    <script type="module">
+        // Check admin authentication before loading
+        async function checkAdminAuth() {
+            const adminToken = localStorage.getItem('admin_token');
+            const isAdmin = localStorage.getItem('is_admin');
+            
+            // If no admin token, redirect to login
+            if (!adminToken || isAdmin !== 'true') {
+                // Check if user is logged in via Supabase (for tenant admins)
+                // Try to load AuthBootstrap if available
+                try {
+                    const { default: AuthBootstrap } = await import('/js/services/auth_bootstrap.js');
+                    await AuthBootstrap.init();
+                    const user = AuthBootstrap.getCurrentUser();
+                    const userEmail = user?.email?.toLowerCase();
+                    
+                    // Allow specific admin emails
+                    const adminEmails = ['pharmasightsolutions@gmail.com', 'admin@pharmasight.com'];
+                    if (user && adminEmails.includes(userEmail)) {
+                        // Tenant admin accessing admin panel - allow
+                        localStorage.setItem('is_admin', 'true');
+                        await initAdminPanel();
+                        return;
+                    }
+                } catch (e) {
+                    console.log('AuthBootstrap not available, checking direct login');
+                }
+                
+                // Not authenticated as admin - redirect to login
+                window.location.href = '/#login';
+                return;
+            }
+            
+            // Admin authenticated - load admin panel
+            await initAdminPanel();
+        }
+        
+        function setupLogout() {
+            const logoutBtn = document.getElementById('logout-btn');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', () => {
+                    // Clear admin authentication
+                    localStorage.removeItem('admin_token');
+                    localStorage.removeItem('is_admin');
+                    
+                    // Clear Supabase session if exists
+                    if (window.AuthBootstrap) {
+                        window.AuthBootstrap.signOut().catch(() => {
+                            // Ignore errors if AuthBootstrap not fully initialized
+                        });
+                    }
+                    
+                    // Redirect to login
+                    window.location.href = '/#login';
+                });
+            }
+        }
+        
+        async function initAdminPanel() {
+            try {
+                // Setup logout button
+                setupLogout();
+                
+                // Wait for API to be available
+                if (!window.API) {
+                    // Wait a bit for api.js to load
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    if (!window.API) {
+                        throw new Error('API client not loaded. Please refresh the page.');
+                    }
+                }
+                
+                const { init } = await import('/js/pages/admin_tenants.js');
+                await init();
+            } catch (error) {
+                console.error('Error loading admin panel:', error);
+                console.error('Error stack:', error.stack);
+                const tbody = document.getElementById('tenants-table-body');
+                if (tbody) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center" style="color: red; padding: 20px;">
+                                <strong>Error loading admin panel</strong><br>
+                                ${error.message || 'Unknown error'}<br>
+                                <small>Check browser console (F12) for details</small>
+                            </td>
+                        </tr>
+                    `;
+                } else {
+                    // Fallback if tbody doesn't exist yet
+                    document.body.innerHTML = `
+                        <div style="padding: 20px; text-align: center;">
+                            <h2>Error Loading Admin Panel</h2>
+                            <p>${error.message || 'Unknown error'}</p>
+                            <p><a href="/#login">Go to Login</a></p>
+                        </div>
+                    `;
+                }
+            }
+        }
+        
+        // Wait for page to load
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', checkAdminAuth);
+        } else {
+            // DOM already loaded
+            setTimeout(checkAdminAuth, 100);
+        }
+    </script>
+</body>
+</html>

@@ -12,7 +12,7 @@ from io import BytesIO
 from datetime import datetime, timezone
 import hashlib
 
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.services.excel_import_service import ExcelImportService
 from app.models import ImportJob
 
@@ -107,7 +107,7 @@ async def import_excel(
     user_id: UUID = Form(...),
     file: UploadFile = File(...),
     force_mode: Optional[str] = Form(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Start Excel import as background job.
@@ -207,7 +207,7 @@ async def import_excel(
 
 
 @router.get("/import/{job_id}/progress")
-def get_import_progress(job_id: UUID, db: Session = Depends(get_db)):
+def get_import_progress(job_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Get progress of an import job.
     Returns current status, progress percentage, and statistics.
@@ -224,7 +224,7 @@ def get_import_progress(job_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/mode/{company_id}")
-def get_import_mode(company_id: UUID, db: Session = Depends(get_db)):
+def get_import_mode(company_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Get the current import mode for a company.
     

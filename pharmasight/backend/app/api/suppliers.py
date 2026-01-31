@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from typing import List, Optional
 from uuid import UUID
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.models import Supplier
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -47,7 +47,7 @@ def search_suppliers(
     q: str = Query(..., min_length=2, description="Search query"),
     company_id: UUID = Query(..., description="Company ID"),
     limit: int = Query(10, ge=1, le=20, description="Maximum results"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Lightweight supplier search endpoint for ERP-style inline search.
@@ -83,7 +83,7 @@ def search_suppliers(
 
 
 @router.get("/company/{company_id}", response_model=List[SupplierResponse])
-def list_suppliers(company_id: UUID, db: Session = Depends(get_db)):
+def list_suppliers(company_id: UUID, db: Session = Depends(get_tenant_db)):
     """List all suppliers for a company"""
     suppliers = db.query(Supplier).filter(
         Supplier.company_id == company_id,
@@ -93,7 +93,7 @@ def list_suppliers(company_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/", response_model=SupplierResponse, status_code=status.HTTP_201_CREATED)
-def create_supplier(supplier: SupplierCreate, db: Session = Depends(get_db)):
+def create_supplier(supplier: SupplierCreate, db: Session = Depends(get_tenant_db)):
     """Create a new supplier"""
     db_supplier = Supplier(
         company_id=supplier.company_id,
@@ -112,7 +112,7 @@ def create_supplier(supplier: SupplierCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{supplier_id}", response_model=SupplierResponse)
-def get_supplier(supplier_id: UUID, db: Session = Depends(get_db)):
+def get_supplier(supplier_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get supplier by ID"""
     supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not supplier:
@@ -121,7 +121,7 @@ def get_supplier(supplier_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.put("/{supplier_id}", response_model=SupplierResponse)
-def update_supplier(supplier_id: UUID, supplier: SupplierBase, db: Session = Depends(get_db)):
+def update_supplier(supplier_id: UUID, supplier: SupplierBase, db: Session = Depends(get_tenant_db)):
     """Update supplier"""
     db_supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not db_supplier:

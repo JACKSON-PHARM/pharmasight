@@ -14,10 +14,21 @@ SUPABASE_URL=https://kwvkkbofubsjiwqlqakt.supabase.co
 SUPABASE_KEY=your-anon-key-here
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 
+# Optional: Supabase project/account owner email (the email you use to log into Supabase).
+# If set, this email cannot be used as a tenant admin (avoids "already registered" in Auth).
+# SUPABASE_OWNER_EMAIL=your-account@gmail.com
+
+# Admin panel login (username "admin" on the main login page → tenant management)
+# Set ADMIN_PASSWORD to the password you want for the admin panel. If unset, default is below.
+ADMIN_PASSWORD=your-secure-admin-password
+
 # ============================================
-# Database Connection
+# Database Connection (Option A: same project for master + legacy)
 # ============================================
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+
+# Master DB (tenant registry only). Option A: same project as DATABASE_URL.
+MASTER_DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
 
 # Or use individual components (if not using DATABASE_URL):
 # SUPABASE_DB_HOST=db.kwvkkbofubsjiwqlqakt.supabase.co
@@ -32,6 +43,16 @@ DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supab
 DEBUG=True
 SECRET_KEY=change-me-generate-with-python-secrets-token_urlsafe-32
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8000
+APP_PUBLIC_URL=http://localhost:3000
+
+# ============================================
+# Email (tenant invites – Gmail SMTP)
+# ============================================
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-gmail@gmail.com
+SMTP_PASSWORD=your-app-password
+EMAIL_FROM=PharmaSight <your-gmail@gmail.com>
 
 # ============================================
 # WHERE TO FIND YOUR VALUES:

@@ -140,6 +140,15 @@ async function renderBranchNormalInterface() {
                         <i class="fas fa-play-circle"></i> Start Stock Take
                     </button>
                     
+                    <div style="margin-top: 1.5rem;">
+                        <button class="btn btn-outline-secondary" onclick="downloadStockTakeTemplate()">
+                            <i class="fas fa-file-pdf"></i> Download recording template (A4)
+                        </button>
+                        <small style="display: block; color: var(--text-secondary); margin-top: 0.5rem;">
+                            Use the template to record counts on paper, then key in later.
+                        </small>
+                    </div>
+                    
                     <div style="margin-top: 2rem;">
                         <small style="color: var(--text-secondary);">
                             <i class="fas fa-info-circle"></i>
@@ -260,6 +269,23 @@ async function startBranchStockTake() {
         }
         
         alert(errorMessage);
+    }
+}
+
+// Download A4 PDF recording template (paper form for counts, then key in later)
+async function downloadStockTakeTemplate() {
+    try {
+        if (typeof API === 'undefined' || !API.stockTake || !API.stockTake.downloadTemplatePdf) {
+            alert('API not loaded. Please refresh the page.');
+            return;
+        }
+        await API.stockTake.downloadTemplatePdf();
+        if (typeof showNotification === 'function') {
+            showNotification('Template downloaded.', 'success');
+        }
+    } catch (e) {
+        console.error('[STOCK TAKE] Template download error:', e);
+        alert('Failed to download template. ' + (e.message || 'Please try again.'));
     }
 }
 
@@ -1250,7 +1276,7 @@ async function updateShelfItemCount() {
                                             </td>
                                             <td>
                                                 ${status === 'PENDING' || status === 'REJECTED' ? `
-                                                    <button class="btn btn-sm btn-outline" onclick="editCount('${count.id}')" title="Edit">
+                                                    <button class="btn btn-sm btn-outline" onclick="if(window.editCount) window.editCount('${count.id}')" title="Edit">
                                                         <i class="fas fa-edit"></i>
                                                     </button>
                                                     <button class="btn btn-sm btn-outline-danger" onclick="deleteCount('${count.id}')" title="Delete">
@@ -1657,7 +1683,7 @@ async function loadMyCounts() {
                                                             </td>
                                                             <td>
                                                                 ${canEdit ? `
-                                                                    <button class="btn btn-sm btn-outline" onclick="editCount('${count.id}')" title="Edit">
+                                                                    <button class="btn btn-sm btn-outline" onclick="if(window.editCount) window.editCount('${count.id}')" title="Edit">
                                                                         <i class="fas fa-edit"></i>
                                                                     </button>
                                                                     <button class="btn btn-sm btn-outline-danger" onclick="deleteCount('${count.id}')" title="Delete">
@@ -1713,7 +1739,7 @@ async function loadMyCounts() {
                                         <td><small>${formatDate(count.counted_at)}</small></td>
                                         <td>
                                             ${canEdit ? `
-                                                <button class="btn btn-sm btn-outline" onclick="editCount('${count.id}')" title="Edit">
+                                                <button class="btn btn-sm btn-outline" onclick="if(window.editCount) window.editCount('${count.id}')" title="Edit">
                                                     <i class="fas fa-edit"></i>
                                                 </button>
                                                 <button class="btn btn-sm btn-outline-danger" onclick="deleteCount('${count.id}')" title="Delete">

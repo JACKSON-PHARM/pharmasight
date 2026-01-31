@@ -8,7 +8,7 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime
-from app.database import get_db
+from app.dependencies import get_tenant_db
 from app.models import (
     DailyOrderBook, OrderBookHistory,
     Item, Supplier, PurchaseOrder, PurchaseOrderItem,
@@ -30,7 +30,7 @@ def list_order_book_entries(
     branch_id: UUID = Query(..., description="Branch ID"),
     company_id: UUID = Query(..., description="Company ID"),
     status_filter: Optional[str] = Query(None, description="Filter by status: PENDING, ORDERED, CANCELLED"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     List all order book entries for a branch
@@ -108,7 +108,7 @@ def create_order_book_entry(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the entry"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Create a new order book entry
@@ -248,7 +248,7 @@ def bulk_create_order_book_entries(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the entries"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Bulk create order book entries from selected items
@@ -339,7 +339,7 @@ def bulk_create_order_book_entries(
 def update_order_book_entry(
     entry_id: UUID,
     entry_update: OrderBookEntryUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Update an order book entry
@@ -407,7 +407,7 @@ def update_order_book_entry(
 
 
 @router.delete("/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_order_book_entry(entry_id: UUID, db: Session = Depends(get_db)):
+def delete_order_book_entry(entry_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Delete (cancel) an order book entry
     
@@ -454,7 +454,7 @@ def delete_order_book_entry(entry_id: UUID, db: Session = Depends(get_db)):
 @router.post("/auto-generate", response_model=dict)
 def auto_generate_order_book_entries(
     request: AutoGenerateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Auto-generate order book entries based on stock thresholds
@@ -483,7 +483,7 @@ def create_purchase_order_from_book(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the purchase order"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Create a purchase order from selected order book entries
@@ -633,7 +633,7 @@ def get_order_book_history(
     branch_id: UUID = Query(..., description="Branch ID"),
     company_id: UUID = Query(..., description="Company ID"),
     limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_tenant_db)
 ):
     """
     Get order book history (ordered or cancelled entries)

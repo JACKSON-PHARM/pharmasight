@@ -21,8 +21,8 @@
                     <h2>Sign In</h2>
                     <form id="loginForm">
                         <div class="form-group">
-                            <label for="loginEmail">Email</label>
-                            <input type="email" id="loginEmail" required placeholder="your@email.com">
+                            <label for="loginUsername">Username</label>
+                            <input type="text" id="loginUsername" required placeholder="Enter your username">
                         </div>
                         <div class="form-group">
                             <label for="loginPassword">Password</label>
@@ -41,6 +41,7 @@
         </div>
         <div id="setup" class="page"></div>
         <div id="invite" class="page"></div>
+        <div id="tenant-invite-setup" class="page"></div>
         <div id="password-set" class="page"></div>
         <div id="password-reset" class="page"></div>
     </div>
@@ -111,6 +112,9 @@
                 <button class="btn btn-link btn-sm" id="logoutBtn" onclick="if(window.globalLogout) window.globalLogout()" style="width: 100%; margin-top: 0.5rem; color: var(--text-secondary); text-decoration: none;">
                     <i class="fas fa-sign-out-alt"></i> Logout
                 </button>
+                <div class="sidebar-powered-by" style="margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color, #e0e0e0); font-size: 0.7rem; color: var(--text-secondary, #666); text-align: center;">
+                    Powered by PharmaSight Solutions
+                </div>
             </div>
         </aside>
 
@@ -151,8 +155,12 @@
                 </div>
             </header>
 
-            <!-- Page Content -->
-            <div class="page-content" id="pageContent">
+            <!-- Page Content (position: relative so overlay positions correctly) -->
+            <div class="page-content" id="pageContent" style="position: relative;">
+                <!-- Page load overlay: shown during navigation until target page is ready (smooth transitions) -->
+                <div id="pageLoadOverlay" class="page-load-overlay" style="display: none; position: absolute; inset: 0; background: rgba(255,255,255,0.7); align-items: center; justify-content: center; z-index: 10; pointer-events: none;">
+                    <div style="text-align: center;"><p style="margin-top: 0.5rem; font-size: 0.875rem;">Loading...</p></div>
+                </div>
                 <!-- Loading indicator -->
                 <div id="appLoading" style="padding: 2rem; text-align: center; display: block;">
                     <p>Loading PharmaSight...</p>
@@ -233,9 +241,18 @@
             // If path is /invite, redirect to hash-based routing
             if (pathname === '/invite' || pathname === '/invite/') {
                 console.log('[INVITE] Redirecting /invite path to hash routing');
-                // Preserve the hash (access_token) and redirect to root
                 window.location.replace(window.location.origin + '/' + hash);
                 return;
+            }
+            // Tenant invite setup: /setup?token=... -> set-password flow
+            if (pathname === '/setup' || pathname === '/setup/') {
+                const params = new URLSearchParams(window.location.search);
+                const token = params.get('token');
+                if (token) {
+                    console.log('[SETUP] Redirecting /setup?token= to tenant-invite-setup');
+                    window.location.replace(window.location.origin + '/?token=' + encodeURIComponent(token) + '#tenant-invite-setup');
+                    return;
+                }
             }
         })();
         
@@ -296,6 +313,7 @@
     <script src="js/app.js?v=18"></script>
     <script src="js/pages/login.js?v=1"></script>
     <script src="js/pages/password_reset.js?v=3"></script>
+    <script src="js/pages/tenant_invite_setup.js?v=1"></script>
     <script>
         // Test: Verify password_reset.js loaded
         if (typeof window.loadPasswordReset === 'function') {
@@ -305,7 +323,7 @@
         }
     </script>
     <script src="js/pages/password_set.js?v=1"></script>
-    <script src="js/pages/branch_select.js?v=1"></script>
+    <script src="js/pages/branch_select.js?v=3"></script>
     <script src="js/pages/setup.js?v=7"></script>
     <script src="js/pages/dashboard.js?v=5"></script>
     <script src="js/pages/items.js?v=5"></script>

@@ -5,6 +5,19 @@
  */
 
 async function loadLogin() {
+    try {
+        // Set tenant context from URL so username-login uses the correct tenant DB (e.g. after invite: ?tenant=pharmasight-meds-ltd)
+        const params = new URLSearchParams(window.location.search || '');
+        const tenantFromUrl = params.get('tenant') || params.get('subdomain');
+        if (tenantFromUrl && typeof localStorage !== 'undefined') {
+            localStorage.setItem('pharmasight_tenant_subdomain', tenantFromUrl);
+        }
+        if (sessionStorage.getItem('tenant_invite_setup_done') === '1') {
+            sessionStorage.removeItem('tenant_invite_setup_done');
+            if (typeof showToast === 'function') showToast('Password set. Sign in with your username.', 'success');
+            else if (typeof showNotification === 'function') showNotification('Password set. Sign in with your username.', 'success');
+        }
+    } catch (_) {}
     // Check if already logged in (using AuthBootstrap for consistency)
     const user = AuthBootstrap.getCurrentUser();
     if (user && isAuthenticated()) {
@@ -61,8 +74,8 @@ async function loadLogin() {
                 <h2>Sign In</h2>
                 <form id="loginForm">
                     <div class="form-group">
-                        <label for="loginEmail">Email</label>
-                        <input type="email" id="loginEmail" required placeholder="your@email.com">
+                        <label for="loginUsername">Username</label>
+                        <input type="text" id="loginUsername" required placeholder="Enter your username">
                     </div>
                     <div class="form-group">
                         <label for="loginPassword">Password</label>
@@ -73,6 +86,10 @@ async function loadLogin() {
                     </button>
                 </form>
                 <div id="loginError" class="error-message" style="display: none;"></div>
+                <p class="login-hint" style="font-size: 0.8rem; color: var(--text-secondary, #666); margin-top: 0.5rem;">
+                    <strong>Admin panel</strong>: username <code>admin</code> + admin password → tenant management.<br>
+                    <strong>Tenant</strong>: use the username from your invite (e.g. J-MWANGI). <a href="#password-reset">Forgot password?</a>
+                </p>
                 <div class="login-links">
                     <a href="#password-reset">Forgot Password?</a>
                 </div>
@@ -243,7 +260,7 @@ async function loadLogin() {
         form.onsubmit = async (e) => {
             e.preventDefault();
             
-            const email = document.getElementById('loginEmail').value;
+            const username = document.getElementById('loginUsername').value.trim();
             const password = document.getElementById('loginPassword').value;
             
             // Clear previous errors
@@ -255,8 +272,8 @@ async function loadLogin() {
             try {
                 // Check if user is blocked (brute force protection)
                 if (window.LoginSecurity) {
-                    if (window.LoginSecurity.isUserBlocked(email)) {
-                        const blockedUntil = window.LoginSecurity.getBlockedUntil(email);
+                    if (window.LoginSecurity.isUserBlocked(username)) {
+                        const blockedUntil = window.LoginSecurity.getBlockedUntil(username);
                         const timeRemaining = window.LoginSecurity.formatTimeUntilUnblock(blockedUntil);
                         
                         const errorMsg = timeRemaining 
@@ -273,18 +290,139 @@ async function loadLogin() {
                     }
                 }
                 
-                // Sign in via AuthBootstrap
-                const data = await AuthBootstrap.signIn(email, password);
+                // Check if this is an admin login
+                const isAdminLogin = username.toLowerCase() === 'admin';
+                
+                if (isAdminLogin) {
+                    // Admin panel login: username "admin" + admin password → tenant management
+                    try {
+                        const adminResponse = await fetch(`${CONFIG.API_BASE_URL}/api/admin/auth/login`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ username, password })
+                        });
+                        const adminData = await adminResponse.json().catch(() => ({}));
+                        if (adminResponse.ok && adminData.success && adminData.is_admin) {
+                            localStorage.setItem('admin_token', adminData.token);
+                            localStorage.setItem('is_admin', 'true');
+                            showToast('Welcome Admin!', 'success');
+                            window.location.href = '/admin.html';
+                            return;
+                        }
+                        // Admin login failed: show admin error, do not fall through to regular auth
+                        if (adminResponse.status === 401 || adminData.detail) {
+                            const errorMsg = adminData.detail || 'Invalid admin credentials';
+                            if (window.LoginSecurity) window.LoginSecurity.recordFailedAttempt(username);
+                            if (errorDiv) {
+                                errorDiv.textContent = errorMsg;
+                                errorDiv.style.display = 'block';
+                            } else {
+                                showToast(errorMsg, 'error');
+                            }
+                            return;
+                        }
+                    } catch (adminError) {
+                        console.log('Admin auth request failed:', adminError);
+                        if (errorDiv) {
+                            errorDiv.textContent = 'Could not reach admin login. Check backend.';
+                            errorDiv.style.display = 'block';
+                        } else {
+                            showToast('Could not reach admin login.', 'error');
+                        }
+                        return;
+                    }
+                }
+                
+                // Regular user authentication: Lookup email from username (must send tenant context so backend uses tenant DB)
+                let userEmail = null;
+                try {
+                    const headers = { 'Content-Type': 'application/json' };
+                    const tenantSubdomain = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain');
+                    if (tenantSubdomain) headers['X-Tenant-Subdomain'] = tenantSubdomain;
+                    const usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({ username, password })
+                    });
+                    
+                    if (usernameResponse.ok) {
+                        const userData = await usernameResponse.json();
+                        userEmail = userData.email;
+                        // Persist tenant so app knows where this user belongs (all API calls use this tenant DB)
+                        if (userData.tenant_subdomain && typeof localStorage !== 'undefined') {
+                            localStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain);
+                        }
+                        // Store username for UI display (status bar / sidebar show username instead of email)
+                        if (typeof localStorage !== 'undefined' && (userData.username || username)) {
+                            localStorage.setItem('pharmasight_username', userData.username || username);
+                        }
+                    } else {
+                        const errorData = await usernameResponse.json().catch(() => ({}));
+                        // Same username in more than one tenant: show picker
+                        if (usernameResponse.status === 409 && errorData.detail && typeof errorData.detail === 'object' && errorData.detail.code === 'multiple_tenants') {
+                            const msg = errorData.detail.message || 'This username exists in more than one organization.';
+                            const tenants = errorData.detail.tenants || [];
+                            if (errorDiv) {
+                                let html = '<p style="margin-bottom:0.5rem;">' + String(msg).replace(/</g, '&lt;') + '</p>';
+                                if (tenants.length) {
+                                    html += '<p class="login-hint" style="margin-top:0.5rem;"><strong>Choose organization:</strong></p><div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-top:0.5rem;">';
+                                    tenants.forEach(function(t) {
+                                        const sub = (t.subdomain || '').replace(/"/g, '&quot;');
+                                        const name = (t.name || t.subdomain || sub).replace(/</g, '&lt;');
+                                        const url = (window.location.pathname || '/') + '?tenant=' + encodeURIComponent(t.subdomain) + '#login';
+                                        html += '<a href="' + url + '" class="btn btn-secondary" style="font-size:0.85rem;">' + name + '</a>';
+                                    });
+                                    html += '</div>';
+                                }
+                                errorDiv.innerHTML = html;
+                                errorDiv.style.display = 'block';
+                            } else {
+                                showToast(msg, 'error');
+                            }
+                            return;
+                        }
+                        throw new Error(typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'User not found');
+                    }
+                } catch (error) {
+                    // Record failed attempt
+                    if (window.LoginSecurity) {
+                        window.LoginSecurity.recordFailedAttempt(username);
+                    }
+                    
+                    const errorMsg = error.message || 'Invalid username or password';
+                    if (errorDiv) {
+                        errorDiv.textContent = errorMsg;
+                        errorDiv.style.display = 'block';
+                    } else {
+                        showToast(errorMsg, 'error');
+                    }
+                    return;
+                }
+                
+                // Now authenticate with Supabase using the email
+                const data = await AuthBootstrap.signIn(userEmail, password);
                 
                 if (data.user) {
                     // Clear failed attempts on successful login
                     if (window.LoginSecurity) {
-                        window.LoginSecurity.clearAttempts(email);
+                        window.LoginSecurity.clearAttempts(username);
                     }
+                    
+                    // Check if this user is also an admin (for tenant admins)
+                    // This allows tenant admins to access both their tenant app and admin panel
+                    const loggedInUserEmail = data.user.email?.toLowerCase();
+                    const isTenantAdmin = loggedInUserEmail === 'pharmasightsolutions@gmail.com' || 
+                                         loggedInUserEmail === 'admin@pharmasight.com';
                     
                     // Store user ID in config
                     CONFIG.USER_ID = data.user.id;
                     saveConfig();
+                    
+                    // Clear admin flags for regular users
+                    localStorage.removeItem('admin_token');
+                    localStorage.removeItem('is_admin');
                     
                     // Refresh auth state
                     await AuthBootstrap.refresh();
@@ -364,10 +502,10 @@ async function loadLogin() {
                 
                 // Record failed attempt (brute force protection)
                 if (window.LoginSecurity) {
-                    const attemptInfo = window.LoginSecurity.recordFailedAttempt(email);
-                    const remaining = window.LoginSecurity.getRemainingAttempts(email);
+                    const attemptInfo = window.LoginSecurity.recordFailedAttempt(username);
+                    const remaining = window.LoginSecurity.getRemainingAttempts(username);
                     
-                    let errorMsg = error.message || 'Invalid email or password';
+                    let errorMsg = error.message || 'Invalid username or password';
                     
                     // Add remaining attempts info if not blocked yet
                     if (!attemptInfo.blocked && remaining > 0) {
@@ -384,7 +522,7 @@ async function loadLogin() {
                     
                     // If blocked, show additional message
                     if (attemptInfo.blocked) {
-                        const blockedUntil = window.LoginSecurity.getBlockedUntil(email);
+                        const blockedUntil = window.LoginSecurity.getBlockedUntil(username);
                         const timeRemaining = window.LoginSecurity.formatTimeUntilUnblock(blockedUntil);
                         const blockMsg = timeRemaining 
                             ? `Account locked. Try again in ${timeRemaining}.`
@@ -401,7 +539,7 @@ async function loadLogin() {
                 } else {
                     // No LoginSecurity available, show basic error
                     if (errorDiv) {
-                        errorDiv.textContent = error.message || 'Invalid email or password';
+                        errorDiv.textContent = error.message || 'Invalid username or password';
                         errorDiv.style.display = 'block';
                     } else {
                         showToast(error.message || 'Login failed', 'error');

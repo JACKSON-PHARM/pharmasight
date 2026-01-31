@@ -102,50 +102,73 @@ async function loadBranches() {
             throw new Error('User not authenticated');
         }
         
-        // Get user's company
-        let companyId = CONFIG.COMPANY_ID;
+        // Get user's company (must exist in this tenant). Prefer list() so we only use companies that exist.
+        let companyId = null;
+        try {
+            const companies = await API.company.list();
+            if (companies && companies.length > 0) {
+                companyId = companies[0].id;
+                CONFIG.COMPANY_ID = companyId;
+                saveConfig();
+            }
+        } catch (error) {
+            console.warn('Could not list companies:', error);
+        }
         
         if (!companyId) {
-            // Try to get from startup status
+            // Try startup status (may return stale id from another tenant - we'll validate)
             try {
                 const status = await API.startup.status();
                 if (status.initialized && status.company_id) {
-                    companyId = status.company_id;
-                    CONFIG.COMPANY_ID = companyId;
-                    saveConfig();
+                    try {
+                        await API.company.get(status.company_id);
+                        companyId = status.company_id;
+                        CONFIG.COMPANY_ID = companyId;
+                        saveConfig();
+                    } catch (e) {
+                        if (e.status === 404 || (e.data && e.data.detail === 'Company not found')) {
+                            console.log('[BRANCH SELECT] Stale company_id from status, clearing');
+                        }
+                    }
                 }
             } catch (error) {
                 console.warn('Could not get company from startup status:', error);
             }
         }
         
-        if (!companyId) {
-            // Try to list companies (user might belong to one)
+        if (!companyId && CONFIG.COMPANY_ID) {
+            // Validate persisted CONFIG company (may be from different tenant)
             try {
-                const companies = await API.company.list();
-                if (companies && companies.length > 0) {
-                    companyId = companies[0].id;
-                    CONFIG.COMPANY_ID = companyId;
+                await API.company.get(CONFIG.COMPANY_ID);
+                companyId = CONFIG.COMPANY_ID;
+            } catch (e) {
+                if (e.status === 404 || (e.data && e.data.detail === 'Company not found')) {
+                    console.log('[BRANCH SELECT] CONFIG company not found in this tenant, clearing');
+                    CONFIG.COMPANY_ID = null;
                     saveConfig();
                 }
-            } catch (error) {
-                console.error('Error loading companies:', error);
             }
         }
         
+        // No company yet: first user must complete company + first branch via setup wizard (company first!)
         if (!companyId) {
-            throw new Error('No company found. Please contact your administrator.');
+            console.log('[BRANCH SELECT] No company found, redirecting to setup wizard (company then branch)');
+            window.location.hash = '#setup';
+            if (window.loadPage) window.loadPage('setup');
+            return;
         }
         
         // Load branches for company
         const branches = await API.branch.list(companyId);
         availableBranches = branches || [];
         
-        // Render branch selection UI
+        // Render branch selection UI (or "create first branch" if none)
         renderBranchSelection();
         
     } catch (error) {
         console.error('Error loading branches:', error);
+        const isNetwork = /fetch|network|cors|failed/i.test(String(error.message || ''));
+        const msg = error.message || 'Failed to load branches.';
         page.innerHTML = `
             <div class="login-container">
                 <div class="login-card">
@@ -153,10 +176,17 @@ async function loadBranches() {
                     <h2>Select Branch</h2>
                     <div class="error-message" style="display: block; margin: 1rem 0;">
                         <i class="fas fa-exclamation-triangle"></i> 
-                        ${escapeHtml(error.message || 'Failed to load branches. Please refresh the page.')}
+                        ${escapeHtml(msg)}
                     </div>
+                    ${isNetwork ? '<p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Make sure the backend server is running (e.g. <code>http://localhost:8000</code>). Then retry or go to setup to complete your company profile.</p>' : ''}
                     <button class="btn btn-primary btn-block" onclick="window.location.reload()">
                         <i class="fas fa-sync-alt"></i> Retry
+                    </button>
+                    <a href="#setup" class="btn btn-secondary btn-block" style="margin-top: 0.5rem; display: inline-block; text-align: center;">
+                        <i class="fas fa-cog"></i> Go to setup (company &amp; first branch)
+                    </a>
+                    <button class="btn btn-secondary btn-block" style="margin-top: 0.5rem;" onclick="window.AuthBootstrap.signOut().then(() => window.location.reload())">
+                        <i class="fas fa-sign-out-alt"></i> Sign Out
                     </button>
                 </div>
             </div>
@@ -175,25 +205,12 @@ function renderBranchSelection() {
     }
     
     if (availableBranches.length === 0) {
-        page.innerHTML = `
-            <div class="login-container">
-                <div class="login-card">
-                    <h1><i class="fas fa-pills"></i> PharmaSight</h1>
-                    <h2>Select Branch</h2>
-                    <div class="error-message" style="display: block; margin: 1rem 0;">
-                        <i class="fas fa-info-circle"></i> 
-                        No branches available. Please contact your administrator to create a branch.
-                    </div>
-                    <button class="btn btn-secondary btn-block" onclick="window.AuthBootstrap.signOut().then(() => window.location.reload())">
-                        <i class="fas fa-sign-out-alt"></i> Sign Out
-                    </button>
-                </div>
-            </div>
-        `;
+        // Company exists but no branches: first user creates first branch here
+        renderCreateFirstBranch();
         return;
     }
     
-    // If only one branch, auto-select it
+    // If only one branch, auto-select it (unless user is explicitly on branch-select route)
     // GUARD: do NOT auto-select when user is explicitly on #branch-select route.
     // Branch selection must be user-invoked on this route.
     const currentHash = window.location.hash || '';
@@ -340,6 +357,97 @@ function renderBranchSelection() {
             } finally {
                 window.location.hash = '#login';
                 window.location.reload();
+            }
+        };
+    }
+}
+
+function renderCreateFirstBranch() {
+    const page = document.getElementById('branch-select');
+    if (!page) return;
+    const companyId = CONFIG.COMPANY_ID;
+    if (!companyId) return;
+    page.innerHTML = `
+        <div class="login-container">
+            <div class="login-card">
+                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                <h2>Complete your setup</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Create your first branch to start using the app. You can add more branches later in Settings.
+                </p>
+                <form id="createFirstBranchForm">
+                    <div class="form-group">
+                        <label for="branchName">Branch name *</label>
+                        <input type="text" id="branchName" required placeholder="e.g. Main Branch">
+                    </div>
+                    <div class="form-group">
+                        <label for="branchCode">Branch code</label>
+                        <input type="text" id="branchCode" placeholder="BR001 (optional, default BR001)">
+                    </div>
+                    <div class="form-group">
+                        <label for="branchAddress">Address</label>
+                        <input type="text" id="branchAddress" placeholder="Branch address">
+                    </div>
+                    <div class="form-group">
+                        <label for="branchPhone">Phone</label>
+                        <input type="tel" id="branchPhone" placeholder="Branch phone">
+                    </div>
+                    <div id="createBranchError" class="error-message" style="display: none; margin-bottom: 1rem;"></div>
+                    <button type="submit" class="btn btn-primary btn-block" id="createBranchBtn">
+                        <i class="fas fa-plus"></i> Create branch & continue
+                    </button>
+                </form>
+                <button class="btn btn-secondary btn-block" style="margin-top: 0.75rem;" onclick="window.AuthBootstrap.signOut().then(() => window.location.reload())">
+                    <i class="fas fa-sign-out-alt"></i> Sign Out
+                </button>
+            </div>
+        </div>
+    `;
+    const form = document.getElementById('createFirstBranchForm');
+    const errEl = document.getElementById('createBranchError');
+    if (form) {
+        form.onsubmit = async function (e) {
+            e.preventDefault();
+            const name = (document.getElementById('branchName') && document.getElementById('branchName').value || '').trim();
+            const codeRaw = (document.getElementById('branchCode') && document.getElementById('branchCode').value || '').trim();
+            const code = codeRaw || 'BR001';
+            const address = (document.getElementById('branchAddress') && document.getElementById('branchAddress').value || '').trim() || null;
+            const phone = (document.getElementById('branchPhone') && document.getElementById('branchPhone').value || '').trim() || null;
+            if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+            if (!name) {
+                if (errEl) { errEl.textContent = 'Branch name is required'; errEl.style.display = 'block'; }
+                return;
+            }
+            const btn = document.getElementById('createBranchBtn');
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...'; }
+            try {
+                const result = await API.branch.create({
+                    company_id: companyId,
+                    name: name,
+                    code: code.toUpperCase(),
+                    address: address,
+                    phone: phone,
+                    is_active: true
+                });
+                const user = AuthBootstrap.getCurrentUser();
+                if (user && user.id && API.users && typeof API.users.assignRole === 'function') {
+                    await API.users.assignRole(user.id, { role_name: 'admin', branch_id: result.id });
+                }
+                CONFIG.BRANCH_ID = result.id;
+                if (typeof saveConfig === 'function') saveConfig();
+                showToast('Branch created. Proceeding...', 'success');
+                if (window.BranchContext && typeof BranchContext.setBranch === 'function') {
+                    BranchContext.setBranch(result);
+                }
+                if (window.handleBranchSelected) {
+                    window.handleBranchSelected();
+                } else {
+                    loadPage('dashboard');
+                }
+            } catch (err) {
+                const msg = (err && err.message) || (err.data && (err.data.detail || err.data.message)) || 'Failed to create branch';
+                if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus"></i> Create branch & continue'; }
             }
         };
     }

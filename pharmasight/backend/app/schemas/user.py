@@ -47,6 +47,7 @@ class UserBranchRoleResponse(BaseModel):
 class UserCreate(BaseModel):
     """Schema for creating a new user (Admin-only)"""
     email: EmailStr
+    username: Optional[str] = Field(None, description="Username for login. If not provided, auto-generated from full_name (e.g., 'D-JACKSON')")
     full_name: Optional[str] = None
     phone: Optional[str] = None
     role_name: str = Field(..., description="Role name (e.g., 'admin', 'pharmacist', 'cashier')")
@@ -56,7 +57,8 @@ class UserCreate(BaseModel):
         json_schema_extra = {
             "example": {
                 "email": "user@example.com",
-                "full_name": "John Doe",
+                "username": "D-JACKSON",  # Optional - auto-generated if not provided
+                "full_name": "Dr. Jackson",
                 "phone": "+254700000000",
                 "role_name": "pharmacist",
                 "branch_id": "123e4567-e89b-12d3-a456-426614174000"
@@ -75,6 +77,7 @@ class UserResponse(BaseModel):
     """User response schema with role information"""
     id: UUID
     email: str
+    username: Optional[str] = None  # Username for login
     full_name: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool
@@ -115,6 +118,7 @@ class InvitationResponse(BaseModel):
     """Response when user is created with invitation"""
     user_id: UUID
     email: str
+    username: str  # Generated username for login
     invitation_token: str
     invitation_code: str
     invitation_link: Optional[str] = None  # Full invitation URL if available

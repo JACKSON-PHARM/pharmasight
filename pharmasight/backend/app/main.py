@@ -1,9 +1,12 @@
 """
 PharmaSight - Main FastAPI Application
 """
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -40,6 +43,21 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.on_event("startup")
+def run_tenant_migrations():
+    """Apply missing migrations for all tenants with database_url (locked architecture)."""
+    try:
+        from app.services.migration_service import MigrationService
+        svc = MigrationService()
+        out = svc.run_migrations_all_tenant_dbs()
+        if out["applied"]:
+            logger.info("Startup migrations applied: %s", out["applied"])
+        if out["errors"]:
+            logger.warning("Startup migration errors: %s", out["errors"])
+    except Exception as e:
+        logger.exception("Startup tenant migrations failed: %s", e)
+
+
 # Import and include routers
 from app.api import items_router, sales_router, purchases_router, inventory_router, quotations_router, stock_take_router, order_book_router
 from app.api.company import router as company_router
@@ -48,6 +66,20 @@ from app.api.invite import router as invite_router
 from app.api.users import router as users_router
 from app.api.suppliers import router as suppliers_router
 from app.api.excel_import import router as excel_import_router
+from app.api.tenants import router as tenants_router
+from app.api.onboarding import router as onboarding_router
+# Optional imports - app can run without these
+try:
+    from app.api.migrations import router as migrations_router
+except ImportError:
+    migrations_router = None
+
+try:
+    from app.api.stripe_webhooks import router as stripe_webhooks_router
+except ImportError:
+    stripe_webhooks_router = None
+from app.api.admin_auth import router as admin_auth_router
+from app.api.auth import router as auth_router
 
 app.include_router(invite_router, prefix="/api", tags=["User Invitation & Setup"])
 app.include_router(startup_router, prefix="/api", tags=["Startup & Initialization"])
@@ -62,10 +94,23 @@ app.include_router(excel_import_router, prefix="/api/excel", tags=["Excel Import
 app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotations"])
 app.include_router(stock_take_router, prefix="/api/stock-take", tags=["Stock Take"])
 app.include_router(order_book_router, prefix="/api/order-book", tags=["Order Book"])
+app.include_router(tenants_router, prefix="/api/admin", tags=["Tenant Management (Admin)"])
+app.include_router(onboarding_router, prefix="/api", tags=["Client Onboarding"])
+if migrations_router:
+    app.include_router(migrations_router, prefix="/api", tags=["Migration Management (Admin)"])
+if stripe_webhooks_router:
+    app.include_router(stripe_webhooks_router, prefix="/api", tags=["Stripe Webhooks"])
+app.include_router(admin_auth_router, prefix="/api", tags=["Admin Authentication"])
+app.include_router(auth_router, prefix="/api", tags=["Authentication"])
 
 # Serve frontend static files and SPA
 if _FRONTEND_DIR.is_dir():
     app.mount("/css", StaticFiles(directory=str(_FRONTEND_DIR / "css")), name="css")
+    
+# Serve uploaded files (logos, etc.)
+_UPLOADS_DIR = _BACKEND / "uploads"
+if _UPLOADS_DIR.is_dir():
+    app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
     app.mount("/js", StaticFiles(directory=str(_FRONTEND_DIR / "js")), name="js")
     _index_path = _FRONTEND_DIR / "index.html"
 

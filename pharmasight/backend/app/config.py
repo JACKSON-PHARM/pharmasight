@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     SUPABASE_DB_NAME: str = os.getenv("SUPABASE_DB_NAME", "postgres")
     SUPABASE_DB_PORT: int = int(os.getenv("SUPABASE_DB_PORT", "5432"))
     SUPABASE_DB_USER: str = os.getenv("SUPABASE_DB_USER", "postgres")
-    
+    # Optional: Supabase project/account owner email. If set, this email cannot be used as tenant admin
+    # (avoids "already registered" in Auth when same email is used for Supabase dashboard login).
+    SUPABASE_OWNER_EMAIL: str = os.getenv("SUPABASE_OWNER_EMAIL", "").strip().lower()
+
     # Build connection string if not provided
     @property
     def database_connection_string(self) -> str:
@@ -54,6 +57,14 @@ class Settings(BaseSettings):
             return ["*"]
         return origins if origins else ["http://localhost:3000", "http://localhost:5173"]
     
+    # Email (tenant invites via SMTP)
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    EMAIL_FROM: str = os.getenv("EMAIL_FROM", "PharmaSight <noreply@pharmasight.com>")
+    APP_PUBLIC_URL: str = os.getenv("APP_PUBLIC_URL", "http://localhost:3000")
+
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
     ALGORITHM: str = "HS256"
@@ -65,4 +76,15 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def is_supabase_owner_email(email: str) -> bool:
+    """
+    True if email is the configured Supabase project/account owner (case-insensitive).
+    When set, this email should not be used as tenant admin to avoid Auth conflicts.
+    """
+    owner = (getattr(settings, "SUPABASE_OWNER_EMAIL", None) or "").strip().lower()
+    if not owner:
+        return False
+    return (email or "").strip().lower() == owner
 

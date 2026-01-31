@@ -29,6 +29,7 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True)  # Must match Supabase Auth user_id
     email = Column(String(255), nullable=False, unique=True)
+    username = Column(String(100), unique=True, nullable=True)  # Unique username for login
     full_name = Column(String(255))
     phone = Column(String(50))
     is_active = Column(Boolean, default=True)
