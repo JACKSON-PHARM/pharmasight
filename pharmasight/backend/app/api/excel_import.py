@@ -1,19 +1,25 @@
 """
-Excel Import API endpoint with background job processing
+Excel Import API endpoint with background job processing.
+Supports Vyper-style column mapping: user maps Excel headers to system fields before import.
 """
+import json
 import logging
 import threading
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Body
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, Dict
 from uuid import UUID
 import pandas as pd
 from io import BytesIO
 from datetime import datetime, timezone
 import hashlib
 
+from sqlalchemy import text
+
 from app.dependencies import get_tenant_db
-from app.services.excel_import_service import ExcelImportService
+from app.services.excel_import_service import ExcelImportService, EXPECTED_EXCEL_FIELDS
+from app.services.clear_for_reimport_service import run_clear as run_clear_for_reimport
 from app.models import ImportJob
 
 logger = logging.getLogger(__name__)
@@ -26,11 +32,13 @@ def process_import_job(
     branch_id: UUID,
     user_id: UUID,
     excel_data: list,
-    force_mode: Optional[str]
+    force_mode: Optional[str],
+    column_mapping: Optional[Dict[str, str]] = None
 ):
     """
     Background task to process Excel import.
     Updates ImportJob progress as it processes.
+    column_mapping: optional dict Excel header -> system field id (Vyper-style).
     """
     from app.database import SessionLocal
     
@@ -61,7 +69,8 @@ def process_import_job(
             user_id=user_id,
             excel_data=excel_data,
             force_mode=force_mode,
-            job_id=job_id  # Pass job_id for progress updates
+            job_id=job_id,
+            column_mapping=column_mapping
         )
         
         logger.info(f"✅ Import completed for job {job_id}, result: {result}")
@@ -100,6 +109,15 @@ def process_import_job(
         logger.info(f"🔒 Database session closed for job {job_id}")
 
 
+@router.get("/expected-fields")
+def get_expected_fields():
+    """
+    Return list of system fields that can be mapped from Excel columns (Vyper-style).
+    Frontend uses this to build the "Map your columns" dropdown.
+    """
+    return {"fields": EXPECTED_EXCEL_FIELDS}
+
+
 @router.post("/import")
 async def import_excel(
     company_id: UUID = Form(...),
@@ -107,23 +125,31 @@ async def import_excel(
     user_id: UUID = Form(...),
     file: UploadFile = File(...),
     force_mode: Optional[str] = Form(None),
+    column_mapping: Optional[str] = Form(None),
     db: Session = Depends(get_tenant_db)
 ):
     """
     Start Excel import as background job.
     Returns job_id immediately. Use GET /api/excel/import/{job_id}/progress to track progress.
     
-    OPTIMIZED for production:
-    - Non-blocking API response (< 1 second)
-    - Background processing with progress tracking
-    - Uses bulk operations (50-100x faster)
-    - Handles network/power failures gracefully
+    column_mapping: optional JSON string mapping Excel header names to system field ids (Vyper-style).
+    When provided, each row is remapped before processing.
     
     Two modes:
     - AUTHORITATIVE: Delete and recreate (only if no live transactions)
     - NON_DESTRUCTIVE: Create missing data only (when live transactions exist)
     """
     try:
+        # Parse column_mapping if provided
+        mapping_dict: Optional[Dict[str, str]] = None
+        if column_mapping and column_mapping.strip():
+            try:
+                mapping_dict = json.loads(column_mapping)
+                if not isinstance(mapping_dict, dict):
+                    mapping_dict = None
+            except json.JSONDecodeError:
+                mapping_dict = None
+
         # Read Excel file
         contents = await file.read()
         
@@ -171,7 +197,7 @@ async def import_excel(
         try:
             thread = threading.Thread(
                 target=process_import_job,
-                args=(job.id, company_id, branch_id, user_id, excel_data, force_mode),
+                args=(job.id, company_id, branch_id, user_id, excel_data, force_mode, mapping_dict),
                 daemon=False,  # Don't kill thread when main process exits
                 name=f"ImportJob-{job.id}"
             )
@@ -211,16 +237,49 @@ def get_import_progress(job_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Get progress of an import job.
     Returns current status, progress percentage, and statistics.
+    Uses a direct SQL read so we always see the latest committed progress
+    from the background import thread.
     """
-    job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
+    # Direct SQL read to avoid any session/ORM caching and see latest committed data
+    row = db.execute(
+        text("""
+            SELECT id, company_id, branch_id, user_id, file_hash, file_name,
+                   status, total_rows, processed_rows, last_batch, stats,
+                   error_message, created_at, updated_at, started_at, completed_at
+            FROM import_jobs WHERE id = :id
+        """),
+        {"id": job_id},
+    ).first()
     
-    if not job:
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Import job not found"
         )
     
-    return job.to_dict()
+    total_rows = row.total_rows or 0
+    processed_rows = row.processed_rows or 0
+    progress_pct = round((processed_rows / total_rows * 100), 1) if total_rows > 0 else 0.0
+    
+    return {
+        "id": str(row.id),
+        "company_id": str(row.company_id),
+        "branch_id": str(row.branch_id) if row.branch_id else None,
+        "user_id": str(row.user_id),
+        "file_hash": row.file_hash,
+        "file_name": row.file_name,
+        "status": row.status,
+        "total_rows": total_rows,
+        "processed_rows": processed_rows,
+        "last_batch": row.last_batch or 0,
+        "progress_percent": progress_pct,
+        "stats": row.stats,
+        "error_message": row.error_message,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+    }
 
 
 @router.get("/mode/{company_id}")
@@ -239,4 +298,47 @@ def get_import_mode(company_id: UUID, db: Session = Depends(get_tenant_db)):
         'mode': mode,
         'has_live_transactions': has_live,
         'message': 'AUTHORITATIVE mode allows reset. NON_DESTRUCTIVE mode preserves existing data.'
+    }
+
+
+class ClearForReimportBody(BaseModel):
+    """Body for clear-for-reimport: company_id only."""
+
+    company_id: UUID = Field(..., description="Company to clear (only when no live transactions)")
+
+
+@router.post("/clear-for-reimport")
+def clear_for_reimport(
+    body: ClearForReimportBody = Body(...),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Clear all company data (items, inventory, sales, purchases, etc.) so you can run a fresh Excel import.
+
+    **Only allowed when there are no live transactions** (no sales, purchases, or stock movements beyond opening balance).
+    If the company has any live transactions, returns 403 and does not delete anything.
+
+    Call this from the UI before re-importing when you want to start from a clean slate.
+    """
+    company_id = body.company_id
+    has_live = ExcelImportService.has_live_transactions(db, company_id)
+    if has_live:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Cannot clear: company has live transactions (sales, purchases, or stock movements). "
+                "Clear is only allowed when there are no transactions yet. "
+                "Use NON_DESTRUCTIVE import to add/update data without clearing."
+            ),
+        )
+    success, messages = run_clear_for_reimport(company_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"message": "Clear failed", "details": messages},
+        )
+    return {
+        "success": True,
+        "message": "Company data cleared. You can now run a fresh Excel import.",
+        "details": messages,
     }

@@ -15,7 +15,7 @@ from app.dependencies import get_tenant_db
 logger = logging.getLogger(__name__)
 from app.models import (
     Quotation, QuotationItem, SalesInvoice, SalesInvoiceItem,
-    Item, ItemUnit, InventoryLedger
+    Item, ItemUnit, InventoryLedger, Company, Branch, User
 )
 from app.schemas.sale import (
     QuotationCreate, QuotationResponse, QuotationUpdate,
@@ -131,7 +131,7 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
 
 @router.get("/{quotation_id}", response_model=QuotationResponse)
 def get_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
-    """Get quotation by ID with full item details"""
+    """Get quotation by ID with full item details, margin, and print header (company/branch/user)"""
     from sqlalchemy.orm import selectinload
     # Load quotation with items and item relationships
     quotation = db.query(Quotation).options(
@@ -141,12 +141,42 @@ def get_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
     if not quotation:
         raise HTTPException(status_code=404, detail="Quotation not found")
     
-    # Enhance items with full item details
+    # Enhance items with item name/code and margin (like sales invoice)
     for quotation_item in quotation.items:
         if quotation_item.item:
             quotation_item.item_code = quotation_item.item.sku or ''
             quotation_item.item_name = quotation_item.item.name or ''
-            quotation_item.item_category = quotation_item.item.category or ''
+        # Margin calculation: cost per sale unit and margin %
+        cost_base = PricingService.get_item_cost(
+            db, quotation_item.item_id, quotation.branch_id
+        )
+        if cost_base is not None:
+            item_unit = db.query(ItemUnit).filter(
+                ItemUnit.item_id == quotation_item.item_id,
+                ItemUnit.unit_name == quotation_item.unit_name
+            ).first()
+            if item_unit and item_unit.multiplier_to_base:
+                cost_per_sale_unit = cost_base * Decimal(str(item_unit.multiplier_to_base))
+                quotation_item.unit_cost_used = cost_per_sale_unit
+                price = quotation_item.unit_price_exclusive or Decimal("0")
+                if price > 0:
+                    quotation_item.margin_percent = (
+                        (price - cost_per_sale_unit) / price * Decimal("100")
+                    )
+    
+    # Print header: company, branch, user
+    company = db.query(Company).filter(Company.id == quotation.company_id).first()
+    if company:
+        quotation.company_name = company.name
+        quotation.company_address = getattr(company, "address", None) or ""
+    branch = db.query(Branch).filter(Branch.id == quotation.branch_id).first()
+    if branch:
+        quotation.branch_name = branch.name
+        quotation.branch_address = getattr(branch, "address", None) or ""
+        quotation.branch_phone = getattr(branch, "phone", None) or ""
+    creator = db.query(User).filter(User.id == quotation.created_by).first()
+    if creator:
+        quotation.created_by_username = creator.username or getattr(creator, "full_name", None) or ""
     
     return quotation
 

@@ -45,7 +45,7 @@ def check_requirements():
     
     return True, project_root, venv_python
 
-def start_backend(project_root, venv_python):
+def start_backend(project_root, venv_python, port=8000):
     """Start the FastAPI backend server"""
     print_colored("🔧 Starting Backend Server...", Colors.YELLOW)
     
@@ -53,23 +53,59 @@ def start_backend(project_root, venv_python):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir)
     
+    # Check if port is in use and try to free it (Windows WinError 10013)
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    result = sock.connect_ex(('127.0.0.1', port))
+    sock.close()
+    if result == 0:
+        print_colored(f"⚠️  Port {port} is in use. Attempting to free it...", Colors.YELLOW)
+        try:
+            import subprocess as sp
+            netstat = sp.run(['netstat', '-ano'], capture_output=True, text=True)
+            for line in netstat.stdout.split('\n'):
+                if f':{port}' in line and 'LISTENING' in line:
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        pid = parts[-1]
+                        try:
+                            sp.run(['taskkill', '/F', '/PID', pid], capture_output=True, check=True)
+                            print_colored(f"✅ Freed port {port} (killed process {pid})", Colors.GREEN)
+                            time.sleep(2)
+                            break
+                        except Exception:
+                            pass
+            # If still in use, try alternate port
+            sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if sock2.connect_ex(('127.0.0.1', port)) == 0:
+                sock2.close()
+                port = 8001
+                print_colored(f"⚠️  Using alternate port {port}. Set API base URL to http://localhost:{port} if needed.", Colors.YELLOW)
+            else:
+                sock2.close()
+        except Exception as e:
+            print_colored(f"⚠️  Could not free port {port}: {e}. Trying port 8001...", Colors.YELLOW)
+            port = 8001
+    
     # Start uvicorn server
     cmd = [
         str(venv_python),
         "-m", "uvicorn",
         "app.main:app",
         "--host", "0.0.0.0",
-        "--port", "8000",
+        "--port", str(port),
         "--reload"
     ]
     
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
         cwd=str(backend_dir),
         env=env,
         stdout=None,  # Show output in console
         stderr=subprocess.STDOUT  # Merge stderr with stdout
     )
+    return proc, port
+
 
 def start_frontend(project_root, port=3000):
     """Start the frontend HTTP server with SPA routing"""
@@ -148,7 +184,7 @@ def main():
     
     try:
         # Start backend
-        backend_process = start_backend(project_root, venv_python)
+        backend_process, backend_port = start_backend(project_root, venv_python)
         processes.append(("Backend", backend_process))
         time.sleep(2)  # Give backend time to start
         
@@ -161,9 +197,9 @@ def main():
         print_colored("✅ Both servers are running!", Colors.GREEN)
         print()
         print_colored("📍 URLs:", Colors.CYAN)
-        print_colored("   Backend API:    http://localhost:8000", Colors.WHITE)
-        print_colored("   API Docs:       http://localhost:8000/docs", Colors.WHITE)
-        print_colored("   Health Check:   http://localhost:8000/health", Colors.WHITE)
+        print_colored(f"   Backend API:    http://localhost:{backend_port}", Colors.WHITE)
+        print_colored(f"   API Docs:       http://localhost:{backend_port}/docs", Colors.WHITE)
+        print_colored(f"   Health Check:   http://localhost:{backend_port}/health", Colors.WHITE)
         print_colored("   Frontend:       http://localhost:3000", Colors.WHITE)
         print()
         print_colored("💡 Press Ctrl+C to stop both servers", Colors.YELLOW)

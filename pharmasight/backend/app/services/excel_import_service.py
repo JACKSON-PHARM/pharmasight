@@ -20,6 +20,72 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
+# System field keys for column mapping (Vyper-style: user maps Excel headers to these)
+# Maps system_key -> canonical header name used by _normalize_column_name lookups
+SYSTEM_TO_CANONICAL_HEADER: Dict[str, str] = {
+    'item_name': 'Item_Name',
+    'generic_name': 'Generic_Name',
+    'item_code': 'Item_Code',
+    'barcode': 'Barcode',
+    'category': 'Category',
+    'supplier_unit': 'Supplier_Unit',
+    'wholesale_unit': 'Wholesale_Unit',
+    'retail_unit': 'Retail_Unit',
+    'pack_size': 'Pack_Size',
+    'can_break_bulk': 'Can_Break_Bulk',
+    'purchase_price_per_supplier_unit': 'Purchase_Price_per_Supplier_Unit',
+    'wholesale_price_per_wholesale_unit': 'Wholesale_Price_per_Wholesale_Unit',
+    'retail_price_per_retail_unit': 'Retail_Price_per_Retail_Unit',
+    'current_stock_quantity': 'Current_Stock_Quantity',
+    'supplier': 'Supplier',
+    'vat_category': 'VAT_Category',
+    'vat_rate': 'VAT_Rate',
+    'base_unit': 'Base_Unit',
+    'secondary_unit': 'Secondary_Unit',
+    'conversion_rate': 'Conversion_Rate',
+    'wholesale_units_per_supplier': 'Wholesale_Units_per_Supplier',
+}
+
+# Expected fields for UI: id (system_key), label, required
+# Single 3-tier unit model only: wholesale = base (1 per item), retail = wholesale × pack_size, supplier = wholesale ÷ wholesale_units_per_supplier.
+# No separate "base unit / secondary unit / conversion rate" — those are duplicates of wholesale/retail/pack_size.
+EXPECTED_EXCEL_FIELDS: List[Dict] = [
+    {'id': 'item_name', 'label': 'Item Name', 'required': True},
+    {'id': 'generic_name', 'label': 'Generic Name / Description', 'required': False},
+    {'id': 'item_code', 'label': 'Item Code (SKU)', 'required': False},
+    {'id': 'barcode', 'label': 'Barcode', 'required': False},
+    {'id': 'category', 'label': 'Category', 'required': False},
+    # 3-tier units only: wholesale (base), retail, supplier + conversion numbers
+    {'id': 'wholesale_unit', 'label': 'Wholesale Unit (base = 1 per item; e.g. box, bottle)', 'required': False},
+    {'id': 'retail_unit', 'label': 'Retail Unit (e.g. tablet, piece, ml)', 'required': False},
+    {'id': 'supplier_unit', 'label': 'Supplier Unit (e.g. carton, crate, dozen)', 'required': False},
+    {'id': 'pack_size', 'label': 'Pack Size (retail per wholesale: 1 wholesale = N retail)', 'required': False},
+    {'id': 'wholesale_units_per_supplier', 'label': 'Wholesale per Supplier (e.g. 12 = 1 carton has 12 wholesale)', 'required': False},
+    {'id': 'can_break_bulk', 'label': 'Can Break Bulk', 'required': False},
+    {'id': 'purchase_price_per_supplier_unit', 'label': 'Purchase Price / Last Cost', 'required': False},
+    {'id': 'wholesale_price_per_wholesale_unit', 'label': 'Wholesale Price', 'required': False},
+    {'id': 'retail_price_per_retail_unit', 'label': 'Retail Price / Sale Price', 'required': False},
+    {'id': 'current_stock_quantity', 'label': 'Current Stock Quantity', 'required': False},
+    {'id': 'supplier', 'label': 'Supplier', 'required': False},
+    {'id': 'vat_category', 'label': 'VAT Category', 'required': False},
+    {'id': 'vat_rate', 'label': 'VAT Rate', 'required': False},
+]
+
+
+def _apply_column_mapping(row: Dict, column_mapping: Dict[str, str]) -> Dict:
+    """
+    Remap row keys using user's column mapping (Excel header -> system field id).
+    Returns a new row with canonical header names expected by the rest of the service.
+    """
+    out: Dict = {}
+    for excel_header, system_key in column_mapping.items():
+        if system_key not in SYSTEM_TO_CANONICAL_HEADER:
+            continue
+        canonical = SYSTEM_TO_CANONICAL_HEADER[system_key]
+        val = row.get(excel_header)
+        out[canonical] = val  # Pass through (validation will catch missing/empty item name)
+    return out
+
 
 def _normalize_column_name(row: Dict, possible_names: List[str]) -> Optional[str]:
     """
@@ -74,6 +140,36 @@ def _safe_strip(value) -> Optional[str]:
         str_value = value.strip()
         return str_value if str_value else None
     return str(value).strip() if value else None
+
+
+def _is_numeric_unit_value(value) -> bool:
+    """
+    Return True if value looks like a number (price/conversion rate mistaken for unit name).
+    Used to reject wrong column mapping (e.g. price in Base Unit column).
+    """
+    if value is None:
+        return False
+    s = (_safe_strip(value) or '').strip()
+    if not s:
+        return False
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _sanitize_unit_label(value, default: str) -> str:
+    """
+    Ensure unit name is a label (bottle, piece, etc.), not a number.
+    If value is missing or parses as a number, return default.
+    """
+    if value is None:
+        return default.lower()
+    s = _safe_strip(value)
+    if not s or _is_numeric_unit_value(s):
+        return default.lower()
+    return s.lower()
 
 
 class ExcelImportService:
@@ -166,7 +262,8 @@ class ExcelImportService:
         user_id: UUID,
         excel_data: List[Dict],
         force_mode: Optional[str] = None,
-        job_id: Optional[UUID] = None
+        job_id: Optional[UUID] = None,
+        column_mapping: Optional[Dict[str, str]] = None
     ) -> Dict:
         """
         Import Excel data with mode detection and integrity enforcement.
@@ -178,10 +275,16 @@ class ExcelImportService:
             user_id: User ID performing import
             excel_data: List of dictionaries from Excel file
             force_mode: Optional mode override ('AUTHORITATIVE' or 'NON_DESTRUCTIVE')
+            column_mapping: Optional dict mapping Excel header names to system field ids
+                           (e.g. {"Product Name": "item_name", "Cost": "purchase_price_per_supplier_unit"}).
+                           When provided, each row is remapped before processing (Vyper-style).
         
         Returns:
             Dict with import results and statistics
         """
+        # Apply column mapping if provided (user matched their Excel headers to system fields)
+        if column_mapping:
+            excel_data = [_apply_column_mapping(row, column_mapping) for row in excel_data]
         # Validate data
         is_valid, errors = ExcelImportService.validate_excel_data(excel_data)
         if not is_valid:
@@ -285,9 +388,12 @@ class ExcelImportService:
         barcode = _normalize_column_name(row, ['Barcode', 'barcode', 'BARCODE']) or ''
         category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY']) or ''
 
-        supplier_unit = _normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit', 'supplier_unit']) or 'packet'
-        wholesale_unit = _normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit', 'wholesale_unit']) or 'packet'
-        retail_unit = _normalize_column_name(row, ['Retail_Unit', 'Retail Unit', 'retail_unit']) or 'tablet'
+        supplier_unit_raw = _normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit', 'supplier_unit']) or ''
+        wholesale_unit_raw = _normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit', 'wholesale_unit']) or ''
+        retail_unit_raw = _normalize_column_name(row, ['Retail_Unit', 'Retail Unit', 'retail_unit']) or ''
+        supplier_unit = _sanitize_unit_label(supplier_unit_raw, 'packet')
+        wholesale_unit = _sanitize_unit_label(wholesale_unit_raw, 'packet')
+        retail_unit = _sanitize_unit_label(retail_unit_raw, 'tablet')
         pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack_size', 'Conversion Rate (n) (x = ny)']) or '1'
         pack_size = int(ExcelImportService._parse_decimal(pack_size_raw)) if pack_size_raw else 1
         pack_size = max(1, int(pack_size))
@@ -339,14 +445,16 @@ class ExcelImportService:
         item.barcode = _safe_strip(barcode)
         item.category = _safe_strip(category)
 
-        item.supplier_unit = (_safe_strip(supplier_unit) or 'packet').lower()
-        item.wholesale_unit = (_safe_strip(wholesale_unit) or 'packet').lower()
-        item.retail_unit = (_safe_strip(retail_unit) or 'tablet').lower()
+        item.supplier_unit = supplier_unit
+        item.wholesale_unit = wholesale_unit
+        item.retail_unit = retail_unit
         item.pack_size = pack_size
         item.can_break_bulk = can_break_bulk
+        wups_raw = _normalize_column_name(row, ['Wholesale_Units_per_Supplier', 'Wholesale Units per Supplier', 'Conversion to Supplier', 'wholesale_units_per_supplier']) or '1'
+        item.wholesale_units_per_supplier = max(Decimal('0.0001'), ExcelImportService._parse_decimal(wups_raw) or Decimal('1'))
 
-        # Legacy: base_unit = retail_unit
-        item.base_unit = item.retail_unit or 'piece'
+        # Base = wholesale (reference unit); never use a numeric value
+        item.base_unit = item.wholesale_unit or 'piece'
 
         # 3-tier pricing
         item.purchase_price_per_supplier_unit = purchase_price_per_supplier_unit
@@ -480,17 +588,31 @@ class ExcelImportService:
                         f"{total_time/60:.1f} min total elapsed)"
                     )
                     
-                    # Update job progress if job_id provided
+                    # Update job progress if job_id provided (use raw SQL so it persists after rollbacks)
                     if job_id:
                         try:
-                            from app.models import ImportJob
-                            job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
-                            if job:
-                                job.processed_rows = batch_end
-                                job.last_batch = batch_num
-                                db.commit()
+                            db.execute(
+                                text("""
+                                    UPDATE import_jobs
+                                    SET processed_rows = :processed_rows,
+                                        last_batch = :last_batch,
+                                        updated_at = now()
+                                    WHERE id = :id
+                                """),
+                                {
+                                    "processed_rows": batch_end,
+                                    "last_batch": batch_num,
+                                    "id": job_id,
+                                },
+                            )
+                            db.commit()
+                            logger.info(f"Job {job_id} progress updated: {batch_end}/{total_rows} (batch {batch_num})")
                         except Exception as progress_error:
                             logger.warning(f"Could not update job progress: {progress_error}")
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
                 except Exception as e:
                     db.rollback()
                     logger.error(f"Error committing batch {batch_num}: {str(e)}")
@@ -823,12 +945,17 @@ class ExcelImportService:
         barcode = _normalize_column_name(row, ['Barcode', 'barcode', 'BARCODE']) or ''
         category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY']) or ''
         
-        # 3-TIER UNIT SYSTEM (from Excel template)
-        supplier_unit = _normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit', 'supplier_unit']) or 'packet'
-        wholesale_unit = _normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit', 'wholesale_unit']) or 'packet'
-        retail_unit = _normalize_column_name(row, ['Retail_Unit', 'Retail Unit', 'retail_unit']) or 'tablet'
+        # 3-TIER UNIT SYSTEM (from Excel template); sanitize so we never store a number as unit name
+        supplier_unit_raw = _normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit', 'supplier_unit']) or ''
+        wholesale_unit_raw = _normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit', 'wholesale_unit']) or ''
+        retail_unit_raw = _normalize_column_name(row, ['Retail_Unit', 'Retail Unit', 'retail_unit']) or ''
+        supplier_unit = _sanitize_unit_label(supplier_unit_raw, 'packet')
+        wholesale_unit = _sanitize_unit_label(wholesale_unit_raw, 'packet')
+        retail_unit = _sanitize_unit_label(retail_unit_raw, 'tablet')
         pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack_size', 'Conversion Rate (n) (x = ny)']) or '1'
-        pack_size = int(ExcelImportService._parse_decimal(pack_size_raw)) if pack_size_raw else 1
+        pack_size = max(1, int(ExcelImportService._parse_decimal(pack_size_raw)) if pack_size_raw else 1)
+        wups_raw = _normalize_column_name(row, ['Wholesale_Units_per_Supplier', 'Wholesale Units per Supplier', 'Conversion to Supplier', 'wholesale_units_per_supplier']) or '1'
+        wholesale_units_per_supplier = max(Decimal('0.0001'), ExcelImportService._parse_decimal(wups_raw) or Decimal('1'))
         can_break_bulk_raw = _normalize_column_name(row, ['Can_Break_Bulk', 'Can Break Bulk', 'can_break_bulk'])
         can_break_bulk = str(can_break_bulk_raw).lower() in ['true', '1', 'yes', 'y'] if can_break_bulk_raw else True
         
@@ -874,9 +1001,9 @@ class ExcelImportService:
         elif vat_category == 'ZERO_RATED':
             vat_rate = Decimal('0.00')
         
-        # Legacy fields (for backward compatibility)
-        base_unit = retail_unit  # base_unit = retail_unit in 3-tier system
-        default_cost = purchase_price_per_supplier_unit  # Legacy: cost per supplier unit
+        # Base = wholesale (reference unit); default_cost = purchase per supplier
+        base_unit = wholesale_unit
+        default_cost = purchase_price_per_supplier_unit
         
         item = Item(
             company_id=company_id,
@@ -887,11 +1014,12 @@ class ExcelImportService:
             category=_safe_strip(category),
             base_unit=_safe_strip(base_unit) or 'piece',
             default_cost=default_cost,
-            # 3-TIER UNIT SYSTEM
+            # 3-TIER UNIT SYSTEM (base = wholesale)
             supplier_unit=_safe_strip(supplier_unit) or 'packet',
             wholesale_unit=_safe_strip(wholesale_unit) or 'packet',
             retail_unit=_safe_strip(retail_unit) or 'tablet',
             pack_size=pack_size,
+            wholesale_units_per_supplier=wholesale_units_per_supplier,
             can_break_bulk=can_break_bulk,
             # 3-TIER PRICING (on items table)
             purchase_price_per_supplier_unit=purchase_price_per_supplier_unit,
@@ -965,65 +1093,52 @@ class ExcelImportService:
     
     @staticmethod
     def _process_item_units(db: Session, item: Item, row: Dict):
-        """Create/update item units from Excel with 3-tier unit support"""
-        # Get existing units from database (to avoid duplicates)
+        """Create/update item units from Excel. Base = wholesale (mult 1), retail = 1/pack_size, supplier = wholesale_units_per_supplier."""
         existing_units = {u.unit_name.lower(): u for u in db.query(ItemUnit).filter(ItemUnit.item_id == item.id).all()}
         
-        # Get pack_size from Excel (used for supplier/wholesale unit multipliers)
         pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack_size', 'Conversion Rate (n) (x = ny)']) or '1'
         pack_size = max(1, int(ExcelImportService._parse_decimal(pack_size_raw))) if pack_size_raw else 1
+        wups_raw = _normalize_column_name(row, ['Wholesale_Units_per_Supplier', 'Wholesale Units per Supplier', 'Conversion to Supplier', 'wholesale_units_per_supplier']) or '1'
+        wholesale_units_per_supplier = max(Decimal('0.0001'), ExcelImportService._parse_decimal(wups_raw) or Decimal('1'))
         
-        # Update item's pack_size if provided
         if pack_size > 1:
             item.pack_size = pack_size
+        if wholesale_units_per_supplier > 0:
+            item.wholesale_units_per_supplier = wholesale_units_per_supplier
         
-        # Get 3-tier units from Excel
         supplier_unit_raw = _normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit']) or ''
         wholesale_unit_raw = _normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit']) or ''
         retail_unit_raw = _normalize_column_name(row, ['Retail_Unit', 'Retail Unit']) or ''
-        base_unit_raw = _normalize_column_name(row, ['Base_Unit', 'Base Unit', 'Base unit', 'Base Unit (x)']) or ''
+        base_unit_raw = _normalize_column_name(row, ['Base_Unit', 'Base Unit', 'Base Unit (x)']) or ''
         
-        # Normalize and update item's 3-tier unit fields
+        # Never assign numeric values to unit names (e.g. price column mapped by mistake)
         if supplier_unit_raw:
-            supplier_unit_clean = _safe_strip(supplier_unit_raw) or 'packet'
-            item.supplier_unit = supplier_unit_clean.lower() if supplier_unit_clean else 'packet'
+            item.supplier_unit = _sanitize_unit_label(supplier_unit_raw, 'packet')
         if wholesale_unit_raw:
-            wholesale_unit_clean = _safe_strip(wholesale_unit_raw) or 'packet'
-            item.wholesale_unit = wholesale_unit_clean.lower() if wholesale_unit_clean else 'packet'
+            item.wholesale_unit = _sanitize_unit_label(wholesale_unit_raw, 'packet')
         if retail_unit_raw:
-            retail_unit_clean = _safe_strip(retail_unit_raw) or 'tablet'
-            item.retail_unit = retail_unit_clean.lower() if retail_unit_clean else 'tablet'
-            # Also update base_unit to match retail_unit
-            if not item.base_unit or item.base_unit == 'piece':
-                item.base_unit = retail_unit_clean.lower() if retail_unit_clean else 'tablet'
-        elif base_unit_raw:
-            base_unit_clean = _safe_strip(base_unit_raw) or 'piece'
-            base_unit_clean = base_unit_clean.lower() if base_unit_clean else 'piece'
-            if not item.retail_unit or item.retail_unit == 'piece':
-                item.retail_unit = base_unit_clean
+            item.retail_unit = _sanitize_unit_label(retail_unit_raw, 'tablet')
+        if base_unit_raw and not item.wholesale_unit:
+            item.wholesale_unit = _sanitize_unit_label(base_unit_raw, 'piece')
+        # Base = wholesale (reference)
+        item.base_unit = (item.wholesale_unit or 'piece').lower()
         
-        # Collect units to create (deduplicate by name - use dict to ensure uniqueness)
-        units_to_create = {}  # unit_name_lower -> (multiplier, is_default)
+        units_to_create = {}
+        wholesale_unit_lower = (item.wholesale_unit or 'piece').lower()
+        retail_unit_clean = (item.retail_unit or 'tablet').lower()
+        supplier_unit_lower = (item.supplier_unit or 'packet').lower()
         
-        # Retail unit (base unit, multiplier = 1) - always create if not exists
-        retail_unit_clean = (item.retail_unit or 'piece').lower()
-        if retail_unit_clean not in existing_units and retail_unit_clean not in units_to_create:
-            units_to_create[retail_unit_clean] = (Decimal('1'), True)
+        # Wholesale = base (multiplier 1, default)
+        if wholesale_unit_lower not in existing_units and wholesale_unit_lower not in units_to_create:
+            units_to_create[wholesale_unit_lower] = (Decimal('1'), True)
         
-        # Supplier unit (multiplier = pack_size) - only if different from retail
-        if item.supplier_unit:
-            supplier_unit_lower = item.supplier_unit.lower()
-            if supplier_unit_lower != retail_unit_clean:
-                if supplier_unit_lower not in existing_units and supplier_unit_lower not in units_to_create:
-                    units_to_create[supplier_unit_lower] = (Decimal(str(pack_size)), False)
+        # Retail: 1 retail = 1/pack_size base (wholesale)
+        if retail_unit_clean not in existing_units and retail_unit_clean not in units_to_create and pack_size >= 1:
+            units_to_create[retail_unit_clean] = (Decimal('1') / Decimal(str(pack_size)), False)
         
-        # Wholesale unit (multiplier = pack_size) - only if different from supplier and retail
-        if item.wholesale_unit:
-            wholesale_unit_lower = item.wholesale_unit.lower()
-            supplier_unit_lower = (item.supplier_unit or '').lower()
-            if wholesale_unit_lower != supplier_unit_lower and wholesale_unit_lower != retail_unit_clean:
-                if wholesale_unit_lower not in existing_units and wholesale_unit_lower not in units_to_create:
-                    units_to_create[wholesale_unit_lower] = (Decimal(str(pack_size)), False)
+        # Supplier: 1 supplier = wholesale_units_per_supplier base (wholesale)
+        if supplier_unit_lower not in existing_units and supplier_unit_lower not in units_to_create and wholesale_units_per_supplier > 0:
+            units_to_create[supplier_unit_lower] = (wholesale_units_per_supplier, False)
         
         # Process unit conversion from Excel template (legacy support)
         # Excel has: Base Unit (x), Secondary Unit (y), Conversion Rate (n) (x = ny)
@@ -1683,7 +1798,7 @@ class ExcelImportService:
             'sku': _safe_strip(_normalize_column_name(row, ['Item_Code', 'SKU', 'Item Code', 'sku']) or ''),
             'barcode': _safe_strip(_normalize_column_name(row, ['Barcode', 'barcode']) or ''),
             'category': _safe_strip(_normalize_column_name(row, ['Category', 'category']) or ''),
-            'base_unit': _safe_strip(_normalize_column_name(row, ['Base_Unit', 'Base Unit']) or 'piece'),
+            'base_unit': _sanitize_unit_label(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit', 'Base_Unit', 'Base Unit', 'Base Unit (x)']), 'piece'),
             'default_cost': ExcelImportService._parse_decimal(_normalize_column_name(row, [
                 'Purchase_Price_per_Supplier_Unit',
                 'Purchase Price per Supplier Unit',
@@ -1697,10 +1812,11 @@ class ExcelImportService:
             'price_includes_vat': False,
             'vat_category': _safe_strip(_normalize_column_name(row, ['VAT_Category', 'VAT Category']) or 'ZERO_RATED'),
             'is_active': True,
-            'supplier_unit': _safe_strip(_normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit']) or 'piece'),
-            'wholesale_unit': _safe_strip(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit']) or 'piece'),
-            'retail_unit': _safe_strip(_normalize_column_name(row, ['Retail_Unit', 'Retail Unit']) or 'tablet'),
+            'supplier_unit': _sanitize_unit_label(_normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit']), 'piece'),
+            'wholesale_unit': _sanitize_unit_label(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit']), 'piece'),
+            'retail_unit': _sanitize_unit_label(_normalize_column_name(row, ['Retail_Unit', 'Retail Unit']), 'tablet'),
             'pack_size': max(1, int(ExcelImportService._parse_decimal(_normalize_column_name(row, ['Pack_Size', 'Pack Size']) or '1'))),
+            'wholesale_units_per_supplier': max(Decimal('0.0001'), ExcelImportService._parse_decimal(_normalize_column_name(row, ['Wholesale_Units_per_Supplier', 'Wholesale Units per Supplier', 'Conversion to Supplier']) or '1') or Decimal('1')),
             'can_break_bulk': True,
             'purchase_price_per_supplier_unit': ExcelImportService._parse_decimal(_normalize_column_name(row, [
                 'Purchase_Price_per_Supplier_Unit',
@@ -1726,41 +1842,35 @@ class ExcelImportService:
     
     @staticmethod
     def _prepare_units_for_bulk(item: Item, row: Dict) -> List[Dict]:
-        """Prepare units dictionary for bulk insert"""
+        """Prepare units for bulk insert. Base = wholesale (mult 1), retail = 1/pack_size, supplier = wholesale_units_per_supplier."""
         from uuid import uuid4
         units = []
+        supplier_unit = (item.supplier_unit or 'piece').lower()
+        wholesale_unit = (item.wholesale_unit or 'piece').lower()
+        retail_unit = (item.retail_unit or 'tablet').lower()
+        pack_size = max(1, int(item.pack_size or 1))
+        wups = max(Decimal('0.0001'), Decimal(str(getattr(item, 'wholesale_units_per_supplier', 1) or 1)))
         
-        supplier_unit = item.supplier_unit or 'piece'
-        wholesale_unit = item.wholesale_unit or 'piece'
-        retail_unit = item.retail_unit or 'tablet'
-        pack_size = item.pack_size or 1
-        
-        # Retail unit (base)
         units.append({
             'id': uuid4(),
-            'unit_name': retail_unit.lower(),
+            'unit_name': wholesale_unit,
             'multiplier_to_base': Decimal('1'),
             'is_default': True
         })
-        
-        # Supplier unit
-        if supplier_unit.lower() != retail_unit.lower():
+        if retail_unit != wholesale_unit:
             units.append({
                 'id': uuid4(),
-                'unit_name': supplier_unit.lower(),
-                'multiplier_to_base': Decimal(str(pack_size)),
+                'unit_name': retail_unit,
+                'multiplier_to_base': Decimal('1') / Decimal(str(pack_size)),
                 'is_default': False
             })
-        
-        # Wholesale unit
-        if wholesale_unit.lower() != supplier_unit.lower() and wholesale_unit.lower() != retail_unit.lower():
+        if supplier_unit != wholesale_unit and wups > 0:
             units.append({
                 'id': uuid4(),
-                'unit_name': wholesale_unit.lower(),
-                'multiplier_to_base': Decimal(str(pack_size)),
+                'unit_name': supplier_unit,
+                'multiplier_to_base': wups,
                 'is_default': False
             })
-        
         return units
     
     @staticmethod
@@ -1818,10 +1928,3 @@ class ExcelImportService:
             except (ValueError, TypeError):
                 return Decimal('0')
         return Decimal('0')
-        """Parse decimal from Excel"""
-        if value is None:
-            return Decimal('0')
-        try:
-            return Decimal(str(value))
-        except (ValueError, TypeError):
-            return Decimal('0')

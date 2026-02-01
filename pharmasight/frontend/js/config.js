@@ -22,6 +22,10 @@ const CONFIG = {
     BRANCH_ID: null,
     USER_ID: null,
     VAT_RATE: 16.00,
+    // Print: 'normal' (A4) or 'thermal' (narrow receipt). Used for quotations, invoices, etc.
+    PRINT_TYPE: 'normal',
+    // Optional message shown on printed documents (quotations, sales invoices, credit notes)
+    TRANSACTION_MESSAGE: '',
 };
 
 // Load config from localStorage
@@ -49,6 +53,8 @@ function saveConfig() {
         BRANCH_ID: CONFIG.BRANCH_ID,
         USER_ID: CONFIG.USER_ID,
         VAT_RATE: CONFIG.VAT_RATE,
+        PRINT_TYPE: CONFIG.PRINT_TYPE,
+        TRANSACTION_MESSAGE: CONFIG.TRANSACTION_MESSAGE || '',
     }));
 }
 

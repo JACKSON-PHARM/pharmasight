@@ -64,6 +64,10 @@ async function loadSettingsSubPage(subPage) {
             console.log('[SETTINGS] Case: transaction');
             await renderTransactionSettingsPage();
             break;
+        case 'print':
+            console.log('[SETTINGS] Case: print');
+            await renderPrintSettingsPage();
+            break;
         default:
             console.log('[SETTINGS] Case: default (general)');
             await renderGeneralSettingsPage();
@@ -1756,6 +1760,72 @@ async function confirmDeleteUser(userId, email) {
 }
 
 // =====================================================
+// PRINT SETTINGS PAGE (thermal / normal, transaction message)
+// =====================================================
+
+async function renderPrintSettingsPage() {
+    const page = document.getElementById('settings');
+    if (!page) return;
+    
+    const printType = CONFIG.PRINT_TYPE || 'normal';
+    const transactionMessage = CONFIG.TRANSACTION_MESSAGE || '';
+    
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-print"></i> Print Settings</h3>
+            </div>
+            <div class="card-body">
+                <form id="printSettingsForm" onsubmit="savePrintSettings(event)">
+                    <h4 style="margin-bottom: 1rem;">Default Print Format</h4>
+                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                        Choose how quotations, sales invoices, and credit notes are laid out when printing.
+                    </p>
+                    <div class="form-group">
+                        <label class="form-label">Print type</label>
+                        <select class="form-input" name="print_type">
+                            <option value="normal" ${printType === 'normal' ? 'selected' : ''}>Normal (A4 / full page)</option>
+                            <option value="thermal" ${printType === 'thermal' ? 'selected' : ''}>Thermal (narrow receipt, e.g. 80mm)</option>
+                        </select>
+                        <small style="color: var(--text-secondary);">
+                            Normal: standard A4. Thermal: narrow width for receipt printers.
+                        </small>
+                    </div>
+                    
+                    <h4 style="margin-top: 2rem; margin-bottom: 1rem;">Transaction Message</h4>
+                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                        Optional text shown on printed documents (quotations, sales invoices, credit notes). Leave blank for no message.
+                    </p>
+                    <div class="form-group">
+                        <label class="form-label">Message on printed documents</label>
+                        <textarea class="form-textarea" name="transaction_message" rows="3" 
+                                  placeholder="e.g. Thanks for your business!">${escapeHtml(transactionMessage)}</textarea>
+                    </div>
+                    
+                    <div style="margin-top: 2rem;">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Save Print Settings
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+}
+
+function savePrintSettings(event) {
+    event.preventDefault();
+    const form = event.target;
+    const formData = new FormData(form);
+    
+    CONFIG.PRINT_TYPE = formData.get('print_type') || 'normal';
+    CONFIG.TRANSACTION_MESSAGE = formData.get('transaction_message') || '';
+    
+    saveConfig();
+    showToast('Print settings saved', 'success');
+}
+
+// =====================================================
 // TRANSACTION SETTINGS PAGE
 // =====================================================
 
@@ -1893,6 +1963,9 @@ function switchSettingsSubPage(subPage) {
         window.editBranch = editBranch;
         window.setCurrentBranch = setCurrentBranch;
         
+        // Print settings
+        window.renderPrintSettingsPage = renderPrintSettingsPage;
+        window.savePrintSettings = savePrintSettings;
         // Transaction settings
         window.saveTransactionSettings = saveTransactionSettings;
         

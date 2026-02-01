@@ -208,7 +208,7 @@ class QuotationItemCreate(QuotationItemBase):
 
 
 class QuotationItemResponse(QuotationItemBase):
-    """Quotation item response"""
+    """Quotation item response (includes item_name, item_code, margin like sales invoice)"""
     id: UUID
     quotation_id: UUID
     vat_rate: Decimal
@@ -216,6 +216,10 @@ class QuotationItemResponse(QuotationItemBase):
     discount_amount: Decimal
     line_total_exclusive: Decimal
     line_total_inclusive: Decimal
+    item_name: Optional[str] = None
+    item_code: Optional[str] = None
+    unit_cost_used: Optional[Decimal] = None
+    margin_percent: Optional[Decimal] = None
     created_at: datetime
 
     class Config:
@@ -255,7 +259,7 @@ class QuotationUpdate(BaseModel):
 
 
 class QuotationResponse(QuotationBase):
-    """Quotation response"""
+    """Quotation response (includes company/branch/user for print header)"""
     id: UUID
     company_id: UUID
     quotation_no: str
@@ -268,6 +272,13 @@ class QuotationResponse(QuotationBase):
     created_at: datetime
     updated_at: datetime
     items: List[QuotationItemResponse] = []
+    # Print header (populated by API when fetching single quotation)
+    company_name: Optional[str] = None
+    company_address: Optional[str] = None
+    branch_name: Optional[str] = None
+    branch_address: Optional[str] = None
+    branch_phone: Optional[str] = None
+    created_by_username: Optional[str] = None
 
     class Config:
         from_attributes = True

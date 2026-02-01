@@ -21,7 +21,7 @@ class Item(Base):
     sku = Column(String(100))
     barcode = Column(String(100))
     category = Column(String(100))
-    base_unit = Column(String(50), nullable=False)  # tablet, ml, gram, etc. (legacy: = retail_unit)
+    base_unit = Column(String(50), nullable=False)  # = wholesale_unit (reference unit; stock in base = wholesale qty)
     default_cost = Column(Numeric(20, 4), default=0)
     # VAT Classification (Kenya Pharmacy Context)
     is_vatable = Column(Boolean, default=True)
@@ -30,11 +30,15 @@ class Item(Base):
     price_includes_vat = Column(Boolean, default=False)
     vat_category = Column(String(20), default="ZERO_RATED")  # ZERO_RATED | STANDARD_RATED
     is_active = Column(Boolean, default=True)
-    # 3-TIER UNIT SYSTEM
-    supplier_unit = Column(String(50), default="piece")   # What we buy: packet, box, bottle
-    wholesale_unit = Column(String(50), default="piece")  # What pharmacies buy
-    retail_unit = Column(String(50), default="piece")     # What customers buy: tablet, capsule, ml, gram
-    pack_size = Column(Integer, nullable=False, default=1)  # Retail units per supplier/wholesale unit
+    # 3-TIER UNIT SYSTEM (base = wholesale)
+    # base_unit = wholesale unit (reference, 1 per item). Stock is stored in base = wholesale.
+    # pack_size = conversion to retail: 1 wholesale = pack_size retail (tablets/pieces). retail_qty = wholesale_qty * pack_size.
+    # wholesale_units_per_supplier = conversion to supplier: 1 supplier = N wholesale. supplier_qty = wholesale_qty / N.
+    supplier_unit = Column(String(50), default="piece")   # What we buy: carton, box
+    wholesale_unit = Column(String(50), default="piece")  # Base/reference: box, bottle (1 per item)
+    retail_unit = Column(String(50), default="piece")     # Smallest: tablet, capsule, ml
+    pack_size = Column(Integer, nullable=False, default=1)  # Retail per 1 wholesale (1 wholesale = pack_size retail)
+    wholesale_units_per_supplier = Column(Numeric(20, 4), nullable=False, default=1)  # Wholesale per 1 supplier (1 supplier = N wholesale)
     can_break_bulk = Column(Boolean, nullable=False, default=True)  # Can sell individual retail units?
     # PRICING WITH CLEAR UNIT ATTRIBUTION (on items)
     purchase_price_per_supplier_unit = Column(Numeric(15, 2), default=0)   # Cost per supplier unit

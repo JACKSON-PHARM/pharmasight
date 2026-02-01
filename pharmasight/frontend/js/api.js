@@ -192,11 +192,12 @@ const API = {
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),
         delete: (itemId) => api.delete(`${CONFIG.API_ENDPOINTS.items}/${itemId}`),
         hasTransactions: (itemId, branchId) => api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/has-transactions`, { branch_id: branchId }),
-        getRecommendedPrice: (itemId, branchId, companyId, unitName) => 
+        getRecommendedPrice: (itemId, branchId, companyId, unitName, tier) => 
             api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/recommended-price`, {
                 branch_id: branchId,
                 company_id: companyId,
                 unit_name: unitName,
+                ...(tier ? { tier } : {}),
             }),
     },
 
@@ -217,6 +218,8 @@ const API = {
             }),
         getAllStock: (branchId) => 
             api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/all`),
+        getItemsInStockCount: (branchId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/items-in-stock-count`),
         getStockOverview: (branchId) =>
             api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/overview`),
         allocateFEFO: (itemId, branchId, quantity, unitName) => 
@@ -234,6 +237,8 @@ const API = {
         getInvoice: (invoiceId) => api.get(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`),
         getBranchInvoices: (branchId) => 
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/invoices`),
+        getTodaySummary: (branchId, userId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/today-summary`, userId != null ? { user_id: userId } : {}),
         updateInvoice: (invoiceId, data) => 
             api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
         deleteInvoice: (invoiceId) => 
@@ -267,6 +272,8 @@ const API = {
         getStock: (itemId, branchId) => api.get(`/api/inventory/stock/${itemId}/${branchId}`),
         getAvailability: (itemId, branchId) => api.get(`/api/inventory/availability/${itemId}/${branchId}`),
         getBatches: (itemId, branchId) => api.get(`/api/inventory/batches/${itemId}/${branchId}`),
+        getAllStock: (branchId) => api.get(`/api/inventory/branch/${branchId}/all`),
+        getItemsInStockCount: (branchId) => api.get(`/api/inventory/branch/${branchId}/items-in-stock-count`),
         allocateFEFO: (itemId, branchId, quantity, unitName) => 
             api.post(`/api/inventory/allocate-fefo?item_id=${itemId}&branch_id=${branchId}&quantity=${quantity}&unit_name=${encodeURIComponent(unitName)}`, null),
     },
@@ -321,9 +328,10 @@ const API = {
         update: (supplierId, data) => api.put(`${CONFIG.API_ENDPOINTS.suppliers}/${supplierId}`, data),
     },
     
-    // Excel Import
+    // Excel Import (supports Vyper-style column mapping)
     excel: {
-        import: (file, companyId, branchId, userId, forceMode = null) => {
+        getExpectedFields: () => api.get('/api/excel/expected-fields'),
+        import: (file, companyId, branchId, userId, forceMode = null, columnMapping = null) => {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('company_id', companyId);
@@ -331,6 +339,9 @@ const API = {
             formData.append('user_id', userId);
             if (forceMode) {
                 formData.append('force_mode', forceMode);
+            }
+            if (columnMapping && typeof columnMapping === 'object' && Object.keys(columnMapping).length > 0) {
+                formData.append('column_mapping', JSON.stringify(columnMapping));
             }
             // For FormData, don't set Content-Type - browser will set it with boundary
             // Short timeout - job starts immediately, progress tracked separately
@@ -343,6 +354,8 @@ const API = {
         },
         getProgress: (jobId) => api.get(`/api/excel/import/${jobId}/progress`),
         getMode: (companyId) => api.get(`/api/excel/mode/${companyId}`),
+        /** Clear company data for fresh Excel import. Only allowed when no live transactions. */
+        clearForReimport: (companyId) => api.post('/api/excel/clear-for-reimport', { company_id: companyId }),
     },
     
     // User Management

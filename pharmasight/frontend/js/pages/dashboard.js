@@ -8,47 +8,53 @@ async function loadDashboard() {
     }
     const page = document.getElementById('dashboard');
     if (!page) return;
-    // Skip items/company API when no company (avoids /api/items/company/null and 422)
+    // Skip when no company/branch (avoids invalid API calls)
     if (!CONFIG.COMPANY_ID) {
         const ti = document.getElementById('totalItems');
         if (ti) ti.textContent = '0';
         const ts = document.getElementById('totalStock');
         if (ts) ts.textContent = formatCurrency(0);
         const td = document.getElementById('todaySales');
-        if (td) td.textContent = '0';
+        if (td) td.textContent = formatCurrency(0);
         const ex = document.getElementById('expiringItems');
         if (ex) ex.textContent = '0';
         return;
     }
-    
-    // Load stats
+
+    // Placeholders first
+    document.getElementById('totalItems').textContent = '0';
+    document.getElementById('totalStock').textContent = formatCurrency(0);
+    document.getElementById('todaySales').textContent = formatCurrency(0);
+    document.getElementById('expiringItems').textContent = '0';
+
     try {
-        // TODO: Implement actual stats loading
-        // For now, show placeholders
-        document.getElementById('totalItems').textContent = '0';
-        document.getElementById('totalStock').textContent = formatCurrency(0);
-        document.getElementById('todaySales').textContent = formatCurrency(0);
-        document.getElementById('expiringItems').textContent = '0';
-        
-        // Load items count (use count endpoint for better performance)
-        if (CONFIG.COMPANY_ID) {
+        // Total items in stock (distinct items with stock > 0 at this branch)
+        if (CONFIG.BRANCH_ID && API.inventory && typeof API.inventory.getItemsInStockCount === 'function') {
             try {
-                const countData = await API.items.count(CONFIG.COMPANY_ID);
-                document.getElementById('totalItems').textContent = countData.count || 0;
-            } catch (error) {
-                // Fallback to list if count endpoint fails
-                console.warn('Count endpoint failed, using list:', error);
-                const items = await API.items.list(CONFIG.COMPANY_ID, { include_units: false, limit: 1 });
-                // Note: This won't give accurate count, but prevents timeout
-                document.getElementById('totalItems').textContent = '...';
+                const countData = await API.inventory.getItemsInStockCount(CONFIG.BRANCH_ID);
+                document.getElementById('totalItems').textContent = countData.count != null ? countData.count : 0;
+            } catch (err) {
+                console.warn('Items-in-stock count failed:', err);
             }
         }
-        
-        // Load stock summary
+
+        // Today's sales for the logged-in user (per-user)
+        if (CONFIG.BRANCH_ID && API.sales && typeof API.sales.getTodaySummary === 'function') {
+            try {
+                const userId = CONFIG.USER_ID || null;
+                const summary = await API.sales.getTodaySummary(CONFIG.BRANCH_ID, userId);
+                const total = parseFloat(summary.total_inclusive || summary.total_exclusive || 0);
+                document.getElementById('todaySales').textContent = formatCurrency(total);
+            } catch (err) {
+                console.warn('Today summary failed:', err);
+            }
+        }
+
+        // Load stock value summary
         if (CONFIG.BRANCH_ID && API.inventory && typeof API.inventory.getAllStock === 'function') {
             try {
                 const stock = await API.inventory.getAllStock(CONFIG.BRANCH_ID);
-                // Calculate total value (simplified)
+                // TODO: total value from stock * cost if needed
                 document.getElementById('totalStock').textContent = formatCurrency(0);
             } catch (error) {
                 console.warn('Failed to load stock summary:', error);
@@ -57,7 +63,6 @@ async function loadDashboard() {
         } else {
             document.getElementById('totalStock').textContent = formatCurrency(0);
         }
-        
     } catch (error) {
         console.error('Error loading dashboard:', error);
         // Only surface toast when user is already on dashboard (avoid noise during navigation)

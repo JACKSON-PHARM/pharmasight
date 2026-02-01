@@ -301,20 +301,25 @@ class InventoryService:
         branch_id: UUID
     ) -> str:
         """
-        Get stock display using 3-tier units: "X packets + Y tablets" or "X packets (Z tablets)" or "Y tablets".
-        Stock is tracked in retail units (base units). Uses supplier_unit, retail_unit, pack_size when present.
+        Get stock display using 3-tier units (base = wholesale).
+        Stock in base = wholesale qty. Display: supplier + wholesale or retail.
         """
         item = db.query(Item).filter(Item.id == item_id).first()
         if not item:
             return "0"
-        total_retail = InventoryService.get_current_stock(db, item_id, branch_id)
+        total_base = InventoryService.get_current_stock(db, item_id, branch_id)  # wholesale qty
+        wholesale_unit = getattr(item, "wholesale_unit", None) or item.base_unit or "piece"
+        retail_unit = getattr(item, "retail_unit", None) or "piece"
         supplier_unit = getattr(item, "supplier_unit", None) or "piece"
-        retail_unit = getattr(item, "retail_unit", None) or item.base_unit
         pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
-        full_packets = total_retail // pack_size
-        partial_units = total_retail % pack_size
-        if full_packets > 0 and partial_units > 0:
-            return f"{full_packets} {supplier_unit} + {partial_units} {retail_unit}"
-        if full_packets > 0:
-            return f"{full_packets} {supplier_unit} ({full_packets * pack_size} {retail_unit})"
-        return f"{partial_units} {retail_unit}"
+        wups = max(0.0001, float(getattr(item, "wholesale_units_per_supplier", None) or 1))
+        full_supplier = int(total_base // wups) if wups >= 1 else 0
+        remainder_wholesale = int(total_base % int(wups)) if wups >= 1 else total_base
+        total_retail = total_base * pack_size
+        if full_supplier > 0 and remainder_wholesale > 0:
+            return f"{full_supplier} {supplier_unit} + {remainder_wholesale} {wholesale_unit}"
+        if full_supplier > 0:
+            return f"{full_supplier} {supplier_unit} ({total_base} {wholesale_unit})"
+        if total_base > 0:
+            return f"{total_base} {wholesale_unit} ({total_retail} {retail_unit})"
+        return "0"

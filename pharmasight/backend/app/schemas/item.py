@@ -52,7 +52,8 @@ class ItemBase(BaseModel):
     supplier_unit: str = Field(default="packet", description="What we buy: packet, box, bottle")
     wholesale_unit: str = Field(default="packet", description="What pharmacies buy")
     retail_unit: str = Field(default="tablet", description="What customers buy: tablet, capsule, ml, gram")
-    pack_size: int = Field(default=1, ge=1, description="Retail units per supplier/wholesale unit")
+    pack_size: int = Field(default=1, ge=1, description="Retail per 1 wholesale (1 wholesale = pack_size retail)")
+    wholesale_units_per_supplier: float = Field(default=1, ge=0.0001, description="Wholesale per 1 supplier (1 supplier = N wholesale); default 1")
     can_break_bulk: bool = Field(default=False, description="Can we sell individual retail units? (requires pack_size > 1)")
     purchase_price_per_supplier_unit: float = Field(default=0, ge=0, description="Cost per supplier unit")
     wholesale_price_per_wholesale_unit: float = Field(default=0, ge=0, description="Sell price per wholesale unit")
@@ -102,11 +103,23 @@ class ItemUpdate(BaseModel):
     wholesale_unit: Optional[str] = None
     retail_unit: Optional[str] = None
     pack_size: Optional[int] = Field(None, ge=1)
+    wholesale_units_per_supplier: Optional[float] = Field(None, ge=0.0001)
     can_break_bulk: Optional[bool] = None
     purchase_price_per_supplier_unit: Optional[float] = Field(None, ge=0)
     wholesale_price_per_wholesale_unit: Optional[float] = Field(None, ge=0)
     retail_price_per_retail_unit: Optional[float] = Field(None, ge=0)
     units: Optional[List[ItemUnitUpdate]] = Field(None, description="Unit conversions (optional, only if modifying units)")
+
+
+def _is_numeric_unit_value(value) -> bool:
+    """True if value looks like a number (e.g. price mistaken for unit name)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return False
+    try:
+        float(str(value).strip())
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 class ItemResponse(ItemBase):
@@ -119,6 +132,13 @@ class ItemResponse(ItemBase):
     units: List[ItemUnitResponse] = []
     requires_batch_tracking: Optional[bool] = None
     requires_expiry_tracking: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def coerce_numeric_base_unit_for_display(self):
+        """Never expose a number as base_unit to the UI; use wholesale_unit (or piece) instead."""
+        if self.base_unit and _is_numeric_unit_value(self.base_unit):
+            self.base_unit = (self.wholesale_unit or "piece").lower()
+        return self
 
     class Config:
         from_attributes = True

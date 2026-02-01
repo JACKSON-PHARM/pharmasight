@@ -143,6 +143,9 @@ function renderItemsSubPage() {
                     <button class="btn btn-outline" onclick="downloadItemTemplate()">
                         <i class="fas fa-download"></i> Download Template
                     </button>
+                    <button class="btn btn-outline" onclick="clearForReimport()" id="clearForReimportBtn" title="Clear all items and data for this company so you can run a fresh Excel import (only when no sales/purchases yet)">
+                        <i class="fas fa-broom"></i> Clear for re-import
+                    </button>
                     <button class="btn btn-secondary" onclick="showImportExcelModal()">
                         <i class="fas fa-file-excel"></i> Import Excel
                     </button>

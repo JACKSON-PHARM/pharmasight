@@ -37,6 +37,9 @@ async function loadItems() {
                     <button class="btn btn-outline" onclick="downloadItemTemplate()">
                         <i class="fas fa-download"></i> Download Template
                     </button>
+                    <button class="btn btn-outline" onclick="clearForReimport()" id="clearForReimportBtn" title="Clear all items and data for this company so you can run a fresh Excel import (only when no sales/purchases yet)">
+                        <i class="fas fa-broom"></i> Clear for re-import
+                    </button>
                     <button class="btn btn-secondary" onclick="showImportExcelModal()">
                         <i class="fas fa-file-excel"></i> Import Excel
                     </button>
@@ -330,7 +333,7 @@ function renderItemsTable() {
                     <tr>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Name</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">SKU</th>
-                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Base Unit</th>
+                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Base Unit (Wholesale)</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Category</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Current Stock</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Supplier Price</th>
@@ -539,9 +542,14 @@ function showAddItemModal() {
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label class="form-label">Pack Size (retail units per packet) *</label>
+                        <label class="form-label">Pack Size (retail per wholesale) *</label>
                         <input type="number" class="form-input" name="pack_size" min="1" value="30" required placeholder="e.g. 30">
-                        <small style="color: var(--text-secondary); font-size: 0.85rem;">e.g. 30 tablets per packet</small>
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">1 wholesale = N retail (e.g. 30 tablets per box)</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Wholesale per supplier</label>
+                        <input type="number" class="form-input" name="wholesale_units_per_supplier" min="0.0001" step="0.01" value="1" placeholder="e.g. 10">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">1 supplier = N wholesale (e.g. 10 boxes per carton). Default 1.</small>
                     </div>
                     <div class="form-group" style="display: flex; align-items: flex-end; padding-bottom: 0.5rem;">
                         <label class="checkbox-item">
@@ -567,7 +575,7 @@ function showAddItemModal() {
                         <input type="text" class="form-input" name="strength" placeholder="Enter strength">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Base Unit (legacy, default = retail unit)</label>
+                        <label class="form-label">Base Unit (= wholesale unit)</label>
                         <select class="form-select" name="base_unit">
                             <option value="tablet">Tablet</option>
                             <option value="capsule">Capsule</option>
@@ -852,12 +860,13 @@ async function saveItem(event) {
         sku: formData.get('sku') || null,
         barcode: formData.get('barcode') || null,
         category: formData.get('category') || null,
-        base_unit: formData.get('base_unit') || formData.get('retail_unit') || 'tablet',
+        base_unit: formData.get('base_unit') || formData.get('wholesale_unit') || 'piece',
         default_cost: parseFloat(formData.get('default_cost') || 0),
         supplier_unit: formData.get('supplier_unit') || 'packet',
         wholesale_unit: formData.get('wholesale_unit') || 'packet',
         retail_unit: formData.get('retail_unit') || 'tablet',
         pack_size: packSize,
+        wholesale_units_per_supplier: Math.max(0.0001, parseFloat(formData.get('wholesale_units_per_supplier') || 1)),
         can_break_bulk: canBreakBulk,
         purchase_price_per_supplier_unit: parseFloat(formData.get('purchase_price_per_supplier_unit') || 0),
         wholesale_price_per_wholesale_unit: parseFloat(formData.get('wholesale_price_per_wholesale_unit') || 0),
@@ -956,47 +965,26 @@ function downloadItemTemplate() {
         return;
     }
     
-    // Template headers exactly matching pharmasight_template.xlsx
+    // 3-tier unit template: base = wholesale, conversion to retail (pack_size), conversion to supplier (wholesale_units_per_supplier)
     const headers = [
         'Item name*',
+        'Generic Name',
         'Item code',
-        'Description',
+        'Barcode',
         'Category',
-        'Base Unit (x)',
-        'Secondary Unit (y)',
-        'Conversion Rate (n) (x = ny)',
-        'Supplier',
-        'markup_Margin',
-        'Price_List_Retail_Price',
-        'Price_List_Wholesale_Price',
-        'Price_List_Trade_Price',
-        'Price_List_Last_Cost',
-        'Price_List_Average_Cost',
-        'Price_List_Retail_Unit_Price',
-        'Price_List_Wholesale_Unit_Price',
-        'Price_List_Trade_Unit_Price',
-        'Price_List_Tax_Code',
-        'Price_List_Tax_Percentage',
-        'Price_List_Tax_Description',
-        'Price_List_Tax_Type',
-        'Price_List_Price_Inclusive',
+        'Supplier Unit',
+        'Wholesale Unit',
+        'Retail Unit',
+        'Pack Size (retail per wholesale)',
+        'Wholesale Units per Supplier',
+        'Purchase Price per Supplier Unit',
+        'Wholesale Price per Wholesale Unit',
+        'Retail Price per Retail Unit',
         'Current stock quantity',
-        'Minimum stock quantity',
-        'HSN',
-        'Sale Discount',
-        'Tax Rate',
-        'Inclusive Of Tax',
-        'Price_List_Min_Price',
-        'Price_List_Special_Price',
-        'Price_List_Has_Refill',
-        'Price_List_Not_For_Sale',
-        'Price_List_Is_Physical_Item',
-        'Price_List_Min_Wholesale_Price',
-        'Price_List_Min_Wholesale_Unit_Price',
-        'Price_List_Min_Retail_Price',
-        'Price_List_Min_Retail_Unit_Price',
-        'Price_List_Min_Trade_Price',
-        'Price_List_Min_Trade_Unit_Price'
+        'Supplier',
+        'VAT Category',
+        'VAT Rate',
+        'Can Break Bulk'
     ];
     
     // Create workbook and worksheet
@@ -1021,17 +1009,64 @@ function downloadItemTemplate() {
     showToast('Template downloaded! Fill it with your items and upload.', 'success');
 }
 
+/** Clear company data for fresh Excel import. Only allowed when no live transactions (no sales/purchases). */
+async function clearForReimport() {
+    const btn = document.getElementById('clearForReimportBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking...';
+    }
+    try {
+        const modeInfo = await API.excel.getMode(CONFIG.COMPANY_ID);
+        if (modeInfo.has_live_transactions) {
+            showToast(
+                'Cannot clear: company has live transactions (sales, purchases, or stock movements). Clear is only allowed when there are no transactions yet.',
+                'error'
+            );
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-broom"></i> Clear for re-import';
+            }
+            return;
+        }
+        const ok = confirm(
+            'This will permanently delete all items, inventory, sales, purchases, and related data for this company. ' +
+            'You can then run a fresh Excel import. Companies, branches, and users will NOT be deleted.\n\nContinue?'
+        );
+        if (!ok) {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-broom"></i> Clear for re-import';
+            }
+            return;
+        }
+        if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Clearing...';
+        const result = await API.excel.clearForReimport(CONFIG.COMPANY_ID);
+        showToast(result.message || 'Company data cleared. You can now run a fresh Excel import.', 'success');
+        loadItems();
+    } catch (err) {
+        const msg = (err.data && (err.data.detail || err.data.message)) || err.message || 'Clear failed';
+        showToast(typeof msg === 'string' ? msg : (msg.detail || msg.message || 'Clear failed'), 'error');
+    } finally {
+        const btn = document.getElementById('clearForReimportBtn');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-broom"></i> Clear for re-import';
+        }
+    }
+}
+
 function showImportExcelModal() {
     const content = `
         <div>
             <div class="alert alert-info">
                 <i class="fas fa-info-circle"></i>
-                <p><strong>Excel Import Instructions:</strong></p>
+                <p><strong>Excel Import (Vyper-style column mapping):</strong></p>
                 <ol style="margin-top: 0.5rem; padding-left: 1.5rem;">
-                    <li>Click "Download Template" to get the Excel template with required headers</li>
-                    <li>Fill in your items (don't change the headers)</li>
-                    <li>Select your filled file below and click Import</li>
-                    <li><strong>Required:</strong> Item name*, Purchase price, Base Unit (x)</li>
+                    <li>Select your Excel file below</li>
+                    <li>Map your column headers to PharmaSight fields (match each Excel column to a system field)</li>
+                    <li><strong>Required:</strong> At least "Item Name" must be mapped</li>
+                    <li>Click Import when ready</li>
                 </ol>
             </div>
             <div class="form-group">
@@ -1042,8 +1077,13 @@ function showImportExcelModal() {
                 <h4>Preview (first 5 rows):</h4>
                 <div id="excelPreviewContent" class="table-container" style="max-height: 300px; overflow-y: auto;"></div>
                 <p style="margin-top: 0.5rem; color: var(--text-secondary);">
-                    <span id="excelRowCount">0</span> rows found. Ready to import?
+                    <span id="excelRowCount">0</span> rows found.
                 </p>
+            </div>
+            <div id="excelColumnMappingSection" style="display: none; margin-top: 1rem;">
+                <h4><i class="fas fa-columns"></i> Map your columns to PharmaSight fields</h4>
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Match each Excel column with the system field it represents. Unmapped columns are ignored. <strong id="excelColumnCount">0</strong> columns from your sheet.</p>
+                <div id="excelColumnMapping" style="max-height: 420px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;"></div>
             </div>
             <div id="excelError" class="alert alert-danger" style="display: none; margin-top: 1rem;"></div>
         </div>
@@ -1067,6 +1107,36 @@ function showImportExcelModal() {
 }
 
 let excelFile = null; // Store the actual file object
+let excelImportHeaders = []; // Excel column headers for building column_mapping
+
+// Normalize string for fuzzy match (lowercase, collapse spaces/underscores)
+function normalizeForMatch(s) {
+    return (s || '').toLowerCase().replace(/[\s_\-*]+/g, ' ').trim();
+}
+
+// Suggest system field id for an Excel header (fuzzy match on label).
+// Legacy Excel "Base Unit (x)" / "Secondary Unit (y)" / "Conversion Rate (n)" map to 3-tier: wholesale_unit, retail_unit, pack_size.
+function suggestFieldForHeader(header, expectedFields) {
+    const n = normalizeForMatch(header);
+    if (!n) return '';
+    // Legacy headers → 3-tier (no duplicate base/secondary/conversion in dropdown)
+    if (n.includes('base') && n.includes('unit')) return 'wholesale_unit';
+    if (n.includes('secondary') && n.includes('unit')) return 'retail_unit';
+    if (n.includes('conversion') && (n.includes('retail') || n.includes('rate')) && !n.includes('supplier')) return 'pack_size';
+    if (n.includes('wholesale') && n.includes('supplier') || n.includes('conversion') && n.includes('supplier')) return 'wholesale_units_per_supplier';
+    for (const f of expectedFields) {
+        const labelNorm = normalizeForMatch(f.label);
+        if (labelNorm === n || labelNorm.includes(n) || n.includes(labelNorm)) return f.id;
+        if (f.id === 'item_name' && (n.includes('item') && n.includes('name'))) return 'item_name';
+        if (f.id === 'generic_name' && (n.includes('generic') || n.includes('description'))) return 'generic_name';
+        if (f.id === 'pack_size' && (n.includes('pack') && n.includes('size'))) return 'pack_size';
+        if (f.id === 'purchase_price_per_supplier_unit' && (n.includes('purchase') || n.includes('cost') || n.includes('last cost'))) return 'purchase_price_per_supplier_unit';
+        if (f.id === 'retail_price_per_retail_unit' && (n.includes('retail') || n.includes('sale') || n.includes('price'))) return 'retail_price_per_retail_unit';
+        if (f.id === 'current_stock_quantity' && (n.includes('stock') || n.includes('quantity') || n.includes('qty'))) return 'current_stock_quantity';
+        if (f.id === 'supplier' && n.includes('supplier') && !n.includes('unit')) return 'supplier';
+    }
+    return '';
+}
 
 function handleFileSelect(event) {
     const file = event.target.files[0];
@@ -1077,14 +1147,18 @@ function handleFileSelect(event) {
     const previewContent = document.getElementById('excelPreviewContent');
     const rowCount = document.getElementById('excelRowCount');
     const importBtn = document.getElementById('importExcelBtn');
+    const mappingSection = document.getElementById('excelColumnMappingSection');
+    const mappingContainer = document.getElementById('excelColumnMapping');
     
     errorDiv.style.display = 'none';
     previewDiv.style.display = 'none';
+    if (mappingSection) mappingSection.style.display = 'none';
     importBtn.disabled = true;
     excelFile = null;
+    excelImportHeaders = [];
     
     const reader = new FileReader();
-    reader.onload = function(e) {
+    reader.onload = async function(e) {
         try {
             if (typeof XLSX === 'undefined') {
                 throw new Error('XLSX library not loaded. Please refresh the page.');
@@ -1094,44 +1168,139 @@ function handleFileSelect(event) {
             const workbook = XLSX.read(data, {type: 'array'});
             const sheetName = workbook.SheetNames[0];
             const worksheet = workbook.Sheets[sheetName];
-            const jsonData = XLSX.utils.sheet_to_json(worksheet, {defval: ''});
-            
-            if (jsonData.length === 0) {
+            // Use header: 1 to get ALL columns (sheet_to_json by key collapses duplicate/empty headers)
+            const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
+            if (!rawRows || rawRows.length === 0) {
                 throw new Error('No data found in Excel file');
             }
-            
-            excelFile = file; // Store file for upload
+            const headerRow = rawRows[0] || [];
+            const maxCols = Math.max(headerRow.length, ...rawRows.slice(1).map(r => (r && r.length) || 0));
+            // Build unique headers per column (match pandas: empty -> "Unnamed: 0", duplicates -> "Name.1", "Name.2")
+            const seen = {};
+            const headers = [];
+            for (let i = 0; i < maxCols; i++) {
+                const raw = headerRow[i];
+                const rawStr = (raw != null && raw !== '') ? String(raw).trim() : '';
+                let name;
+                if (rawStr === '') {
+                    name = 'Unnamed: ' + i;
+                } else {
+                    if (seen[rawStr] !== undefined) {
+                        seen[rawStr] += 1;
+                        name = rawStr + '.' + seen[rawStr];
+                    } else {
+                        seen[rawStr] = 0;
+                        name = rawStr;
+                    }
+                }
+                headers.push(name);
+            }
+            // Build jsonData as array of objects keyed by headers (for preview and row count)
+            const jsonData = rawRows.slice(1).map(row => {
+                const obj = {};
+                headers.forEach((h, i) => { obj[h] = (row && row[i] != null) ? row[i] : ''; });
+                return obj;
+            });
+            if (jsonData.length === 0) {
+                throw new Error('No data rows found in Excel file');
+            }
+            excelFile = file;
+            excelImportHeaders = headers;
             
             // Show preview
             const previewRows = jsonData.slice(0, 5);
-            const headers = Object.keys(jsonData[0]);
-            
             let previewHTML = '<table style="width: 100%; font-size: 0.875rem;"><thead><tr>';
-            headers.forEach(h => previewHTML += `<th style="padding: 0.5rem; border: 1px solid var(--border-color);">${h}</th>`);
+            headers.forEach(h => previewHTML += `<th style="padding: 0.5rem; border: 1px solid var(--border-color);">${escapeHtml(h)}</th>`);
             previewHTML += '</tr></thead><tbody>';
-            
             previewRows.forEach(row => {
                 previewHTML += '<tr>';
                 headers.forEach(h => {
-                    previewHTML += `<td style="padding: 0.5rem; border: 1px solid var(--border-color);">${row[h] || ''}</td>`;
+                    previewHTML += `<td style="padding: 0.5rem; border: 1px solid var(--border-color);">${escapeHtml(row[h] || '')}</td>`;
                 });
                 previewHTML += '</tr>';
             });
             previewHTML += '</tbody></table>';
-            
             previewContent.innerHTML = previewHTML;
             rowCount.textContent = jsonData.length;
             previewDiv.style.display = 'block';
+            
+            // Fetch expected fields and build mapping UI
+            let expectedFields = [];
+            try {
+                const res = await API.excel.getExpectedFields();
+                expectedFields = (res && res.fields) || [];
+            } catch (_) {
+                // 3-tier only: wholesale = base (1), retail = wholesale × pack_size, supplier = wholesale ÷ wholesale_units_per_supplier
+                expectedFields = [
+                    { id: 'item_name', label: 'Item Name', required: true },
+                    { id: 'generic_name', label: 'Generic Name / Description', required: false },
+                    { id: 'item_code', label: 'Item Code (SKU)', required: false },
+                    { id: 'barcode', label: 'Barcode', required: false },
+                    { id: 'category', label: 'Category', required: false },
+                    { id: 'wholesale_unit', label: 'Wholesale Unit (base = 1 per item; e.g. box, bottle)', required: false },
+                    { id: 'retail_unit', label: 'Retail Unit (e.g. tablet, piece, ml)', required: false },
+                    { id: 'supplier_unit', label: 'Supplier Unit (e.g. carton, crate, dozen)', required: false },
+                    { id: 'pack_size', label: 'Pack Size (retail per wholesale: 1 wholesale = N retail)', required: false },
+                    { id: 'wholesale_units_per_supplier', label: 'Wholesale per Supplier (e.g. 12 = 1 carton has 12 wholesale)', required: false },
+                    { id: 'can_break_bulk', label: 'Can Break Bulk', required: false },
+                    { id: 'purchase_price_per_supplier_unit', label: 'Purchase Price / Last Cost', required: false },
+                    { id: 'wholesale_price_per_wholesale_unit', label: 'Wholesale Price', required: false },
+                    { id: 'retail_price_per_retail_unit', label: 'Retail Price / Sale Price', required: false },
+                    { id: 'current_stock_quantity', label: 'Current Stock Quantity', required: false },
+                    { id: 'supplier', label: 'Supplier', required: false },
+                    { id: 'vat_category', label: 'VAT Category', required: false },
+                    { id: 'vat_rate', label: 'VAT Rate', required: false },
+                ];
+            }
+            
+            let mappingHTML = '<table style="width: 100%; font-size: 0.875rem;"><thead><tr><th style="text-align:left;">Your column</th><th style="text-align:left;">Map to</th></tr></thead><tbody>';
+            headers.forEach((h, idx) => {
+                const suggested = suggestFieldForHeader(h, expectedFields);
+                mappingHTML += '<tr><td style="padding: 0.35rem 0.5rem;">' + escapeHtml(h) + '</td><td style="padding: 0.35rem 0.5rem;">';
+                mappingHTML += '<select class="form-input excel-map-select" data-excel-header-index="' + idx + '" style="min-width: 220px;">';
+                mappingHTML += '<option value="">— Don\'t import —</option>';
+                expectedFields.forEach(f => {
+                    const sel = f.id === suggested ? ' selected' : '';
+                    const req = f.required ? ' (required)' : '';
+                    mappingHTML += '<option value="' + escapeHtml(f.id) + '"' + sel + '>' + escapeHtml(f.label) + req + '</option>';
+                });
+                mappingHTML += '</select></td></tr>';
+            });
+            mappingHTML += '</tbody></table>';
+            mappingContainer.innerHTML = mappingHTML;
+            const colCountEl = document.getElementById('excelColumnCount');
+            if (colCountEl) colCountEl.textContent = headers.length;
+            mappingSection.style.display = 'block';
             importBtn.disabled = false;
             
         } catch (error) {
             console.error('Excel parsing error:', error);
             errorDiv.style.display = 'block';
-            errorDiv.innerHTML = `<strong>Error:</strong> ${error.message}`;
+            errorDiv.innerHTML = '<strong>Error:</strong> ' + escapeHtml(error.message);
         }
     };
     
     reader.readAsArrayBuffer(file);
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    const div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+}
+
+function getExcelColumnMapping() {
+    const selects = document.querySelectorAll('#excelColumnMapping .excel-map-select');
+    const mapping = {};
+    selects.forEach(sel => {
+        const idx = parseInt(sel.getAttribute('data-excel-header-index'), 10);
+        const systemId = (sel.value || '').trim();
+        if (systemId && excelImportHeaders[idx] !== undefined) {
+            mapping[excelImportHeaders[idx]] = systemId;
+        }
+    });
+    return mapping;
 }
 
 // Prevent multiple simultaneous imports
@@ -1146,6 +1315,13 @@ async function importExcelFile() {
     
     if (!excelFile) {
         showToast('Please select an Excel file first', 'error');
+        return;
+    }
+    
+    const columnMapping = getExcelColumnMapping();
+    const hasItemName = Object.values(columnMapping).indexOf('item_name') !== -1;
+    if (!hasItemName) {
+        showToast('Please map at least one column to "Item Name" (required)', 'error');
         return;
     }
     
@@ -1209,13 +1385,15 @@ async function importExcelFile() {
         const modeInfo = await API.excel.getMode(CONFIG.COMPANY_ID);
         updateProgress(5, `Mode: ${modeInfo.mode} - Starting import...`);
         
-        // Upload file to backend - returns job_id immediately
+        // Upload file to backend - returns job_id immediately (with column mapping)
         updateProgress(10, 'Uploading file to server...');
         const startResult = await API.excel.import(
             excelFile,
             CONFIG.COMPANY_ID,
             CONFIG.BRANCH_ID,
-            CONFIG.USER_ID
+            CONFIG.USER_ID,
+            null,
+            columnMapping
         );
         
         if (!startResult.job_id) {
@@ -1396,15 +1574,16 @@ async function editItem(itemId) {
                 </div>
                 <div class="form-group">
                     <label class="form-label">
-                        Base Unit *
+                        Base Unit (Wholesale) *
                         ${isLocked ? '<i class="fas fa-lock" style="color: #dc3545; margin-left: 0.25rem;" title="Cannot be modified after item has transactions"></i>' : ''}
                     </label>
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0.25rem 0 0.5rem 0;">Reference unit for stock and pricing (e.g. bottle, piece, box). This is your <strong>wholesale</strong> unit.</p>
                     <select 
                         class="form-select" 
                         name="base_unit" 
                         required
                         ${isLocked ? 'disabled style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
-                        title="${isLocked ? 'Base unit is locked because item has inventory transactions' : 'Base unit for this item'}"
+                        title="${isLocked ? 'Base unit is locked because item has inventory transactions' : 'Base unit (wholesale) for this item'}"
                     >
                         <option value="tablet" ${item.base_unit === 'tablet' ? 'selected' : ''}>Tablet</option>
                         <option value="capsule" ${item.base_unit === 'capsule' ? 'selected' : ''}>Capsule</option>
@@ -1423,9 +1602,9 @@ async function editItem(itemId) {
                 
                 <!-- Units Display - Editable -->
                 <div class="form-group" style="margin-top: 1rem;">
-                    <label class="form-label">Unit Conversions</label>
+                    <label class="form-label">Unit Conversions (Retail & Supplier tiers)</label>
                     <p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0.5rem 0;">
-                        Base unit: <strong>${escapeHtml(item.base_unit)}</strong> (Price is per ${escapeHtml(item.base_unit)})
+                        Base (wholesale): <strong>${escapeHtml(item.base_unit)}</strong> — Prices and stock are per ${escapeHtml(item.base_unit)}. Other rows are <strong>retail</strong> or <strong>supplier</strong> units with conversion to base.
                     </p>
                     <div id="unitsEditContainer" style="margin-top: 0.5rem;">
                         ${(item.units && item.units.length > 0) ? `

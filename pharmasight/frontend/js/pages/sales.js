@@ -687,9 +687,10 @@ async function renderCreateSalesInvoicePage() {
                                 <select class="form-select" name="sales_type" id="salesTypeSelect" onchange="handleSalesTypeChange()">
                                     <option value="RETAIL" ${invoiceData?.sales_type === 'RETAIL' || !invoiceData?.sales_type ? 'selected' : ''}>Retail (Customers)</option>
                                     <option value="WHOLESALE" ${invoiceData?.sales_type === 'WHOLESALE' ? 'selected' : ''}>Wholesale (Pharmacies)</option>
+                                    <option value="SUPPLIER" ${invoiceData?.sales_type === 'SUPPLIER' ? 'selected' : ''}>Supplier</option>
                                 </select>
                                 <small style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem; display: block;">
-                                    <i class="fas fa-info-circle"></i> Retail uses retail price per tablet, Wholesale uses wholesale price per packet
+                                    <i class="fas fa-info-circle"></i> Units and prices follow mode: Retail = retail units, Wholesale = wholesale units, Supplier = supplier units (or wholesale if not set)
                                 </small>
                             </div>
                             <div class="form-group" style="margin: 0;">
@@ -1201,9 +1202,9 @@ async function renderCreateSalesQuotationPage() {
             // Map quotation items to component format
             quotationItems = quotationData.items.map(item => ({
                 item_id: item.item_id,
-                item_name: item.item?.name || item.item_name || 'Item',
-                item_sku: item.item?.sku || item.item_code || '',
-                item_code: item.item?.sku || item.item_code || '',
+                item_name: item.item_name || item.item?.name || '',
+                item_sku: item.item_code || item.item?.sku || '',
+                item_code: item.item_code || item.item?.sku || '',
                 unit_name: item.unit_name,
                 quantity: item.quantity,
                 unit_price: item.unit_price_exclusive || 0,
@@ -1769,24 +1770,47 @@ async function addToCart(itemId) {
             return;
         }
         
-        // Get recommended price
+        const salesTypeSelect = document.getElementById('salesTypeSelect');
+        const salesType = (salesTypeSelect && salesTypeSelect.value) ? salesTypeSelect.value : 'RETAIL';
+        const tier = salesType.toLowerCase();
+        const wups = Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1);
+        const packSize = Math.max(1, parseInt(item.pack_size, 10) || 1);
+        const baseQty = availability.total_base_units;
+        let unitForTier = item.base_unit || 'piece';
+        let displayQty = baseQty;
+        if (salesType === 'WHOLESALE') {
+            unitForTier = item.wholesale_unit || item.base_unit || 'piece';
+            displayQty = baseQty;
+        } else if (salesType === 'RETAIL') {
+            unitForTier = item.retail_unit || item.base_unit || 'piece';
+            displayQty = baseQty * packSize;
+        } else if (salesType === 'SUPPLIER') {
+            if (wups > 1 && item.supplier_unit) {
+                unitForTier = item.supplier_unit;
+                displayQty = Math.floor(baseQty / wups);
+            } else {
+                unitForTier = item.wholesale_unit || item.base_unit || 'piece';
+                displayQty = baseQty;
+            }
+        }
+        
         const priceInfo = await API.items.getRecommendedPrice(
-            itemId, CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, item.base_unit
+            itemId, CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, unitForTier, tier
         );
         
-        // Show add to cart modal
-        showAddToCartModal(item, availability, priceInfo);
+        showAddToCartModal(item, availability, priceInfo, { salesType, unitForTier, displayQty });
     } catch (error) {
         console.error('Error getting item details:', error);
         showToast('Error loading item details', 'error');
     }
 }
 
-function showAddToCartModal(item, availability, priceInfo) {
-    const units = availability.unit_breakdown || [];
-    const unitOptions = units.map(u => 
-        `<option value="${u.unit_name}">${u.unit_name} (${u.display})</option>`
-    ).join('');
+function showAddToCartModal(item, availability, priceInfo, tierInfo) {
+    tierInfo = tierInfo || {};
+    const salesType = tierInfo.salesType || 'RETAIL';
+    const unitForTier = tierInfo.unitForTier || (item.wholesale_unit || item.base_unit || 'piece');
+    const displayQty = tierInfo.displayQty != null ? tierInfo.displayQty : (availability.total_base_units || 0);
+    const unitOptions = `<option value="${unitForTier}">${unitForTier} (${displayQty} available)</option>`;
     
     const content = `
         <form id="addToCartForm" onsubmit="confirmAddToCart(event, '${item.id}')">
@@ -1796,7 +1820,7 @@ function showAddToCartModal(item, availability, priceInfo) {
             </div>
             <div class="form-row">
                 <div class="form-group">
-                    <label class="form-label">Unit</label>
+                    <label class="form-label">Unit (${salesType})</label>
                     <select class="form-select" name="unit_name" id="cartUnitSelect" required>
                         ${unitOptions}
                     </select>
@@ -2476,18 +2500,18 @@ async function convertSalesInvoiceToQuotation(invoiceId) {
 }
 
 // Print Quotation (enabled for all statuses including draft)
-async function printQuotation(quotationId) {
+// printType: 'normal' (A4) or 'thermal' (narrow) - from CONFIG.PRINT_TYPE or default 'normal'
+async function printQuotation(quotationId, printType) {
     try {
         const quotation = await API.quotations.get(quotationId);
+        const layout = printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'normal';
         
-        // Create printable HTML
         const printWindow = window.open('', '_blank');
-        const printContent = generateQuotationPrintHTML(quotation);
+        const printContent = generateQuotationPrintHTML(quotation, layout);
         
         printWindow.document.write(printContent);
         printWindow.document.close();
         
-        // Wait for content to load, then print
         printWindow.onload = function() {
             setTimeout(() => {
                 printWindow.print();
@@ -2499,91 +2523,85 @@ async function printQuotation(quotationId) {
     }
 }
 
-function generateQuotationPrintHTML(quotation) {
-    const quotationDate = new Date(quotation.quotation_date).toLocaleDateString();
-    const validUntil = quotation.valid_until ? new Date(quotation.valid_until).toLocaleDateString() : 'N/A';
+function generateQuotationPrintHTML(quotation, printType) {
+    const isThermal = printType === 'thermal';
+    const quotationDate = new Date(quotation.quotation_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    const validUntil = quotation.valid_until ? new Date(quotation.valid_until).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A';
+    const generatedTime = new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+    
+    const companyName = quotation.company_name || 'PharmaSight';
+    const companyAddress = quotation.company_address || '';
+    const branchName = quotation.branch_name || '';
+    const branchAddress = quotation.branch_address || '';
+    const branchPhone = quotation.branch_phone || '';
+    const createdByUser = quotation.created_by_username || '';
+    const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
+    
+    const hasMargin = quotation.items && quotation.items.some(item => item.margin_percent != null);
     const itemsHTML = quotation.items && quotation.items.length > 0 
         ? quotation.items.map(item => {
-            const itemName = item.item_name || item.item?.name || 'Item';
+            const itemName = item.item_name || item.item?.name || '';
             const itemCode = item.item_code || item.item?.sku || '';
+            const marginCell = hasMargin 
+                ? `<td style="text-align: right;">${item.margin_percent != null ? (parseFloat(item.margin_percent).toFixed(1) + '%') : '—'}</td>` 
+                : '';
             return `
                 <tr>
-                    <td>${escapeHtml(itemName)} ${itemCode ? `(${escapeHtml(itemCode)})` : ''}</td>
+                    <td>${escapeHtml(itemName)}${itemCode ? ' (' + escapeHtml(itemCode) + ')' : ''}</td>
                     <td style="text-align: right;">${parseFloat(item.quantity).toFixed(4)} ${escapeHtml(item.unit_name)}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
+                    ${marginCell}
                     <td style="text-align: right;">${formatCurrency(item.vat_amount || 0)}</td>
                     <td style="text-align: right;">${formatCurrency(item.line_total_inclusive || 0)}</td>
                 </tr>
             `;
         }).join('')
-        : '<tr><td colspan="5" style="text-align: center;">No items</td></tr>';
+        : '<tr><td colspan="' + (hasMargin ? 6 : 5) + '" style="text-align: center;">No items</td></tr>';
+    
+    const marginHeader = hasMargin ? '<th style="text-align: right;">Margin</th>' : '';
+    const colSpanTotal = hasMargin ? 5 : 4;
+    
+    const pageStyle = isThermal 
+        ? `@page { size: 80mm auto; margin: 0; }
+           body { font-size: 10px; max-width: 72mm; padding: 8px; margin: 0 auto; }
+           .header, .footer { font-size: 9px; }
+           th, td { padding: 4px; }`
+        : `@page { size: A4; margin: 1cm; }
+           body { font-size: 12px; max-width: 210mm; padding: 20px; margin: 0 auto; }
+           th, td { padding: 8px; }`;
     
     return `
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Quotation ${quotation.quotation_no}</title>
+    <title>Quotation ${escapeHtml(quotation.quotation_no)}</title>
     <style>
-        @media print {
-            @page { size: A4; margin: 1cm; }
-        }
-        body {
-            font-family: Arial, sans-serif;
-            font-size: 12px;
-            max-width: 210mm;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .header {
-            text-align: center;
-            border-bottom: 2px solid #000;
-            padding-bottom: 10px;
-            margin-bottom: 20px;
-        }
-        .quotation-info {
-            margin: 15px 0;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 15px 0;
-        }
-        th, td {
-            padding: 8px;
-            border-bottom: 1px solid #ddd;
-            text-align: left;
-        }
-        th {
-            background: #f0f0f0;
-            font-weight: bold;
-        }
-        .total {
-            font-weight: bold;
-            font-size: 14px;
-            border-top: 2px solid #000;
-            padding-top: 8px;
-        }
-        .footer {
-            margin-top: 30px;
-            text-align: center;
-            font-size: 10px;
-            border-top: 1px solid #ddd;
-            padding-top: 15px;
-        }
+        @media print { ${pageStyle} }
+        body { font-family: Arial, sans-serif; }
+        .header { border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 15px; }
+        .company-name { font-size: 1.25em; font-weight: bold; margin-bottom: 4px; }
+        .company-details { font-size: 0.9em; color: #333; line-height: 1.4; }
+        .quotation-info { margin: 12px 0; }
+        table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+        th, td { border-bottom: 1px solid #ddd; text-align: left; }
+        th { background: #f0f0f0; font-weight: bold; }
+        .total { font-weight: bold; border-top: 2px solid #000; padding-top: 8px; }
+        .footer { margin-top: 20px; text-align: center; font-size: 0.85em; border-top: 1px solid #ddd; padding-top: 12px; color: #555; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h2>PharmaSight</h2>
-        <p>Sales Quotation</p>
+        <div class="company-name">${escapeHtml(companyName)}</div>
+        ${companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
+        ${branchName ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName)}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : ''}
+        ${createdByUser ? `<div class="company-details"><strong>Prepared by:</strong> ${escapeHtml(createdByUser)}</div>` : ''}
+        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
     </div>
     
     <div class="quotation-info">
-        <p><strong>Quotation #:</strong> ${escapeHtml(quotation.quotation_no)}</p>
-        <p><strong>Date:</strong> ${quotationDate}</p>
-        <p><strong>Valid Until:</strong> ${validUntil}</p>
+        <p><strong>Quotation #:</strong> ${escapeHtml(quotation.quotation_no)} &nbsp; <strong>Date:</strong> ${quotationDate} &nbsp; <strong>Valid Until:</strong> ${validUntil}</p>
         ${quotation.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(quotation.customer_name)}</p>` : ''}
-        <p><strong>Status:</strong> ${quotation.status || 'draft'}</p>
+        <p><strong>Status:</strong> ${(quotation.status || 'draft')}</p>
     </div>
     
     <table>
@@ -2591,7 +2609,8 @@ function generateQuotationPrintHTML(quotation) {
             <tr>
                 <th>Item</th>
                 <th style="text-align: right;">Qty</th>
-                <th style="text-align: right;">Price</th>
+                <th style="text-align: right;">Price/Unit</th>
+                ${marginHeader}
                 <th style="text-align: right;">VAT</th>
                 <th style="text-align: right;">Total</th>
             </tr>
@@ -2601,15 +2620,15 @@ function generateQuotationPrintHTML(quotation) {
         </tbody>
         <tfoot>
             <tr>
-                <td colspan="4" class="total">Total:</td>
+                <td colspan="${colSpanTotal}" class="total">Total:</td>
                 <td class="total" style="text-align: right;">${formatCurrency(quotation.total_inclusive || 0)}</td>
             </tr>
         </tfoot>
     </table>
     
     <div class="footer">
-        <p>This is a quotation and does not affect inventory.</p>
-        <p>Generated: ${new Date().toLocaleString()}</p>
+        ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
+        <p>Generated: ${generatedTime}</p>
     </div>
 </body>
 </html>

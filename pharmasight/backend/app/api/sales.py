@@ -4,9 +4,11 @@ Sales API routes (KRA Compliant)
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
+from datetime import date
+from fastapi import Query
 from app.dependencies import get_tenant_db
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
@@ -94,9 +96,14 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
             )
         
         # Get recommended price if not provided
-        # Use appropriate tier based on sales_type
+        # Use appropriate tier based on sales_type (wholesale / retail / supplier; supplier falls back to wholesale if not set)
         sales_type = getattr(invoice, 'sales_type', 'RETAIL') or 'RETAIL'
-        pricing_tier = 'wholesale' if sales_type == 'WHOLESALE' else 'retail'
+        if sales_type == 'WHOLESALE':
+            pricing_tier = 'wholesale'
+        elif sales_type == 'SUPPLIER':
+            pricing_tier = 'supplier'
+        else:
+            pricing_tier = 'retail'
         
         unit_price = item_data.unit_price_exclusive
         unit_cost_used = None
@@ -106,6 +113,12 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
                 db, item_data.item_id, invoice.branch_id,
                 invoice.company_id, item_data.unit_name, tier=pricing_tier
             )
+            # Supplier tier: if no supplier price/unit, fall back to wholesale
+            if not price_info and pricing_tier == 'supplier':
+                price_info = PricingService.calculate_recommended_price(
+                    db, item_data.item_id, invoice.branch_id,
+                    invoice.company_id, item_data.unit_name, tier='wholesale'
+                )
             if price_info:
                 unit_price = price_info["recommended_unit_price"]
                 unit_cost_used = price_info["unit_cost_used"]
@@ -234,6 +247,34 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
                 invoice_item.item_code = invoice_item.item.sku or ''
     
     return invoice
+
+
+@router.get("/branch/{branch_id}/today-summary", response_model=dict)
+def get_branch_today_summary(
+    branch_id: UUID,
+    user_id: Optional[UUID] = Query(None, description="Filter by user (batched_by) for per-user sales today"),
+    db: Session = Depends(get_tenant_db),
+):
+    """Get total sales for today for the branch. If user_id is provided, only sales batched by that user today."""
+    today = date.today()
+    q = db.query(
+        func.coalesce(func.sum(SalesInvoice.total_inclusive), 0).label("total_inclusive"),
+        func.coalesce(func.sum(SalesInvoice.total_exclusive), 0).label("total_exclusive"),
+    ).filter(
+        SalesInvoice.branch_id == branch_id,
+        SalesInvoice.status.in_(["BATCHED", "PAID"]),
+        func.date(func.coalesce(SalesInvoice.batched_at, SalesInvoice.created_at)) == today,
+    )
+    if user_id is not None:
+        q = q.filter(SalesInvoice.batched_by == user_id)
+
+    row = q.first()
+    total_inclusive = row.total_inclusive if row else Decimal("0")
+    total_exclusive = row.total_exclusive if row else Decimal("0")
+    return {
+        "total_inclusive": str(total_inclusive),
+        "total_exclusive": str(total_exclusive),
+    }
 
 
 @router.get("/branch/{branch_id}/invoices", response_model=List[SalesInvoiceResponse])

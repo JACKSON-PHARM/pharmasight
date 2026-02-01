@@ -1,10 +1,9 @@
 """
-Items service – 3-tier UNIT system.
+Items service – 3-tier UNIT system (base = wholesale).
 
-Supplier unit: what we buy (packet, box, bottle).
-Wholesale unit: what pharmacies buy.
-Retail unit: what customers buy (tablet, capsule, ml, gram).
-Stock tracked in retail units. Display: "5 packets + 25 tablets".
+Base/reference = wholesale unit (1 per item). Stock in base = wholesale qty.
+- Retail: 1 wholesale = pack_size retail. retail_qty = wholesale_qty * pack_size.
+- Supplier: 1 supplier = wholesale_units_per_supplier wholesale. supplier_qty = wholesale_qty / N.
 """
 from __future__ import annotations
 
@@ -19,6 +18,30 @@ from app.models import Item, ItemUnit
 from app.schemas.item import ItemCreate, ItemUpdate
 
 logger = logging.getLogger(__name__)
+
+
+def _is_numeric_unit_value(value) -> bool:
+    """Return True if value looks like a number (e.g. price mistaken for unit name)."""
+    if value is None:
+        return False
+    s = (str(value).strip() if value else "").strip()
+    if not s:
+        return False
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _sanitize_base_unit(value, fallback: str) -> str:
+    """Ensure base_unit is a label (bottle, piece, etc.), not a number."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return (fallback or "piece").lower()
+    s = str(value).strip()
+    if _is_numeric_unit_value(s):
+        return (fallback or "piece").lower()
+    return s.lower()
 
 
 def _generate_sku(company_id: UUID, db: Session) -> str:
@@ -43,40 +66,43 @@ def _generate_sku(company_id: UUID, db: Session) -> str:
 
 
 def _ensure_units_from_3tier(db: Session, item: Item, data: ItemCreate) -> None:
-    """Create item_units from 3-tier when `units` list is empty."""
+    """Create item_units from 3-tier when `units` list is empty. Base = wholesale (multiplier 1)."""
     if data.units:
         return
+    wups = max(Decimal("0.0001"), Decimal(str(getattr(data, "wholesale_units_per_supplier", 1) or 1)))
+    pack = max(1, data.pack_size)
     existing = {}
-    if data.retail_unit not in existing:
+    # Wholesale = base (1 per item)
+    if data.wholesale_unit not in existing:
         u = ItemUnit(
             item_id=item.id,
-            unit_name=data.retail_unit,
+            unit_name=data.wholesale_unit,
             multiplier_to_base=Decimal("1"),
             is_default=True,
         )
         db.add(u)
+        existing[data.wholesale_unit] = u
+    # Retail: 1 retail = 1/pack_size base (wholesale)
+    if data.retail_unit not in existing and pack >= 1:
+        mult = Decimal("1") / Decimal(str(pack))
+        u = ItemUnit(
+            item_id=item.id,
+            unit_name=data.retail_unit,
+            multiplier_to_base=mult,
+            is_default=False,
+        )
+        db.add(u)
         existing[data.retail_unit] = u
-    # Supplier unit: 1 supplier unit = pack_size retail units
-    if data.supplier_unit not in existing and data.pack_size >= 1:
-        mult = Decimal(str(data.pack_size))
+    # Supplier: 1 supplier = wholesale_units_per_supplier base (wholesale)
+    if data.supplier_unit not in existing and wups > 0:
         u = ItemUnit(
             item_id=item.id,
             unit_name=data.supplier_unit,
-            multiplier_to_base=mult,
+            multiplier_to_base=wups,
             is_default=False,
         )
         db.add(u)
         existing[data.supplier_unit] = u
-    # Wholesale unit: same as supplier if different
-    if data.wholesale_unit != data.supplier_unit and data.wholesale_unit not in existing and data.pack_size >= 1:
-        mult = Decimal(str(data.pack_size))
-        u = ItemUnit(
-            item_id=item.id,
-            unit_name=data.wholesale_unit,
-            multiplier_to_base=mult,
-            is_default=False,
-        )
-        db.add(u)
 
 
 def create_item(db: Session, data: ItemCreate) -> Item:
@@ -84,8 +110,7 @@ def create_item(db: Session, data: ItemCreate) -> Item:
     Create item with 3-tier units.
 
     - Validates pack_size >= 1 and breakable => pack_size > 1 (done in schema).
-    - Sets base_unit = retail_unit, default_cost = purchase_price_per_supplier_unit
-      for legacy compatibility.
+    - Sets base_unit = wholesale_unit (reference), default_cost = purchase_price_per_supplier_unit.
     - Builds item_units from 3-tier when `units` is empty.
     """
     if data.pack_size < 1:
@@ -104,7 +129,8 @@ def create_item(db: Session, data: ItemCreate) -> Item:
             sku = f"A{n:05d}"
         dump["sku"] = sku
 
-    dump["base_unit"] = dump.get("base_unit") or data.retail_unit
+    # Never persist a number as base_unit (e.g. price column mapped by mistake)
+    dump["base_unit"] = _sanitize_base_unit(dump.get("base_unit"), data.wholesale_unit or "piece")
     dump["default_cost"] = dump.get("default_cost")
     if dump["default_cost"] is None:
         dump["default_cost"] = data.purchase_price_per_supplier_unit
@@ -156,6 +182,16 @@ def update_item(db: Session, item_id: UUID, data: ItemUpdate) -> Item | None:
     if "can_break_bulk" in dump and "pack_size" in dump:
         if dump["can_break_bulk"] and dump["pack_size"] < 2:
             raise ValueError("Breakable items must have pack_size > 1")
+
+    # Never persist a number as unit names
+    if "base_unit" in dump:
+        dump["base_unit"] = _sanitize_base_unit(dump["base_unit"], item.wholesale_unit or "piece")
+    if "wholesale_unit" in dump:
+        dump["wholesale_unit"] = _sanitize_base_unit(dump["wholesale_unit"], "piece")
+    if "retail_unit" in dump:
+        dump["retail_unit"] = _sanitize_base_unit(dump["retail_unit"], "tablet")
+    if "supplier_unit" in dump:
+        dump["supplier_unit"] = _sanitize_base_unit(dump["supplier_unit"], "packet")
 
     for k, v in dump.items():
         setattr(item, k, v)

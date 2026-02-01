@@ -22,7 +22,6 @@ from app.schemas.item import (
     ItemsBulkCreate, ItemOverviewResponse
 )
 from app.services.pricing_service import PricingService
-from app.services.inventory_service import InventoryService
 from app.services.items_service import create_item as svc_create_item
 
 logger = logging.getLogger(__name__)
@@ -101,7 +100,7 @@ def search_items(
         else_=0
     )
     
-    # Build base query with relevance scoring
+    # Build base query with relevance scoring and 3-tier price columns (for dropdown without N+1)
     base_query = db.query(
         Item.id,
         Item.name,
@@ -113,6 +112,9 @@ def search_items(
         Item.vat_rate,
         Item.vat_code,
         Item.is_vatable,
+        Item.retail_price_per_retail_unit,
+        Item.wholesale_price_per_wholesale_unit,
+        Item.purchase_price_per_supplier_unit,
         relevance_score
     ).filter(
         Item.company_id == company_id,
@@ -159,6 +161,8 @@ def search_items(
     last_supplier_map = {}
     last_order_date_map = {}
     sale_price_map = {}
+    last_supply_date_map = {}
+    last_unit_cost_ledger_map = {}
     
     if include_pricing:
         # Get last purchase info - OPTIMIZED: Use window function for reliable results
@@ -278,53 +282,10 @@ def search_items(
                 for row in last_supplies
             }
         
-        # OPTIMIZED: Batch pricing calculation (if branch_id provided)
-        if branch_id:
-            for item in items:
-                try:
-                    price_info = PricingService.calculate_recommended_price(
-                        db=db,
-                        item_id=item.id,
-                        branch_id=branch_id,
-                        company_id=company_id,
-                        unit_name=item.base_unit
-                    )
-                    sale_price_map[item.id] = float(price_info["recommended_unit_price"]) if price_info and price_info.get("recommended_unit_price") else 0.0
-                except Exception as e:
-                    logger.warning(f"Could not calculate price for item {item.id}: {e}")
-                    sale_price_map[item.id] = 0.0
-    
-    # Get 3-tier pricing for all items in batch
-    tier_pricing_map = {}
-    if include_pricing:
+        # Use 3-tier prices from item row for dropdown (no per-item PricingService calls)
         for item in items:
-            tier_pricing = PricingService.get_3tier_pricing(db, item.id)
-            if tier_pricing:
-                tier_pricing_map[item.id] = tier_pricing
-    
-    # Get stock availability with unit breakdown for all items (if branch_id provided)
-    stock_availability_map = {}
-    if branch_id:
-        for item in items:
-            try:
-                availability = InventoryService.get_stock_availability(db, item.id, branch_id)
-                if availability:
-                    stock_availability_map[item.id] = {
-                        "total_base_units": availability.total_base_units,
-                        "base_unit": availability.base_unit,
-                        "unit_breakdown": [
-                            {
-                                "unit_name": ub.unit_name,
-                                "multiplier": ub.multiplier,
-                                "whole_units": ub.whole_units,
-                                "remainder_base_units": ub.remainder_base_units,
-                                "display": ub.display
-                            }
-                            for ub in availability.unit_breakdown
-                        ] if availability.unit_breakdown else []
-                    }
-            except Exception as e:
-                logger.warning(f"Could not get stock availability for item {item.id}: {e}")
+            retail = getattr(item, "retail_price_per_retail_unit", None)
+            sale_price_map[item.id] = float(retail) if retail is not None and retail else 0.0
     
     # Return response - includes stock, VAT info, and pricing
     # For purchase_order context, include additional fields from inventory_ledger
@@ -347,14 +308,6 @@ def search_items(
             "last_supplier": last_supplier_map.get(item.id, "") if include_pricing else "",
             "last_order_date": last_order_date_map.get(item.id, None) if include_pricing else None
         }
-        
-        # Add 3-tier pricing information
-        if include_pricing and item.id in tier_pricing_map:
-            item_data["pricing_3tier"] = tier_pricing_map[item.id]
-        
-        # Add stock availability with unit breakdown
-        if item.id in stock_availability_map:
-            item_data["stock_availability"] = stock_availability_map[item.id]
         
         # Add Purchase Order specific fields
         if context == 'purchase_order':
@@ -957,13 +910,21 @@ def get_recommended_price(
     branch_id: UUID,
     company_id: UUID,
     unit_name: str,
+    tier: Optional[str] = Query("retail", description="Pricing tier: retail, wholesale, or supplier"),
     db: Session = Depends(get_tenant_db)
 ):
-    """Get recommended selling price for item"""
+    """Get recommended selling price for item (tier: retail / wholesale / supplier)."""
     try:
+        tier_clean = (tier or "retail").lower()
+        if tier_clean not in ("retail", "wholesale", "supplier"):
+            tier_clean = "retail"
         price_info = PricingService.calculate_recommended_price(
-            db, item_id, branch_id, company_id, unit_name
+            db, item_id, branch_id, company_id, unit_name, tier=tier_clean
         )
+        if not price_info and tier_clean == "supplier":
+            price_info = PricingService.calculate_recommended_price(
+                db, item_id, branch_id, company_id, unit_name, tier="wholesale"
+            )
         if not price_info:
             raise HTTPException(status_code=404, detail="Item cost not available")
         return price_info

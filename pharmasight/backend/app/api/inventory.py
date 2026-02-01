@@ -133,6 +133,30 @@ def get_all_stock(branch_id: UUID, db: Session = Depends(get_tenant_db)):
     return stock_list
 
 
+@router.get("/branch/{branch_id}/items-in-stock-count", response_model=dict)
+def get_items_in_stock_count(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+    """Get count of distinct items that have stock > 0 at this branch (for dashboard)."""
+    from sqlalchemy import func
+    from app.models import InventoryLedger
+
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    company_item_ids = db.query(Item.id).filter(Item.company_id == branch.company_id)
+    subq = (
+        db.query(InventoryLedger.item_id)
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.item_id.in_(company_item_ids),
+        )
+        .group_by(InventoryLedger.item_id)
+        .having(func.sum(InventoryLedger.quantity_delta) > 0)
+    ).subquery()
+    count = db.query(func.count()).select_from(subq).scalar() or 0
+    return {"count": count}
+
+
 @router.get("/branch/{branch_id}/overview", response_model=List[dict])
 def get_all_stock_overview(branch_id: UUID, db: Session = Depends(get_tenant_db)):
     """
