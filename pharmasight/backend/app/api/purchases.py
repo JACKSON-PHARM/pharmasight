@@ -970,7 +970,9 @@ def get_purchase_order(order_id: UUID, db: Session = Depends(get_tenant_db)):
             order_item.item_name = order_item.item.name or ''
             order_item.item_category = order_item.item.category or ''
             order_item.base_unit = order_item.item.base_unit or ''
-            order_item.default_cost = float(order_item.item.default_cost) if order_item.item.default_cost else 0.0
+            # Cost from inventory_ledger only (never from items table)
+            from app.services.canonical_pricing import CanonicalPricingService
+            order_item.default_cost = float(CanonicalPricingService.get_best_available_cost(db, order_item.item_id, order.branch_id, order.company_id)) if order.branch_id else 0.0
     
     return order
 

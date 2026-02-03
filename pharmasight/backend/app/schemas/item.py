@@ -40,30 +40,27 @@ class ItemUnitResponse(ItemUnitBase):
 
 
 class ItemBase(BaseModel):
-    """Item base schema with 3-tier UNIT system"""
+    """Item base schema with 3-tier UNIT system. Cost/price from inventory_ledger only."""
     name: str = Field(..., min_length=1, max_length=255)
-    generic_name: Optional[str] = None
-    sku: Optional[str] = None
+    description: Optional[str] = Field(None, description="Item description")
+    sku: Optional[str] = Field(None, description="Item code (SKU)")
     barcode: Optional[str] = None
     category: Optional[str] = None
-    base_unit: Optional[str] = Field(None, description="Legacy: base unit; default = retail_unit")
-    default_cost: float = Field(default=0, ge=0)
-    # 3-TIER UNIT SYSTEM
-    supplier_unit: str = Field(default="packet", description="What we buy: packet, box, bottle")
-    wholesale_unit: str = Field(default="packet", description="What pharmacies buy")
-    retail_unit: str = Field(default="tablet", description="What customers buy: tablet, capsule, ml, gram")
-    pack_size: int = Field(default=1, ge=1, description="Retail per 1 wholesale (1 wholesale = pack_size retail)")
-    wholesale_units_per_supplier: float = Field(default=1, ge=0.0001, description="Wholesale per 1 supplier (1 supplier = N wholesale); default 1")
-    can_break_bulk: bool = Field(default=False, description="Can we sell individual retail units? (requires pack_size > 1)")
-    purchase_price_per_supplier_unit: float = Field(default=0, ge=0, description="Cost per supplier unit")
-    wholesale_price_per_wholesale_unit: float = Field(default=0, ge=0, description="Sell price per wholesale unit")
-    retail_price_per_retail_unit: float = Field(default=0, ge=0, description="Sell price per retail unit")
+    base_unit: Optional[str] = Field(None, description="Legacy: base unit = wholesale_unit")
+    # 3-tier units
+    supplier_unit: str = Field(default="packet", description="Supplier unit name")
+    wholesale_unit: str = Field(default="packet", description="Wholesale unit name (base)")
+    retail_unit: str = Field(default="tablet", description="Retail unit name")
+    pack_size: int = Field(default=1, ge=1, description="Wholesale-to-retail: 1 wholesale = pack_size retail")
+    wholesale_units_per_supplier: float = Field(default=1, ge=0.0001, description="Wholesale-to-supplier: 1 supplier = N wholesale")
+    can_break_bulk: bool = Field(default=False, description="Can sell individual retail units? (requires pack_size > 1)")
     # VAT
     vat_category: str = Field(default="ZERO_RATED", description="ZERO_RATED | STANDARD_RATED")
     vat_rate: float = Field(default=0, ge=0, le=100, description="0 or 16")
-    price_includes_vat: bool = Field(default=False, description="Is price inclusive of VAT?")
-    is_vatable: Optional[bool] = Field(default=True, description="Is this item VATable?")
-    vat_code: Optional[str] = Field(default=None, description="ZERO_RATED | STANDARD | EXEMPT")
+    # Tracking flags
+    track_expiry: bool = Field(default=False, description="Whether item requires expiry date tracking")
+    is_controlled: bool = Field(default=False, description="Whether item is a controlled substance")
+    is_cold_chain: bool = Field(default=False, description="Whether item requires cold chain storage")
 
 
 class ItemCreate(ItemBase):
@@ -87,16 +84,12 @@ class ItemsBulkCreate(BaseModel):
 class ItemUpdate(BaseModel):
     """Update item request"""
     name: Optional[str] = None
-    generic_name: Optional[str] = None
+    description: Optional[str] = None
     sku: Optional[str] = None
     barcode: Optional[str] = None
     category: Optional[str] = None
     base_unit: Optional[str] = None
-    default_cost: Optional[float] = Field(None, ge=0)
-    is_vatable: Optional[bool] = None
     vat_rate: Optional[float] = Field(None, ge=0, le=100)
-    vat_code: Optional[str] = None
-    price_includes_vat: Optional[bool] = None
     vat_category: Optional[str] = None
     is_active: Optional[bool] = None
     supplier_unit: Optional[str] = None
@@ -105,9 +98,9 @@ class ItemUpdate(BaseModel):
     pack_size: Optional[int] = Field(None, ge=1)
     wholesale_units_per_supplier: Optional[float] = Field(None, ge=0.0001)
     can_break_bulk: Optional[bool] = None
-    purchase_price_per_supplier_unit: Optional[float] = Field(None, ge=0)
-    wholesale_price_per_wholesale_unit: Optional[float] = Field(None, ge=0)
-    retail_price_per_retail_unit: Optional[float] = Field(None, ge=0)
+    track_expiry: Optional[bool] = None
+    is_controlled: Optional[bool] = None
+    is_cold_chain: Optional[bool] = None
     units: Optional[List[ItemUnitUpdate]] = Field(None, description="Unit conversions (optional, only if modifying units)")
 
 
@@ -123,15 +116,16 @@ def _is_numeric_unit_value(value) -> bool:
 
 
 class ItemResponse(ItemBase):
-    """Item response with 3-tier unit fields"""
+    """Item response with 3-tier unit fields. Cost from API (inventory_ledger) only."""
     id: UUID
     company_id: UUID
     is_active: bool
     created_at: datetime
     updated_at: datetime
     units: List[ItemUnitResponse] = []
-    requires_batch_tracking: Optional[bool] = None
-    requires_expiry_tracking: Optional[bool] = None
+    default_cost: Optional[float] = Field(None, description="Cost per wholesale unit from ledger (API only)")
+    default_cost_per_base: Optional[float] = Field(None, description="Fallback cost per base unit when no ledger data")
+    default_supplier_id: Optional[UUID] = Field(None, description="Fallback supplier ID when no purchase history")
 
     @model_validator(mode="after")
     def coerce_numeric_base_unit_for_display(self):
@@ -182,10 +176,10 @@ class ItemPricingResponse(ItemPricingBase):
 
 
 class CompanyPricingDefaultBase(BaseModel):
-    """Company pricing defaults base schema"""
+    """Company pricing defaults base schema (recommended markup 30%, minimum margin 15%)"""
     default_markup_percent: float = Field(default=30.00, ge=0)
     rounding_rule: str = Field(default="nearest_1")
-    min_margin_percent: float = Field(default=0, ge=0)
+    min_margin_percent: float = Field(default=15.00, ge=0)
 
 
 class CompanyPricingDefaultCreate(CompanyPricingDefaultBase):

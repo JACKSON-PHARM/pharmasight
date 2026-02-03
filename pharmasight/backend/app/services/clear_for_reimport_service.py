@@ -7,7 +7,8 @@ Used by:
 
 Deletes (in FK-safe order): import jobs, inventory ledger, stock take data,
 order book, GRNs, purchase invoices/orders, payments, credit notes, sales
-invoices, quotations, items (and item_units, item_pricing), suppliers.
+invoices, quotations, items (and item_pricing), suppliers. item_units is
+deprecated and left intact (no reads/writes).
 
 Does NOT delete: companies, branches, users, tenants, settings, document
 sequences.
@@ -48,7 +49,7 @@ DELETIONS = [
     ("purchase_invoices", "company_id = :company_id"),
     ("purchase_order_items", "purchase_order_id IN (SELECT id FROM purchase_orders WHERE company_id = :company_id)"),
     ("purchase_orders", "company_id = :company_id"),
-    ("item_units", "item_id IN (SELECT id FROM items WHERE company_id = :company_id)"),
+    # item_units deprecated: no explicit deletes; table left intact
     ("item_pricing", "item_id IN (SELECT id FROM items WHERE company_id = :company_id)"),
     ("items", "company_id = :company_id"),
     ("suppliers", "company_id = :company_id"),

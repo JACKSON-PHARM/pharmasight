@@ -1006,18 +1006,18 @@ async function selectItemForCounting(itemId) {
                     </div>
                     
                     <!-- Batch and Expiry (if required) -->
-                    ${item.requires_batch_tracking || item.requires_expiry_tracking ? `
-                    <div style="display: grid; grid-template-columns: ${item.requires_batch_tracking && item.requires_expiry_tracking ? '1fr 1fr' : '1fr'}; gap: 1rem; margin-bottom: 1rem;">
-                        ${item.requires_batch_tracking ? `
+                    ${item.is_controlled || item.track_expiry ? `
+                    <div style="display: grid; grid-template-columns: ${item.is_controlled && item.track_expiry ? '1fr 1fr' : '1fr'}; gap: 1rem; margin-bottom: 1rem;">
+                        ${item.is_controlled ? `
                         <div>
-                            <label>Batch Number ${item.requires_batch_tracking ? '<span style="color: var(--danger-color);">*</span>' : ''}</label>
-                            <input type="text" id="batchNumber" class="form-input" placeholder="Enter batch number" ${item.requires_batch_tracking ? 'required' : ''}>
+                            <label>Batch Number ${item.is_controlled ? '<span style="color: var(--danger-color);">*</span>' : ''}</label>
+                            <input type="text" id="batchNumber" class="form-input" placeholder="Enter batch number" ${item.is_controlled ? 'required' : ''}>
                         </div>
                         ` : ''}
-                        ${item.requires_expiry_tracking ? `
+                        ${item.track_expiry ? `
                         <div>
-                            <label>Expiry Date ${item.requires_expiry_tracking ? '<span style="color: var(--danger-color);">*</span>' : ''}</label>
-                            <input type="date" id="expiryDate" class="form-input" ${item.requires_expiry_tracking ? 'required' : ''}>
+                            <label>Expiry Date ${item.track_expiry ? '<span style="color: var(--danger-color);">*</span>' : ''}</label>
+                            <input type="date" id="expiryDate" class="form-input" ${item.track_expiry ? 'required' : ''}>
                         </div>
                         ` : ''}
                     </div>
@@ -1337,13 +1337,13 @@ async function saveCount(itemId) {
         const batchNumber = document.getElementById('batchNumber')?.value.trim() || null;
         const expiryDate = document.getElementById('expiryDate')?.value || null;
         
-        if (item.requires_batch_tracking && !batchNumber) {
+        if (item.is_controlled && !batchNumber) {
             alert('Batch number is required for this item. Please enter a batch number.');
             document.getElementById('batchNumber')?.focus();
             return;
         }
         
-        if (item.requires_expiry_tracking && !expiryDate) {
+        if (item.track_expiry && !expiryDate) {
             alert('Expiry date is required for this item. Please select an expiry date.');
             document.getElementById('expiryDate')?.focus();
             return;

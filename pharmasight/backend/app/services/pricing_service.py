@@ -54,12 +54,12 @@ class PricingService:
         if last_purchase:
             return Decimal(str(last_purchase.unit_cost))
         
-        # Fallback to item default cost
+        # No fallback to items table — cost from ledger only (CanonicalPricingService)
+        from app.services.canonical_pricing import CanonicalPricingService
         item = db.query(Item).filter(Item.id == item_id).first()
-        if item and item.default_cost:
-            return Decimal(str(item.default_cost))
-        
-        return None
+        if not item:
+            return None
+        return CanonicalPricingService.get_best_available_cost(db, item_id, branch_id, item.company_id)
 
     @staticmethod
     def get_markup_percent(
@@ -353,43 +353,19 @@ class PricingService:
         item_id: UUID
     ) -> Optional[Dict]:
         """
-        Get 3-tier pricing for an item (from Item model, not ItemPricing)
+        DEPRECATED: 3-tier pricing from items table is no longer supported.
+        
+        Prices must come from:
+        - Cost: inventory_ledger (use CanonicalPricingService)
+        - Sale price: external configuration (markup, price list, etc.)
         
         Returns:
-            Dict with:
-            - supplier_price: {price, unit}
-            - wholesale_price: {price, unit}
-            - retail_price: {price, unit}
+            None (deprecated functionality)
         """
-        item = db.query(Item).filter(Item.id == item_id).first()
-        
-        if not item:
-            return None
-        
-        result = {}
-        
-        # Tier 1: Supplier Price (from Item model)
-        if hasattr(item, 'purchase_price_per_supplier_unit') and item.purchase_price_per_supplier_unit:
-            result["supplier_price"] = {
-                "price": float(item.purchase_price_per_supplier_unit),
-                "unit": getattr(item, 'supplier_unit', None) or "piece"
-            }
-        
-        # Tier 2: Wholesale Price (from Item model)
-        if hasattr(item, 'wholesale_price_per_wholesale_unit') and item.wholesale_price_per_wholesale_unit:
-            result["wholesale_price"] = {
-                "price": float(item.wholesale_price_per_wholesale_unit),
-                "unit": getattr(item, 'wholesale_unit', None) or "piece"
-            }
-        
-        # Tier 3: Retail Price (from Item model)
-        if hasattr(item, 'retail_price_per_retail_unit') and item.retail_price_per_retail_unit:
-            result["retail_price"] = {
-                "price": float(item.retail_price_per_retail_unit),
-                "unit": getattr(item, 'retail_unit', None) or item.base_unit or "piece"
-            }
-        
-        return result if result else None
+        # DEPRECATED: Do not read prices from items table
+        # Cost must come from inventory_ledger
+        # Sale prices must be configured separately
+        return None
 
     @staticmethod
     def get_price_for_tier(
@@ -414,54 +390,7 @@ class PricingService:
         if not item:
             return None
         
-        tier = tier.lower()
-        price_data = None
-        
-        # Get price from Item model (not ItemPricing)
-        if tier == "supplier" and hasattr(item, 'purchase_price_per_supplier_unit') and item.purchase_price_per_supplier_unit:
-            price_data = {
-                "price": float(item.purchase_price_per_supplier_unit),
-                "unit": getattr(item, 'supplier_unit', None) or "piece"
-            }
-        elif tier == "wholesale" and hasattr(item, 'wholesale_price_per_wholesale_unit') and item.wholesale_price_per_wholesale_unit:
-            price_data = {
-                "price": float(item.wholesale_price_per_wholesale_unit),
-                "unit": getattr(item, 'wholesale_unit', None) or "piece"
-            }
-        elif tier == "retail" and hasattr(item, 'retail_price_per_retail_unit') and item.retail_price_per_retail_unit:
-            price_data = {
-                "price": float(item.retail_price_per_retail_unit),
-                "unit": getattr(item, 'retail_unit', None) or item.base_unit or "piece"
-            }
-        
-        if not price_data:
-            return None
-        
-        # If unit_name is provided and different, convert the price
-        if unit_name and unit_name != price_data["unit"]:
-            # Get item units for conversion
-            item = db.query(Item).filter(Item.id == item_id).first()
-            if item:
-                source_unit = db.query(ItemUnit).filter(
-                    and_(
-                        ItemUnit.item_id == item_id,
-                        ItemUnit.unit_name == price_data["unit"]
-                    )
-                ).first()
-                
-                target_unit = db.query(ItemUnit).filter(
-                    and_(
-                        ItemUnit.item_id == item_id,
-                        ItemUnit.unit_name == unit_name
-                    )
-                ).first()
-                
-                if source_unit and target_unit:
-                    # Convert: price_per_target_unit = price_per_source_unit * (source_multiplier / target_multiplier)
-                    source_mult = Decimal(str(source_unit.multiplier_to_base))
-                    target_mult = Decimal(str(target_unit.multiplier_to_base))
-                    converted_price = Decimal(str(price_data["price"])) * (source_mult / target_mult)
-                    price_data["converted_price"] = float(converted_price)
-                    price_data["converted_unit"] = unit_name
-        
-        return price_data
+        # DEPRECATED: Do not read prices from items table
+        # Cost must come from inventory_ledger (use CanonicalPricingService)
+        # Sale prices must be configured separately
+        return None

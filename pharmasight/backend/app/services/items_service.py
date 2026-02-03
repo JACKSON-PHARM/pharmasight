@@ -110,7 +110,7 @@ def create_item(db: Session, data: ItemCreate) -> Item:
     Create item with 3-tier units.
 
     - Validates pack_size >= 1 and breakable => pack_size > 1 (done in schema).
-    - Sets base_unit = wholesale_unit (reference), default_cost = purchase_price_per_supplier_unit.
+    - Sets base_unit = wholesale_unit (reference). Cost/price from inventory_ledger only — do not set default_cost or price fields.
     - Builds item_units from 3-tier when `units` is empty.
     """
     if data.pack_size < 1:
@@ -131,11 +131,9 @@ def create_item(db: Session, data: ItemCreate) -> Item:
 
     # Never persist a number as base_unit (e.g. price column mapped by mistake)
     dump["base_unit"] = _sanitize_base_unit(dump.get("base_unit"), data.wholesale_unit or "piece")
-    dump["default_cost"] = dump.get("default_cost")
-    if dump["default_cost"] is None:
-        dump["default_cost"] = data.purchase_price_per_supplier_unit
-    if data.vat_category:
-        dump["vat_code"] = dump.get("vat_code") or data.vat_category
+    # Do not persist deprecated price fields — cost from inventory_ledger only
+    for key in ("default_cost", "purchase_price_per_supplier_unit", "wholesale_price_per_wholesale_unit", "retail_price_per_retail_unit"):
+        dump.pop(key, None)
 
     db_item = Item(**dump)
     db.add(db_item)

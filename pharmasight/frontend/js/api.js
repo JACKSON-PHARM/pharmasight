@@ -186,7 +186,10 @@ const API = {
             return api.get(`${CONFIG.API_ENDPOINTS.items}/company/${companyId}/overview${query ? '?' + query : ''}`);
         },
         count: (companyId) => api.get(`${CONFIG.API_ENDPOINTS.items}/company/${companyId}/count`),
-        get: (itemId) => api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}`),
+        get: (itemId, branchId = null) => {
+            const params = branchId ? { branch_id: branchId } : {};
+            return api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, params);
+        },
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/`, data),
         bulkCreate: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/bulk`, data, { timeout: 300000 }), // 5 minute timeout for bulk
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),
@@ -331,7 +334,7 @@ const API = {
     // Excel Import (supports Vyper-style column mapping)
     excel: {
         getExpectedFields: () => api.get('/api/excel/expected-fields'),
-        import: (file, companyId, branchId, userId, forceMode = null, columnMapping = null) => {
+        import: (file, companyId, branchId, userId, forceMode = null, columnMapping = null, sync = true) => {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('company_id', companyId);
@@ -343,13 +346,16 @@ const API = {
             if (columnMapping && typeof columnMapping === 'object' && Object.keys(columnMapping).length > 0) {
                 formData.append('column_mapping', JSON.stringify(columnMapping));
             }
-            // For FormData, don't set Content-Type - browser will set it with boundary
-            // Short timeout - job starts immediately, progress tracked separately
+            if (sync) {
+                formData.append('sync', '1');
+            }
+            // sync=1: long timeout (import runs in request; 90 min for large sheets). sync=0: short timeout (job starts, poll progress).
+            const timeoutMs = sync ? 90 * 60 * 1000 : 30000; // 90 min sync, 30 s async
             return api.request('/api/excel/import', {
                 method: 'POST',
                 body: formData,
-                headers: {}, // Let browser set Content-Type for FormData
-                timeout: 30000 // 30 seconds to start job
+                headers: {},
+                timeout: timeoutMs
             });
         },
         getProgress: (jobId) => api.get(`/api/excel/import/${jobId}/progress`),

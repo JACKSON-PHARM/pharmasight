@@ -178,12 +178,12 @@ class StartupService:
         )
         db.add(user_branch_role)
 
-        # Step 7: Initialize pricing defaults
+        # Step 7: Initialize pricing defaults (recommended markup 30%, minimum margin 15%)
         pricing_defaults = CompanyPricingDefault(
             company_id=company.id,
             default_markup_percent=Decimal('30.00'),
             rounding_rule='nearest_1',
-            min_margin_percent=Decimal('0')
+            min_margin_percent=Decimal('15.00')
         )
         db.add(pricing_defaults)
 

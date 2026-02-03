@@ -17,41 +17,35 @@ class Item(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
-    generic_name = Column(String(255))
-    sku = Column(String(100))
+    description = Column(String(255))  # Item description (was generic_name)
+    sku = Column(String(100))  # Item code
     barcode = Column(String(100))
     category = Column(String(100))
     base_unit = Column(String(50), nullable=False)  # = wholesale_unit (reference unit; stock in base = wholesale qty)
-    default_cost = Column(Numeric(20, 4), default=0)
-    # VAT Classification (Kenya Pharmacy Context)
-    is_vatable = Column(Boolean, default=True)
-    vat_rate = Column(Numeric(5, 2), default=0)  # 0 for zero-rated, 16 for standard-rated
-    vat_code = Column(String(50))  # ZERO_RATED | STANDARD | EXEMPT
-    price_includes_vat = Column(Boolean, default=False)
+    # VAT: vat_category + vat_rate only
     vat_category = Column(String(20), default="ZERO_RATED")  # ZERO_RATED | STANDARD_RATED
+    vat_rate = Column(Numeric(5, 2), default=0)  # 0 for zero-rated, 16 for standard-rated
     is_active = Column(Boolean, default=True)
-    # 3-TIER UNIT SYSTEM (base = wholesale)
-    # base_unit = wholesale unit (reference, 1 per item). Stock is stored in base = wholesale.
-    # pack_size = conversion to retail: 1 wholesale = pack_size retail (tablets/pieces). retail_qty = wholesale_qty * pack_size.
-    # wholesale_units_per_supplier = conversion to supplier: 1 supplier = N wholesale. supplier_qty = wholesale_qty / N.
-    supplier_unit = Column(String(50), default="piece")   # What we buy: carton, box
-    wholesale_unit = Column(String(50), default="piece")  # Base/reference: box, bottle (1 per item)
-    retail_unit = Column(String(50), default="piece")     # Smallest: tablet, capsule, ml
-    pack_size = Column(Integer, nullable=False, default=1)  # Retail per 1 wholesale (1 wholesale = pack_size retail)
-    wholesale_units_per_supplier = Column(Numeric(20, 4), nullable=False, default=1)  # Wholesale per 1 supplier (1 supplier = N wholesale)
-    can_break_bulk = Column(Boolean, nullable=False, default=True)  # Can sell individual retail units?
-    # PRICING WITH CLEAR UNIT ATTRIBUTION (on items)
-    purchase_price_per_supplier_unit = Column(Numeric(15, 2), default=0)   # Cost per supplier unit
-    wholesale_price_per_wholesale_unit = Column(Numeric(15, 2), default=0) # Sell per wholesale unit
-    retail_price_per_retail_unit = Column(Numeric(15, 2), default=0)       # Sell per retail unit
-    # Batch and expiry tracking
-    requires_batch_tracking = Column(Boolean, default=False)  # Whether item requires batch tracking
-    requires_expiry_tracking = Column(Boolean, default=False)  # Whether item requires expiry date tracking
+    # 3-tier units: supplier / wholesale / retail + conversion rates
+    supplier_unit = Column(String(50), default="piece")
+    wholesale_unit = Column(String(50), default="piece")  # Base/reference unit
+    retail_unit = Column(String(50), default="piece")
+    pack_size = Column(Integer, nullable=False, default=1)  # Wholesale-to-retail: 1 wholesale = pack_size retail
+    wholesale_units_per_supplier = Column(Numeric(20, 4), nullable=False, default=1)  # Wholesale-to-supplier: 1 supplier = N wholesale
+    can_break_bulk = Column(Boolean, nullable=False, default=True)
+    # Tracking flags
+    track_expiry = Column(Boolean, default=False)  # Whether item requires expiry date tracking
+    is_controlled = Column(Boolean, default=False)  # Whether item is a controlled substance
+    is_cold_chain = Column(Boolean, default=False)  # Whether item requires cold chain storage
+    # Default parameters — used only when item has no inventory_ledger / purchase history
+    default_cost_per_base = Column(Numeric(20, 4), nullable=True)  # Cost per base unit fallback
+    default_supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
     # Relationships
     company = relationship("Company", back_populates="items")
+    default_supplier = relationship("Supplier", foreign_keys=[default_supplier_id])
     units = relationship("ItemUnit", back_populates="item", cascade="all, delete-orphan")
     pricing = relationship("ItemPricing", back_populates="item", uselist=False, cascade="all, delete-orphan")
 

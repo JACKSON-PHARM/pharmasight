@@ -454,7 +454,7 @@ function showAddItemModal() {
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">Generic Name</label>
-                        <input type="text" class="form-input" name="generic_name" placeholder="Enter generic name">
+                        <input type="text" class="form-input" name="description" placeholder="Enter generic name">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Category/SubGroup</label>
@@ -637,35 +637,14 @@ function showAddItemModal() {
                 </div>
             </div>
 
-            <!-- Pricing (3-tier unit attribution) -->
+            <!-- Pricing: DEPRECATED — cost/price from inventory_ledger only (Excel import or purchases). Do not send price fields. -->
             <div class="form-section">
                 <div class="form-section-title">
-                    <i class="fas fa-dollar-sign"></i> Pricing (per unit)
+                    <i class="fas fa-info-circle"></i> Cost &amp; pricing
                 </div>
-                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-                    Each price is per unit: purchase per <strong>supplier unit</strong>, wholesale per <strong>wholesale unit</strong>, retail per <strong>retail unit</strong>.
+                <p style="color: var(--text-secondary); font-size: 0.9rem;">
+                    Cost and prices are set from <strong>inventory ledger</strong> (Excel import opening balance or purchase transactions). This form does not accept price fields.
                 </p>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Purchase price per supplier unit</label>
-                        <input type="number" class="form-input" name="purchase_price_per_supplier_unit" step="0.01" min="0" value="0" placeholder="0.00">
-                        <small style="color: var(--text-secondary); font-size: 0.85rem;">e.g. cost per packet</small>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Wholesale price per wholesale unit</label>
-                        <input type="number" class="form-input" name="wholesale_price_per_wholesale_unit" step="0.01" min="0" value="0" placeholder="0.00">
-                        <small style="color: var(--text-secondary); font-size: 0.85rem;">e.g. price per packet to pharmacies</small>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Retail price per retail unit</label>
-                        <input type="number" class="form-input" name="retail_price_per_retail_unit" step="0.01" min="0" value="0" placeholder="0.00">
-                        <small style="color: var(--text-secondary); font-size: 0.85rem;">e.g. price per tablet to customers</small>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Default cost (legacy, per base unit)</label>
-                    <input type="number" class="form-input" name="default_cost" step="0.01" min="0" value="0" placeholder="0.00">
-                </div>
             </div>
 
             <!-- VAT/Tax Classification -->
@@ -685,34 +664,6 @@ function showAddItemModal() {
                         <label class="form-label">VAT Rate (%)</label>
                         <input type="number" class="form-input" name="vat_rate" id="vat_rate_input" step="0.01" min="0" max="100" value="0" placeholder="0.00">
                         <small style="color: var(--text-secondary); font-size: 0.85rem;">0% zero-rated, 16% standard-rated</small>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Is VATable?</label>
-                        <div style="display: flex; gap: 2rem; margin-top: 0.5rem;">
-                            <label class="checkbox-item">
-                                <input type="radio" name="is_vatable" value="true" checked>
-                                <span>Yes</span>
-                            </label>
-                            <label class="checkbox-item">
-                                <input type="radio" name="is_vatable" value="false">
-                                <span>No</span>
-                            </label>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Price includes VAT?</label>
-                        <div style="display: flex; gap: 2rem; margin-top: 0.5rem;">
-                            <label class="checkbox-item">
-                                <input type="radio" name="price_includes_vat" value="true">
-                                <span>Yes</span>
-                            </label>
-                            <label class="checkbox-item">
-                                <input type="radio" name="price_includes_vat" value="false" checked>
-                                <span>No</span>
-                            </label>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -852,30 +803,24 @@ async function saveItem(event) {
     const packSize = parseInt(formData.get('pack_size') || '1', 10) || 1;
     const canBreakBulk = formData.get('can_break_bulk') === 'on';
 
-    // Build item data with 3-tier unit system
+    // Build item data — do NOT send deprecated price fields (cost from inventory_ledger only)
     const itemData = {
         company_id: CONFIG.COMPANY_ID,
         name: formData.get('name'),
-        generic_name: formData.get('generic_name') || null,
+        description: formData.get('description') || null,
         sku: formData.get('sku') || null,
         barcode: formData.get('barcode') || null,
         category: formData.get('category') || null,
         base_unit: formData.get('base_unit') || formData.get('wholesale_unit') || 'piece',
-        default_cost: parseFloat(formData.get('default_cost') || 0),
         supplier_unit: formData.get('supplier_unit') || 'packet',
         wholesale_unit: formData.get('wholesale_unit') || 'packet',
         retail_unit: formData.get('retail_unit') || 'tablet',
         pack_size: packSize,
         wholesale_units_per_supplier: Math.max(0.0001, parseFloat(formData.get('wholesale_units_per_supplier') || 1)),
         can_break_bulk: canBreakBulk,
-        purchase_price_per_supplier_unit: parseFloat(formData.get('purchase_price_per_supplier_unit') || 0),
-        wholesale_price_per_wholesale_unit: parseFloat(formData.get('wholesale_price_per_wholesale_unit') || 0),
-        retail_price_per_retail_unit: parseFloat(formData.get('retail_price_per_retail_unit') || 0),
         vat_category: formData.get('vat_category') || 'ZERO_RATED',
-        vat_code: formData.get('vat_category') || 'ZERO_RATED',
+        vat_category: formData.get('vat_category') || 'ZERO_RATED',
         vat_rate: parseFloat(formData.get('vat_rate') || 0),
-        price_includes_vat: formData.get('price_includes_vat') === 'true',
-        is_vatable: formData.get('is_vatable') === 'true',
         units: []
     };
 
@@ -928,8 +873,8 @@ async function saveItem(event) {
                 sku: createdItem.sku || '',
                 code: createdItem.sku || '',
                 base_unit: createdItem.base_unit,
-                sale_price: 0, // Will be calculated by pricing service
-                purchase_price: itemData.default_cost,
+                sale_price: 0,
+                purchase_price: 0, // Cost from inventory_ledger when item is used in transactions
                 vat_rate: createdItem.vat_rate || 0,
                 current_stock: 0
             };
@@ -1064,7 +1009,7 @@ function showImportExcelModal() {
                 <p><strong>Excel Import (Vyper-style column mapping):</strong></p>
                 <ol style="margin-top: 0.5rem; padding-left: 1.5rem;">
                     <li>Select your Excel file below</li>
-                    <li>Map your column headers to PharmaSight fields (match each Excel column to a system field)</li>
+                    <li>For each PharmaSight field, choose which column from your Excel sheet contains that data</li>
                     <li><strong>Required:</strong> At least "Item Name" must be mapped</li>
                     <li>Click Import when ready</li>
                 </ol>
@@ -1081,8 +1026,14 @@ function showImportExcelModal() {
                 </p>
             </div>
             <div id="excelColumnMappingSection" style="display: none; margin-top: 1rem;">
-                <h4><i class="fas fa-columns"></i> Map your columns to PharmaSight fields</h4>
-                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Match each Excel column with the system field it represents. Unmapped columns are ignored. <strong id="excelColumnCount">0</strong> columns from your sheet.</p>
+                <p id="importTargetLine" style="font-size: 0.875rem; margin-bottom: 0.5rem; padding: 0.35rem 0.5rem; background: var(--bg-secondary); border-radius: 4px;"><i class="fas fa-database"></i> <strong>Import target:</strong> <span id="importTargetValue">—</span></p>
+                <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-size: 0.875rem; cursor: pointer;">
+                    <input type="checkbox" id="excelImportSyncCheckbox" checked>
+                    <span>Run import synchronously (recommended: see errors immediately; may take several minutes for large files)</span>
+                </label>
+                <h4><i class="fas fa-columns"></i> Map PharmaSight fields to your Excel columns</h4>
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">For each PharmaSight field, choose which column from your Excel sheet contains that data. <strong id="excelColumnCount">0</strong> columns available from your sheet.</p>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;"><i class="fas fa-info-circle"></i> For <strong>opening balance</strong>: choose your columns for <strong>Current Stock Quantity</strong>, <strong>Wholesale Unit Price</strong> (or Purchase Price per Supplier Unit), and <strong>Supplier</strong>.</p>
                 <div id="excelColumnMapping" style="max-height: 420px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;"></div>
             </div>
             <div id="excelError" class="alert alert-danger" style="display: none; margin-top: 1rem;"></div>
@@ -1115,25 +1066,45 @@ function normalizeForMatch(s) {
 }
 
 // Suggest system field id for an Excel header (fuzzy match on label).
-// Legacy Excel "Base Unit (x)" / "Secondary Unit (y)" / "Conversion Rate (n)" map to 3-tier: wholesale_unit, retail_unit, pack_size.
+// Order matters: specific matches (VAT Category, Supplier name, etc.) before generic (category, description).
 function suggestFieldForHeader(header, expectedFields) {
     const n = normalizeForMatch(header);
     if (!n) return '';
-    // Legacy headers → 3-tier (no duplicate base/secondary/conversion in dropdown)
+    // —— Explicit matches first (per discussion: VAT Category, VAT Rate, Supplier, etc.) ——
+    if (n.includes('vat') && n.includes('category')) return 'vat_category';
+    if (n.includes('vat') && n.includes('rate')) return 'vat_rate';
+    // "Supplier" as name only (not Supplier_Unit, Supplier_Item_Code, etc.)
+    if (n === 'supplier' || (n.includes('supplier') && !n.includes('unit') && !n.includes('item') && !n.includes('code') && !n.includes('last') && !n.includes('cost'))) return 'supplier';
+    // Item name / description / category (description must not be "vat description")
+    if (n.includes('item') && n.includes('name')) return 'item_name';
+    if ((n.includes('description') || n.includes('generic')) && !n.includes('vat')) return 'description';
+    if (n === 'category' || (n.includes('category') && !n.includes('vat'))) return 'category';
+    if (n.includes('item') && n.includes('code')) return 'item_code';
+    if (n.includes('barcode')) return 'barcode';
+    // 3-tier units: names only
+    if (n.includes('supplier') && n.includes('unit')) return 'supplier_unit';
+    if (n.includes('wholesale') && n.includes('unit') && !n.includes('price')) return 'wholesale_unit';
+    if (n.includes('retail') && n.includes('unit') && !n.includes('price')) return 'retail_unit';
+    // Conversion rates (including new template: Conversion_To_Retail, Conversion_To_Supplier, Supplier_Pack_Size)
+    if ((n.includes('pack') && n.includes('size')) || (n.includes('conversion') && (n.includes('retail') || n.includes('rate')) && !n.includes('supplier')) || n === 'conversion to retail') return 'pack_size';
+    if ((n.includes('wholesale') && n.includes('supplier')) || (n.includes('conversion') && n.includes('supplier')) || n === 'conversion to supplier' || (n.includes('supplier') && n.includes('pack') && n.includes('size'))) return 'wholesale_units_per_supplier';
     if (n.includes('base') && n.includes('unit')) return 'wholesale_unit';
     if (n.includes('secondary') && n.includes('unit')) return 'retail_unit';
-    if (n.includes('conversion') && (n.includes('retail') || n.includes('rate')) && !n.includes('supplier')) return 'pack_size';
-    if (n.includes('wholesale') && n.includes('supplier') || n.includes('conversion') && n.includes('supplier')) return 'wholesale_units_per_supplier';
+    // Prices: wholesale unit price (purchase cost per wholesale) first
+    if ((n.includes('wholesale') && n.includes('price')) || (n.includes('purchase') && n.includes('wholesale')) || n === 'wholesale unit price') return 'wholesale_unit_price';
+    if (n.includes('purchase') || n.includes('last cost') || n.includes('price list last cost')) return 'purchase_price_per_supplier_unit';
+    // Stock
+    if (n.includes('current') && (n.includes('stock') || n.includes('quantity'))) return 'current_stock_quantity';
+    if (n.includes('minimum') && (n.includes('stock') || n.includes('quantity'))) return 'current_stock_quantity';
+    if ((n.includes('stock') || n.includes('quantity')) && !n.includes('minimum')) return 'current_stock_quantity';
+    if (n.includes('can') && n.includes('break')) return 'can_break_bulk';
+    if (n.includes('track') && n.includes('expiry')) return 'track_expiry';
+    if (n.includes('controlled')) return 'is_controlled';
+    if (n.includes('cold') && n.includes('chain')) return 'is_cold_chain';
+    // Fallback: match by label
     for (const f of expectedFields) {
         const labelNorm = normalizeForMatch(f.label);
         if (labelNorm === n || labelNorm.includes(n) || n.includes(labelNorm)) return f.id;
-        if (f.id === 'item_name' && (n.includes('item') && n.includes('name'))) return 'item_name';
-        if (f.id === 'generic_name' && (n.includes('generic') || n.includes('description'))) return 'generic_name';
-        if (f.id === 'pack_size' && (n.includes('pack') && n.includes('size'))) return 'pack_size';
-        if (f.id === 'purchase_price_per_supplier_unit' && (n.includes('purchase') || n.includes('cost') || n.includes('last cost'))) return 'purchase_price_per_supplier_unit';
-        if (f.id === 'retail_price_per_retail_unit' && (n.includes('retail') || n.includes('sale') || n.includes('price'))) return 'retail_price_per_retail_unit';
-        if (f.id === 'current_stock_quantity' && (n.includes('stock') || n.includes('quantity') || n.includes('qty'))) return 'current_stock_quantity';
-        if (f.id === 'supplier' && n.includes('supplier') && !n.includes('unit')) return 'supplier';
     }
     return '';
 }
@@ -1233,7 +1204,7 @@ function handleFileSelect(event) {
                 // 3-tier only: wholesale = base (1), retail = wholesale × pack_size, supplier = wholesale ÷ wholesale_units_per_supplier
                 expectedFields = [
                     { id: 'item_name', label: 'Item Name', required: true },
-                    { id: 'generic_name', label: 'Generic Name / Description', required: false },
+                    { id: 'description', label: 'Description', required: false },
                     { id: 'item_code', label: 'Item Code (SKU)', required: false },
                     { id: 'barcode', label: 'Barcode', required: false },
                     { id: 'category', label: 'Category', required: false },
@@ -1243,7 +1214,11 @@ function handleFileSelect(event) {
                     { id: 'pack_size', label: 'Pack Size (retail per wholesale: 1 wholesale = N retail)', required: false },
                     { id: 'wholesale_units_per_supplier', label: 'Wholesale per Supplier (e.g. 12 = 1 carton has 12 wholesale)', required: false },
                     { id: 'can_break_bulk', label: 'Can Break Bulk', required: false },
-                    { id: 'purchase_price_per_supplier_unit', label: 'Purchase Price / Last Cost', required: false },
+                    { id: 'track_expiry', label: 'Track Expiry', required: false },
+                    { id: 'is_controlled', label: 'Is Controlled', required: false },
+                    { id: 'is_cold_chain', label: 'Is Cold Chain', required: false },
+                    { id: 'wholesale_unit_price', label: 'Wholesale Unit Price (purchase cost per wholesale unit)', required: false },
+                    { id: 'purchase_price_per_supplier_unit', label: 'Purchase Price per Supplier Unit (fallback)', required: false },
                     { id: 'wholesale_price_per_wholesale_unit', label: 'Wholesale Price', required: false },
                     { id: 'retail_price_per_retail_unit', label: 'Retail Price / Sale Price', required: false },
                     { id: 'current_stock_quantity', label: 'Current Stock Quantity', required: false },
@@ -1253,16 +1228,23 @@ function handleFileSelect(event) {
                 ];
             }
             
-            let mappingHTML = '<table style="width: 100%; font-size: 0.875rem;"><thead><tr><th style="text-align:left;">Your column</th><th style="text-align:left;">Map to</th></tr></thead><tbody>';
-            headers.forEach((h, idx) => {
-                const suggested = suggestFieldForHeader(h, expectedFields);
-                mappingHTML += '<tr><td style="padding: 0.35rem 0.5rem;">' + escapeHtml(h) + '</td><td style="padding: 0.35rem 0.5rem;">';
-                mappingHTML += '<select class="form-input excel-map-select" data-excel-header-index="' + idx + '" style="min-width: 220px;">';
-                mappingHTML += '<option value="">— Don\'t import —</option>';
-                expectedFields.forEach(f => {
-                    const sel = f.id === suggested ? ' selected' : '';
-                    const req = f.required ? ' (required)' : '';
-                    mappingHTML += '<option value="' + escapeHtml(f.id) + '"' + sel + '>' + escapeHtml(f.label) + req + '</option>';
+            // Suggest which Excel header maps to each system field (first header that matches)
+            function suggestedExcelHeaderForSystemField(systemFieldId, excelHeaders, expectedFields) {
+                for (let i = 0; i < excelHeaders.length; i++) {
+                    if (suggestFieldForHeader(excelHeaders[i], expectedFields) === systemFieldId) return excelHeaders[i];
+                }
+                return '';
+            }
+            let mappingHTML = '<table style="width: 100%; font-size: 0.875rem;"><thead><tr><th style="text-align:left;">PharmaSight field</th><th style="text-align:left;">Your Excel column</th></tr></thead><tbody>';
+            expectedFields.forEach(f => {
+                const suggested = suggestedExcelHeaderForSystemField(f.id, headers, expectedFields);
+                const reqLabel = f.required ? ' <span style="color: var(--danger);">*</span>' : '';
+                mappingHTML += '<tr><td style="padding: 0.35rem 0.5rem;">' + escapeHtml(f.label) + reqLabel + '</td><td style="padding: 0.35rem 0.5rem;">';
+                mappingHTML += '<select class="form-input excel-map-select" data-system-field-id="' + escapeHtml(f.id) + '" style="min-width: 220px;">';
+                mappingHTML += '<option value="">— Don\'t map —</option>';
+                headers.forEach(h => {
+                    const sel = h === suggested ? ' selected' : '';
+                    mappingHTML += '<option value="' + escapeHtml(h) + '"' + sel + '>' + escapeHtml(h) + '</option>';
                 });
                 mappingHTML += '</select></td></tr>';
             });
@@ -1270,6 +1252,11 @@ function handleFileSelect(event) {
             mappingContainer.innerHTML = mappingHTML;
             const colCountEl = document.getElementById('excelColumnCount');
             if (colCountEl) colCountEl.textContent = headers.length;
+            const targetEl = document.getElementById('importTargetValue');
+            if (targetEl) {
+                const sub = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain');
+                targetEl.textContent = sub ? `Tenant (${sub}) — items will appear when viewing this tenant` : 'Default database';
+            }
             mappingSection.style.display = 'block';
             importBtn.disabled = false;
             
@@ -1294,10 +1281,10 @@ function getExcelColumnMapping() {
     const selects = document.querySelectorAll('#excelColumnMapping .excel-map-select');
     const mapping = {};
     selects.forEach(sel => {
-        const idx = parseInt(sel.getAttribute('data-excel-header-index'), 10);
-        const systemId = (sel.value || '').trim();
-        if (systemId && excelImportHeaders[idx] !== undefined) {
-            mapping[excelImportHeaders[idx]] = systemId;
+        const systemId = (sel.getAttribute('data-system-field-id') || '').trim();
+        const excelHeader = (sel.value || '').trim();
+        if (excelHeader && systemId) {
+            mapping[excelHeader] = systemId;
         }
     });
     return mapping;
@@ -1341,9 +1328,10 @@ async function importExcelFile() {
     // Set importing flag
     isImporting = true;
     
-    // Add progress indicator with progress bar
+    // Add progress indicator with progress bar; scope warning at top so "default DB" is unmissable
     let progressHTML = `
-        <div id="importProgress" style="margin-top: 1rem; padding: 1rem; background: var(--bg-secondary); border-radius: 4px;">
+        <div id="importScopeWarning" style="display: none; margin-bottom: 1rem; padding: 0.75rem 1rem; font-size: 0.9rem; background: rgba(220,53,69,0.12); border: 1px solid rgba(220,53,69,0.5); border-radius: 6px; color: var(--text-primary);"></div>
+        <div id="importProgress" style="margin-top: 0; padding: 1rem; background: var(--bg-secondary); border-radius: 4px;">
             <div id="importStatus" style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
                 <i class="fas fa-spinner fa-spin"></i> <span id="importStatusText">Uploading and processing Excel file...</span>
             </div>
@@ -1385,15 +1373,17 @@ async function importExcelFile() {
         const modeInfo = await API.excel.getMode(CONFIG.COMPANY_ID);
         updateProgress(5, `Mode: ${modeInfo.mode} - Starting import...`);
         
-        // Upload file to backend - returns job_id immediately (with column mapping)
-        updateProgress(10, 'Uploading file to server...');
+        // Upload file to backend. Sync=1: import runs in request, returns when done. Sync=0: returns job_id, poll progress.
+        const useSync = document.getElementById('excelImportSyncCheckbox') ? document.getElementById('excelImportSyncCheckbox').checked : true;
+        updateProgress(10, useSync ? 'Uploading and running import (this may take several minutes)...' : 'Uploading and starting import...');
         const startResult = await API.excel.import(
             excelFile,
             CONFIG.COMPANY_ID,
             CONFIG.BRANCH_ID,
             CONFIG.USER_ID,
             null,
-            columnMapping
+            columnMapping,
+            useSync
         );
         
         if (!startResult.job_id) {
@@ -1401,12 +1391,65 @@ async function importExcelFile() {
         }
         
         jobId = startResult.job_id;
+        if (startResult.success === false && (startResult.message || '').toLowerCase().includes('already in progress')) {
+            showToast('Same file is already importing. Showing its progress. To start fresh, use "Clear for re-import" first (when no live transactions).', 'info');
+        }
+        
+        // If backend ran import synchronously (sync=1), response has final status/stats — no polling
+        if (startResult.status === 'completed' || startResult.status === 'failed') {
+            clearInterval(pollInterval);
+            const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+            if (startResult.status === 'completed') {
+                updateProgress(100, `Import completed in ${totalTime} seconds!`);
+                const stats = startResult.stats || {};
+                const created = stats.items_created || 0;
+                const updated = stats.items_updated || 0;
+                let message = `Import completed successfully. `;
+                message += `Items: ${created} created`;
+                if (updated) message += `, ${updated} updated`;
+                if (stats.items_skipped) message += `, ${stats.items_skipped} skipped`;
+                if (stats.opening_balances_created) message += ` | Opening balances: ${stats.opening_balances_created} created`;
+                if (stats.suppliers_created) message += ` | Suppliers: ${stats.suppliers_created} created`;
+                if (stats.errors && stats.errors.length > 0) {
+                    console.warn('Import errors:', stats.errors);
+                    message += ` | ${stats.errors.length} errors (check console)`;
+                }
+                showToast(message, 'success');
+                if (created === 0 && updated === 0 && (startResult.total_rows || 0) > 0) {
+                    showToast('No items were created. If you use a tenant link, ensure you are viewing the same tenant. Or run with "Run import synchronously" to see any error.', 'warning');
+                }
+            } else {
+                updateProgress(0, `Import failed after ${totalTime} seconds`);
+                showToast(`Import failed: ${startResult.error_message || 'Unknown error'}`, 'error');
+            }
+            setTimeout(() => { closeModal(); loadItems(); }, 2000);
+            if (importBtn) { importBtn.disabled = false; importBtn.innerHTML = '<i class="fas fa-upload"></i> Import Items'; }
+            isImporting = false;
+            return;
+        }
+        
         updateProgress(15, 'Import started - Processing in background...');
         
-        // Poll for progress every 2 seconds
+        let consecutiveFailures = 0;
+        const maxConsecutiveFailures = 5;
+        
+        // Poll for progress every 2 seconds (async mode only)
         pollInterval = setInterval(async () => {
             try {
                 const progress = await API.excel.getProgress(jobId);
+                consecutiveFailures = 0; // Reset on success
+
+                // Only warn when user has tenant context but progress is from default DB (mismatch). Default DB alone is the intended primary DB for now.
+                const scopeEl = document.getElementById('importScopeWarning');
+                const isDefaultDb = progress.database_scope === 'default';
+                const hasTenantContext = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain');
+                const mismatch = hasTenantContext && isDefaultDb; // expected tenant DB but got default
+                if (scopeEl && mismatch) {
+                    scopeEl.style.display = 'block';
+                    scopeEl.innerHTML = '<strong><i class="fas fa-database"></i> Different database</strong><br>You opened the app with a tenant link but this import ran against the <strong>default database</strong>. To import into your tenant (Supabase), open the app from your tenant URL and run a new import.';
+                } else if (scopeEl) {
+                    scopeEl.style.display = 'none';
+                }
                 
                 // Update progress bar with real data
                 const progressPct = progress.progress_percent || 0;
@@ -1430,23 +1473,25 @@ async function importExcelFile() {
                     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
                     updateProgress(100, `Import completed in ${totalTime} seconds!`);
                     
-                    // Show results
+                    // Same success message for default DB and tenant DB
                     const stats = progress.stats || {};
+                    const created = stats.items_created || 0;
+                    const updated = stats.items_updated || 0;
                     let message = `Import completed successfully. `;
-                    message += `Items: ${stats.items_created || 0} created`;
-                    if (stats.items_updated) message += `, ${stats.items_updated} updated`;
+                    message += `Items: ${created} created`;
+                    if (updated) message += `, ${updated} updated`;
                     if (stats.items_skipped) message += `, ${stats.items_skipped} skipped`;
                     if (stats.opening_balances_created) message += ` | Opening balances: ${stats.opening_balances_created} created`;
                     if (stats.suppliers_created) message += ` | Suppliers: ${stats.suppliers_created} created`;
-                    
                     if (stats.errors && stats.errors.length > 0) {
                         console.warn('Import errors:', stats.errors);
                         message += ` | ${stats.errors.length} errors (check console)`;
                     }
-                    
                     showToast(message, 'success');
+                    if (created === 0 && updated === 0 && (progress.total_rows || 0) > 0) {
+                        showToast('No items were created. If you use a tenant link, ensure you are viewing the same tenant. Run with "Run import synchronously" to see any error.', 'warning');
+                    }
                     
-                    // Wait a moment to show completion, then close
                     setTimeout(() => {
                         closeModal();
                         loadItems();
@@ -1460,8 +1505,48 @@ async function importExcelFile() {
                     showToast(`Import failed: ${errorMsg}`, 'error');
                 }
             } catch (pollError) {
-                console.error('Error polling progress:', pollError);
-                // Don't stop polling on individual errors, just log
+                // 404 = job not in this database (e.g. job in default DB but user polling with tenant)
+                if (pollError.status === 404) {
+                    clearInterval(pollInterval);
+                    const statusEl = document.getElementById('importStatus');
+                    const statusTextEl = document.getElementById('importStatusText');
+                    const scopeEl = document.getElementById('importScopeWarning');
+                    if (statusEl) statusEl.innerHTML = '<span style="color: var(--danger-color);"><i class="fas fa-search"></i> Job not found in this database</span>';
+                    if (statusTextEl) statusTextEl.textContent = 'This job is not in your current database. Open the app from your tenant URL (e.g. your-tenant.pharmasight.com) and start a new import to load data into Supabase.';
+                    if (scopeEl) {
+                        scopeEl.style.display = 'block';
+                        scopeEl.innerHTML = '<strong><i class="fas fa-info-circle"></i> Job not in tenant database</strong><br>If you expected data in Supabase, open the app from your <strong>tenant URL</strong> and run a <strong>new import</strong>. This job may belong to the default database.';
+                    }
+                    showToast('Job not found in this database. Use your tenant URL and start a new import to load data into Supabase.', 'warning');
+                    if (importBtn) { importBtn.disabled = false; importBtn.innerHTML = '<i class="fas fa-upload"></i> Import Items'; }
+                    isImporting = false;
+                    return;
+                }
+                consecutiveFailures += 1;
+                if (consecutiveFailures >= maxConsecutiveFailures) {
+                    clearInterval(pollInterval);
+                    const statusEl = document.getElementById('importStatus');
+                    const statusTextEl = document.getElementById('importStatusText');
+                    const is503 = pollError.status === 503;
+                    if (statusEl) {
+                        statusEl.innerHTML = is503
+                            ? '<span style="color: var(--danger-color);"><i class="fas fa-database"></i> Tenant database unreachable</span>'
+                            : '<span style="color: var(--danger-color);"><i class="fas fa-unlink"></i> Cannot reach server</span>';
+                    }
+                    if (statusTextEl) {
+                        statusTextEl.textContent = is503
+                            ? (pollError.message || 'Cannot reach Supabase. Check network, Supabase status, or try again. Import may still be running.')
+                            : 'Backend is not responding. Start the server on http://localhost:8000 and refresh the page to check if the import completed.';
+                    }
+                    showToast(is503 ? (pollError.message || 'Tenant database unreachable. Check Supabase and retry.') : 'Cannot reach server. Start the backend and refresh to check import status.', 'error');
+                    if (importBtn) {
+                        importBtn.disabled = false;
+                        importBtn.innerHTML = '<i class="fas fa-upload"></i> Import Items';
+                    }
+                    isImporting = false;
+                } else {
+                    console.warn('Error polling progress (' + consecutiveFailures + '/' + maxConsecutiveFailures + '):', pollError.message || pollError);
+                }
             }
         }, 2000); // Poll every 2 seconds
         
@@ -1493,10 +1578,10 @@ async function importExcelFile() {
 }
 
 async function editItem(itemId) {
-    // Fetch full item details from API (works from any page)
+    // Fetch full item details from API (branch_id for cost from ledger)
     let item;
     try {
-        item = await API.items.get(itemId);
+        item = await API.items.get(itemId, CONFIG.BRANCH_ID || undefined);
         // Also check if we have overview data (for has_transactions flag)
         if (!item.has_transactions && itemsList.length > 0) {
             const overviewItem = itemsList.find(i => i.id === itemId);
@@ -1557,7 +1642,7 @@ async function editItem(itemId) {
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">Generic Name</label>
-                        <input type="text" class="form-input" name="generic_name" value="${escapeHtml(item.generic_name || '')}" placeholder="Enter generic name">
+                        <input type="text" class="form-input" name="description" value="${escapeHtml(item.description || '')}" placeholder="Enter generic name">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Category</label>
@@ -1693,16 +1778,37 @@ async function editItem(itemId) {
                 </div>
             </div>
 
-            <!-- Pricing Section -->
-            <div class="form-section">
+            <!-- Unit cost (from ledger): derive per wholesale / retail / supplier -->
+            <div class="form-section" id="editItemUnitCostSection"
+                data-cost-wholesale="${(item.default_cost != null ? item.default_cost : 0)}"
+                data-pack-size="${Math.max(1, parseInt(item.pack_size, 10) || 1)}"
+                data-wups="${Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)}"
+                data-wholesale-unit="${escapeHtml((item.wholesale_unit || item.base_unit || 'piece'))}"
+                data-retail-unit="${escapeHtml((item.retail_unit || 'piece'))}"
+                data-supplier-unit="${escapeHtml((item.supplier_unit || 'piece'))}">
                 <div class="form-section-title">
-                    <i class="fas fa-dollar-sign"></i> Pricing
+                    <i class="fas fa-coins"></i> Unit Cost (from ledger)
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Default Cost per Base Unit</label>
-                    <input type="number" class="form-input" name="default_cost" value="${item.default_cost || 0}" step="0.01" min="0" required>
+                <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.75rem;">
+                    Cost per wholesale unit from inventory ledger. Select unit below to see equivalent cost per retail or supplier unit (e.g. 90 per packet → 0.9 per tablet if conversion is 100).
+                </p>
+                <div class="form-row" style="align-items: center; gap: 1rem;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label">Show cost per</label>
+                        <select id="editItemUnitCostSelect" class="form-select" style="min-width: 140px;">
+                            <option value="wholesale">Wholesale (${escapeHtml((item.wholesale_unit || item.base_unit || 'piece'))})</option>
+                            <option value="retail">Retail (${escapeHtml((item.retail_unit || 'piece'))})</option>
+                            <option value="supplier">Supplier (${escapeHtml((item.supplier_unit || 'piece'))})</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0; flex: 1;">
+                        <label class="form-label">&nbsp;</label>
+                        <p style="margin: 0; font-size: 1.1rem;"><strong id="editItemUnitCostValue">—</strong></p>
+                    </div>
                 </div>
             </div>
+
+            <!-- Pricing: DEPRECATED — cost from inventory_ledger only; not editable here -->
 
             <!-- VAT Section -->
             <div class="form-section">
@@ -1715,20 +1821,12 @@ async function editItem(itemId) {
                         <input type="number" class="form-input" name="vat_rate" value="${item.vat_rate || 0}" step="0.01" min="0" max="100">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">VAT Code</label>
-                        <select class="form-select" name="vat_code">
-                            <option value="">Select VAT Code</option>
-                            <option value="ZERO_RATED" ${item.vat_code === 'ZERO_RATED' ? 'selected' : ''}>Zero Rated</option>
-                            <option value="STANDARD" ${item.vat_code === 'STANDARD' ? 'selected' : ''}>Standard (16%)</option>
-                            <option value="EXEMPT" ${item.vat_code === 'EXEMPT' ? 'selected' : ''}>Exempt</option>
+                        <label class="form-label">VAT Category</label>
+                        <select class="form-select" name="vat_category">
+                            <option value="ZERO_RATED" ${(item.vat_category || 'ZERO_RATED') === 'ZERO_RATED' ? 'selected' : ''}>Zero Rated</option>
+                            <option value="STANDARD_RATED" ${(item.vat_category || '') === 'STANDARD_RATED' ? 'selected' : ''}>Standard Rated (16%)</option>
                         </select>
                     </div>
-                </div>
-                <div class="form-group">
-                    <label class="checkbox-item">
-                        <input type="checkbox" name="price_includes_vat" ${item.price_includes_vat ? 'checked' : ''}>
-                        <span>Price includes VAT</span>
-                    </label>
                 </div>
             </div>
 
@@ -1774,6 +1872,18 @@ async function editItem(itemId) {
         modal.setAttribute('data-has-transactions', hasTransactions.toString());
     }
     
+    // Unit cost display: derive cost per selected unit (wholesale / retail / supplier)
+    setTimeout(() => {
+        const sel = document.getElementById('editItemUnitCostSelect');
+        const section = document.getElementById('editItemUnitCostSection');
+        if (sel && section) {
+            updateUnitCostDisplay(sel, section);
+            sel.addEventListener('change', function() {
+                updateUnitCostDisplay(this, section);
+            });
+        }
+    }, 0);
+
     // Add event listeners to existing unit name inputs for dynamic label updates
     setTimeout(() => {
         const allNameInputs = document.querySelectorAll('.unit-name-input');
@@ -1790,6 +1900,38 @@ async function editItem(itemId) {
             }
         });
     }, 100);
+}
+
+/**
+ * Update the "Unit cost (from ledger)" display when user changes unit (wholesale / retail / supplier).
+ * Cost is stored per wholesale unit; retail = cost_wholesale / pack_size, supplier = cost_wholesale * wholesale_units_per_supplier.
+ */
+function updateUnitCostDisplay(selectEl, sectionEl) {
+    if (!selectEl || !sectionEl) return;
+    const costWholesale = parseFloat(sectionEl.dataset.costWholesale || '0') || 0;
+    const packSize = Math.max(1, parseInt(sectionEl.dataset.packSize, 10) || 1);
+    const wups = Math.max(0.0001, parseFloat(sectionEl.dataset.wups) || 1);
+    const unitNames = {
+        wholesale: sectionEl.dataset.wholesaleUnit || 'piece',
+        retail: sectionEl.dataset.retailUnit || 'piece',
+        supplier: sectionEl.dataset.supplierUnit || 'piece'
+    };
+    const tier = selectEl.value;
+    let cost, unitName;
+    if (tier === 'wholesale') {
+        cost = costWholesale;
+        unitName = unitNames.wholesale;
+    } else if (tier === 'retail') {
+        cost = packSize > 0 ? costWholesale / packSize : 0;
+        unitName = unitNames.retail;
+    } else {
+        cost = costWholesale * wups;
+        unitName = unitNames.supplier;
+    }
+    const valueEl = document.getElementById('editItemUnitCostValue');
+    if (valueEl) {
+        valueEl.textContent = (typeof window.formatCurrency === 'function' ? window.formatCurrency(cost) : cost.toFixed(2)) + ' per ' + unitName;
+    }
 }
 
 async function updateItem(event, itemId) {
@@ -1817,15 +1959,14 @@ async function updateItem(event, itemId) {
         }
     }
     
+    // Do NOT send deprecated price fields — cost from inventory_ledger only
     const updateData = {
         name: formData.get('name'),
-        generic_name: formData.get('generic_name') || null,
+        description: formData.get('description') || null,
         barcode: formData.get('barcode') || null,
         category: formData.get('category') || null,
-        default_cost: parseFloat(formData.get('default_cost')) || 0,
         vat_rate: parseFloat(formData.get('vat_rate')) || 0,
-        vat_code: formData.get('vat_code') || null,
-        price_includes_vat: formData.has('price_includes_vat'),
+        vat_category: formData.get('vat_category') || null,
         is_active: formData.has('is_active')
     };
     

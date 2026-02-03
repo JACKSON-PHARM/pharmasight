@@ -23,6 +23,7 @@ from app.schemas.item import (
 )
 from app.services.pricing_service import PricingService
 from app.services.items_service import create_item as svc_create_item
+from app.services.canonical_pricing import CanonicalPricingService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -100,21 +101,16 @@ def search_items(
         else_=0
     )
     
-    # Build base query with relevance scoring and 3-tier price columns (for dropdown without N+1)
+    # Build base query with relevance scoring. No deprecated price columns — pricing from inventory_ledger only.
     base_query = db.query(
         Item.id,
         Item.name,
         Item.base_unit,
-        Item.default_cost,
         Item.sku,
         Item.category,
         Item.is_active,
         Item.vat_rate,
-        Item.vat_code,
-        Item.is_vatable,
-        Item.retail_price_per_retail_unit,
-        Item.wholesale_price_per_wholesale_unit,
-        Item.purchase_price_per_supplier_unit,
+        Item.vat_category,
         relevance_score
     ).filter(
         Item.company_id == company_id,
@@ -202,11 +198,24 @@ def search_items(
             for row in last_purchases
         }
         
-        # Get supplier names in batch
+        # Get supplier names in batch (from purchase history)
         supplier_ids = {row.supplier_id for row in last_purchases if row.supplier_id}
         if supplier_ids:
             suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()}
             last_supplier_map = {row.item_id: suppliers.get(row.supplier_id, '') for row in last_purchases if row.supplier_id}
+        # Fallback: default_supplier_id when no purchase history
+        ids_without_supplier = [i for i in item_ids if i not in last_supplier_map]
+        if ids_without_supplier and include_pricing:
+            default_rows = db.query(Item.id, Item.default_supplier_id).filter(
+                Item.id.in_(ids_without_supplier),
+                Item.default_supplier_id.isnot(None)
+            ).all()
+            if default_rows:
+                default_supplier_ids = {r.default_supplier_id for r in default_rows if r.default_supplier_id}
+                default_suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(default_supplier_ids)).all()} if default_supplier_ids else {}
+                for r in default_rows:
+                    if r.default_supplier_id:
+                        last_supplier_map[r.id] = default_suppliers.get(r.default_supplier_id, '')
         
         # Get last order dates - OPTIMIZED: Use window function
         last_order_subq = (
@@ -282,37 +291,38 @@ def search_items(
                 for row in last_supplies
             }
         
-        # Use 3-tier prices from item row for dropdown (no per-item PricingService calls)
+        # sale_price: no longer from items table; use 0.0 if no external config (pricing from ledger only)
         for item in items:
-            retail = getattr(item, "retail_price_per_retail_unit", None)
-            sale_price_map[item.id] = float(retail) if retail is not None and retail else 0.0
+            sale_price_map[item.id] = 0.0
     
-    # Return response - includes stock, VAT info, and pricing
-    # For purchase_order context, include additional fields from inventory_ledger
+    # Return response — pricing from inventory_ledger only (CanonicalPricingService)
     result = []
     for item in items:
+        # Best available cost from ledger (last purchase → opening balance → weighted avg → 0)
+        price_from_ledger = float(CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, company_id)) if branch_id else 0.0
+        purchase_price_val = purchase_price_map.get(item.id, price_from_ledger) if include_pricing else price_from_ledger
+        last_unit_cost_val = last_unit_cost_ledger_map.get(item.id, purchase_price_map.get(item.id, price_from_ledger)) if context == 'purchase_order' else None
+        
         item_data = {
             "id": str(item.id),
             "name": item.name,
             "base_unit": item.base_unit,
-            "price": float(item.default_cost) if item.default_cost else 0.0,
+            "price": price_from_ledger,
             "sku": item.sku or "",
             "category": getattr(item, 'category', None) or "",
             "is_active": getattr(item, 'is_active', True),
             "current_stock": stock_map.get(item.id, 0) if branch_id else None,
             "vat_rate": float(item.vat_rate) if item.vat_rate else 0.0,
-            "vat_code": item.vat_code or "",
-            "is_vatable": getattr(item, 'is_vatable', True),
-            "purchase_price": purchase_price_map.get(item.id, float(item.default_cost) if item.default_cost else 0.0) if include_pricing else float(item.default_cost) if item.default_cost else 0.0,
+            "vat_category": getattr(item, 'vat_category', None) or "ZERO_RATED",
+            "purchase_price": purchase_price_val,
             "sale_price": sale_price_map.get(item.id, 0.0) if include_pricing else 0.0,
             "last_supplier": last_supplier_map.get(item.id, "") if include_pricing else "",
             "last_order_date": last_order_date_map.get(item.id, None) if include_pricing else None
         }
         
-        # Add Purchase Order specific fields
         if context == 'purchase_order':
             item_data["last_supply_date"] = last_supply_date_map.get(item.id, None)
-            item_data["last_unit_cost"] = last_unit_cost_ledger_map.get(item.id, purchase_price_map.get(item.id, float(item.default_cost) if item.default_cost else 0.0) if include_pricing else float(item.default_cost) if item.default_cost else 0.0)
+            item_data["last_unit_cost"] = last_unit_cost_val if last_unit_cost_val is not None else purchase_price_val
         
         result.append(item_data)
     
@@ -320,12 +330,19 @@ def search_items(
 
 
 @router.get("/{item_id}", response_model=ItemResponse)
-def get_item(item_id: UUID, db: Session = Depends(get_tenant_db)):
-    """Get item by ID"""
+def get_item(
+    item_id: UUID,
+    branch_id: Optional[UUID] = Query(None, description="Branch ID for cost from ledger (optional)"),
+    db: Session = Depends(get_tenant_db)
+):
+    """Get item by ID. Cost/price in response from inventory_ledger only (never from items table)."""
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    return item
+    resp = ItemResponse.model_validate(item)
+    # Cost from ledger only
+    resp.default_cost = float(CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, item.company_id)) if branch_id else 0.0
+    return resp
 
 
 @router.get("/{item_id}/pricing/3tier", response_model=dict)
@@ -452,47 +469,68 @@ def get_items_overview(
     supplier_ids = {row.supplier_id for row in last_purchases if row.supplier_id}
     suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()} if supplier_ids else {}
     
-    # Build lookup dictionaries
+    # Build lookup dictionaries (cost from purchase invoices / ledger only)
     last_supplier_map = {}
     last_cost_map = {}
     for row in last_purchases:
         last_supplier_map[row.item_id] = suppliers.get(row.supplier_id)
         last_cost_map[row.item_id] = float(row.unit_cost_exclusive) if row.unit_cost_exclusive else None
     
-    # Get 3-tier pricing for all items
-    tier_pricing_map = {}
-    for item in items:
-        tier_pricing = PricingService.get_3tier_pricing(db, item.id)
-        if tier_pricing:
-            tier_pricing_map[item.id] = tier_pricing
+    # Fallback: default_supplier_id when no purchase history
+    ids_without_supplier = [i for i in item_ids if i not in last_supplier_map]
+    if ids_without_supplier:
+        default_rows = db.query(Item.id, Item.default_supplier_id).filter(
+            Item.id.in_(ids_without_supplier),
+            Item.default_supplier_id.isnot(None)
+        ).all()
+        if default_rows:
+            default_supplier_ids = {r.default_supplier_id for r in default_rows if r.default_supplier_id}
+            default_suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(default_supplier_ids)).all()} if default_supplier_ids else {}
+            for r in default_rows:
+                if r.default_supplier_id:
+                    last_supplier_map[r.id] = default_suppliers.get(r.default_supplier_id)
     
-    # Build response
+    # 3-tier pricing deprecated — cost from ledger only; no tier_pricing from items
+    tier_pricing_map = {}
+    
+    # Build response — default_cost from ledger (last_cost_map), never from items table
     result = []
     for item in items:
-        # Convert item to dict for response
+        cost_from_ledger = last_cost_map.get(item.id)
+        if cost_from_ledger is None and branch_id:
+            cost_from_ledger = float(CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, item.company_id))
+        default_cost_val = float(cost_from_ledger) if cost_from_ledger is not None else 0.0
+        
         item_dict = {
             'id': item.id,
             'company_id': item.company_id,
             'name': item.name,
-            'generic_name': item.generic_name,
+            'description': getattr(item, 'description', None),
             'sku': item.sku,
             'barcode': item.barcode,
             'category': item.category,
             'base_unit': item.base_unit,
-            'default_cost': float(item.default_cost) if item.default_cost else 0.0,
-            'is_vatable': item.is_vatable,
+            'default_cost': default_cost_val,
+            'vat_category': getattr(item, 'vat_category', None) or 'ZERO_RATED',
             'vat_rate': float(item.vat_rate) if item.vat_rate else 0.0,
-            'vat_code': item.vat_code,
-            'price_includes_vat': item.price_includes_vat,
             'is_active': item.is_active,
             'created_at': item.created_at,
             'updated_at': item.updated_at,
             'units': item.units,
+            'supplier_unit': item.supplier_unit,
+            'wholesale_unit': item.wholesale_unit,
+            'retail_unit': item.retail_unit,
+            'pack_size': item.pack_size,
+            'wholesale_units_per_supplier': float(item.wholesale_units_per_supplier) if item.wholesale_units_per_supplier else 1,
+            'can_break_bulk': item.can_break_bulk,
+            'track_expiry': getattr(item, 'track_expiry', False),
+            'is_controlled': getattr(item, 'is_controlled', False),
+            'is_cold_chain': getattr(item, 'is_cold_chain', False),
             'current_stock': stock_data.get(item.id, 0.0),
             'last_supplier': last_supplier_map.get(item.id),
             'last_unit_cost': last_cost_map.get(item.id),
             'has_transactions': item.id in items_with_transactions,
-            'minimum_stock': None  # TODO: Add minimum_stock field to items table if needed
+            'minimum_stock': None
         }
         # Add 3-tier pricing as additional field (not in schema, but useful)
         overview_item = ItemOverviewResponse(**item_dict)
@@ -537,7 +575,13 @@ def get_items_by_company(
         query = query.limit(limit).offset(offset)
     
     items = query.all()
-    return items
+    # Do not expose items table price columns — overwrite with 0 (cost from ledger via search/overview only)
+    result = []
+    for item in items:
+        resp = ItemResponse.model_validate(item)
+        resp.default_cost = 0.0
+        result.append(resp)
+    return result
 
 
 @router.put("/{item_id}", response_model=ItemResponse)
@@ -559,6 +603,9 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
     units_to_update = item_update.units if hasattr(item_update, 'units') and item_update.units is not None else None
     
     update_data = item_update.model_dump(exclude_unset=True, exclude={'units'}) if hasattr(item_update, 'model_dump') else item_update.dict(exclude_unset=True, exclude={'units'})
+    # Do not persist deprecated price fields — cost from inventory_ledger only
+    for key in ("default_cost", "purchase_price_per_supplier_unit", "wholesale_price_per_wholesale_unit", "retail_price_per_retail_unit"):
+        update_data.pop(key, None)
     
     # Business Rule 1: SKU is immutable
     if 'sku' in update_data:

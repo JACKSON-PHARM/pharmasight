@@ -16,8 +16,9 @@ from datetime import datetime, timezone
 import hashlib
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_tenant_from_header, _session_factory_for_url
 from app.services.excel_import_service import ExcelImportService, EXPECTED_EXCEL_FIELDS
 from app.services.clear_for_reimport_service import run_clear as run_clear_for_reimport
 from app.models import ImportJob
@@ -33,18 +34,23 @@ def process_import_job(
     user_id: UUID,
     excel_data: list,
     force_mode: Optional[str],
-    column_mapping: Optional[Dict[str, str]] = None
+    column_mapping: Optional[Dict[str, str]] = None,
+    database_url: Optional[str] = None,
 ):
     """
     Background task to process Excel import.
     Updates ImportJob progress as it processes.
     column_mapping: optional dict Excel header -> system field id (Vyper-style).
+    database_url: when set (tenant request), use this DB so items/ledger go to tenant DB; else use default DB.
     """
     from app.database import SessionLocal
-    
-    logger.info(f"🚀 Background task STARTED for job {job_id} - Processing {len(excel_data)} rows")
-    
-    db = SessionLocal()
+
+    logger.info(f"🚀 Background task STARTED for job {job_id} - Processing {len(excel_data)} rows (tenant_db={bool(database_url)})")
+
+    if database_url:
+        db = _session_factory_for_url(database_url)()
+    else:
+        db = SessionLocal()
     try:
         # Get job record
         job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
@@ -126,18 +132,18 @@ async def import_excel(
     file: UploadFile = File(...),
     force_mode: Optional[str] = Form(None),
     column_mapping: Optional[str] = Form(None),
-    db: Session = Depends(get_tenant_db)
+    sync: Optional[str] = Form("0"),
+    db: Session = Depends(get_tenant_db),
+    tenant=Depends(get_tenant_from_header),
 ):
     """
-    Start Excel import as background job.
-    Returns job_id immediately. Use GET /api/excel/import/{job_id}/progress to track progress.
+    Start Excel import. By default runs in background; use sync=1 to run in request (recommended for localhost so data is written before response).
+    
+    sync=1: Run import in the same request (blocking). Request may take several minutes. Returns when done with final job status/stats.
+    sync=0: Start background thread, return job_id immediately; poll GET /api/excel/import/{job_id}/progress.
     
     column_mapping: optional JSON string mapping Excel header names to system field ids (Vyper-style).
-    When provided, each row is remapped before processing.
-    
-    Two modes:
-    - AUTHORITATIVE: Delete and recreate (only if no live transactions)
-    - NON_DESTRUCTIVE: Create missing data only (when live transactions exist)
+    Two modes: AUTHORITATIVE (no live tx) / NON_DESTRUCTIVE (live tx exist).
     """
     try:
         # Parse column_mapping if provided
@@ -173,9 +179,13 @@ async def import_excel(
                 'progress_percent': (existing_job.processed_rows / existing_job.total_rows * 100) if existing_job.total_rows > 0 else 0
             }
         
-        # Parse Excel
+        # Parse Excel — coerce NaN to None so service never sees float('nan') or np.nan
         df = pd.read_excel(BytesIO(contents))
-        excel_data = df.to_dict('records')
+        raw = df.to_dict('records')
+        excel_data = [
+            {k: (None if pd.isna(v) else v) for k, v in row.items()}
+            for row in raw
+        ]
         
         # Create import job record
         job = ImportJob(
@@ -192,27 +202,65 @@ async def import_excel(
         db.commit()
         db.refresh(job)
         
-        # Start background task in a separate thread (more reliable than FastAPI BackgroundTasks)
-        logger.info(f"📤 Starting background thread for job {job.id} with {len(excel_data)} rows")
+        tenant_db_url = tenant.database_url if tenant else None
+        run_sync = str(sync or "0").strip().lower() in ("1", "true", "yes")
+        
+        if run_sync:
+            # Run import in this request (blocking). Ensures data is written before response; no background thread.
+            logger.info(f"📤 Running import SYNCHRONOUSLY for job {job.id} with {len(excel_data)} rows (database={('tenant' if tenant else 'default')})")
+            try:
+                process_import_job(
+                    job.id, company_id, branch_id, user_id, excel_data,
+                    force_mode, mapping_dict, tenant_db_url
+                )
+            except Exception as sync_error:
+                logger.error(f"❌ Sync import failed for job {job.id}: {sync_error}", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Import failed: {str(sync_error)}"
+                ) from sync_error
+            # Reload job from DB (process_import_job uses its own session)
+            row = db.execute(
+                text("""
+                    SELECT id, status, total_rows, processed_rows, stats, error_message,
+                           started_at, completed_at
+                    FROM import_jobs WHERE id = :id
+                """),
+                {"id": job.id},
+            ).first()
+            r = row._mapping if row else {}
+            status_val = r.get("status", "unknown")
+            return {
+                "success": status_val == "completed",
+                "message": "Import completed" if status_val == "completed" else (r.get("error_message") or "Import finished with errors"),
+                "job_id": str(job.id),
+                "total_rows": len(excel_data),
+                "status": status_val,
+                "processed_rows": r.get("processed_rows", 0),
+                "stats": r.get("stats"),
+                "error_message": r.get("error_message"),
+            }
+        
+        # Start background task in a separate thread
+        logger.info(f"📤 Starting background thread for job {job.id} with {len(excel_data)} rows (database={('tenant' if tenant else 'default')})")
         try:
             thread = threading.Thread(
                 target=process_import_job,
-                args=(job.id, company_id, branch_id, user_id, excel_data, force_mode, mapping_dict),
-                daemon=False,  # Don't kill thread when main process exits
+                args=(job.id, company_id, branch_id, user_id, excel_data, force_mode, mapping_dict, tenant_db_url),
+                daemon=False,
                 name=f"ImportJob-{job.id}"
             )
             thread.start()
             logger.info(f"✅ Background thread started for job {job.id} (thread ID: {thread.ident}) - API returning immediately")
         except Exception as thread_error:
             logger.error(f"❌ Failed to start background thread for job {job.id}: {thread_error}", exc_info=True)
-            # Mark job as failed
             job.status = "failed"
             job.error_message = f"Failed to start background task: {str(thread_error)}"
             db.commit()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to start import: {str(thread_error)}"
-            )
+            ) from thread_error
         
         return {
             'success': True,
@@ -233,24 +281,37 @@ async def import_excel(
 
 
 @router.get("/import/{job_id}/progress")
-def get_import_progress(job_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_import_progress(
+    job_id: UUID,
+    db: Session = Depends(get_tenant_db),
+    tenant=Depends(get_tenant_from_header),
+):
     """
     Get progress of an import job.
     Returns current status, progress percentage, and statistics.
-    Uses a direct SQL read so we always see the latest committed progress
-    from the background import thread.
+    Uses the same DB as the request (tenant or default). database_scope tells
+    which DB the progress is from so the UI can warn if expecting tenant (Supabase).
     """
-    # Direct SQL read to avoid any session/ORM caching and see latest committed data
-    row = db.execute(
-        text("""
-            SELECT id, company_id, branch_id, user_id, file_hash, file_name,
-                   status, total_rows, processed_rows, last_batch, stats,
-                   error_message, created_at, updated_at, started_at, completed_at
-            FROM import_jobs WHERE id = :id
-        """),
-        {"id": job_id},
-    ).first()
-    
+    try:
+        row = db.execute(
+            text("""
+                SELECT id, company_id, branch_id, user_id, file_hash, file_name,
+                       status, total_rows, processed_rows, last_batch, stats,
+                       error_message, created_at, updated_at, started_at, completed_at
+                FROM import_jobs WHERE id = :id
+            """),
+            {"id": job_id},
+        ).first()
+    except OperationalError as e:
+        logger.warning(f"Tenant DB unreachable when fetching import progress: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Cannot reach tenant database (Supabase). Check your network, "
+                "Supabase status page, or try again later. Import may still be running."
+            ),
+        ) from e
+
     if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -260,7 +321,10 @@ def get_import_progress(job_id: UUID, db: Session = Depends(get_tenant_db)):
     total_rows = row.total_rows or 0
     processed_rows = row.processed_rows or 0
     progress_pct = round((processed_rows / total_rows * 100), 1) if total_rows > 0 else 0.0
-    
+
+    # So the UI can warn when progress is from default DB but user expects Supabase
+    database_scope = "tenant" if tenant else "default"
+
     return {
         "id": str(row.id),
         "company_id": str(row.company_id),
@@ -275,6 +339,7 @@ def get_import_progress(job_id: UUID, db: Session = Depends(get_tenant_db)):
         "progress_percent": progress_pct,
         "stats": row.stats,
         "error_message": row.error_message,
+        "database_scope": database_scope,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "started_at": row.started_at.isoformat() if row.started_at else None,

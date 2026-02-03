@@ -45,17 +45,29 @@ async def health_check():
 
 @app.on_event("startup")
 def run_tenant_migrations():
-    """Apply missing migrations for all tenants with database_url (locked architecture)."""
+    """Apply missing migrations on default/master app DB and on all tenant DBs (locked architecture)."""
     try:
-        from app.services.migration_service import MigrationService
+        from app.services.migration_service import MigrationService, run_migrations_for_url
+
+        # 1) Run app migrations on the default/master app DB (tenant management + transactions when no tenant)
+        try:
+            default_url = settings.database_connection_string
+            if default_url:
+                ran_default = run_migrations_for_url(default_url)
+                if ran_default:
+                    logger.info("Startup migrations applied on default/master DB: %s", ran_default)
+        except Exception as e:
+            logger.warning("Startup migrations on default/master DB failed: %s", e)
+
+        # 2) Run app migrations on each tenant DB (Supabase per tenant)
         svc = MigrationService()
         out = svc.run_migrations_all_tenant_dbs()
         if out["applied"]:
-            logger.info("Startup migrations applied: %s", out["applied"])
+            logger.info("Startup migrations applied on tenant DBs: %s", out["applied"])
         if out["errors"]:
-            logger.warning("Startup migration errors: %s", out["errors"])
+            logger.warning("Startup migration errors on tenant DBs: %s", out["errors"])
     except Exception as e:
-        logger.exception("Startup tenant migrations failed: %s", e)
+        logger.exception("Startup migrations failed: %s", e)
 
 
 # Import and include routers

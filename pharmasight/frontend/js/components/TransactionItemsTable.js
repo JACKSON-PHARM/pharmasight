@@ -50,6 +50,7 @@
         this.context = options.context || null; // 'purchase_order' for PO-specific fields
         this.canEdit = options.canEdit !== undefined ? options.canEdit : true; // Edit permission
         this.itemsSource = options.items || options.itemsSource || [];
+        // purchase_price / sale_price must come from API only (inventory_ledger); never from items table
         this.priceType = options.priceType || (this.mode === 'sale' ? 'sale_price' : 'purchase_price');
         this.onItemsChange = options.onItemsChange || null;
         this.onTotalChange = options.onTotalChange || null;
@@ -62,6 +63,7 @@
         this.activeSearchRow = null;
         this.activeSelectedItemRow = null; // Row showing "selected item" dropdown (details / search different / view full)
         this.inputDebounceTimeout = null; // For debouncing input events
+        this.totalInputDebounce = null; // For debouncing total input (reverse calc)
         this._searchId = 0; // Incremented per search; used to ignore stale responses
         this._searchDebounceMs = 250; // Debounce so requests fire only after user pauses typing
         
@@ -158,7 +160,7 @@
      * Calculate margin percentage
      */
     TransactionItemsTable.prototype.calculateMargin = function(item) {
-        if (this.mode !== 'sale') return 0;
+        if (this.mode !== 'sale' && this.mode !== 'quotation') return 0;
         const purchasePrice = item.purchase_price || 0;
         const salePrice = item.unit_price || 0;
         if (purchasePrice <= 0) return 0;
@@ -192,7 +194,7 @@
                             <th style="padding: 0.75rem; text-align: center; font-weight: 600; width: 5%;">QTY</th>
                             <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 7%; min-width: 60px;">UNIT</th>
                             <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 9%;">PRICE/UNIT</th>
-                            ${this.mode === 'sale' ? '<th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">MARGIN%</th>' : ''}
+                            ${(this.mode === 'sale' || this.mode === 'quotation') ? '<th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">MARGIN%</th>' : ''}
                             <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">DISCOUNT%</th>
                             <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">VAT</th>
                             <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 10%;">NETT</th>
@@ -274,7 +276,7 @@
                                data-field="unit_price"
                                ${!this.canEdit ? 'disabled' : ''}>
                     </td>
-                    ${this.mode === 'sale' ? `
+                    ${(this.mode === 'sale' || this.mode === 'quotation') ? `
                     <td style="padding: 0.25rem; text-align: right;">
                         <span class="margin-display" 
                               data-row="${index}"
@@ -309,7 +311,12 @@
                         <span class="item-nett" data-row="${index}">${formatCurrency(this.calculateNett(item))}</span>
                     </td>
                     <td style="padding: 0.25rem; text-align: right; font-weight: 600;">
-                        <span class="item-total" data-row="${index}">${formatCurrency(item.total || 0)}</span>
+                        <input type="number" class="form-input total-input" data-row="${index}" data-field="total"
+                               value="${Number(item.total) || 0}"
+                               step="0.01" min="0"
+                               style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 600;"
+                               ${!this.canEdit ? 'readonly' : ''}
+                               title="Editable: enter total to reverse-calculate unit price">
                     </td>
                     <td style="padding: 0.25rem; text-align: center;">
                         <div style="display: flex; gap: 0.25rem; justify-content: center; align-items: center;">
@@ -349,7 +356,7 @@
                     </tbody>
                     <tfoot>
                         <tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;">
-                            <td colspan="${this.mode === 'sale' ? '7' : '6'}" style="padding: 0.75rem; text-align: right;">Net:</td>
+                            <td colspan="${(this.mode === 'sale' || this.mode === 'quotation') ? '7' : '6'}" style="padding: 0.75rem; text-align: right;">Net:</td>
                             <td style="padding: 0.75rem; text-align: right;" id="${this.instanceId}_vat_total">${formatCurrency(summary.vat)}</td>
                             <td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_nett_total">${formatCurrency(summary.nett)}</td>
                             <td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total">${formatCurrency(summary.total)}</td>
@@ -424,6 +431,11 @@
                     // Move to next field or add new row
                     this.moveToNextField(e.target);
                 }
+            } else if (e.target.classList.contains('total-input')) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this.handleTotalChange(parseInt(e.target.dataset.row), e.target.value);
+                }
             }
         });
         
@@ -442,6 +454,10 @@
                 const unitName = e.target.value;
                 const multiplier = opt ? parseFloat(opt.dataset.multiplier) || 1 : 1;
                 this.handleUnitChange(row, unitName, multiplier);
+            }
+            if (e.target.classList.contains('total-input')) {
+                const row = parseInt(e.target.dataset.row);
+                this.handleTotalChange(row, e.target.value);
             }
         });
         
@@ -462,6 +478,13 @@
                 this.inputDebounceTimeout = setTimeout(() => {
                     this.handleFieldChange(row, field, e.target.value);
                 }, 150);
+            }
+            if (e.target.classList.contains('total-input')) {
+                const row = parseInt(e.target.dataset.row);
+                if (this.totalInputDebounce) clearTimeout(this.totalInputDebounce);
+                this.totalInputDebounce = setTimeout(() => {
+                    this.handleTotalChange(row, e.target.value);
+                }, 300);
             }
         });
         
@@ -721,7 +744,7 @@
                 const purchasePrice = suggestion.purchase_price || 0;
                 const stock = typeof suggestion.current_stock === 'number' ? suggestion.current_stock : (suggestion.stock || 0);
                 const vatRate = typeof suggestion.vat_rate === 'number' ? suggestion.vat_rate : (suggestion.vatRate || 0);
-                const vatCode = suggestion.vat_code || '';
+                const vatCode = suggestion.vat_category || suggestion.vat_code || '';
                 const lastSupplier = suggestion.last_supplier || '';
                 const baseUnit = suggestion.base_unit || '';
                 
@@ -730,9 +753,14 @@
                 const lastSupplyDate = suggestion.last_supply_date || null;
                 const lastUnitCost = suggestion.last_unit_cost || purchasePrice;
                 
-                // Determine which price to show based on mode
-                const displayPrice = this.mode === 'sale' ? salePrice : purchasePrice;
-                const priceLabel = this.mode === 'sale' ? 'Price' : 'Cost';
+                // For sale/quotation: if selling price is zero but cost exists, pre-calculate 30% margin
+                const DEFAULT_MARGIN_PERCENT = 30;
+                const effectiveSalePrice = (this.mode === 'sale' || this.mode === 'quotation') && (!salePrice || salePrice === 0) && purchasePrice > 0
+                    ? Math.round(purchasePrice * (1 + DEFAULT_MARGIN_PERCENT / 100) * 100) / 100
+                    : salePrice;
+                // Determine which price to show based on mode (quotation uses selling price like sale)
+                const displayPrice = (this.mode === 'sale' || this.mode === 'quotation') ? effectiveSalePrice : purchasePrice;
+                const priceLabel = (this.mode === 'sale' || this.mode === 'quotation') ? 'Price' : 'Cost';
                 
                 // Build stock display with color coding
                 let stockDisplay = '';
@@ -822,7 +850,7 @@
                                 <i class="fas fa-truck" style="margin-right: 0.25rem;"></i>Last Supplier: ${escapeHtml(lastSupplier)}
                             </div>`;
                         }
-                    } else if (this.mode === 'sale') {
+                    } else if (this.mode === 'sale' || this.mode === 'quotation') {
                         if (vatRate > 0 || vatCode) {
                             additionalInfo = `<div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-top: 0.2rem;">
                                 <i class="fas fa-receipt" style="margin-right: 0.25rem;"></i>VAT: ${vatRate.toFixed(1)}% ${vatCode ? `(${escapeHtml(vatCode)})` : ''}
@@ -837,7 +865,7 @@
                              data-item-sku="${escapeHtml(suggestion.sku || '')}"
                              data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
                              data-unit-name="${escapeHtml(baseUnit)}"
-                             data-sale-price="${salePrice}"
+                             data-sale-price="${(this.mode === 'sale' || this.mode === 'quotation') ? effectiveSalePrice : salePrice}"
                              data-purchase-price="${this.context === 'purchase_order' ? lastUnitCost : purchasePrice}"
                              data-vat-rate="${vatRate}"
                              data-stock="${stock}"
@@ -869,7 +897,7 @@
                                     ` : ''}
                                 </div>
                                 <div style="text-align: right;">
-                                    ${this.mode === 'sale' && purchasePrice > 0 ? `
+                                    ${(this.mode === 'sale' || this.mode === 'quotation') && purchasePrice > 0 ? `
                                         <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.15rem;">Cost:</div>
                                         <div style="font-size: 0.75rem; color: var(--text-secondary, #666);">
                                             ${formatCurrency(purchasePrice)}
@@ -908,10 +936,18 @@
             item_sku: suggestionEl.dataset.itemSku,
             item_code: suggestionEl.dataset.itemCode,
             unit_name: suggestionEl.dataset.unitName,
-            unit_price: this.mode === 'sale' 
-                ? parseFloat(suggestionEl.dataset.salePrice) 
-                : parseFloat(suggestionEl.dataset.purchasePrice),
-            purchase_price: parseFloat(suggestionEl.dataset.purchasePrice) || 0, // Store purchase price for margin
+            unit_price: (() => {
+                let up = (this.mode === 'sale' || this.mode === 'quotation')
+                    ? parseFloat(suggestionEl.dataset.salePrice)
+                    : parseFloat(suggestionEl.dataset.purchasePrice);
+                // When selling price is zero but cost exists, use 30% margin (already set on data-sale-price in suggestions)
+                if ((this.mode === 'sale' || this.mode === 'quotation') && (!up || up === 0)) {
+                    const cost = parseFloat(suggestionEl.dataset.purchasePrice) || 0;
+                    if (cost > 0) up = Math.round(cost * 1.30 * 100) / 100;
+                }
+                return up;
+            })(),
+            purchase_price: parseFloat(suggestionEl.dataset.purchasePrice) || 0, // Store cost for margin
             quantity: this.items[rowIndex].quantity || 1,
             discount_percent: 0,
             tax_percent: suggestionEl.dataset.vatRate ? parseFloat(suggestionEl.dataset.vatRate) || 0 : 0,
@@ -978,6 +1014,31 @@
     };
     
     /**
+     * Handle total change: reverse-calculate unit price from total.
+     * total = quantity * unit_price * (1 - discount_percent/100) * (1 + tax_percent/100)
+     * => unit_price = total / (quantity * (1 - discount_percent/100) * (1 + tax_percent/100))
+     */
+    TransactionItemsTable.prototype.handleTotalChange = function(rowIndex, value) {
+        if (rowIndex < 0 || rowIndex >= this.items.length) return;
+        const newTotal = parseFloat(value);
+        if (isNaN(newTotal) || newTotal < 0) return;
+        const item = this.items[rowIndex];
+        if (!item) return;
+        const qty = item.quantity || 0;
+        if (qty <= 0) return;
+        const discountPct = (item.discount_percent || 0) / 100;
+        const taxPct = (item.tax_percent || 0) / 100;
+        const factor = qty * (1 - discountPct) * (1 + taxPct);
+        if (factor <= 0) return;
+        const unitPrice = newTotal / factor;
+        item.unit_price = Math.round(unitPrice * 10000) / 10000;
+        this.recalculateRow(rowIndex);
+        this.updateRowDisplay(rowIndex);
+        this.updateMarginDisplay(rowIndex);
+        this.notifyChange();
+    };
+
+    /**
      * Handle field change (qty, price, discount)
      */
     TransactionItemsTable.prototype.handleFieldChange = function(rowIndex, field, value) {
@@ -1019,7 +1080,7 @@
      * Update margin display for a row
      */
     TransactionItemsTable.prototype.updateMarginDisplay = function(rowIndex) {
-        if (this.mode !== 'sale') return;
+        if (this.mode !== 'sale' && this.mode !== 'quotation') return;
         
         const item = this.items[rowIndex];
         if (!item) return;
@@ -1112,14 +1173,14 @@
             nettEl.textContent = this.getFormatCurrency()(this.calculateNett(item));
         }
         
-        // Update Total display
-        const totalEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .item-total`);
+        // Update Total display (editable input)
+        const totalEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .total-input`);
         if (totalEl) {
-            totalEl.textContent = this.getFormatCurrency()(item.total || 0);
+            totalEl.value = Number(item.total) || 0;
         }
         
-        // Update margin display in real-time (for sales mode)
-        if (this.mode === 'sale') {
+        // Update margin display in real-time (for sales and quotation)
+        if (this.mode === 'sale' || this.mode === 'quotation') {
             this.updateMarginDisplay(rowIndex);
         }
         
@@ -1224,14 +1285,19 @@
         const escapeHtml = this.getEscapeHtml();
         const code = item.item_code || item.item_sku || '';
         const stock = typeof item.available_stock === 'number' ? this.getFormatNumber()(item.available_stock) : 'N/A';
-        const price = formatCurrency(item.unit_price || 0);
+        const sellingPrice = formatCurrency(item.unit_price || 0);
+        const costPrice = (item.purchase_price != null && item.purchase_price !== '') ? formatCurrency(item.purchase_price) : null;
+        const margin = (this.mode === 'sale' || this.mode === 'quotation') ? this.formatMargin(this.calculateMargin(item)) : null;
         const vat = (item.tax_percent || 0).toFixed(1) + '%';
+        const priceLine = (this.mode === 'sale' || this.mode === 'quotation') && costPrice
+            ? `Selling: ${sellingPrice} &nbsp;|&nbsp; Cost: ${costPrice} &nbsp;|&nbsp; Margin: ${margin}`
+            : `Price: ${sellingPrice}`;
         
         dropdown.innerHTML = `
             <div class="selected-item-details" style="padding: 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6);">
                 <div style="font-weight: 600; margin-bottom: 0.35rem;">${escapeHtml(item.item_name || '')}</div>
                 <div style="color: var(--text-secondary, #666); font-size: 0.8rem;">
-                    Code: ${escapeHtml(code)} &nbsp;|&nbsp; Stock: ${stock} &nbsp;|&nbsp; Price: ${price} &nbsp;|&nbsp; VAT: ${vat}
+                    Code: ${escapeHtml(code)} &nbsp;|&nbsp; Stock: ${stock} &nbsp;|&nbsp; ${priceLine} &nbsp;|&nbsp; VAT: ${vat}
                 </div>
             </div>
             <div class="suggestion-item selected-item-action" data-action="search-different" data-row="${rowIndex}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center; border-bottom: 1px solid var(--border-color, #dee2e6);" onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='white'">
@@ -1460,7 +1526,7 @@
                 console.warn('Could not fetch item details:', error);
             }
             
-            const requiresExpiry = itemDetails?.requires_expiry_tracking || false;
+            const requiresExpiry = itemDetails?.track_expiry || false;
             const baseUnit = itemDetails?.base_unit || '';
             
             // Get existing batches if any (stored in item.batches)

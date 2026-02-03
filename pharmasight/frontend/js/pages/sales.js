@@ -1208,6 +1208,7 @@ async function renderCreateSalesQuotationPage() {
                 unit_name: item.unit_name,
                 quantity: item.quantity,
                 unit_price: item.unit_price_exclusive || 0,
+                purchase_price: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null,
                 discount_percent: item.discount_percent || 0,
                 total: item.line_total_inclusive || 0,
                 is_empty: false

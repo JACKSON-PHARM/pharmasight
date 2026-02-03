@@ -536,13 +536,13 @@ def create_count(
                 raise HTTPException(status_code=404, detail="Item not found")
             
             # Validate batch/expiry if required
-            if item.requires_batch_tracking and not batch_number:
+            if item.is_controlled and not batch_number:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Batch number is required for this item"
                 )
             
-            if item.requires_expiry_tracking and not expiry_date:
+            if item.track_expiry and not expiry_date:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Expiry date is required for this item"
@@ -607,13 +607,13 @@ def create_count(
                 raise HTTPException(status_code=404, detail="Item not found")
             
             # Validate batch/expiry if required
-            if item.requires_batch_tracking and not batch_number:
+            if item.is_controlled and not batch_number:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Batch number is required for this item"
                 )
             
-            if item.requires_expiry_tracking and not expiry_date:
+            if item.track_expiry and not expiry_date:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Expiry date is required for this item"
@@ -1632,8 +1632,9 @@ def complete_branch_stock_take(
                         logger.warning(f"Item {count.item_id} not found when completing stock take")
                         continue
                     
-                    # Use item's default cost or 0
-                    unit_cost = Decimal(str(item.default_cost)) if item.default_cost else Decimal('0')
+                    # Cost from inventory_ledger only (CanonicalPricingService)
+                    from app.services.canonical_pricing import CanonicalPricingService
+                    unit_cost = CanonicalPricingService.get_best_available_cost(db, count.item_id, branch_id, branch.company_id)
                     total_cost = abs(variance) * unit_cost
                     
                     # Create inventory ledger entry for adjustment
@@ -1848,7 +1849,7 @@ def update_count(
             count.shelf_location = shelf_location.strip()
         
         # Validate batch/expiry if required
-        if item.requires_batch_tracking and batch_number is not None:
+        if item.is_controlled and batch_number is not None:
             if not batch_number:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -1856,7 +1857,7 @@ def update_count(
                 )
             count.batch_number = batch_number
         
-        if item.requires_expiry_tracking and expiry_date is not None:
+        if item.track_expiry and expiry_date is not None:
             if not expiry_date:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
