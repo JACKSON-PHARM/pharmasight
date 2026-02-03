@@ -5,11 +5,12 @@ All pricing MUST flow through this service.
 Source of Truth: inventory_ledger; when no ledger records exist, items.default_cost_per_base is used.
 """
 from decimal import Decimal
-from typing import Optional
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from sqlalchemy import and_, func, desc
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import func as sql_func
 
 from app.models import InventoryLedger, Item
 
@@ -167,3 +168,101 @@ class CanonicalPricingService:
             return Decimal(str(item.default_cost_per_base))
         
         return Decimal('0')
+
+    @staticmethod
+    def get_best_available_cost_batch(
+        db: Session,
+        item_ids: List[UUID],
+        branch_id: UUID,
+        company_id: UUID
+    ) -> Dict[UUID, Decimal]:
+        """
+        Batch version: get best available cost for many items in a few queries.
+        Returns dict item_id -> cost (Decimal). Missing items get 0.
+        """
+        if not item_ids:
+            return {}
+        result = {iid: None for iid in item_ids}
+
+        # 1) Last purchase cost per item (one query with row_number)
+        last_purchase_subq = (
+            db.query(
+                InventoryLedger.item_id,
+                InventoryLedger.unit_cost,
+                sql_func.row_number()
+                .over(
+                    partition_by=InventoryLedger.item_id,
+                    order_by=desc(InventoryLedger.created_at)
+                )
+                .label('rn')
+            )
+            .filter(
+                InventoryLedger.item_id.in_(item_ids),
+                InventoryLedger.branch_id == branch_id,
+                InventoryLedger.company_id == company_id,
+                InventoryLedger.transaction_type == 'PURCHASE',
+                InventoryLedger.quantity_delta > 0
+            )
+        ).subquery()
+        last_purchases = (
+            db.query(last_purchase_subq.c.item_id, last_purchase_subq.c.unit_cost)
+            .filter(last_purchase_subq.c.rn == 1)
+            .all()
+        )
+        for row in last_purchases:
+            result[row.item_id] = Decimal(str(row.unit_cost)) if row.unit_cost else Decimal('0')
+
+        # 2) Opening balance for items still missing
+        missing = [iid for iid in item_ids if result[iid] is None]
+        if missing:
+            opening = (
+                db.query(InventoryLedger.item_id, InventoryLedger.unit_cost)
+                .filter(
+                    InventoryLedger.item_id.in_(missing),
+                    InventoryLedger.branch_id == branch_id,
+                    InventoryLedger.company_id == company_id,
+                    InventoryLedger.transaction_type == 'OPENING_BALANCE',
+                    InventoryLedger.reference_type == 'OPENING_BALANCE'
+                )
+                .all()
+            )
+            for row in opening:
+                if result[row.item_id] is None:
+                    result[row.item_id] = Decimal(str(row.unit_cost)) if row.unit_cost else Decimal('0')
+
+        # 3) Weighted average for items still missing
+        missing = [iid for iid in item_ids if result[iid] is None]
+        if missing:
+            wavg = (
+                db.query(
+                    InventoryLedger.item_id,
+                    (func.sum(InventoryLedger.quantity_delta * InventoryLedger.unit_cost)
+                     / func.sum(InventoryLedger.quantity_delta)).label('avg_cost')
+                )
+                .filter(
+                    InventoryLedger.item_id.in_(missing),
+                    InventoryLedger.branch_id == branch_id,
+                    InventoryLedger.company_id == company_id,
+                    InventoryLedger.quantity_delta > 0
+                )
+                .group_by(InventoryLedger.item_id)
+                .all()
+            )
+            for row in wavg:
+                if result[row.item_id] is None and row.avg_cost is not None:
+                    result[row.item_id] = Decimal(str(row.avg_cost))
+
+        # 4) Item default_cost_per_base for items still missing
+        missing = [iid for iid in item_ids if result[iid] is None]
+        if missing:
+            defaults = (
+                db.query(Item.id, Item.default_cost_per_base)
+                .filter(Item.id.in_(missing), Item.company_id == company_id)
+                .all()
+            )
+            for row in defaults:
+                if result[row.id] is None and row.default_cost_per_base is not None:
+                    result[row.id] = Decimal(str(row.default_cost_per_base))
+
+        # 5) Zero for any remaining
+        return {iid: (result[iid] if result[iid] is not None else Decimal('0')) for iid in item_ids}

@@ -17,6 +17,7 @@ from app.models import (
     Item, ItemPricing, InventoryLedger,
     Supplier, Company, Branch
 )
+from app.services.items_service import ensure_item_units_from_3tier
 
 logger = logging.getLogger(__name__)
 
@@ -479,11 +480,12 @@ class ExcelImportService:
         return tx_item_ids
 
     @staticmethod
-    def _overwrite_item_from_excel(item: Item, row: Dict):
+    def _overwrite_item_from_excel(db: Session, item: Item, row: Dict):
         """
         Overwrite an existing item with Excel data (safe ONLY when item has no real transactions).
 
         This updates BOTH structural fields (units/pack_size) and non-structural fields.
+        Ensures item_units has base + retail (when can_break_bulk) + supplier for unit dropdown.
         """
         # Reuse the same parsing logic as create for consistency
         description = _normalize_column_name(row, ['Description', 'Generic_Name', 'Generic Name', 'Generic name']) or ''
@@ -541,6 +543,7 @@ class ExcelImportService:
         is_cold_chain_raw = _normalize_column_name(row, ['Is_Cold_Chain', 'Is Cold Chain', 'is_cold_chain'])
         if is_cold_chain_raw is not None:
             item.is_cold_chain = _parse_bool_from_row(row, ['Is_Cold_Chain', 'Is Cold Chain', 'is_cold_chain'], False)
+        ensure_item_units_from_3tier(db, item)
     
     @staticmethod
     def _import_authoritative(
@@ -840,8 +843,8 @@ class ExcelImportService:
                     db, company_id, [item.id]
                 )
                 if not has_real_tx:
-                    # Safe to fully overwrite (master data only; no item_units)
-                    ExcelImportService._overwrite_item_from_excel(item, row)
+                    # Safe to fully overwrite (master data only; sync item_units for dropdown)
+                    ExcelImportService._overwrite_item_from_excel(db, item, row)
                     db.query(ItemPricing).filter(ItemPricing.item_id == item.id).delete(synchronize_session=False)
                 else:
                     # Only update non-structural fields (VAT/category)
@@ -965,7 +968,7 @@ class ExcelImportService:
                 db, company_id, [item.id]
             )
             if not has_real_tx:
-                ExcelImportService._overwrite_item_from_excel(item, row)
+                ExcelImportService._overwrite_item_from_excel(db, item, row)
                 db.query(ItemPricing).filter(ItemPricing.item_id == item.id).delete(synchronize_session=False)
                 ExcelImportService._process_item_pricing(db, item, company_id, row)
                 result['price_updated'] = 1

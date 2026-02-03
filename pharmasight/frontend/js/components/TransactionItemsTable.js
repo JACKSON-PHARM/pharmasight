@@ -64,6 +64,7 @@
         this.activeSelectedItemRow = null; // Row showing "selected item" dropdown (details / search different / view full)
         this.inputDebounceTimeout = null; // For debouncing input events
         this.totalInputDebounce = null; // For debouncing total input (reverse calc)
+        this.marginInputDebounce = null; // For debouncing margin input
         this._searchId = 0; // Incremented per search; used to ignore stale responses
         this._searchDebounceMs = 250; // Debounce so requests fire only after user pauses typing
         
@@ -278,11 +279,14 @@
                     </td>
                     ${(this.mode === 'sale' || this.mode === 'quotation') ? `
                     <td style="padding: 0.25rem; text-align: right;">
-                        <span class="margin-display" 
-                              data-row="${index}"
-                              style="font-weight: 500; color: ${this.calculateMargin(item) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};">
-                            ${this.formatMargin(this.calculateMargin(item))}
-                        </span>
+                        <input type="number" 
+                               class="form-input margin-input" 
+                               value="${(this.calculateMargin(item) || 0).toFixed(1)}" 
+                               step="0.1" 
+                               data-row="${index}"
+                               style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 500; color: ${this.calculateMargin(item) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};"
+                               title="Edit margin % — net and total will recalculate"
+                               ${!this.canEdit ? 'disabled' : ''}>
                     </td>
                     ` : ''}
                     <td style="padding: 0.25rem;">
@@ -459,6 +463,10 @@
                 const row = parseInt(e.target.dataset.row);
                 this.handleTotalChange(row, e.target.value);
             }
+            if (e.target.classList.contains('margin-input')) {
+                const row = parseInt(e.target.dataset.row);
+                this.handleMarginChange(row, e.target.value);
+            }
         });
         
         // Real-time input handlers (debounced) for live calculation
@@ -484,6 +492,13 @@
                 if (this.totalInputDebounce) clearTimeout(this.totalInputDebounce);
                 this.totalInputDebounce = setTimeout(() => {
                     this.handleTotalChange(row, e.target.value);
+                }, 300);
+            }
+            if (e.target.classList.contains('margin-input')) {
+                const row = parseInt(e.target.dataset.row);
+                if (this.marginInputDebounce) clearTimeout(this.marginInputDebounce);
+                this.marginInputDebounce = setTimeout(() => {
+                    this.handleMarginChange(row, e.target.value);
                 }, 300);
             }
         });
@@ -549,7 +564,7 @@
         const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
         const cache = (typeof window !== 'undefined' && window.searchCache) ? window.searchCache : null;
         if (config && cache) {
-            const cached = cache.get(queryTrimmed, config.COMPANY_ID, config.BRANCH_ID, 10);
+            const cached = cache.get(queryTrimmed, config.COMPANY_ID, config.BRANCH_ID, 50);
             if (cached !== null && cached !== undefined) {
                 this.activeSearchRow = rowIndex;
                 if (cached.length === 0) {
@@ -606,7 +621,7 @@
             const includePricing = true;
             
             if (cache) {
-                const cached = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 10);
+                const cached = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 50);
                 if (cached !== null && cached !== undefined) {
                     if (cached.length === 0) {
                         applyResults([{ type: 'create', query: query, message: 'Create new item: "' + query + '"' }]);
@@ -618,10 +633,11 @@
             }
             
             const requestOptions = signal ? { signal } : {};
-            const items = await api.items.search(query, config.COMPANY_ID, 10, config.BRANCH_ID || null, includePricing, this.context, requestOptions);
+            const searchLimit = 50;
+            const items = await api.items.search(query, config.COMPANY_ID, searchLimit, config.BRANCH_ID || null, includePricing, this.context, requestOptions);
             
             if (cache && items) {
-                cache.set(query, config.COMPANY_ID, config.BRANCH_ID, 10, items);
+                cache.set(query, config.COMPANY_ID, config.BRANCH_ID, searchLimit, items);
             }
             
             if (searchId !== this._searchId) return;
@@ -1014,6 +1030,24 @@
     };
     
     /**
+     * Handle margin change: set unit price from cost and margin %, then recalc net and total.
+     * unit_price (selling) = purchase_price * (1 + margin_percent/100)
+     */
+    TransactionItemsTable.prototype.handleMarginChange = function(rowIndex, value) {
+        if (rowIndex < 0 || rowIndex >= this.items.length) return;
+        const item = this.items[rowIndex];
+        if (!item) return;
+        const marginPct = parseFloat(value);
+        if (isNaN(marginPct)) return;
+        const cost = item.purchase_price || 0;
+        if (cost <= 0) return;
+        item.unit_price = Math.round(cost * (1 + marginPct / 100) * 10000) / 10000;
+        this.recalculateRow(rowIndex);
+        this.updateRowDisplay(rowIndex);
+        this.notifyChange();
+    };
+
+    /**
      * Handle total change: reverse-calculate unit price from total.
      * total = quantity * unit_price * (1 - discount_percent/100) * (1 + tax_percent/100)
      * => unit_price = total / (quantity * (1 - discount_percent/100) * (1 + tax_percent/100))
@@ -1077,7 +1111,7 @@
     };
     
     /**
-     * Update margin display for a row
+     * Update margin display for a row (editable input)
      */
     TransactionItemsTable.prototype.updateMarginDisplay = function(rowIndex) {
         if (this.mode !== 'sale' && this.mode !== 'quotation') return;
@@ -1085,10 +1119,10 @@
         const item = this.items[rowIndex];
         if (!item) return;
         
-        const marginEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .margin-display`);
+        const marginEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .margin-input`);
         if (marginEl) {
             const margin = this.calculateMargin(item);
-            marginEl.textContent = this.formatMargin(margin);
+            marginEl.value = (margin !== null && !isNaN(margin)) ? margin.toFixed(1) : '';
             marginEl.style.color = margin >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)';
         }
     };
@@ -1171,6 +1205,13 @@
         const nettEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .item-nett`);
         if (nettEl) {
             nettEl.textContent = this.getFormatCurrency()(this.calculateNett(item));
+        }
+        
+        // Update Price/unit input so it stays in sync when total or unit changes
+        const priceEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .price-input`);
+        if (priceEl) {
+            const v = item.unit_price;
+            priceEl.value = (v != null && v !== '' && !isNaN(Number(v))) ? Number(v) : 0;
         }
         
         // Update Total display (editable input)

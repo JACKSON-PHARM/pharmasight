@@ -1,12 +1,16 @@
 """
-Items API routes
+Items API routes.
+
+All item endpoints use get_tenant_db: session is the logged-in context (tenant DB when
+X-Tenant-Subdomain is set, else default DB). Same company/DB as rest of app.
 """
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 from app.dependencies import get_tenant_db
 from app.models import (
     Item, ItemUnit, ItemPricing, CompanyPricingDefault,
@@ -22,11 +26,69 @@ from app.schemas.item import (
     ItemsBulkCreate, ItemOverviewResponse
 )
 from app.services.pricing_service import PricingService
-from app.services.items_service import create_item as svc_create_item
+from app.services.items_service import create_item as svc_create_item, ensure_item_units_from_3tier
 from app.services.canonical_pricing import CanonicalPricingService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _display_units_from_item(item: Item) -> List[ItemUnitResponse]:
+    """
+    Build 3-tier unit list from items table columns only (no item_units dependency).
+    Fetches names from: wholesale_unit, retail_unit, supplier_unit. Uses pack_size for
+    wholesale→retail (1 retail = 1/pack_size wholesale) and wholesale_units_per_supplier
+    for wholesale→supplier. Always reveals all available tiers when column values are set.
+    """
+    wholesale_name = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
+    retail_name = (item.retail_unit or "").strip()
+    supplier_name = (item.supplier_unit or "").strip()
+    pack = max(1, int(item.pack_size or 1))
+    wups = max(0.0001, float(item.wholesale_units_per_supplier or 1))
+    now = datetime.now(timezone.utc)
+    units: List[ItemUnitResponse] = []
+
+    # 1) Wholesale (base) — always first, multiplier 1; name from wholesale_unit column
+    units.append(
+        ItemUnitResponse(
+            id=uuid4(),
+            item_id=item.id,
+            unit_name=wholesale_name,
+            multiplier_to_base=1.0,
+            is_default=True,
+            created_at=now,
+        )
+    )
+
+    # 2) Retail — whenever retail_unit column is set; conversion 1 retail = 1/pack_size wholesale
+    # Skip only if same name as wholesale and pack_size==1 to avoid duplicate option
+    if retail_name:
+        is_same_as_wholesale = retail_name.lower() == wholesale_name.lower()
+        if not (is_same_as_wholesale and pack == 1):
+            units.append(
+                ItemUnitResponse(
+                    id=uuid4(),
+                    item_id=item.id,
+                    unit_name=item.retail_unit.strip(),
+                    multiplier_to_base=1.0 / pack,
+                    is_default=False,
+                    created_at=now,
+                )
+            )
+
+    # 3) Supplier — whenever supplier_unit column is set and different from wholesale
+    if supplier_name and supplier_name.lower() != wholesale_name.lower():
+        units.append(
+            ItemUnitResponse(
+                id=uuid4(),
+                item_id=item.id,
+                unit_name=item.supplier_unit.strip(),
+                multiplier_to_base=wups,
+                is_default=False,
+                created_at=now,
+            )
+        )
+    return units
 
 
 def generate_sku(company_id: UUID, db: Session) -> str:
@@ -66,21 +128,17 @@ def search_items(
     q: str = Query(..., min_length=2, description="Search query"),
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: Optional[UUID] = Query(None, description="Branch ID for pricing and stock (optional)"),
-    limit: int = Query(10, ge=1, le=20, description="Maximum results"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum results"),
     include_pricing: bool = Query(False, description="Include pricing info (slower)"),
     context: Optional[str] = Query(None, description="Context: 'purchase_order' for PO-specific fields"),
     db: Session = Depends(get_tenant_db)
 ):
     """
-    Optimized item search endpoint for ERP-style inline search.
-    Returns minimal data: id, name, base_unit, prices, sku, stock, VAT info.
-    
-    Performance optimizations:
-    - Uses indexed fields for fast search
-    - Pricing info is optional (set include_pricing=true if needed)
-    - Stock is always calculated if branch_id is provided
-    - Limits results early to reduce query time
-    - Orders by best match first, then by stock level (highest first)
+    Item search: reads only from DB (items table). Joins with inventory_ledger for
+    stock and cost; if no ledger data, falls back to item default_cost_per_base.
+    Excel import only seeds the DB; this endpoint never uses Excel.
+    Returns: id, name, base_unit, prices, sku, stock, VAT info. Ordered by
+    best match then in-stock first when branch_id given.
     """
     search_term_lower = q.lower()
     search_term_pattern = f"%{search_term_lower}%"
@@ -90,7 +148,7 @@ def search_items(
     # Calculate relevance score in SQL using CASE statements
     from sqlalchemy import case
     
-    # Build relevance score: name matches get highest priority, then SKU, then barcode
+    # Build relevance score: name matches get highest priority, then SKU, then barcode (label so row.relevance_score works)
     relevance_score = case(
         (func.lower(Item.name).like(search_term_start), 1000),  # Name starts with (highest priority)
         (func.lower(Item.name).like(search_term_pattern), 500),  # Name contains
@@ -99,9 +157,9 @@ def search_items(
         (and_(Item.barcode.isnot(None), func.lower(Item.barcode).like(search_term_start)), 100),  # Barcode starts with
         (and_(Item.barcode.isnot(None), func.lower(Item.barcode).like(search_term_pattern)), 50),  # Barcode contains
         else_=0
-    )
-    
-    # Build base query with relevance scoring. No deprecated price columns — pricing from inventory_ledger only.
+    ).label("relevance_score")
+
+    # Build base query: items from DB only (no Excel). Join with ledger/costs later; fallback to item defaults.
     base_query = db.query(
         Item.id,
         Item.name,
@@ -111,7 +169,7 @@ def search_items(
         Item.is_active,
         Item.vat_rate,
         Item.vat_category,
-        relevance_score
+        relevance_score,
     ).filter(
         Item.company_id == company_id,
         Item.is_active == True,
@@ -151,6 +209,15 @@ def search_items(
             .all()
         )
         stock_map = {row.item_id: int(row.total_stock) if row.total_stock else 0 for row in stock_data}
+        # Order: in-stock first, then best match (relevance), then name
+        items = sorted(
+            items,
+            key=lambda r: (
+                0 if stock_map.get(r.id, 0) > 0 else 1,
+                -(getattr(r, "relevance_score", 0) or 0),
+                (r.name or "").lower(),
+            ),
+        )
     
     # OPTIMIZED: Only fetch purchase/order info if pricing is requested
     purchase_price_map = {}
@@ -295,11 +362,14 @@ def search_items(
         for item in items:
             sale_price_map[item.id] = 0.0
     
-    # Return response — pricing from inventory_ledger only (CanonicalPricingService)
+    # Best available cost: batch when branch_id set (avoids N+1); else 0
+    cost_from_ledger_map = {}
+    if branch_id:
+        cost_from_ledger_map = CanonicalPricingService.get_best_available_cost_batch(db, item_ids, branch_id, company_id)
+    
     result = []
     for item in items:
-        # Best available cost from ledger (last purchase → opening balance → weighted avg → 0)
-        price_from_ledger = float(CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, company_id)) if branch_id else 0.0
+        price_from_ledger = float(cost_from_ledger_map.get(item.id, 0)) if branch_id else 0.0
         purchase_price_val = purchase_price_map.get(item.id, price_from_ledger) if include_pricing else price_from_ledger
         last_unit_cost_val = last_unit_cost_ledger_map.get(item.id, purchase_price_map.get(item.id, price_from_ledger)) if context == 'purchase_order' else None
         
@@ -333,15 +403,24 @@ def search_items(
 def get_item(
     item_id: UUID,
     branch_id: Optional[UUID] = Query(None, description="Branch ID for cost from ledger (optional)"),
-    db: Session = Depends(get_tenant_db)
+    db: Session = Depends(get_tenant_db),
 ):
-    """Get item by ID. Cost/price in response from inventory_ledger only (never from items table)."""
+    """
+    Get item by ID. Uses same DB/session as request (tenant when X-Tenant-Subdomain set).
+    Cost from inventory_ledger; fallback item.default_cost_per_base. Units list is built from
+    the item row (3-tier: base, retail, supplier) so the unit dropdown always shows all tiers.
+    """
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     resp = ItemResponse.model_validate(item)
-    # Cost from ledger only
-    resp.default_cost = float(CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, item.company_id)) if branch_id else 0.0
+    # Streamline: units from item 3-tier columns only (no item_units table dependency)
+    resp.units = _display_units_from_item(item)
+    resp.default_cost = float(
+        CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, item.company_id)
+    ) if branch_id else 0.0
+    # Keep item_units table in sync for other code paths (e.g. inventory conversion)
+    ensure_item_units_from_3tier(db, item)
     return resp
 
 
@@ -516,7 +595,7 @@ def get_items_overview(
             'is_active': item.is_active,
             'created_at': item.created_at,
             'updated_at': item.updated_at,
-            'units': item.units,
+            'units': _display_units_from_item(item),
             'supplier_unit': item.supplier_unit,
             'wholesale_unit': item.wholesale_unit,
             'retail_unit': item.retail_unit,
@@ -580,6 +659,7 @@ def get_items_by_company(
     for item in items:
         resp = ItemResponse.model_validate(item)
         resp.default_cost = 0.0
+        resp.units = _display_units_from_item(item)
         result.append(resp)
     return result
 

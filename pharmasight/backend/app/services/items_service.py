@@ -65,6 +65,51 @@ def _generate_sku(company_id: UUID, db: Session) -> str:
     return f"A{(max_n + 1):05d}"
 
 
+def ensure_item_units_from_3tier(db: Session, item: Item) -> None:
+    """
+    Ensure item_units table has rows for base (wholesale), retail (if break-bulk or retail != base), and supplier.
+    So the unit dropdown shows all three tiers (e.g. box + tablets) and price converts per unit.
+    """
+    existing = {(getattr(u, "unit_name", None) or "").strip().lower(): u for u in (list(item.units) if item.units else []) if u}
+    base_name = (item.base_unit or item.wholesale_unit or "piece").strip().lower()
+    pack = max(1, int(item.pack_size or 1))
+    wups = max(Decimal("0.0001"), Decimal(str(getattr(item, "wholesale_units_per_supplier", 1) or 1)))
+    retail_name = (getattr(item, "retail_unit", None) or "piece").strip().lower()
+    supplier_name = (getattr(item, "supplier_unit", None) or "").strip().lower()
+    can_break = getattr(item, "can_break_bulk", False)
+    # Show retail in dropdown when can_break_bulk or when retail unit differs from base and pack_size > 1
+    show_retail = (can_break or (retail_name != base_name and pack > 1)) and retail_name and retail_name not in existing
+
+    if base_name and base_name not in existing:
+        u = ItemUnit(
+            item_id=item.id,
+            unit_name=item.base_unit or item.wholesale_unit or "piece",
+            multiplier_to_base=Decimal("1"),
+            is_default=True,
+        )
+        db.add(u)
+        existing[base_name] = u
+    if show_retail and pack >= 1:
+        mult = Decimal("1") / Decimal(str(pack))
+        u = ItemUnit(
+            item_id=item.id,
+            unit_name=item.retail_unit or "piece",
+            multiplier_to_base=mult,
+            is_default=False,
+        )
+        db.add(u)
+        existing[retail_name] = u
+    if supplier_name and supplier_name not in existing:
+        u = ItemUnit(
+            item_id=item.id,
+            unit_name=item.supplier_unit or "piece",
+            multiplier_to_base=wups,
+            is_default=False,
+        )
+        db.add(u)
+    db.flush()
+
+
 def _ensure_units_from_3tier(db: Session, item: Item, data: ItemCreate) -> None:
     """Create item_units from 3-tier when `units` list is empty. Base = wholesale (multiplier 1)."""
     if data.units:
