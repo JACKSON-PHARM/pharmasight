@@ -6,7 +6,7 @@ from app.database import Base
 # Import all models
 from .company import Company, Branch
 from .user import User, UserRole, UserBranchRole
-from .item import Item, ItemUnit, ItemPricing, CompanyPricingDefault
+from .item import Item, ItemPricing, CompanyPricingDefault
 from .inventory import InventoryLedger
 from .supplier import Supplier
 from .purchase import GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem, PurchaseOrder, PurchaseOrderItem
@@ -27,7 +27,6 @@ __all__ = [
     "UserRole",
     "UserBranchRole",
     "Item",
-    "ItemUnit",
     "ItemPricing",
     "CompanyPricingDefault",
     "InventoryLedger",

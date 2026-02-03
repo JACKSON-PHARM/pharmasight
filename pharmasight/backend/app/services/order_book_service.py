@@ -11,7 +11,7 @@ from sqlalchemy import func, and_, or_
 
 from app.models import (
     DailyOrderBook, Item, InventoryLedger, Supplier,
-    SalesInvoiceItem, SalesInvoice, ItemUnit
+    SalesInvoiceItem, SalesInvoice
 )
 from app.services.inventory_service import InventoryService
 

@@ -13,7 +13,7 @@ from typing import List, Optional
 from uuid import UUID, uuid4
 from app.dependencies import get_tenant_db
 from app.models import (
-    Item, ItemUnit, ItemPricing, CompanyPricingDefault,
+    Item, ItemPricing, CompanyPricingDefault,
     InventoryLedger, SupplierInvoice, SupplierInvoiceItem, Supplier,
     PurchaseOrder, PurchaseOrderItem
 )
@@ -26,7 +26,7 @@ from app.schemas.item import (
     ItemsBulkCreate, ItemOverviewResponse
 )
 from app.services.pricing_service import PricingService
-from app.services.items_service import create_item as svc_create_item, ensure_item_units_from_3tier
+from app.services.items_service import create_item as svc_create_item
 from app.services.canonical_pricing import CanonicalPricingService
 
 logger = logging.getLogger(__name__)
@@ -399,6 +399,41 @@ def search_items(
     return result
 
 
+def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
+    """
+    Build a dict suitable for ItemResponse from an Item using only scalar columns.
+    Never accesses item.units (avoids querying item_units table which may not exist).
+    """
+    return {
+        "id": item.id,
+        "company_id": item.company_id,
+        "name": item.name,
+        "description": item.description,
+        "sku": item.sku,
+        "barcode": item.barcode,
+        "category": item.category,
+        "base_unit": item.base_unit or "piece",
+        "vat_category": getattr(item, "vat_category", None) or "ZERO_RATED",
+        "vat_rate": float(item.vat_rate) if item.vat_rate is not None else 0.0,
+        "is_active": item.is_active,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "supplier_unit": item.supplier_unit or "piece",
+        "wholesale_unit": item.wholesale_unit or item.base_unit or "piece",
+        "retail_unit": item.retail_unit or "piece",
+        "pack_size": int(item.pack_size) if item.pack_size is not None else 1,
+        "wholesale_units_per_supplier": float(item.wholesale_units_per_supplier) if item.wholesale_units_per_supplier is not None else 1.0,
+        "can_break_bulk": item.can_break_bulk,
+        "track_expiry": getattr(item, "track_expiry", False),
+        "is_controlled": getattr(item, "is_controlled", False),
+        "is_cold_chain": getattr(item, "is_cold_chain", False),
+        "default_cost_per_base": float(item.default_cost_per_base) if item.default_cost_per_base is not None else None,
+        "default_supplier_id": item.default_supplier_id,
+        "default_cost": default_cost,
+        "units": [],  # Set below from _display_units_from_item
+    }
+
+
 @router.get("/{item_id}", response_model=ItemResponse)
 def get_item(
     item_id: UUID,
@@ -409,18 +444,17 @@ def get_item(
     Get item by ID. Uses same DB/session as request (tenant when X-Tenant-Subdomain set).
     Cost from inventory_ledger; fallback item.default_cost_per_base. Units list is built from
     the item row (3-tier: base, retail, supplier) so the unit dropdown always shows all tiers.
+    Does not use the item_units table (works when that table is missing).
     """
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    resp = ItemResponse.model_validate(item)
-    # Streamline: units from item 3-tier columns only (no item_units table dependency)
-    resp.units = _display_units_from_item(item)
-    resp.default_cost = float(
+    default_cost = float(
         CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, item.company_id)
     ) if branch_id else 0.0
-    # Keep item_units table in sync for other code paths (e.g. inventory conversion)
-    ensure_item_units_from_3tier(db, item)
+    data = _item_to_response_dict(item, default_cost=default_cost)
+    data["units"] = _display_units_from_item(item)
+    resp = ItemResponse.model_validate(data)
     return resp
 
 
@@ -480,9 +514,9 @@ def get_items_overview(
     Computes stock from inventory_ledger aggregation.
     Gets last supplier and cost from purchase transactions.
     """
-    # Base query for items
+    # Base query for items (units are from item columns; no item_units table)
     items_query = db.query(Item).filter(Item.company_id == company_id)
-    items = items_query.options(selectinload(Item.units)).all()
+    items = items_query.all()
     
     if not items:
         return []
@@ -644,23 +678,17 @@ def get_items_by_company(
     """
     query = db.query(Item).filter(Item.company_id == company_id)
     
-    # Eagerly load units to avoid N+1 queries (much faster!)
-    # Use selectinload for better performance with many items
-    if include_units:
-        query = query.options(selectinload(Item.units))
-    
     # Apply pagination if limit is provided
     if limit:
         query = query.limit(limit).offset(offset)
     
     items = query.all()
-    # Do not expose items table price columns — overwrite with 0 (cost from ledger via search/overview only)
+    # Build response from scalar columns only (units from 3-tier columns; no item_units table)
     result = []
     for item in items:
-        resp = ItemResponse.model_validate(item)
-        resp.default_cost = 0.0
-        resp.units = _display_units_from_item(item)
-        result.append(resp)
+        data = _item_to_response_dict(item, default_cost=0.0)
+        data["units"] = _display_units_from_item(item)
+        result.append(ItemResponse.model_validate(data))
     return result
 
 
@@ -678,9 +706,6 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
     
     # Check if item has any transactions
     has_transactions = db.query(InventoryLedger).filter(InventoryLedger.item_id == item_id).first() is not None
-    
-    # Get units to update before converting to dict
-    units_to_update = item_update.units if hasattr(item_update, 'units') and item_update.units is not None else None
     
     update_data = item_update.model_dump(exclude_unset=True, exclude={'units'}) if hasattr(item_update, 'model_dump') else item_update.dict(exclude_unset=True, exclude={'units'})
     # Do not persist deprecated price fields — cost from inventory_ledger only
@@ -711,48 +736,9 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
     if cb and (int(ps) if ps is not None else 1) < 2:
         raise HTTPException(status_code=400, detail="Breakable items must have pack_size > 1")
     
-    # Apply allowed updates
+    # Apply allowed updates. Units are item characteristics (columns on items table); no separate unit list.
     for field, value in update_data.items():
         setattr(item, field, value)
-    
-    # Handle unit updates if provided (only if no transactions)
-    if units_to_update is not None:
-        if has_transactions:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot modify unit conversions after item has inventory transactions. "
-                       "These fields are locked to maintain data integrity."
-            )
-        
-        # Get existing units
-        existing_units = {str(u.id): u for u in db.query(ItemUnit).filter(ItemUnit.item_id == item_id).all()}
-        existing_unit_ids = set(existing_units.keys())
-        
-        # Get IDs from update request
-        update_unit_ids = {str(u.id) for u in units_to_update if u.id}
-        
-        # Delete units that are no longer in the update list
-        units_to_delete = existing_unit_ids - update_unit_ids
-        for unit_id in units_to_delete:
-            db.delete(existing_units[unit_id])
-        
-        # Update or create units
-        for unit_data in units_to_update:
-            if unit_data.id and str(unit_data.id) in existing_units:
-                # Update existing unit
-                unit = existing_units[str(unit_data.id)]
-                unit.unit_name = unit_data.unit_name
-                unit.multiplier_to_base = unit_data.multiplier_to_base
-                unit.is_default = unit_data.is_default
-            else:
-                # Create new unit
-                new_unit = ItemUnit(
-                    item_id=item_id,
-                    unit_name=unit_data.unit_name,
-                    multiplier_to_base=unit_data.multiplier_to_base,
-                    is_default=unit_data.is_default
-                )
-                db.add(new_unit)
     
     db.commit()
     db.refresh(item)
@@ -830,8 +816,6 @@ def bulk_create_items(bulk_data: ItemsBulkCreate, db: Session = Depends(get_tena
         # Step 2: Filter out duplicates and prepare new items
         new_items = []
         items_to_insert = []
-        units_to_insert = []
-        
         for idx, item_data in enumerate(bulk_data.items):
             try:
                 # Use model_dump() for Pydantic v2, fallback to dict() for v1
@@ -910,10 +894,7 @@ def bulk_create_items(bulk_data: ItemsBulkCreate, db: Session = Depends(get_tena
                 key = item.sku.strip().lower() if item.sku else item.name.strip().lower()
                 item_id_map[key] = item.id
             
-            # Step 5: Prepare units for bulk insert (with deduplication)
-            # Track units per item to avoid duplicates
-            units_by_item = {}  # {item_id: {unit_name: unit_dict}}
-            
+            # Step 5: Count created items (units are item columns; no item_units table)
             for new_item in new_items:
                 idx = new_item['index']
                 item_data = new_item['item_data']
@@ -933,86 +914,16 @@ def bulk_create_items(bulk_data: ItemsBulkCreate, db: Session = Depends(get_tena
                         })
                         continue
                     
-                    # Initialize units dict for this item if not exists
-                    if item_id not in units_by_item:
-                        units_by_item[item_id] = {}
-                    
-                    units_data = item_data.units if hasattr(item_data, 'units') else item_data.dict().get('units', [])
-                    
-                    # Add units (deduplicate by unit_name)
-                    for unit_data in units_data:
-                        unit_dict = unit_data.model_dump() if hasattr(unit_data, 'model_dump') else unit_data.dict()
-                        unit_name = unit_dict.get('unit_name', '').upper().strip()
-                        if unit_name:
-                            # Only add if not already exists for this item
-                            if unit_name not in units_by_item[item_id]:
-                                units_by_item[item_id][unit_name] = {
-                                    'item_id': item_id,
-                                    **unit_dict
-                                }
-                    
-                    # Add default base unit if not provided (check if already exists)
-                    base_unit_name = item_data.base_unit.upper().strip() if item_data.base_unit else None
-                    if base_unit_name and base_unit_name not in units_by_item[item_id]:
-                        units_by_item[item_id][base_unit_name] = {
-                            'item_id': item_id,
-                            'unit_name': base_unit_name,
-                            'multiplier_to_base': 1.0,
-                            'is_default': True
-                        }
-                    
                     created_count += 1
                     
                 except Exception as e:
                     errors.append({
                         'index': idx,
                         'name': item_dict.get('name', 'Unknown'),
-                        'error': f"Unit creation error: {str(e)}"
+                        'error': str(e)
                     })
             
-            # Step 6: Flatten units dict and check for existing units in database
-            if units_by_item:
-                # Get all item_ids and unit_names to check for existing units
-                all_item_ids = list(units_by_item.keys())
-                all_unit_names = set()
-                for item_units in units_by_item.values():
-                    all_unit_names.update(unit['unit_name'] for unit in item_units.values())
-                
-                # Query existing units to avoid duplicates
-                existing_units = db.query(ItemUnit).filter(
-                    ItemUnit.item_id.in_(all_item_ids),
-                    ItemUnit.unit_name.in_(list(all_unit_names))
-                ).all()
-                
-                # Build set of existing (item_id, unit_name) pairs
-                existing_unit_keys = {(str(unit.item_id), unit.unit_name.upper()) for unit in existing_units}
-                
-                # Only add units that don't already exist
-                for item_id, item_units_dict in units_by_item.items():
-                    for unit_name, unit_dict in item_units_dict.items():
-                        unit_key = (str(item_id), unit_name.upper())
-                        if unit_key not in existing_unit_keys:
-                            units_to_insert.append(unit_dict)
-            
-            # Step 7: Bulk insert units (only new ones)
-            if units_to_insert:
-                try:
-                    db.bulk_insert_mappings(ItemUnit, units_to_insert)
-                except Exception as e:
-                    # If still fails, try individual inserts with error handling
-                    logger.warning(f"Bulk unit insert failed, trying individual: {str(e)}")
-                    for unit_dict in units_to_insert:
-                        try:
-                            # Check if unit already exists before inserting
-                            existing = db.query(ItemUnit).filter(
-                                ItemUnit.item_id == unit_dict['item_id'],
-                                ItemUnit.unit_name == unit_dict['unit_name']
-                            ).first()
-                            if not existing:
-                                db.add(ItemUnit(**unit_dict))
-                        except Exception as unit_error:
-                            logger.warning(f"Failed to insert unit {unit_dict.get('unit_name')} for item {unit_dict.get('item_id')}: {str(unit_error)}")
-                            continue
+            # Units are item characteristics (columns on items table only); no item_units table to insert.
         
         # Commit all at once
         db.commit()

@@ -7,8 +7,9 @@ from typing import List, Optional, Dict, Tuple
 from datetime import date
 from uuid import UUID
 from decimal import Decimal
-from app.models import InventoryLedger, Item, ItemUnit, Branch
+from app.models import InventoryLedger, Item, Branch
 from app.schemas.inventory import StockBalance, BatchStock, StockAvailability, UnitBreakdown
+from app.services.item_units_helper import get_unit_multiplier_from_item
 
 
 class InventoryService:
@@ -93,36 +94,41 @@ class InventoryService:
         Returns:
             StockAvailability with unit breakdown (e.g., "8 boxes + 40 tablets")
         """
-        # Get item and units
+        # Get item; units from item columns (items table is source of truth)
         item = db.query(Item).filter(Item.id == item_id).first()
         if not item:
             return None
         
-        units = db.query(ItemUnit).filter(
-            ItemUnit.item_id == item_id
-        ).order_by(ItemUnit.multiplier_to_base.desc()).all()
+        wholesale_name = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
+        retail_name = (item.retail_unit or "").strip()
+        supplier_name = (item.supplier_unit or "").strip()
+        pack = max(1, int(item.pack_size or 1))
+        wups = max(0.0001, float(item.wholesale_units_per_supplier or 1))
+        units_list = [
+            (wholesale_name, 1.0, True),
+        ]
+        if retail_name and (retail_name.lower() != wholesale_name.lower() or pack > 1):
+            units_list.append((item.retail_unit.strip(), 1.0 / pack, False))
+        if supplier_name and supplier_name.lower() != wholesale_name.lower():
+            units_list.append((item.supplier_unit.strip(), wups, False))
+        # Sort by multiplier desc (largest first for breakdown)
+        units_list.sort(key=lambda x: x[1], reverse=True)
         
-        # Get total stock in base units
         total_base_units = InventoryService.get_current_stock(db, item_id, branch_id)
-        
-        # Build unit breakdown
         unit_breakdown = []
         remaining = total_base_units
         
-        for unit in units:
-            multiplier = float(unit.multiplier_to_base)
+        for unit_name, multiplier, is_default in units_list:
             whole_units = int(remaining // multiplier)
             remainder = int(remaining % multiplier)
-            
-            if whole_units > 0 or (whole_units == 0 and unit.is_default):
+            if whole_units > 0 or (whole_units == 0 and is_default):
                 display_parts = []
                 if whole_units > 0:
-                    display_parts.append(f"{whole_units} {unit.unit_name}")
+                    display_parts.append(f"{whole_units} {unit_name}")
                 if remainder > 0:
                     display_parts.append(f"{remainder} {item.base_unit}")
-                
                 unit_breakdown.append(UnitBreakdown(
-                    unit_name=unit.unit_name,
+                    unit_name=unit_name,
                     multiplier=multiplier,
                     whole_units=whole_units,
                     remainder_base_units=remainder,
@@ -176,15 +182,11 @@ class InventoryService:
             - unit_cost
             - ledger_entry_id (for reference)
         """
-        # Get item unit multiplier
-        item_unit = db.query(ItemUnit).filter(
-            and_(
-                ItemUnit.item_id == item_id,
-                ItemUnit.unit_name == unit_name
-            )
-        ).first()
-        
-        if not item_unit:
+        item = db.query(Item).filter(Item.id == item_id).first()
+        if not item:
+            raise ValueError(f"Item {item_id} not found")
+        multiplier = get_unit_multiplier_from_item(item, unit_name)
+        if multiplier is None:
             raise ValueError(f"Unit '{unit_name}' not found for item {item_id}")
         
         # Get available batches (FEFO order)
@@ -261,17 +263,13 @@ class InventoryService:
         Returns:
             int: Quantity in base units
         """
-        item_unit = db.query(ItemUnit).filter(
-            and_(
-                ItemUnit.item_id == item_id,
-                ItemUnit.unit_name == unit_name
-            )
-        ).first()
-        
-        if not item_unit:
+        item = db.query(Item).filter(Item.id == item_id).first()
+        if not item:
+            raise ValueError(f"Item {item_id} not found")
+        mult = get_unit_multiplier_from_item(item, unit_name)
+        if mult is None:
             raise ValueError(f"Unit '{unit_name}' not found for item {item_id}")
-        
-        return int(quantity * float(item_unit.multiplier_to_base))
+        return int(quantity * float(mult))
 
     @staticmethod
     def check_stock_availability(

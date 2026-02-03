@@ -8,9 +8,10 @@ from uuid import UUID
 from decimal import Decimal, ROUND_HALF_UP
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
-    InventoryLedger, ItemUnit
+    InventoryLedger
 )
 from app.services.inventory_service import InventoryService
+from app.services.item_units_helper import get_unit_multiplier_from_item
 
 
 class PricingService:
@@ -188,34 +189,18 @@ class PricingService:
                 recommended_unit_price = Decimal(str(tier_pricing["converted_price"]))
                 pricing_unit = tier_pricing["converted_unit"]
             else:
-                # Price is in original unit, need to convert
-                item_unit = db.query(ItemUnit).filter(
-                    and_(
-                        ItemUnit.item_id == item_id,
-                        ItemUnit.unit_name == unit_name
-                    )
-                ).first()
-                
-                if not item_unit:
+                # Price is in original unit, need to convert (items table is source of truth)
+                item = db.query(Item).filter(Item.id == item_id).first()
+                if not item:
+                    raise ValueError(f"Item {item_id} not found")
+                target_mult = get_unit_multiplier_from_item(item, unit_name)
+                if target_mult is None:
                     raise ValueError(f"Unit '{unit_name}' not found for item {item_id}")
-                
-                # Get source unit multiplier
-                source_unit = db.query(ItemUnit).filter(
-                    and_(
-                        ItemUnit.item_id == item_id,
-                        ItemUnit.unit_name == tier_pricing["unit"]
-                    )
-                ).first()
-                
-                if source_unit:
-                    source_mult = Decimal(str(source_unit.multiplier_to_base))
-                    target_mult = Decimal(str(item_unit.multiplier_to_base))
-                    # Convert: price_per_target = price_per_source * (source_mult / target_mult)
+                source_mult = get_unit_multiplier_from_item(item, tier_pricing.get("unit"))
+                if source_mult is not None:
                     recommended_unit_price = Decimal(str(tier_pricing["price"])) * (source_mult / target_mult)
                 else:
-                    # Fallback: assume same unit
                     recommended_unit_price = Decimal(str(tier_pricing["price"]))
-                
                 pricing_unit = unit_name
             
             # Get cost for margin calculation
@@ -223,17 +208,11 @@ class PricingService:
             if not unit_cost:
                 unit_cost = Decimal("0")
             
-            # Calculate base unit price from recommended price
-            item_unit = db.query(ItemUnit).filter(
-                and_(
-                    ItemUnit.item_id == item_id,
-                    ItemUnit.unit_name == unit_name
-                )
-            ).first()
-            
-            if item_unit:
-                multiplier = Decimal(str(item_unit.multiplier_to_base))
-                base_unit_price = recommended_unit_price / multiplier if multiplier > 0 else recommended_unit_price
+            # Calculate base unit price from recommended price (items table)
+            item = db.query(Item).filter(Item.id == item_id).first()
+            multiplier = get_unit_multiplier_from_item(item, unit_name) if item else None
+            if multiplier and multiplier > 0:
+                base_unit_price = recommended_unit_price / multiplier
             else:
                 base_unit_price = recommended_unit_price
             
@@ -262,18 +241,12 @@ class PricingService:
             }
         
         # Fallback to legacy markup-based pricing if 3-tier not available
-        # Get unit multiplier
-        item_unit = db.query(ItemUnit).filter(
-            and_(
-                ItemUnit.item_id == item_id,
-                ItemUnit.unit_name == unit_name
-            )
-        ).first()
-        
-        if not item_unit:
+        item = db.query(Item).filter(Item.id == item_id).first()
+        if not item:
+            raise ValueError(f"Item {item_id} not found")
+        multiplier = get_unit_multiplier_from_item(item, unit_name)
+        if multiplier is None:
             raise ValueError(f"Unit '{unit_name}' not found for item {item_id}")
-        
-        multiplier = Decimal(str(item_unit.multiplier_to_base))
         
         # Get cost (FEFO batch preferred)
         unit_cost = PricingService.get_item_cost(db, item_id, branch_id, use_fefo=True)

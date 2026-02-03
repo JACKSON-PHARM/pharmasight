@@ -11,8 +11,9 @@ from app.dependencies import get_tenant_db
 from app.models import (
     GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
     PurchaseOrder, PurchaseOrderItem,
-    InventoryLedger, Item, ItemUnit, Supplier, Branch, User
+    InventoryLedger, Item, Supplier, Branch, User
 )
+from app.services.item_units_helper import get_unit_multiplier_from_item
 from app.schemas.purchase import (
     GRNCreate, GRNResponse,
     SupplierInvoiceCreate, SupplierInvoiceResponse,
@@ -47,15 +48,10 @@ def create_grn(grn: GRNCreate, db: Session = Depends(get_tenant_db)):
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
         
-        # Get item unit multiplier
-        item_unit = db.query(ItemUnit).filter(
-            ItemUnit.item_id == item_data.item_id,
-            ItemUnit.unit_name == item_data.unit_name
-        ).first()
-        if not item_unit:
+        # Unit multiplier from item columns (items table is source of truth)
+        multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
+        if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
-        
-        multiplier = Decimal(str(item_unit.multiplier_to_base))
         
         # Handle batch distribution: if batches array is provided, use it; otherwise use legacy single batch
         if item_data.batches and len(item_data.batches) > 0:
@@ -225,15 +221,9 @@ def create_supplier_invoice(invoice: SupplierInvoiceCreate, db: Session = Depend
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
         
-        # Get item unit multiplier
-        item_unit = db.query(ItemUnit).filter(
-            ItemUnit.item_id == item_data.item_id,
-            ItemUnit.unit_name == item_data.unit_name
-        ).first()
-        if not item_unit:
+        multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
+        if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
-        
-        multiplier = Decimal(str(item_unit.multiplier_to_base))
         
         # Calculate line totals (VAT)
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
@@ -467,15 +457,9 @@ def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCre
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
         
-        # Get item unit multiplier
-        item_unit = db.query(ItemUnit).filter(
-            ItemUnit.item_id == item_data.item_id,
-            ItemUnit.unit_name == item_data.unit_name
-        ).first()
-        if not item_unit:
+        multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
+        if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
-        
-        multiplier = Decimal(str(item_unit.multiplier_to_base))
         
         # Calculate line totals (VAT)
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
@@ -613,17 +597,12 @@ def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db
                 detail=f"Item {invoice_item.item_id} not found. Cannot batch."
             )
         
-        item_unit = db.query(ItemUnit).filter(
-            ItemUnit.item_id == invoice_item.item_id,
-            ItemUnit.unit_name == invoice_item.unit_name
-        ).first()
-        if not item_unit:
+        multiplier = get_unit_multiplier_from_item(item, invoice_item.unit_name)
+        if multiplier is None:
             raise HTTPException(
                 status_code=400,
                 detail=f"Unit '{invoice_item.unit_name}' not found for item {item.name}. Cannot batch."
             )
-        
-        multiplier = Decimal(str(item_unit.multiplier_to_base))
         
         # Parse batch data from JSON
         if invoice_item.batch_data:

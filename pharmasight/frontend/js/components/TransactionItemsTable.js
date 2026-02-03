@@ -158,14 +158,28 @@
     };
     
     /**
-     * Calculate margin percentage
+     * Available stock in the currently selected unit (for display and qty validation).
+     * API returns stock in base (wholesale) units; selected unit has unit_multiplier to base.
+     * So available in selected unit = available_base / unit_multiplier (e.g. 3 packets, piece mult 1/100 => 300 pieces).
+     */
+    TransactionItemsTable.prototype.getAvailableInSelectedUnit = function(item) {
+        if (item == null || typeof item.available_stock !== 'number') return null;
+        const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
+        return Math.floor(item.available_stock / mult);
+    };
+
+    /**
+     * Calculate margin percentage in the selected unit (so retail vs retail, wholesale vs wholesale).
+     * purchase_price is cost per base (wholesale) unit; convert to cost per selected unit using unit_multiplier.
      */
     TransactionItemsTable.prototype.calculateMargin = function(item) {
         if (this.mode !== 'sale' && this.mode !== 'quotation') return 0;
-        const purchasePrice = item.purchase_price || 0;
-        const salePrice = item.unit_price || 0;
-        if (purchasePrice <= 0) return 0;
-        return ((salePrice - purchasePrice) / purchasePrice) * 100;
+        const costPerBase = item.purchase_price || 0;
+        if (costPerBase <= 0) return 0;
+        const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
+        const costPerSelectedUnit = costPerBase * mult;
+        const salePricePerUnit = item.unit_price || 0;
+        return ((salePricePerUnit - costPerSelectedUnit) / costPerSelectedUnit) * 100;
     };
     
     /**
@@ -245,7 +259,8 @@
                                    data-field="quantity"
                                    ${!this.canEdit ? 'disabled' : ''}>
                             ${this.mode === 'sale' && typeof item.available_stock === 'number' ? (() => {
-                                const stock = item.available_stock;
+                                const stock = this.getAvailableInSelectedUnit(item);
+                                if (stock == null) return '';
                                 let color = 'var(--success-color, #16a34a)';
                                 if (stock <= 0) {
                                     color = 'var(--danger-color, #dc2626)';
@@ -1030,8 +1045,8 @@
     };
     
     /**
-     * Handle margin change: set unit price from cost and margin %, then recalc net and total.
-     * unit_price (selling) = purchase_price * (1 + margin_percent/100)
+     * Handle margin change: set unit price from cost (in selected unit) and margin %, then recalc net and total.
+     * cost per selected unit = purchase_price * unit_multiplier; unit_price = cost_per_selected * (1 + margin%/100)
      */
     TransactionItemsTable.prototype.handleMarginChange = function(rowIndex, value) {
         if (rowIndex < 0 || rowIndex >= this.items.length) return;
@@ -1039,9 +1054,11 @@
         if (!item) return;
         const marginPct = parseFloat(value);
         if (isNaN(marginPct)) return;
-        const cost = item.purchase_price || 0;
-        if (cost <= 0) return;
-        item.unit_price = Math.round(cost * (1 + marginPct / 100) * 10000) / 10000;
+        const costPerBase = item.purchase_price || 0;
+        if (costPerBase <= 0) return;
+        const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
+        const costPerSelectedUnit = costPerBase * mult;
+        item.unit_price = Math.round(costPerSelectedUnit * (1 + marginPct / 100) * 10000) / 10000;
         this.recalculateRow(rowIndex);
         this.updateRowDisplay(rowIndex);
         this.notifyChange();
@@ -1081,10 +1098,11 @@
         const numValue = parseFloat(value) || 0;
         const item = this.items[rowIndex];
 
-        // Real-time stock validation for quantity in sales mode
-        if (this.mode === 'sale' && field === 'quantity' && typeof item.available_stock === 'number') {
-            if (numValue > item.available_stock) {
-                const clamped = item.available_stock > 0 ? item.available_stock : 0;
+        // Real-time stock validation for quantity in sales mode (limit = available in selected unit)
+        const availableInSelected = this.mode === 'sale' ? this.getAvailableInSelectedUnit(item) : null;
+        if (this.mode === 'sale' && field === 'quantity' && availableInSelected != null) {
+            if (numValue > availableInSelected) {
+                const clamped = availableInSelected > 0 ? availableInSelected : 0;
                 this.items[rowIndex][field] = clamped;
 
                 // Reflect clamped value in the input
@@ -1225,6 +1243,19 @@
             this.updateMarginDisplay(rowIndex);
         }
         
+        // Update stock indicator (available in selected unit) when unit or data changes
+        const stockIndicator = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .stock-indicator`);
+        if (stockIndicator && this.mode === 'sale' && typeof item.available_stock === 'number') {
+            const avail = this.getAvailableInSelectedUnit(item);
+            if (avail != null) {
+                let color = 'var(--success-color, #16a34a)';
+                if (avail <= 0) color = 'var(--danger-color, #dc2626)';
+                else if (avail < 5) color = 'var(--warning-color, #d97706)';
+                stockIndicator.style.color = color;
+                stockIndicator.textContent = 'Available: ' + this.getFormatNumber()(avail);
+            }
+        }
+        
         // Update summary footer
         const summary = this.calculateSummary();
         const nettTotalEl = document.getElementById(`${this.instanceId}_nett_total`);
@@ -1325,7 +1356,8 @@
         const formatCurrency = this.getFormatCurrency();
         const escapeHtml = this.getEscapeHtml();
         const code = item.item_code || item.item_sku || '';
-        const stock = typeof item.available_stock === 'number' ? this.getFormatNumber()(item.available_stock) : 'N/A';
+        const availInUnit = this.getAvailableInSelectedUnit(item);
+        const stock = availInUnit != null ? this.getFormatNumber()(availInUnit) : (typeof item.available_stock === 'number' ? this.getFormatNumber()(item.available_stock) : 'N/A');
         const sellingPrice = formatCurrency(item.unit_price || 0);
         const costPrice = (item.purchase_price != null && item.purchase_price !== '') ? formatCurrency(item.purchase_price) : null;
         const margin = (this.mode === 'sale' || this.mode === 'quotation') ? this.formatMargin(this.calculateMargin(item)) : null;
@@ -1383,7 +1415,32 @@
     };
     
     /**
-     * Load available units for a row (from API) and re-render unit cell
+     * Build 3-tier unit list from item fields (wholesale_unit, retail_unit, supplier_unit, pack_size, wholesale_units_per_supplier).
+     * Used when API returns no/empty units or as fallback so user can always choose wholesale, retail, or supplier.
+     */
+    TransactionItemsTable.prototype.buildUnitsFrom3Tier = function(full) {
+        const wholesaleName = (full.wholesale_unit || full.base_unit || 'piece').toString().trim() || 'piece';
+        const retailName = (full.retail_unit || '').toString().trim();
+        const supplierName = (full.supplier_unit || '').toString().trim();
+        const pack = Math.max(1, parseInt(full.pack_size, 10) || 1);
+        const wups = Math.max(0.0001, parseFloat(full.wholesale_units_per_supplier) || 1);
+        const units = [];
+        units.push({ unit_name: wholesaleName, multiplier_to_base: 1, is_default: true });
+        if (retailName) {
+            const sameAsWholesale = retailName.toLowerCase() === wholesaleName.toLowerCase();
+            if (!(sameAsWholesale && pack === 1)) {
+                units.push({ unit_name: retailName, multiplier_to_base: 1 / pack, is_default: false });
+            }
+        }
+        if (supplierName && supplierName.toLowerCase() !== wholesaleName.toLowerCase()) {
+            units.push({ unit_name: supplierName, multiplier_to_base: wups, is_default: false });
+        }
+        return units.length ? units : [{ unit_name: wholesaleName, multiplier_to_base: 1, is_default: true }];
+    };
+
+    /**
+     * Load available units for a row (from API) and re-render unit cell.
+     * Always shows wholesale, retail, supplier when item has 3-tier columns; default selection is wholesale.
      */
     TransactionItemsTable.prototype.loadUnitsForRow = async function(rowIndex) {
         const item = this.items[rowIndex];
@@ -1392,12 +1449,18 @@
         if (!api || !api.items || !api.items.get) return;
         try {
             const full = await api.items.get(item.item_id);
-            const units = full.units && full.units.length ? full.units : [{ unit_name: full.base_unit || item.unit_name || 'unit', multiplier_to_base: 1 }];
+            // Prefer API units if we have more than one; otherwise build from 3-tier columns so user can always choose
+            let units = full.units && full.units.length > 1 ? full.units : this.buildUnitsFrom3Tier(full);
             item.available_units = units;
-            const currentUnit = item.unit_name || (units[0] && units[0].unit_name) || '';
+            // Default to wholesale (first unit) so user can change to retail/supplier if they want
+            const wholesaleUnit = (units[0] && units[0].unit_name) || full.wholesale_unit || full.base_unit || 'piece';
+            const currentUnit = item.unit_name || wholesaleUnit;
             const currentU = units.find(u => (u.unit_name || '') === currentUnit);
+            item.unit_name = currentU ? currentUnit : wholesaleUnit;
             item.unit_multiplier = currentU ? (parseFloat(currentU.multiplier_to_base) || 1) : 1;
+            this.recalculateRow(rowIndex);
             this.updateRowUnitSelect(rowIndex);
+            this.updateRowDisplay(rowIndex);
         } catch (err) {
             console.warn('TransactionItemsTable: could not load units for item', item.item_id, err);
             item.available_units = [{ unit_name: item.unit_name || 'unit', multiplier_to_base: 1 }];

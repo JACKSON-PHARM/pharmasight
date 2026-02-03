@@ -176,7 +176,7 @@ def get_all_stock_overview(branch_id: UUID, db: Session = Depends(get_tenant_db)
     
     # Aggregate stock for all items in ONE query
     from sqlalchemy import func
-    from app.models import InventoryLedger, ItemUnit
+    from app.models import InventoryLedger
     
     stock_aggregates = db.query(
         InventoryLedger.item_id,
@@ -188,34 +188,30 @@ def get_all_stock_overview(branch_id: UUID, db: Session = Depends(get_tenant_db)
     
     stock_map = {row.item_id: int(row.total_stock or 0) for row in stock_aggregates}
     
-    # Get all units for all items in ONE query
-    units_query = db.query(ItemUnit).filter(ItemUnit.item_id.in_(item_ids)).all()
-    units_map = {}
-    for unit in units_query:
-        if unit.item_id not in units_map:
-            units_map[unit.item_id] = []
-        units_map[unit.item_id].append(unit)
-    
-    # Build response with unit breakdown
+    # Build response with unit breakdown from item columns (items table is source of truth)
     result = []
     for item in items:
         stock = stock_map.get(item.id, 0)
         if stock > 0:
-            # Calculate unit breakdown
-            units = units_map.get(item.id, [])
+            wholesale_name = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
+            retail_name = (item.retail_unit or "").strip()
+            supplier_name = (item.supplier_unit or "").strip()
+            pack = max(1, int(item.pack_size or 1))
+            wups = max(0.0001, float(item.wholesale_units_per_supplier or 1))
+            units_list = [(wholesale_name, 1.0)]
+            if retail_name and (retail_name.lower() != wholesale_name.lower() or pack > 1):
+                units_list.append((item.retail_unit.strip(), 1.0 / pack))
+            if supplier_name and supplier_name.lower() != wholesale_name.lower():
+                units_list.append((item.supplier_unit.strip(), wups))
+            units_list.sort(key=lambda x: x[1], reverse=True)
             unit_breakdown = []
             remaining = stock
-            
-            # Sort units by multiplier (largest first)
-            sorted_units = sorted(units, key=lambda u: u.multiplier_to_base, reverse=True)
-            
-            for unit in sorted_units:
-                if unit.multiplier_to_base > 0 and remaining >= unit.multiplier_to_base:
-                    count = int(remaining / unit.multiplier_to_base)
-                    remaining = remaining % unit.multiplier_to_base
+            for unit_name, mult in units_list:
+                if mult > 0 and remaining >= mult:
+                    count = int(remaining / mult)
+                    remaining = remaining % int(mult) if mult >= 1 else remaining % mult
                     if count > 0:
-                        unit_breakdown.append(f"{count} {unit.unit_name}")
-            
+                        unit_breakdown.append(f"{count} {unit_name}")
             if remaining > 0:
                 unit_breakdown.append(f"{remaining} {item.base_unit}")
             

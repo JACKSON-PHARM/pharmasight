@@ -17,7 +17,6 @@ from app.models import (
     Item, ItemPricing, InventoryLedger,
     Supplier, Company, Branch
 )
-from app.services.items_service import ensure_item_units_from_3tier
 
 logger = logging.getLogger(__name__)
 
@@ -485,7 +484,7 @@ class ExcelImportService:
         Overwrite an existing item with Excel data (safe ONLY when item has no real transactions).
 
         This updates BOTH structural fields (units/pack_size) and non-structural fields.
-        Ensures item_units has base + retail (when can_break_bulk) + supplier for unit dropdown.
+        Units are item characteristics (items table columns only).
         """
         # Reuse the same parsing logic as create for consistency
         description = _normalize_column_name(row, ['Description', 'Generic_Name', 'Generic Name', 'Generic name']) or ''
@@ -543,7 +542,7 @@ class ExcelImportService:
         is_cold_chain_raw = _normalize_column_name(row, ['Is_Cold_Chain', 'Is Cold Chain', 'is_cold_chain'])
         if is_cold_chain_raw is not None:
             item.is_cold_chain = _parse_bool_from_row(row, ['Is_Cold_Chain', 'Is Cold Chain', 'is_cold_chain'], False)
-        ensure_item_units_from_3tier(db, item)
+        # Units are item characteristics (items table only); no item_units table.
     
     @staticmethod
     def _import_authoritative(
@@ -843,7 +842,7 @@ class ExcelImportService:
                     db, company_id, [item.id]
                 )
                 if not has_real_tx:
-                    # Safe to fully overwrite (master data only; sync item_units for dropdown)
+                    # Safe to fully overwrite (master data only; units are item columns)
                     ExcelImportService._overwrite_item_from_excel(db, item, row)
                     db.query(ItemPricing).filter(ItemPricing.item_id == item.id).delete(synchronize_session=False)
                 else:
@@ -1359,12 +1358,12 @@ class ExcelImportService:
             ).all()
         }
 
-        # If replaceable existing items, clear their ItemPricing only (no item_units)
+        # If replaceable existing items, clear their ItemPricing only
         if replaceable_item_ids:
             db.query(ItemPricing).filter(ItemPricing.item_id.in_(list(replaceable_item_ids))).delete(synchronize_session=False)
             db.flush()
         
-        # Step 8: Prepare pricing and opening balances (no item_units)
+        # Step 8: Prepare pricing and opening balances
         for item_name_lower, (item_name, row) in item_name_to_row.items():
             if item_name_lower not in all_items_map:
                 continue

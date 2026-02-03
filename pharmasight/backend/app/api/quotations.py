@@ -15,7 +15,7 @@ from app.dependencies import get_tenant_db
 logger = logging.getLogger(__name__)
 from app.models import (
     Quotation, QuotationItem, SalesInvoice, SalesInvoiceItem,
-    Item, ItemUnit, InventoryLedger, Company, Branch, User
+    Item, InventoryLedger, Company, Branch, User
 )
 from app.schemas.sale import (
     QuotationCreate, QuotationResponse, QuotationUpdate,
@@ -27,6 +27,7 @@ from app.services.pricing_service import PricingService
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
 from app.services.order_book_service import OrderBookService
+from app.services.item_units_helper import get_unit_multiplier_from_item
 
 router = APIRouter()
 
@@ -151,12 +152,10 @@ def get_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
             db, quotation_item.item_id, quotation.branch_id
         )
         if cost_base is not None:
-            item_unit = db.query(ItemUnit).filter(
-                ItemUnit.item_id == quotation_item.item_id,
-                ItemUnit.unit_name == quotation_item.unit_name
-            ).first()
-            if item_unit and item_unit.multiplier_to_base:
-                cost_per_sale_unit = cost_base * Decimal(str(item_unit.multiplier_to_base))
+            item = quotation_item.item
+            mult = get_unit_multiplier_from_item(item, quotation_item.unit_name) if item else None
+            if mult is not None:
+                cost_per_sale_unit = cost_base * mult
                 quotation_item.unit_cost_used = cost_per_sale_unit
                 price = quotation_item.unit_price_exclusive or Decimal("0")
                 if price > 0:
@@ -343,13 +342,11 @@ def convert_quotation_to_invoice(
         )
         if not is_available:
             item = db.query(Item).filter(Item.id == q_item.item_id).first()
-            # Convert available_base back to sale unit for display
-            item_unit = db.query(ItemUnit).filter(
-                ItemUnit.item_id == q_item.item_id,
-                ItemUnit.unit_name == q_item.unit_name
-            ).first()
-            if item_unit:
-                available_in_sale_unit = available_base / float(item_unit.multiplier_to_base)
+            # Convert available_base back to sale unit for display (items table is source of truth)
+            item = db.query(Item).filter(Item.id == q_item.item_id).first()
+            mult = get_unit_multiplier_from_item(item, q_item.unit_name) if item else None
+            if mult and float(mult) > 0:
+                available_in_sale_unit = available_base / float(mult)
             else:
                 available_in_sale_unit = available_base
             stock_errors.append(
@@ -389,17 +386,7 @@ def convert_quotation_to_invoice(
         # Get item details
         item = db.query(Item).filter(Item.id == q_item.item_id).first()
         
-        # Allocate stock using FEFO
-        # Convert quantity to base units first
-        item_unit = db.query(ItemUnit).filter(
-            ItemUnit.item_id == q_item.item_id,
-            ItemUnit.unit_name == q_item.unit_name
-        ).first()
-        if not item_unit:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unit '{q_item.unit_name}' not found for item {q_item.item_id}"
-            )
+        # Allocate stock using FEFO (unit from items table)
         quantity_base_units = InventoryService.convert_to_base_units(
             db, q_item.item_id, q_item.quantity, q_item.unit_name
         )

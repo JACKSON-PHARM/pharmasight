@@ -43,30 +43,10 @@ class Item(Base):
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Relationships
+    # Relationships (units are item characteristics from columns above; no item_units table)
     company = relationship("Company", back_populates="items")
     default_supplier = relationship("Supplier", foreign_keys=[default_supplier_id])
-    units = relationship("ItemUnit", back_populates="item", cascade="all, delete-orphan")
     pricing = relationship("ItemPricing", back_populates="item", uselist=False, cascade="all, delete-orphan")
-
-
-class ItemUnit(Base):
-    """Item unit conversion (breaking bulk)"""
-    __tablename__ = "item_units"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
-    unit_name = Column(String(50), nullable=False)  # box, carton, tablet, etc.
-    multiplier_to_base = Column(Numeric(20, 4), nullable=False)  # e.g., 1 box = 100 tablets
-    is_default = Column(Boolean, default=False)
-    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-
-    # Relationships
-    item = relationship("Item", back_populates="units")
-
-    __table_args__ = (
-        {"comment": "Breaking bulk configuration. Defines how packs convert to base units."},
-    )
 
 
 class ItemPricing(Base):

@@ -12,7 +12,7 @@ from fastapi import Query
 from app.dependencies import get_tenant_db
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
-    Item, ItemUnit, InvoicePayment
+    Item, InvoicePayment
 )
 from app.schemas.sale import (
     SalesInvoiceCreate, SalesInvoiceResponse,

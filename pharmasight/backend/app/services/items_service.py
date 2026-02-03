@@ -14,7 +14,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models import Item, ItemUnit
+from app.models import Item
 from app.schemas.item import ItemCreate, ItemUpdate
 
 logger = logging.getLogger(__name__)
@@ -65,98 +65,12 @@ def _generate_sku(company_id: UUID, db: Session) -> str:
     return f"A{(max_n + 1):05d}"
 
 
-def ensure_item_units_from_3tier(db: Session, item: Item) -> None:
-    """
-    Ensure item_units table has rows for base (wholesale), retail (if break-bulk or retail != base), and supplier.
-    So the unit dropdown shows all three tiers (e.g. box + tablets) and price converts per unit.
-    """
-    existing = {(getattr(u, "unit_name", None) or "").strip().lower(): u for u in (list(item.units) if item.units else []) if u}
-    base_name = (item.base_unit or item.wholesale_unit or "piece").strip().lower()
-    pack = max(1, int(item.pack_size or 1))
-    wups = max(Decimal("0.0001"), Decimal(str(getattr(item, "wholesale_units_per_supplier", 1) or 1)))
-    retail_name = (getattr(item, "retail_unit", None) or "piece").strip().lower()
-    supplier_name = (getattr(item, "supplier_unit", None) or "").strip().lower()
-    can_break = getattr(item, "can_break_bulk", False)
-    # Show retail in dropdown when can_break_bulk or when retail unit differs from base and pack_size > 1
-    show_retail = (can_break or (retail_name != base_name and pack > 1)) and retail_name and retail_name not in existing
-
-    if base_name and base_name not in existing:
-        u = ItemUnit(
-            item_id=item.id,
-            unit_name=item.base_unit or item.wholesale_unit or "piece",
-            multiplier_to_base=Decimal("1"),
-            is_default=True,
-        )
-        db.add(u)
-        existing[base_name] = u
-    if show_retail and pack >= 1:
-        mult = Decimal("1") / Decimal(str(pack))
-        u = ItemUnit(
-            item_id=item.id,
-            unit_name=item.retail_unit or "piece",
-            multiplier_to_base=mult,
-            is_default=False,
-        )
-        db.add(u)
-        existing[retail_name] = u
-    if supplier_name and supplier_name not in existing:
-        u = ItemUnit(
-            item_id=item.id,
-            unit_name=item.supplier_unit or "piece",
-            multiplier_to_base=wups,
-            is_default=False,
-        )
-        db.add(u)
-    db.flush()
-
-
-def _ensure_units_from_3tier(db: Session, item: Item, data: ItemCreate) -> None:
-    """Create item_units from 3-tier when `units` list is empty. Base = wholesale (multiplier 1)."""
-    if data.units:
-        return
-    wups = max(Decimal("0.0001"), Decimal(str(getattr(data, "wholesale_units_per_supplier", 1) or 1)))
-    pack = max(1, data.pack_size)
-    existing = {}
-    # Wholesale = base (1 per item)
-    if data.wholesale_unit not in existing:
-        u = ItemUnit(
-            item_id=item.id,
-            unit_name=data.wholesale_unit,
-            multiplier_to_base=Decimal("1"),
-            is_default=True,
-        )
-        db.add(u)
-        existing[data.wholesale_unit] = u
-    # Retail: 1 retail = 1/pack_size base (wholesale)
-    if data.retail_unit not in existing and pack >= 1:
-        mult = Decimal("1") / Decimal(str(pack))
-        u = ItemUnit(
-            item_id=item.id,
-            unit_name=data.retail_unit,
-            multiplier_to_base=mult,
-            is_default=False,
-        )
-        db.add(u)
-        existing[data.retail_unit] = u
-    # Supplier: 1 supplier = wholesale_units_per_supplier base (wholesale)
-    if data.supplier_unit not in existing and wups > 0:
-        u = ItemUnit(
-            item_id=item.id,
-            unit_name=data.supplier_unit,
-            multiplier_to_base=wups,
-            is_default=False,
-        )
-        db.add(u)
-        existing[data.supplier_unit] = u
-
-
 def create_item(db: Session, data: ItemCreate) -> Item:
     """
-    Create item with 3-tier units.
+    Create item with 3-tier units. Units are item characteristics (items table only; no item_units table).
 
     - Validates pack_size >= 1 and breakable => pack_size > 1 (done in schema).
-    - Sets base_unit = wholesale_unit (reference). Cost/price from inventory_ledger only — do not set default_cost or price fields.
-    - Builds item_units from 3-tier when `units` is empty.
+    - Sets base_unit = wholesale_unit (reference). Cost/price from inventory_ledger only.
     """
     if data.pack_size < 1:
         raise ValueError("Pack size must be at least 1")
@@ -182,26 +96,6 @@ def create_item(db: Session, data: ItemCreate) -> Item:
 
     db_item = Item(**dump)
     db.add(db_item)
-    db.flush()
-
-    if data.units:
-        for u in data.units:
-            d = u.model_dump() if hasattr(u, "model_dump") else u.dict()
-            db_unit = ItemUnit(item_id=db_item.id, **d)
-            db.add(db_unit)
-        base_in_units = any(u.unit_name == db_item.base_unit for u in data.units)
-        if not base_in_units:
-            db.add(
-                ItemUnit(
-                    item_id=db_item.id,
-                    unit_name=db_item.base_unit,
-                    multiplier_to_base=Decimal("1"),
-                    is_default=True,
-                )
-            )
-    else:
-        _ensure_units_from_3tier(db, db_item, data)
-
     db.flush()
     return db_item
 
@@ -239,22 +133,6 @@ def update_item(db: Session, item_id: UUID, data: ItemUpdate) -> Item | None:
     for k, v in dump.items():
         setattr(item, k, v)
 
-    if data.units is not None:
-        existing = {str(u.id): u for u in db.query(ItemUnit).filter(ItemUnit.item_id == item_id).all()}
-        seen = set()
-        for u in data.units:
-            ud = u.model_dump() if hasattr(u, "model_dump") else u.dict()
-            uid = ud.pop("id", None)
-            if uid and str(uid) in existing:
-                existing[str(uid)].unit_name = ud["unit_name"]
-                existing[str(uid)].multiplier_to_base = ud["multiplier_to_base"]
-                existing[str(uid)].is_default = ud["is_default"]
-                seen.add(str(uid))
-            else:
-                db.add(ItemUnit(item_id=item_id, **ud))
-        for kid, u in list(existing.items()):
-            if kid not in seen:
-                db.delete(u)
-
+    # Units are item characteristics (columns on items table only). No separate units list to persist.
     db.flush()
     return item
