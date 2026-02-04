@@ -26,6 +26,12 @@ const CONFIG = {
     PRINT_TYPE: 'normal',
     // Optional message shown on printed documents (quotations, sales invoices, credit notes)
     TRANSACTION_MESSAGE: '',
+    // Minimize margins on thermal print (less paper waste)
+    PRINT_REMOVE_MARGIN: false,
+    // Default number of copies when printing (user can still change in print dialog)
+    PRINT_COPIES: 1,
+    // Auto-cut receipts: add extra feed so thermal printer cuts at end of content
+    PRINT_AUTO_CUT: false,
 };
 
 // Load config from localStorage
@@ -55,6 +61,9 @@ function saveConfig() {
         VAT_RATE: CONFIG.VAT_RATE,
         PRINT_TYPE: CONFIG.PRINT_TYPE,
         TRANSACTION_MESSAGE: CONFIG.TRANSACTION_MESSAGE || '',
+        PRINT_REMOVE_MARGIN: CONFIG.PRINT_REMOVE_MARGIN === true,
+        PRINT_COPIES: Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1),
+        PRINT_AUTO_CUT: CONFIG.PRINT_AUTO_CUT === true,
     }));
 }
 

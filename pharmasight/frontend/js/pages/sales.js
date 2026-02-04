@@ -2339,15 +2339,14 @@ async function checkIfAdminOrManager() {
 async function printSalesInvoice(invoiceId) {
     try {
         const invoice = await API.sales.getInvoice(invoiceId);
+        const layout = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal';
+        const printContent = generateInvoicePrintHTML(invoice, layout);
         
-        // Create printable HTML
         const printWindow = window.open('', '_blank');
-        const printContent = generateInvoicePrintHTML(invoice);
-        
         printWindow.document.write(printContent);
         printWindow.document.close();
         
-        // Wait for content to load, then print
+        const copies = Math.max(1, parseInt((typeof CONFIG !== 'undefined' && CONFIG.PRINT_COPIES), 10) || 1);
         printWindow.onload = function() {
             setTimeout(() => {
                 printWindow.print();
@@ -2359,88 +2358,87 @@ async function printSalesInvoice(invoiceId) {
     }
 }
 
-function generateInvoicePrintHTML(invoice) {
+function generateInvoicePrintHTML(invoice, printType) {
+    const isThermal = (printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal') === 'thermal';
+    const noMargin = typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN === true;
+    const autoCut = typeof CONFIG !== 'undefined' && CONFIG.PRINT_AUTO_CUT === true;
+    const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
+    
     const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString();
+    const hasDiscount = invoice.items && invoice.items.some(item => (parseFloat(item.discount_percent) || 0) > 0 || (parseFloat(item.discount_amount) || 0) > 0);
+    const colCount = 5 + (hasDiscount ? 1 : 0);
+    
     const itemsHTML = invoice.items && invoice.items.length > 0 
         ? invoice.items.map(item => {
             const itemName = item.item_name || item.item?.name || 'Item';
             const itemCode = item.item_code || item.item?.sku || '';
+            const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
+            const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
+            const discountCell = hasDiscount ? `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>` : '';
+            const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
+            const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
+            const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
             return `
                 <tr>
                     <td>${escapeHtml(itemName)} ${itemCode ? `(${escapeHtml(itemCode)})` : ''}</td>
                     <td style="text-align: right;">${parseFloat(item.quantity).toFixed(4)} ${escapeHtml(item.unit_name)}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
-                    <td style="text-align: right;">${formatCurrency(item.vat_amount || 0)}</td>
-                    <td style="text-align: right;">${formatCurrency(item.line_total_inclusive || 0)}</td>
+                    ${discountCell}
+                    <td style="text-align: right;">${vatDisplay}</td>
+                    <td style="text-align: right;">${formatCurrency(lineTotal)}</td>
                 </tr>
             `;
         }).join('')
-        : '<tr><td colspan="5" style="text-align: center;">No items</td></tr>';
+        : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
+    
+    const discountHeader = hasDiscount ? '<th style="text-align: right;">Discount</th>' : '';
+    const colSpanTotal = colCount - 1;
+    
+    const companyName = invoice.company_name || 'PharmaSight';
+    const branchName = invoice.branch_name || '';
+    
+    const thermalPadding = noMargin ? '2px 4px' : '5px';
+    const thermalBodyPad = noMargin ? '2px 4px' : '8px';
+    const pageStyle = isThermal 
+        ? `@page { size: 80mm auto; margin: 0; }
+           body { font-size: 9px; max-width: 72mm; padding: ${thermalBodyPad}; margin: 0 auto; }
+           .header { padding-bottom: 4px; margin-bottom: 6px; }
+           .invoice-info { margin: 4px 0; }
+           .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
+           th, td { padding: ${thermalPadding}; font-size: 9px; }
+           table { margin: 4px 0; }`
+        : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
+           body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
+           th, td { padding: 8px; }`;
+    
+    const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
     
     return `
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Invoice ${invoice.invoice_no}</title>
+    <title>Invoice ${escapeHtml(invoice.invoice_no)}</title>
     <style>
-        @media print {
-            @page { size: 80mm auto; margin: 0; }
-            body { margin: 0; padding: 10px; }
-        }
-        body {
-            font-family: Arial, sans-serif;
-            font-size: 12px;
-            max-width: 80mm;
-            margin: 0 auto;
-            padding: 10px;
-        }
-        .header {
-            text-align: center;
-            border-bottom: 2px solid #000;
-            padding-bottom: 10px;
-            margin-bottom: 10px;
-        }
-        .invoice-info {
-            margin: 10px 0;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 10px 0;
-        }
-        th, td {
-            padding: 5px;
-            border-bottom: 1px solid #ddd;
-            text-align: left;
-        }
-        th {
-            background: #f0f0f0;
-            font-weight: bold;
-        }
-        .total {
-            font-weight: bold;
-            font-size: 14px;
-            border-top: 2px solid #000;
-            padding-top: 5px;
-        }
-        .footer {
-            margin-top: 20px;
-            text-align: center;
-            font-size: 10px;
-            border-top: 1px solid #ddd;
-            padding-top: 10px;
-        }
+        @media print { ${pageStyle} }
+        body { font-family: Arial, sans-serif; }
+        .header { text-align: center; border-bottom: 2px solid #000; }
+        .invoice-info { margin: 10px 0; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        th, td { padding: 5px; border-bottom: 1px solid #ddd; text-align: left; }
+        th { background: #f0f0f0; font-weight: bold; }
+        .total { font-weight: bold; font-size: 14px; border-top: 2px solid #000; padding-top: 5px; }
+        .footer { text-align: center; font-size: 10px; border-top: 1px solid #ddd; padding-top: 10px; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h2>PharmaSight</h2>
-        <p>Sales Invoice</p>
+        <h2>${escapeHtml(companyName)}</h2>
+        ${branchName ? `<p style="margin: 0; font-size: 0.9em;">${escapeHtml(branchName)}</p>` : ''}
+        <p style="margin: 4px 0 0 0;">Sales Invoice</p>
     </div>
     
     <div class="invoice-info">
-        <p><strong>Invoice #:</strong> ${escapeHtml(invoice.invoice_no)}</p>
-        <p><strong>Date:</strong> ${invoiceDate}</p>
+        <p><strong>Invoice #:</strong> ${escapeHtml(invoice.invoice_no)} &nbsp; <strong>Date:</strong> ${invoiceDate}</p>
         ${invoice.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(invoice.customer_name)}</p>` : ''}
         <p><strong>Status:</strong> ${invoice.status || 'DRAFT'}</p>
     </div>
@@ -2450,7 +2448,8 @@ function generateInvoicePrintHTML(invoice) {
             <tr>
                 <th>Item</th>
                 <th style="text-align: right;">Qty</th>
-                <th style="text-align: right;">Price</th>
+                <th style="text-align: right;">Price/Unit (excl. VAT)</th>
+                ${discountHeader}
                 <th style="text-align: right;">VAT</th>
                 <th style="text-align: right;">Total</th>
             </tr>
@@ -2460,16 +2459,17 @@ function generateInvoicePrintHTML(invoice) {
         </tbody>
         <tfoot>
             <tr>
-                <td colspan="4" class="total">Total:</td>
+                <td colspan="${colSpanTotal}" class="total">Total:</td>
                 <td class="total" style="text-align: right;">${formatCurrency(invoice.total_inclusive || 0)}</td>
             </tr>
         </tfoot>
     </table>
     
     <div class="footer">
-        <p>Thank you for your business!</p>
+        ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
         <p>Generated: ${new Date().toLocaleString()}</p>
     </div>
+    ${autoCutSpacer}
 </body>
 </html>
     `;
@@ -2526,6 +2526,8 @@ async function printQuotation(quotationId, printType) {
 
 function generateQuotationPrintHTML(quotation, printType) {
     const isThermal = printType === 'thermal';
+    const noMargin = typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN === true;
+    const autoCut = typeof CONFIG !== 'undefined' && CONFIG.PRINT_AUTO_CUT === true;
     const quotationDate = new Date(quotation.quotation_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     const validUntil = quotation.valid_until ? new Date(quotation.valid_until).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A';
     const generatedTime = new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
@@ -2539,6 +2541,9 @@ function generateQuotationPrintHTML(quotation, printType) {
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
     
     const hasMargin = quotation.items && quotation.items.some(item => item.margin_percent != null);
+    const hasDiscount = quotation.items && quotation.items.some(item => (parseFloat(item.discount_percent) || 0) > 0 || (parseFloat(item.discount_amount) || 0) > 0);
+    const colCount = 5 + (hasMargin ? 1 : 0) + (hasDiscount ? 1 : 0);
+    
     const itemsHTML = quotation.items && quotation.items.length > 0 
         ? quotation.items.map(item => {
             const itemName = item.item_name || item.item?.name || '';
@@ -2546,30 +2551,46 @@ function generateQuotationPrintHTML(quotation, printType) {
             const marginCell = hasMargin 
                 ? `<td style="text-align: right;">${item.margin_percent != null ? (parseFloat(item.margin_percent).toFixed(1) + '%') : '—'}</td>` 
                 : '';
+            const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
+            const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
+            const discountCell = hasDiscount ? `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>` : '';
+            const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
+            const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
+            const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
             return `
                 <tr>
                     <td>${escapeHtml(itemName)}${itemCode ? ' (' + escapeHtml(itemCode) + ')' : ''}</td>
                     <td style="text-align: right;">${parseFloat(item.quantity).toFixed(4)} ${escapeHtml(item.unit_name)}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
                     ${marginCell}
-                    <td style="text-align: right;">${formatCurrency(item.vat_amount || 0)}</td>
-                    <td style="text-align: right;">${formatCurrency(item.line_total_inclusive || 0)}</td>
+                    ${discountCell}
+                    <td style="text-align: right;">${vatDisplay}</td>
+                    <td style="text-align: right;">${formatCurrency(lineTotal)}</td>
                 </tr>
             `;
         }).join('')
-        : '<tr><td colspan="' + (hasMargin ? 6 : 5) + '" style="text-align: center;">No items</td></tr>';
+        : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
     
     const marginHeader = hasMargin ? '<th style="text-align: right;">Margin</th>' : '';
-    const colSpanTotal = hasMargin ? 5 : 4;
+    const discountHeader = hasDiscount ? '<th style="text-align: right;">Discount</th>' : '';
+    const colSpanTotal = colCount - 1;
     
+    const thermalPadding = noMargin ? '2px 4px' : '6px 8px';
+    const thermalBodyPad = noMargin ? '2px 4px' : '8px';
     const pageStyle = isThermal 
         ? `@page { size: 80mm auto; margin: 0; }
-           body { font-size: 10px; max-width: 72mm; padding: 8px; margin: 0 auto; }
-           .header, .footer { font-size: 9px; }
-           th, td { padding: 4px; }`
-        : `@page { size: A4; margin: 1cm; }
-           body { font-size: 12px; max-width: 210mm; padding: 20px; margin: 0 auto; }
+           body { font-size: 9px; max-width: 72mm; padding: ${thermalBodyPad}; margin: 0 auto; }
+           .header { padding-bottom: 4px; margin-bottom: 6px; }
+           .header .company-name { font-size: 1em; }
+           .quotation-info { margin: 4px 0; }
+           .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
+           th, td { padding: ${thermalPadding}; font-size: 9px; }
+           table { margin: 4px 0; }`
+        : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
+           body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
            th, td { padding: 8px; }`;
+    
+    const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
     
     return `
 <!DOCTYPE html>
@@ -2579,7 +2600,7 @@ function generateQuotationPrintHTML(quotation, printType) {
     <style>
         @media print { ${pageStyle} }
         body { font-family: Arial, sans-serif; }
-        .header { border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 15px; }
+        .header { border-bottom: 2px solid #000; }
         .company-name { font-size: 1.25em; font-weight: bold; margin-bottom: 4px; }
         .company-details { font-size: 0.9em; color: #333; line-height: 1.4; }
         .quotation-info { margin: 12px 0; }
@@ -2587,7 +2608,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         th, td { border-bottom: 1px solid #ddd; text-align: left; }
         th { background: #f0f0f0; font-weight: bold; }
         .total { font-weight: bold; border-top: 2px solid #000; padding-top: 8px; }
-        .footer { margin-top: 20px; text-align: center; font-size: 0.85em; border-top: 1px solid #ddd; padding-top: 12px; color: #555; }
+        .footer { text-align: center; font-size: 0.85em; border-top: 1px solid #ddd; color: #555; }
     </style>
 </head>
 <body>
@@ -2610,8 +2631,9 @@ function generateQuotationPrintHTML(quotation, printType) {
             <tr>
                 <th>Item</th>
                 <th style="text-align: right;">Qty</th>
-                <th style="text-align: right;">Price/Unit</th>
+                <th style="text-align: right;">Price/Unit (excl. VAT)</th>
                 ${marginHeader}
+                ${discountHeader}
                 <th style="text-align: right;">VAT</th>
                 <th style="text-align: right;">Total</th>
             </tr>
@@ -2631,6 +2653,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
         <p>Generated: ${generatedTime}</p>
     </div>
+    ${autoCutSpacer}
 </body>
 </html>
     `;

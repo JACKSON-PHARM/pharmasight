@@ -1467,8 +1467,14 @@ async function loadPage(pageName) {
                 console.log('✅ [HASH] Added route prefix while preserving token format');
             }
         } else if (pageName !== 'password-reset') {
-            // Normal hash update for other pages
-            window.location.hash = `#${pageName}`;
+            // Normal hash update for other pages (preserve query e.g. #items?item_id=xxx)
+            const curBase = (currentHash.replace('#', '') || '').split('?')[0];
+            const hasQuery = currentHash.includes('?');
+            if (hasQuery && curBase === pageName) {
+                // Keep existing hash so e.g. #items?item_id=xxx is not overwritten
+            } else {
+                window.location.hash = `#${pageName}`;
+            }
         }
         // For password-reset without token, let the default hash update happen
     } catch (e) {
@@ -1721,6 +1727,11 @@ async function loadPage(pageName) {
                 window.loadInventory();
             } else {
                 console.error('loadInventory function not found on window object');
+            }
+            break;
+        case 'items':
+            if (window.loadItems) {
+                window.loadItems();
             }
             break;
         case 'stock-take': {

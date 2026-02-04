@@ -15,7 +15,7 @@ from app.dependencies import get_tenant_db
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
     InventoryLedger, SupplierInvoice, SupplierInvoiceItem, Supplier,
-    PurchaseOrder, PurchaseOrderItem
+    PurchaseOrder, PurchaseOrderItem, Branch
 )
 from app.models.sale import SalesInvoice, SalesInvoiceItem
 from app.schemas.item import (
@@ -28,6 +28,7 @@ from app.schemas.item import (
 from app.services.pricing_service import PricingService
 from app.services.items_service import create_item as svc_create_item
 from app.services.canonical_pricing import CanonicalPricingService
+from app.services.inventory_service import InventoryService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -456,6 +457,142 @@ def get_item(
     data["units"] = _display_units_from_item(item)
     resp = ItemResponse.model_validate(data)
     return resp
+
+
+@router.get("/{item_id}/activity", response_model=dict)
+def get_item_activity(
+    item_id: UUID,
+    branch_id: UUID = Query(..., description="Session branch ID (for stock and cost context)"),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Read-only item activity for transaction documents (sales, purchases, quotations).
+    Returns: order & supply details, stock (session + other branches), expiry & batch.
+    """
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    company_id = item.company_id
+
+    # ---- Order & supply ----
+    # Last purchase order date (any branch for this company)
+    last_po = (
+        db.query(func.max(PurchaseOrder.order_date).label("dt"))
+        .join(PurchaseOrderItem, PurchaseOrderItem.purchase_order_id == PurchaseOrder.id)
+        .filter(PurchaseOrderItem.item_id == item_id, PurchaseOrder.company_id == company_id)
+        .scalar()
+    )
+    last_order_date = last_po.isoformat() if last_po else None
+
+    # Last received: max created_at from ledger PURCHASE (positive)
+    last_rec = (
+        db.query(func.max(InventoryLedger.created_at).label("dt"))
+        .filter(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.company_id == company_id,
+            InventoryLedger.transaction_type == "PURCHASE",
+            InventoryLedger.quantity_delta > 0,
+        )
+        .scalar()
+    )
+    last_received = last_rec.isoformat()[:10] if last_rec else None
+
+    # Last sold: max created_at from ledger SALE
+    last_sale = (
+        db.query(func.max(InventoryLedger.created_at).label("dt"))
+        .filter(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.company_id == company_id,
+            InventoryLedger.transaction_type == "SALE",
+        )
+        .scalar()
+    )
+    last_sold = last_sale.isoformat()[:10] if last_sale else None
+
+    # Last supplier and last unit cost (from last supplier invoice containing this item)
+    last_inv = (
+        db.query(
+            Supplier.name.label("supplier_name"),
+            SupplierInvoiceItem.unit_cost_exclusive,
+        )
+        .join(SupplierInvoice, SupplierInvoiceItem.purchase_invoice_id == SupplierInvoice.id)
+        .join(Supplier, Supplier.id == SupplierInvoice.supplier_id)
+        .filter(SupplierInvoiceItem.item_id == item_id, SupplierInvoice.company_id == company_id)
+        .order_by(desc(SupplierInvoice.created_at))
+        .first()
+    )
+    last_supplier_name = last_inv.supplier_name if last_inv else None
+    last_unit_cost_from_inv = float(last_inv.unit_cost_exclusive) if last_inv and last_inv.unit_cost_exclusive is not None else None
+    # Prefer cost per base from ledger for display consistency
+    last_cost_per_base = CanonicalPricingService.get_last_purchase_cost(db, item_id, branch_id, company_id)
+    last_unit_cost = float(last_cost_per_base) if last_cost_per_base is not None else last_unit_cost_from_inv
+
+    # ---- Stock: session branch + other branches ----
+    session_stock = InventoryService.get_current_stock(db, item_id, branch_id)
+    branches = db.query(Branch).filter(Branch.company_id == company_id, Branch.is_active == True).all()
+    session_branch = next((b for b in branches if b.id == branch_id), None)
+    other_branches = []
+    for b in branches:
+        if b.id == branch_id:
+            continue
+        st = InventoryService.get_current_stock(db, item_id, b.id)
+        other_branches.append({
+            "branch_id": str(b.id),
+            "branch_name": b.name,
+            "code": b.code or "",
+            "stock": st,
+        })
+    stock_session = {
+        "branch_id": str(branch_id),
+        "branch_name": session_branch.name if session_branch else "",
+        "code": session_branch.code if session_branch else "",
+        "stock": session_stock,
+    }
+
+    # ---- Expiry & batch (session branch only) ----
+    batches = InventoryService.get_stock_by_batch(db, item_id, branch_id)
+    expiry_batch = {
+        "batches": [
+            {
+                "batch_number": b.get("batch_number"),
+                "expiry_date": b["expiry_date"].isoformat() if b.get("expiry_date") else None,
+                "quantity": b["quantity"],
+                "unit_cost": b["unit_cost"],
+            }
+            for b in batches
+        ],
+    }
+
+    # Item basics (minimal for header)
+    units = _display_units_from_item(item)
+    default_cost = float(
+        CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, company_id)
+    ) if branch_id else 0.0
+    item_data = _item_to_response_dict(item, default_cost=default_cost)
+    item_data["units"] = [{"unit_name": u.unit_name, "multiplier_to_base": u.multiplier_to_base} for u in units]
+
+    return {
+        "item": {
+            "id": str(item.id),
+            "name": item.name,
+            "sku": item.sku or "",
+            "barcode": item.barcode or "",
+            "base_unit": item.base_unit or "piece",
+            "units": item_data["units"],
+        },
+        "order_supply": {
+            "last_order_date": last_order_date,
+            "last_received": last_received,
+            "last_sold": last_sold,
+            "last_supplier_name": last_supplier_name,
+            "last_unit_cost": last_unit_cost,
+        },
+        "stock": {
+            "session_branch": stock_session,
+            "other_branches": other_branches,
+        },
+        "expiry_batch": expiry_batch,
+    }
 
 
 @router.get("/{item_id}/pricing/3tier", response_model=dict)

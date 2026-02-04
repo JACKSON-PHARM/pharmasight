@@ -208,7 +208,7 @@
                            <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 12%;">ITEM CODE</th>
                             <th style="padding: 0.75rem; text-align: center; font-weight: 600; width: 5%;">QTY</th>
                             <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 7%; min-width: 60px;">UNIT</th>
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 9%;">PRICE/UNIT</th>
+                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 9%;" title="Price per unit excluding VAT. VAT is shown in the VAT column.">PRICE/UNIT (excl. VAT)</th>
                             ${(this.mode === 'sale' || this.mode === 'quotation') ? '<th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">MARGIN%</th>' : ''}
                             <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">DISCOUNT%</th>
                             <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">VAT</th>
@@ -1394,11 +1394,14 @@
                 if (action === 'search-different') {
                     this.clearRowSelection(r);
                 } else if (action === 'view-details' && el.dataset.itemId) {
-                    if (typeof window.loadPage === 'function') {
-                        window.location.hash = '#items';
+                    const itemId = el.dataset.itemId;
+                    if (typeof window.showItemFullDetailsModal === 'function') {
+                        window.showItemFullDetailsModal(itemId);
+                    } else if (typeof window.loadPage === 'function') {
+                        window.location.hash = '#items?item_id=' + encodeURIComponent(itemId);
                         window.loadPage('items');
                     } else {
-                        window.location.hash = '#items';
+                        window.location.hash = '#items?item_id=' + encodeURIComponent(itemId);
                     }
                 }
             });

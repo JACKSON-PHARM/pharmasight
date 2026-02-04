@@ -190,6 +190,10 @@ const API = {
             const params = branchId ? { branch_id: branchId } : {};
             return api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, params);
         },
+        getActivity: (itemId, branchId) => {
+            if (!branchId) return Promise.reject(new Error('branch_id required for item activity'));
+            return api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/activity`, { branch_id: branchId });
+        },
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/`, data),
         bulkCreate: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/bulk`, data, { timeout: 300000 }), // 5 minute timeout for bulk
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),

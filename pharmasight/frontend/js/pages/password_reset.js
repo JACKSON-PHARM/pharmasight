@@ -428,12 +428,7 @@ function ensureAuthLayout() {
         appLayout.style.display = 'none';
     }
 }
-// Helper functions (should be in your global scope)
-
-function showToast(message, type = 'info') {
-    // Your toast implementation
-    console.log(`[TOAST ${type.toUpperCase()}] ${message}`);
-}
+// Use global showToast from utils.js (do not override with console-only stub)
 
 // Export to window
 window.loadPasswordReset = loadPasswordReset;

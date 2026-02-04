@@ -1769,6 +1769,9 @@ async function renderPrintSettingsPage() {
     
     const printType = CONFIG.PRINT_TYPE || 'normal';
     const transactionMessage = CONFIG.TRANSACTION_MESSAGE || '';
+    const removeMargin = CONFIG.PRINT_REMOVE_MARGIN === true;
+    const printCopies = Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1);
+    const autoCut = CONFIG.PRINT_AUTO_CUT === true;
     
     page.innerHTML = `
         <div class="card">
@@ -1776,7 +1779,7 @@ async function renderPrintSettingsPage() {
                 <h3 class="card-title"><i class="fas fa-print"></i> Print Settings</h3>
             </div>
             <div class="card-body">
-                <form id="printSettingsForm" onsubmit="savePrintSettings(event)">
+                <form id="printSettingsForm">
                     <h4 style="margin-bottom: 1rem;">Default Print Format</h4>
                     <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
                         Choose how quotations, sales invoices, and credit notes are laid out when printing.
@@ -1791,6 +1794,31 @@ async function renderPrintSettingsPage() {
                             Normal: standard A4. Thermal: narrow width for receipt printers.
                         </small>
                     </div>
+                    <div class="form-group">
+                        <label class="form-checkbox">
+                            <input type="checkbox" name="print_remove_margin" ${removeMargin ? 'checked' : ''}>
+                            <span>Remove margins on printed documents (saves paper on thermal)</span>
+                        </label>
+                        <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
+                            Minimizes top/bottom and side space so content fits better on receipt paper.
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Default print copies</label>
+                        <input type="number" class="form-input" name="print_copies" min="1" max="99" value="${printCopies}" style="max-width: 6rem;">
+                        <small style="color: var(--text-secondary);">
+                            Set number of copies in the print dialog when printing.
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-checkbox">
+                            <input type="checkbox" name="print_auto_cut" ${autoCut ? 'checked' : ''}>
+                            <span>Auto-cut receipts (thermal)</span>
+                        </label>
+                        <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
+                            Adds a short feed at the end so the printer cuts after the receipt. Enable in your printer driver if supported.
+                        </small>
+                    </div>
                     
                     <h4 style="margin-top: 2rem; margin-bottom: 1rem;">Transaction Message</h4>
                     <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
@@ -1803,7 +1831,7 @@ async function renderPrintSettingsPage() {
                     </div>
                     
                     <div style="margin-top: 2rem;">
-                        <button type="submit" class="btn btn-primary">
+                        <button type="submit" class="btn btn-primary" id="printSettingsSaveBtn">
                             <i class="fas fa-save"></i> Save Print Settings
                         </button>
                     </div>
@@ -1811,18 +1839,37 @@ async function renderPrintSettingsPage() {
             </div>
         </div>
     `;
+    
+    const form = document.getElementById('printSettingsForm');
+    if (form) {
+        form.onsubmit = function(e) {
+            e.preventDefault();
+            savePrintSettingsFromForm(form);
+        };
+    }
+}
+
+function savePrintSettingsFromForm(form) {
+    if (!form) return;
+    const formData = new FormData(form);
+    CONFIG.PRINT_TYPE = formData.get('print_type') || 'normal';
+    CONFIG.TRANSACTION_MESSAGE = formData.get('transaction_message') || '';
+    CONFIG.PRINT_REMOVE_MARGIN = formData.get('print_remove_margin') === 'on';
+    CONFIG.PRINT_COPIES = Math.max(1, parseInt(formData.get('print_copies'), 10) || 1);
+    CONFIG.PRINT_AUTO_CUT = formData.get('print_auto_cut') === 'on';
+    try {
+        if (typeof saveConfig === 'function') saveConfig();
+        if (typeof showToast === 'function') showToast('Print settings saved', 'success');
+    } catch (err) {
+        console.error('Save print settings error:', err);
+        if (typeof showToast === 'function') showToast('Failed to save print settings', 'error');
+    }
 }
 
 function savePrintSettings(event) {
-    event.preventDefault();
-    const form = event.target;
-    const formData = new FormData(form);
-    
-    CONFIG.PRINT_TYPE = formData.get('print_type') || 'normal';
-    CONFIG.TRANSACTION_MESSAGE = formData.get('transaction_message') || '';
-    
-    saveConfig();
-    showToast('Print settings saved', 'success');
+    if (event) event.preventDefault();
+    const form = document.getElementById('printSettingsForm');
+    savePrintSettingsFromForm(form || (event && event.target));
 }
 
 // =====================================================

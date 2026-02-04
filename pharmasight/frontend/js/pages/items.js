@@ -83,6 +83,18 @@ async function loadItems() {
     // Reset lists
     itemsList = [];
     filteredItemsList = [];
+    
+    // If navigated with item_id (e.g. from Sales "View full item details"), open that item's detail modal
+    const hash = window.location.hash || '';
+    const itemIdMatch = hash.match(/[?&]item_id=([^&]+)/);
+    if (itemIdMatch && itemIdMatch[1]) {
+        const itemId = decodeURIComponent(itemIdMatch[1]);
+        setTimeout(function() {
+            if (typeof window.editItem === 'function') {
+                window.editItem(itemId);
+            }
+        }, 150);
+    }
 }
 
 function showItemsPrompt() {
@@ -2173,9 +2185,92 @@ function removeEditUnitRow(button) {
     }
 }
 
+/**
+ * Read-only "Item full details" modal for transaction documents (sales, purchases, quotations).
+ * Shows: order & supply details, stock (session + other branches), expiry & batch.
+ */
+async function showItemFullDetailsModal(itemId) {
+    const branchId = typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID ? CONFIG.BRANCH_ID : null;
+    if (!branchId) {
+        showToast('Branch context required to view item details.', 'warning');
+        return;
+    }
+    if (typeof API === 'undefined' || !API.items || typeof API.items.getActivity !== 'function') {
+        showToast('Unable to load item details.', 'error');
+        return;
+    }
+    let data;
+    try {
+        data = await API.items.getActivity(itemId, branchId);
+    } catch (err) {
+        console.error('Item activity fetch failed:', err);
+        showToast(err.data?.detail || err.message || 'Failed to load item details', 'error');
+        return;
+    }
+    const item = data.item || {};
+    const orderSupply = data.order_supply || {};
+    const stock = data.stock || {};
+    const expiryBatch = data.expiry_batch || {};
+    const fmt = (v) => (v == null || v === '') ? '—' : v;
+    const fmtDate = (d) => (!d) ? '—' : (d.length >= 10 ? d.substring(0, 10) : d);
+    const fmtCur = (n) => (n == null || n === '') ? '—' : (typeof formatCurrency === 'function' ? formatCurrency(n) : 'Ksh ' + Number(n).toFixed(2));
+
+    const orderSupplyRows = [
+        ['Last order date', fmtDate(orderSupply.last_order_date)],
+        ['Last received', fmtDate(orderSupply.last_received)],
+        ['Last sold', fmtDate(orderSupply.last_sold)],
+        ['Last supplier', fmt(orderSupply.last_supplier_name)],
+        ['Last unit cost (per base)', fmtCur(orderSupply.last_unit_cost)],
+    ];
+    const orderSupplyHtml = `
+        <div class="form-section-title" style="margin-bottom: 0.5rem;"><i class="fas fa-truck-loading"></i> Order & supply details</div>
+        <table class="table" style="width: 100%; font-size: 0.9rem;">
+            <tbody>
+                ${orderSupplyRows.map(([label, value]) => `<tr><td style="color: var(--text-secondary);">${escapeHtml(label)}</td><td>${escapeHtml(String(value))}</td></tr>`).join('')}
+            </tbody>
+        </table>`;
+
+    const sessionBranch = stock.session_branch || {};
+    const otherBranches = stock.other_branches || [];
+    const sessionRow = `<tr><td>${escapeHtml(sessionBranch.branch_name || 'Current branch')}</td><td>${escapeHtml(sessionBranch.code || '')}</td><td><strong>${sessionBranch.stock != null ? sessionBranch.stock : '—'}</strong> ${escapeHtml(item.base_unit || '')}</td></tr>`;
+    const otherRows = otherBranches.map(b => `<tr><td>${escapeHtml(b.branch_name)}</td><td>${escapeHtml(b.code)}</td><td>${b.stock != null ? b.stock : '—'} ${escapeHtml(item.base_unit || '')}</td></tr>`).join('');
+    const stockHtml = `
+        <div class="form-section-title" style="margin-bottom: 0.5rem;"><i class="fas fa-warehouse"></i> Stock</div>
+        <table class="table" style="width: 100%; font-size: 0.9rem;">
+            <thead><tr><th>Branch</th><th>Code</th><th>Quantity (base)</th></tr></thead>
+            <tbody>${sessionRow}${otherRows}</tbody>
+        </table>`;
+
+    const batches = expiryBatch.batches || [];
+    const batchRows = batches.length
+        ? batches.map(b => `<tr><td>${escapeHtml(fmt(b.batch_number))}</td><td>${fmtDate(b.expiry_date)}</td><td>${b.quantity != null ? b.quantity : '—'}</td><td>${fmtCur(b.unit_cost)}</td></tr>`).join('')
+        : '<tr><td colspan="4" style="color: var(--text-secondary);">No batch/expiry data</td></tr>';
+    const expiryBatchHtml = `
+        <div class="form-section-title" style="margin-bottom: 0.5rem;"><i class="fas fa-calendar-alt"></i> Expiry & batch</div>
+        <table class="table" style="width: 100%; font-size: 0.9rem;">
+            <thead><tr><th>Batch</th><th>Expiry</th><th>Qty</th><th>Unit cost</th></tr></thead>
+            <tbody>${batchRows}</tbody>
+        </table>`;
+
+    const title = 'Item details — ' + (item.name || 'Item');
+    const content = `
+        <div style="max-height: 70vh; overflow-y: auto;">
+            <div style="margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-color);">
+                <div style="font-weight: 600; font-size: 1.05rem;">${escapeHtml(item.name || '')}</div>
+                <div style="color: var(--text-secondary); font-size: 0.875rem;">Code: ${escapeHtml(item.sku || '')} ${item.barcode ? '| Barcode: ' + escapeHtml(item.barcode) : ''} | Base unit: ${escapeHtml(item.base_unit || '')}</div>
+            </div>
+            <div class="form-section" style="margin-bottom: 1.25rem;">${orderSupplyHtml}</div>
+            <div class="form-section" style="margin-bottom: 1.25rem;">${stockHtml}</div>
+            <div class="form-section">${expiryBatchHtml}</div>
+        </div>`;
+    const footer = '<button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>';
+    showModal(title, content, footer, 'modal-large');
+}
+
 // Export
 window.loadItems = loadItems;
 window.showAddItemModal = showAddItemModal;
+window.showItemFullDetailsModal = showItemFullDetailsModal;
 window.showImportExcelModal = showImportExcelModal;
 window.downloadItemTemplate = downloadItemTemplate;
 window.handleFileSelect = handleFileSelect;
