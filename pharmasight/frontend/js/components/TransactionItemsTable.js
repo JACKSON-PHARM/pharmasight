@@ -170,24 +170,20 @@
     };
 
     /**
-     * Calculate margin % in the selected unit. Uses margin-on-price (same as backend): (price - cost) / price * 100.
-     * When unit_cost_used is set (e.g. from API on reload), use it as cost per sale unit; else use purchase_price * unit_multiplier.
-     * Margin on price stays 0–100% and avoids huge values when cost is very small.
+     * Calculate margin percentage in the selected unit (unit-aware).
+     * purchase_price is cost per base (wholesale) unit; convert to cost per selected unit using unit_multiplier.
+     * NOTE: This margin is markup-on-cost: (price - cost) / cost * 100.
      */
     TransactionItemsTable.prototype.calculateMargin = function(item) {
         if (this.mode !== 'sale' && this.mode !== 'quotation') return 0;
-        var costPerSelectedUnit;
-        if (item.unit_cost_used != null && (parseFloat(item.unit_cost_used) || 0) > 0) {
-            costPerSelectedUnit = parseFloat(item.unit_cost_used);
-        } else {
-            const costPerBase = item.purchase_price || 0;
-            if (costPerBase <= 0) return 0;
-            const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
-            costPerSelectedUnit = costPerBase * mult;
-        }
+        const costPerBase = item.purchase_price || 0;
+        if (costPerBase <= 0) return 0;
+        const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
+        const costPerSelectedUnit = costPerBase * mult;
         const salePricePerUnit = item.unit_price || 0;
         if (salePricePerUnit <= 0) return 0;
-        return ((salePricePerUnit - costPerSelectedUnit) / salePricePerUnit) * 100;
+        if (costPerSelectedUnit <= 0) return 0;
+        return ((salePricePerUnit - costPerSelectedUnit) / costPerSelectedUnit) * 100;
     };
     
     /**
@@ -1053,28 +1049,20 @@
     };
     
     /**
-     * Handle margin change: set unit price from cost and margin-on-price %.
-     * margin = (price - cost) / price  =>  price = cost / (1 - margin/100)
-     * Cost: use unit_cost_used when set (from API), else purchase_price * unit_multiplier.
+     * Handle margin change: set unit price from cost (in selected unit) and margin %, then recalc net and total.
+     * cost per selected unit = purchase_price * unit_multiplier; unit_price = cost_per_selected * (1 + margin%/100)
      */
     TransactionItemsTable.prototype.handleMarginChange = function(rowIndex, value) {
         if (rowIndex < 0 || rowIndex >= this.items.length) return;
         const item = this.items[rowIndex];
         if (!item) return;
         const marginPct = parseFloat(value);
-        if (isNaN(marginPct) || marginPct >= 100) return;
-        var costPerSelectedUnit;
-        if (item.unit_cost_used != null && (parseFloat(item.unit_cost_used) || 0) > 0) {
-            costPerSelectedUnit = parseFloat(item.unit_cost_used);
-        } else {
-            const costPerBase = item.purchase_price || 0;
-            if (costPerBase <= 0) return;
-            const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
-            costPerSelectedUnit = costPerBase * mult;
-        }
-        const denom = 1 - marginPct / 100;
-        if (denom <= 0) return;
-        item.unit_price = Math.round((costPerSelectedUnit / denom) * 10000) / 10000;
+        if (isNaN(marginPct)) return;
+        const costPerBase = item.purchase_price || 0;
+        if (costPerBase <= 0) return;
+        const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
+        const costPerSelectedUnit = costPerBase * mult;
+        item.unit_price = Math.round(costPerSelectedUnit * (1 + marginPct / 100) * 10000) / 10000;
         this.recalculateRow(rowIndex);
         this.updateRowDisplay(rowIndex);
         this.notifyChange();

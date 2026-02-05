@@ -33,6 +33,7 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     line_total_exclusive: Decimal
     line_total_inclusive: Decimal
     unit_cost_used: Optional[Decimal]
+    unit_cost_base: Optional[Decimal] = None  # Cost per base (wholesale) unit for accurate unit-aware calculations
     item_name: Optional[str] = None
     item_code: Optional[str] = None
     unit_display_short: Optional[str] = None  # P/W/S for display/print only
@@ -220,6 +221,7 @@ class QuotationItemResponse(QuotationItemBase):
     item_name: Optional[str] = None
     item_code: Optional[str] = None
     unit_cost_used: Optional[Decimal] = None
+    unit_cost_base: Optional[Decimal] = None  # Cost per base (wholesale) unit for accurate unit-aware calculations
     margin_percent: Optional[Decimal] = None
     unit_display_short: Optional[str] = None  # P/W/S for display/print only
     created_at: datetime

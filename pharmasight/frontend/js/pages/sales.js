@@ -1208,8 +1208,8 @@ async function renderCreateSalesQuotationPage() {
                 unit_name: item.unit_name,
                 quantity: item.quantity,
                 unit_price: item.unit_price_exclusive || 0,
-                purchase_price: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null,
-                unit_cost_used: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null,
+                // IMPORTANT: purchase_price must be base (wholesale) cost; never pass unit_cost_used here
+                purchase_price: item.unit_cost_base != null ? parseFloat(item.unit_cost_base) : null,
                 discount_percent: item.discount_percent || 0,
                 total: item.line_total_inclusive || 0,
                 is_empty: false

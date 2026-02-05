@@ -155,6 +155,8 @@ def get_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
             db, quotation_item.item_id, quotation.branch_id
         )
         if cost_base is not None:
+            # Expose base-unit cost for UI to calculate margins consistently across unit tiers
+            quotation_item.unit_cost_base = cost_base
             item = quotation_item.item
             mult = get_unit_multiplier_from_item(item, quotation_item.unit_name) if item else None
             if mult is not None:

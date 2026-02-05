@@ -250,6 +250,13 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
             invoice_item.unit_display_short = get_unit_display_short(
                 invoice_item.item, invoice_item.unit_name or ''
             )
+            # Provide base-unit cost for consistent unit-aware margin calculations in UI
+            try:
+                invoice_item.unit_cost_base = PricingService.get_item_cost(
+                    db, invoice_item.item_id, invoice.branch_id
+                )
+            except Exception:
+                invoice_item.unit_cost_base = None
     
     return invoice
 
