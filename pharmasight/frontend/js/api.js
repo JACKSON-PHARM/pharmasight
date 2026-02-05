@@ -199,6 +199,7 @@ const API = {
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),
         delete: (itemId) => api.delete(`${CONFIG.API_ENDPOINTS.items}/${itemId}`),
         hasTransactions: (itemId, branchId) => api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/has-transactions`, { branch_id: branchId }),
+        adjustStock: (itemId, data) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/adjust-stock`, data),
         getRecommendedPrice: (itemId, branchId, companyId, unitName, tier) => 
             api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/recommended-price`, {
                 branch_id: branchId,

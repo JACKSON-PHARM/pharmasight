@@ -206,3 +206,32 @@ class ItemOverviewResponse(ItemResponse):
     has_transactions: bool = Field(default=False, description="Whether item has any inventory_ledger records (locks structural fields)")
     minimum_stock: Optional[float] = Field(default=None, description="Minimum stock level (if configured)")
 
+
+class AdjustStockRequest(BaseModel):
+    """Request body for manual stock adjustment (add or reduce)."""
+    branch_id: UUID = Field(..., description="Branch where stock is adjusted")
+    user_id: UUID = Field(..., description="User performing the adjustment (must be ADMIN, Pharmacist, or Auditor)")
+    unit_name: str = Field(..., min_length=1, description="Unit to use (e.g. box, tablet, piece - one of item's 3-tier units)")
+    quantity: float = Field(..., gt=0, description="Quantity in the selected unit (always positive)")
+    direction: str = Field(..., description="'add' or 'reduce'")
+    unit_cost: Optional[float] = Field(None, ge=0, description="Cost per base unit; default = last purchase cost")
+    batch_number: Optional[str] = Field(None, max_length=200, description="Batch/lot number for this adjustment")
+    expiry_date: Optional[str] = Field(None, description="Expiry date (YYYY-MM-DD)")
+    notes: Optional[str] = Field(None, max_length=2000, description="Comments or details (e.g. source, reason)")
+
+    @model_validator(mode="after")
+    def validate_direction(self):
+        if self.direction.lower() not in ("add", "reduce"):
+            raise ValueError("direction must be 'add' or 'reduce'")
+        return self
+
+
+class AdjustStockResponse(BaseModel):
+    """Response after stock adjustment."""
+    success: bool = True
+    message: str = Field(..., description="Success message")
+    item_id: UUID = Field(..., description="Item that was adjusted")
+    branch_id: UUID = Field(..., description="Branch where stock was adjusted")
+    quantity_delta: int = Field(..., description="Change in base units (positive = add, negative = reduce)")
+    new_stock: int = Field(..., description="New total stock in base units after adjustment")
+

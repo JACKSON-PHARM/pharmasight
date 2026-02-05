@@ -79,3 +79,29 @@ def validate_unit_for_item(item: "Item", unit_name: str) -> Tuple[bool, Optional
     """
     mult = get_unit_multiplier_from_item(item, unit_name)
     return (mult is not None, mult)
+
+
+def get_unit_display_short(item: Optional["Item"], unit_name: str) -> str:
+    """
+    Universal short form for display/printing only. Does not change stored unit_name.
+    - P = retail (pieces, tablets, capsules, etc.)
+    - W = wholesale (base)
+    - S = supplier
+    When can_break_bulk is False, return "P" throughout.
+    """
+    if not item:
+        return "P"
+    if getattr(item, "can_break_bulk", True) is False:
+        return "P"
+    u = (unit_name or "").strip().lower()
+    wholesale = (item.wholesale_unit or item.base_unit or "piece").strip().lower()
+    retail = (item.retail_unit or "").strip().lower()
+    supplier = (item.supplier_unit or "").strip().lower()
+    # Match wholesale first so e.g. "pack" (1 pack = 100 caps) shows W not P when names differ
+    if u == wholesale:
+        return "W"
+    if retail and u == retail:
+        return "P"
+    if supplier and u == supplier:
+        return "S"
+    return "P"

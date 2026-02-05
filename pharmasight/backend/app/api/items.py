@@ -12,10 +12,12 @@ from sqlalchemy import func, or_, and_, desc
 from typing import List, Optional
 from uuid import UUID, uuid4
 from app.dependencies import get_tenant_db
+from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
     InventoryLedger, SupplierInvoice, SupplierInvoiceItem, Supplier,
-    PurchaseOrder, PurchaseOrderItem, Branch
+    PurchaseOrder, PurchaseOrderItem, Branch,
+    UserRole, UserBranchRole
 )
 from app.models.sale import SalesInvoice, SalesInvoiceItem
 from app.schemas.item import (
@@ -23,7 +25,8 @@ from app.schemas.item import (
     ItemUnitCreate, ItemUnitResponse,
     ItemPricingCreate, ItemPricingResponse,
     CompanyPricingDefaultCreate, CompanyPricingDefaultResponse,
-    ItemsBulkCreate, ItemOverviewResponse
+    ItemsBulkCreate, ItemOverviewResponse,
+    AdjustStockRequest, AdjustStockResponse
 )
 from app.services.pricing_service import PricingService
 from app.services.items_service import create_item as svc_create_item
@@ -32,6 +35,22 @@ from app.services.inventory_service import InventoryService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Roles allowed to perform manual stock adjustment (add/reduce)
+ADJUST_STOCK_ALLOWED_ROLES = {"admin", "pharmacist", "auditor", "super admin"}
+
+
+def _get_user_role(user_id: UUID, branch_id: UUID, db: Session) -> Optional[str]:
+    """Get user's role name for a branch (lowercase)."""
+    role = db.query(UserRole.role_name).join(
+        UserBranchRole, UserRole.id == UserBranchRole.role_id
+    ).filter(
+        and_(
+            UserBranchRole.user_id == user_id,
+            UserBranchRole.branch_id == branch_id
+        )
+    ).first()
+    return (role[0].lower() if role and role[0] else None)
 
 
 def _display_units_from_item(item: Item) -> List[ItemUnitResponse]:
@@ -827,6 +846,103 @@ def get_items_by_company(
         data["units"] = _display_units_from_item(item)
         result.append(ItemResponse.model_validate(data))
     return result
+
+
+@router.post("/{item_id}/adjust-stock", response_model=AdjustStockResponse)
+def adjust_stock(
+    item_id: UUID,
+    body: AdjustStockRequest,
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Add or reduce stock for an item (manual adjustment).
+    Only users with role ADMIN, Pharmacist, or Auditor can adjust stock.
+    Quantity is in the selected unit (one of the item's 3-tier units: e.g. box, tablet, piece).
+    Unit cost defaults to last purchase cost if not provided.
+    """
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    user_role = _get_user_role(body.user_id, body.branch_id, db)
+    if not user_role or user_role not in ADJUST_STOCK_ALLOWED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only ADMIN, Pharmacist, or Auditor can adjust stock quantities.",
+        )
+
+    # Convert quantity in selected unit to base units
+    try:
+        base_quantity = InventoryService.convert_to_base_units(
+            db, item_id, float(body.quantity), body.unit_name.strip()
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if base_quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Quantity in selected unit must result in at least 1 base unit.",
+        )
+
+    quantity_delta = base_quantity if body.direction.lower() == "add" else -base_quantity
+
+    # For reduce, check current stock
+    if quantity_delta < 0:
+        current = InventoryService.get_current_stock(db, item_id, body.branch_id)
+        if current + quantity_delta < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot reduce by {abs(quantity_delta)} base units: current stock is {current}.",
+            )
+
+    # Unit cost: use provided or last purchase/default
+    if body.unit_cost is not None:
+        unit_cost = Decimal(str(body.unit_cost))
+    else:
+        unit_cost = CanonicalPricingService.get_best_available_cost(
+            db, item_id, body.branch_id, item.company_id
+        )
+        if unit_cost is None or unit_cost <= 0:
+            unit_cost = Decimal("0")
+    total_cost = unit_cost * abs(quantity_delta)
+
+    expiry_date_parsed = None
+    if body.expiry_date and body.expiry_date.strip():
+        try:
+            from datetime import date as date_type
+            expiry_date_parsed = date_type.fromisoformat(body.expiry_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid expiry_date; use YYYY-MM-DD.")
+
+    ledger_entry = InventoryLedger(
+        company_id=item.company_id,
+        branch_id=body.branch_id,
+        item_id=item_id,
+        transaction_type="ADJUSTMENT",
+        reference_type="MANUAL_ADJUSTMENT",
+        reference_id=None,
+        quantity_delta=quantity_delta,
+        unit_cost=unit_cost,
+        total_cost=total_cost,
+        created_by=body.user_id,
+        batch_number=body.batch_number.strip() if body.batch_number and body.batch_number.strip() else None,
+        expiry_date=expiry_date_parsed,
+        notes=body.notes.strip() if body.notes and body.notes.strip() else None,
+    )
+    db.add(ledger_entry)
+    db.commit()
+
+    new_stock = InventoryService.get_current_stock(db, item_id, body.branch_id)
+    direction_label = "added" if quantity_delta > 0 else "reduced"
+    return AdjustStockResponse(
+        success=True,
+        message=f"Stock {direction_label}: {abs(quantity_delta)} base units. New stock: {new_stock}.",
+        item_id=item_id,
+        branch_id=body.branch_id,
+        quantity_delta=quantity_delta,
+        new_stock=new_stock,
+    )
 
 
 @router.put("/{item_id}", response_model=ItemResponse)

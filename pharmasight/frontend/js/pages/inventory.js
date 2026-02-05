@@ -366,6 +366,9 @@ function renderItemsTable() {
                                 </span>
                             </td>
                             <td>
+                                <button class="btn btn-primary" onclick="showAdjustStockModal('${item.id}')" title="Adjust stock: add/reduce, set batch, expiry, notes" style="min-width: 2.25rem;">
+                                    <i class="fas fa-sliders-h"></i> <span style="margin-left: 0.25rem;">Adjust</span>
+                                </button>
                                 <button class="btn btn-outline" onclick="editItem('${item.id}')" title="Edit item">
                                     <i class="fas fa-edit"></i>
                                 </button>
@@ -383,6 +386,142 @@ function renderItemsTable() {
             ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${inventoryFilteredItemsList.length} search result${inventoryFilteredItemsList.length !== 1 ? 's' : ''}</p>`
             : ''}
     `;
+}
+
+// ============================================
+// ADJUST STOCK MODAL
+// ============================================
+async function showAdjustStockModal(itemId) {
+    if (!CONFIG.BRANCH_ID) {
+        if (typeof showToast === 'function') showToast('Please select a branch first.', 'warning');
+        else alert('Please select a branch first.');
+        return;
+    }
+    if (!CONFIG.USER_ID) {
+        if (typeof showToast === 'function') showToast('User session required to adjust stock.', 'warning');
+        else alert('User session required to adjust stock.');
+        return;
+    }
+    try {
+        const branchId = CONFIG.BRANCH_ID != null ? (typeof CONFIG.BRANCH_ID === 'string' ? CONFIG.BRANCH_ID : (CONFIG.BRANCH_ID && (CONFIG.BRANCH_ID.id || CONFIG.BRANCH_ID))) : null;
+        const data = await API.items.get(itemId, branchId);
+        const itemName = (data && data.name) ? String(data.name) : 'Item';
+        const units = (data && data.units && data.units.length) ? data.units : [{ unit_name: data.base_unit || 'piece', multiplier_to_base: 1 }];
+        const lastCost = (data && (data.default_cost != null || data.default_cost_per_base != null)) ? (data.default_cost ?? data.default_cost_per_base) : 0;
+        const unitOptions = units.map(u => `<option value="${escapeHtml(u.unit_name)}">${escapeHtml(u.unit_name)}</option>`).join('');
+
+        const content = `
+            <div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-secondary, #f5f5f5); border-radius: 6px;">
+                <strong>${escapeHtml(itemName)}</strong>
+            </div>
+            <div class="form-group">
+                <label>Unit (Box, Tablets, Pieces, etc.)</label>
+                <select id="adjustStockUnit" class="form-input">
+                    ${unitOptions}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Direction</label>
+                <div style="display: flex; gap: 1rem;">
+                    <label><input type="radio" name="adjustDirection" value="add" checked> Add stock</label>
+                    <label><input type="radio" name="adjustDirection" value="reduce"> Reduce stock</label>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Quantity (in selected unit)</label>
+                <input type="number" id="adjustStockQty" class="form-input" min="0.001" step="any" value="1" required>
+            </div>
+            <div class="form-group">
+                <label>Unit cost (per base unit) — optional; defaults to last purchase cost</label>
+                <input type="number" id="adjustStockCost" class="form-input" min="0" step="0.01" value="${lastCost}" placeholder="0 = use last price">
+            </div>
+            <div class="form-group">
+                <label>Batch / Lot number</label>
+                <input type="text" id="adjustStockBatch" class="form-input" maxlength="200" placeholder="e.g. BATCH-2024-001">
+            </div>
+            <div class="form-group">
+                <label>Expiry date</label>
+                <input type="date" id="adjustStockExpiry" class="form-input" value="" placeholder="YYYY-MM-DD">
+            </div>
+            <div class="form-group">
+                <label>Comments / Details (source, reason — for tracking)</label>
+                <textarea id="adjustStockNotes" class="form-input" rows="2" maxlength="2000" placeholder="e.g. Received from store X, stock take correction"></textarea>
+            </div>
+        `;
+        const footer = `
+            <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="adjustStockSubmitBtn"><i class="fas fa-check"></i> Apply adjustment</button>
+        `;
+        if (typeof showModal === 'function') {
+            showModal('Adjust Item', content, footer);
+        } else {
+            document.getElementById('modalOverlay').style.display = 'flex';
+            document.getElementById('modal').innerHTML = '<div class="modal-header"><h3>Adjust Item</h3><button class="modal-close" onclick="closeModal()"><i class="fas fa-times"></i></button></div><div class="modal-body">' + content + '</div><div class="modal-footer">' + footer + '</div>';
+        }
+        const submitBtn = document.getElementById('adjustStockSubmitBtn');
+        if (submitBtn) {
+            submitBtn.onclick = async () => submitAdjustStock(itemId);
+        }
+    } catch (err) {
+        const msg = err.message || (err.data && err.data.detail) || 'Failed to load item';
+        if (typeof showToast === 'function') showToast(msg, 'error');
+        else alert(msg);
+    }
+}
+
+async function submitAdjustStock(itemId) {
+    const unitEl = document.getElementById('adjustStockUnit');
+    const qtyEl = document.getElementById('adjustStockQty');
+    const costEl = document.getElementById('adjustStockCost');
+    const directionRadios = document.querySelectorAll('input[name="adjustDirection"]');
+    if (!unitEl || !qtyEl || !directionRadios.length) return;
+    const unit_name = unitEl.value;
+    const quantity = parseFloat(qtyEl.value);
+    const direction = Array.from(directionRadios).find(r => r.checked);
+    const dir = direction ? direction.value : 'add';
+    if (!quantity || quantity <= 0) {
+        if (typeof showToast === 'function') showToast('Enter a valid quantity.', 'warning');
+        else alert('Enter a valid quantity.');
+        return;
+    }
+    const unit_cost = costEl ? parseFloat(costEl.value) : null;
+    const batchEl = document.getElementById('adjustStockBatch');
+    const expiryEl = document.getElementById('adjustStockExpiry');
+    const notesEl = document.getElementById('adjustStockNotes');
+    const branchIdRaw = CONFIG.BRANCH_ID != null ? (typeof CONFIG.BRANCH_ID === 'string' ? CONFIG.BRANCH_ID : (CONFIG.BRANCH_ID && (CONFIG.BRANCH_ID.id || CONFIG.BRANCH_ID))) : null;
+    const userIdRaw = CONFIG.USER_ID != null ? (typeof CONFIG.USER_ID === 'string' ? CONFIG.USER_ID : (CONFIG.USER_ID && (CONFIG.USER_ID.id || CONFIG.USER_ID))) : null;
+    const payload = {
+        branch_id: branchIdRaw,
+        user_id: userIdRaw,
+        unit_name: unit_name,
+        quantity: quantity,
+        direction: dir,
+        unit_cost: (unit_cost != null && !isNaN(unit_cost) && unit_cost > 0) ? unit_cost : null,
+        batch_number: batchEl && batchEl.value.trim() ? batchEl.value.trim() : null,
+        expiry_date: expiryEl && expiryEl.value ? expiryEl.value : null,
+        notes: notesEl && notesEl.value.trim() ? notesEl.value.trim() : null
+    };
+    const submitBtn = document.getElementById('adjustStockSubmitBtn');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Applying...';
+    }
+    try {
+        await API.items.adjustStock(itemId, payload);
+        if (typeof closeModal === 'function') closeModal();
+        if (typeof showToast === 'function') showToast('Stock adjusted successfully.', 'success');
+        else alert('Stock adjusted successfully.');
+        if (typeof filterItems === 'function') filterItems();
+    } catch (err) {
+        const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Adjustment failed';
+        if (typeof showToast === 'function') showToast(msg, 'error');
+        else alert(msg);
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Apply adjustment';
+        }
+    }
 }
 
 // ============================================
@@ -453,6 +592,8 @@ function formatNumber(num) {
             }
             // Export loadItemsData for use from items.js
             window.loadItemsData = loadItemsData;
+            if (typeof showAdjustStockModal === 'function') window.showAdjustStockModal = showAdjustStockModal;
+            if (typeof submitAdjustStock === 'function') window.submitAdjustStock = submitAdjustStock;
             
             console.log('✓ Inventory functions exported to window:', {
                 loadInventory: typeof window.loadInventory,

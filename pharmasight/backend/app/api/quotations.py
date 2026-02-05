@@ -27,7 +27,7 @@ from app.services.pricing_service import PricingService
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
 from app.services.order_book_service import OrderBookService
-from app.services.item_units_helper import get_unit_multiplier_from_item
+from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
 
 router = APIRouter()
 
@@ -58,8 +58,8 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
                 detail=f"Item {item_data.item_id} not found"
             )
         
-        # Get VAT rate from item
-        vat_rate = Decimal(str(item.vat_rate)) if item.vat_rate else Decimal("16.00")
+        # Get VAT rate from item (0 is valid for zero-rated; only use default when None)
+        vat_rate = Decimal(str(item.vat_rate)) if item.vat_rate is not None else Decimal("16.00")
         
         # Calculate line totals
         quantity = Decimal(str(item_data.quantity))
@@ -142,11 +142,14 @@ def get_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
     if not quotation:
         raise HTTPException(status_code=404, detail="Quotation not found")
     
-    # Enhance items with item name/code and margin (like sales invoice)
+    # Enhance items with item name/code, margin, and unit_display_short (P/W/S for print)
     for quotation_item in quotation.items:
         if quotation_item.item:
             quotation_item.item_code = quotation_item.item.sku or ''
             quotation_item.item_name = quotation_item.item.name or ''
+            quotation_item.unit_display_short = get_unit_display_short(
+                quotation_item.item, quotation_item.unit_name or ''
+            )
         # Margin calculation: cost per sale unit and margin %
         cost_base = PricingService.get_item_cost(
             db, quotation_item.item_id, quotation.branch_id
@@ -239,7 +242,8 @@ def update_quotation(quotation_id: UUID, quotation: QuotationUpdate, db: Session
                     detail=f"Item {item_data.item_id} not found"
                 )
             
-            vat_rate = Decimal(str(item.vat_rate)) if item.vat_rate else Decimal("16.00")
+            # 0 is valid for zero-rated; only use default when None
+            vat_rate = Decimal(str(item.vat_rate)) if item.vat_rate is not None else Decimal("16.00")
             quantity = Decimal(str(item_data.quantity))
             unit_price = Decimal(str(item_data.unit_price_exclusive or 0))
             

@@ -33,7 +33,8 @@ class InventoryLedger(Base):
     total_cost = Column(Numeric(20, 4), nullable=False)  # quantity_delta * unit_cost
     created_by = Column(UUID(as_uuid=True), nullable=False)  # User ID
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    
+    notes = Column(String(2000), nullable=True)  # Optional comment/details (e.g. source, reason for adjustment)
+
     # Enhanced batch tracking fields
     batch_cost = Column(Numeric(20, 4), nullable=True)  # Cost for this specific batch (for FIFO/LIFO)
     remaining_quantity = Column(Integer, nullable=True)  # Remaining quantity in this batch (for tracking)

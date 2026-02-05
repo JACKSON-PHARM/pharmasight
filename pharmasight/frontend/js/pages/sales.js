@@ -1209,14 +1209,20 @@ async function renderCreateSalesQuotationPage() {
                 quantity: item.quantity,
                 unit_price: item.unit_price_exclusive || 0,
                 purchase_price: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null,
+                unit_cost_used: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null,
                 discount_percent: item.discount_percent || 0,
                 total: item.line_total_inclusive || 0,
                 is_empty: false
             }));
             
-            // Update TransactionItemsTable with items
+            // Update TransactionItemsTable with items and ensure one empty row for adding more
             if (salesQuotationItemsTable && quotationItems.length > 0) {
                 salesQuotationItemsTable.items = salesQuotationItemsTable.normalizeItems(quotationItems);
+                const last = salesQuotationItemsTable.items[salesQuotationItemsTable.items.length - 1];
+                const hasEmptyRow = last && !last.item_id && !last.item_name;
+                if (!hasEmptyRow) {
+                    salesQuotationItemsTable.items.push(salesQuotationItemsTable.createEmptyItem());
+                }
                 salesQuotationItemsTable.render();
                 salesQuotationItemsTable.attachEventListeners();
                 updateSalesQuotationSummary();
@@ -2358,6 +2364,14 @@ async function printSalesInvoice(invoiceId) {
     }
 }
 
+/** Format quantity for print: whole number when integer, else up to 2 decimals, strip trailing zeros */
+function formatQuantityForPrint(q) {
+    const n = parseFloat(q);
+    if (isNaN(n) || !isFinite(n)) return '0';
+    if (n % 1 === 0) return String(Math.round(n));
+    return Number(n.toFixed(2)).toString();
+}
+
 function generateInvoicePrintHTML(invoice, printType) {
     const isThermal = (printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal') === 'thermal';
     const noMargin = typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN === true;
@@ -2365,8 +2379,8 @@ function generateInvoicePrintHTML(invoice, printType) {
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
     
     const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString();
-    const hasDiscount = invoice.items && invoice.items.some(item => (parseFloat(item.discount_percent) || 0) > 0 || (parseFloat(item.discount_amount) || 0) > 0);
-    const colCount = 5 + (hasDiscount ? 1 : 0);
+    /* Margin is internal-only; never in print. Always show Discount column (same as quotation). */
+    const colCount = 6; /* Item, Qty, Price/Unit, Discount, VAT, Total */
     
     const itemsHTML = invoice.items && invoice.items.length > 0 
         ? invoice.items.map(item => {
@@ -2374,14 +2388,14 @@ function generateInvoicePrintHTML(invoice, printType) {
             const itemCode = item.item_code || item.item?.sku || '';
             const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
             const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
-            const discountCell = hasDiscount ? `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>` : '';
+            const discountCell = `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>`;
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
             return `
                 <tr>
                     <td>${escapeHtml(itemName)} ${itemCode ? `(${escapeHtml(itemCode)})` : ''}</td>
-                    <td style="text-align: right;">${parseFloat(item.quantity).toFixed(4)} ${escapeHtml(item.unit_name)}</td>
+                    <td style="text-align: right;">${formatQuantityForPrint(item.quantity)} ${(item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : escapeHtml(item.unit_name || '')}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
                     ${discountCell}
                     <td style="text-align: right;">${vatDisplay}</td>
@@ -2391,7 +2405,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         }).join('')
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
     
-    const discountHeader = hasDiscount ? '<th style="text-align: right;">Discount</th>' : '';
+    const discountHeader = '<th style="text-align: right;">Discount</th>';
     const colSpanTotal = colCount - 1;
     
     const companyName = invoice.company_name || 'PharmaSight';
@@ -2540,29 +2554,24 @@ function generateQuotationPrintHTML(quotation, printType) {
     const createdByUser = quotation.created_by_username || '';
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
     
-    const hasMargin = quotation.items && quotation.items.some(item => item.margin_percent != null);
-    const hasDiscount = quotation.items && quotation.items.some(item => (parseFloat(item.discount_percent) || 0) > 0 || (parseFloat(item.discount_amount) || 0) > 0);
-    const colCount = 5 + (hasMargin ? 1 : 0) + (hasDiscount ? 1 : 0);
+    /* Margin is internal-only; never show in customer-facing print. Always show Discount column. */
+    const colCount = 6; /* Item, Qty, Price/Unit, Discount, VAT, Total */
     
     const itemsHTML = quotation.items && quotation.items.length > 0 
         ? quotation.items.map(item => {
             const itemName = item.item_name || item.item?.name || '';
             const itemCode = item.item_code || item.item?.sku || '';
-            const marginCell = hasMargin 
-                ? `<td style="text-align: right;">${item.margin_percent != null ? (parseFloat(item.margin_percent).toFixed(1) + '%') : '—'}</td>` 
-                : '';
             const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
             const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
-            const discountCell = hasDiscount ? `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>` : '';
+            const discountCell = `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>`;
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
             return `
                 <tr>
                     <td>${escapeHtml(itemName)}${itemCode ? ' (' + escapeHtml(itemCode) + ')' : ''}</td>
-                    <td style="text-align: right;">${parseFloat(item.quantity).toFixed(4)} ${escapeHtml(item.unit_name)}</td>
+                    <td style="text-align: right;">${formatQuantityForPrint(item.quantity)} ${(item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : escapeHtml(item.unit_name || '')}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
-                    ${marginCell}
                     ${discountCell}
                     <td style="text-align: right;">${vatDisplay}</td>
                     <td style="text-align: right;">${formatCurrency(lineTotal)}</td>
@@ -2571,8 +2580,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         }).join('')
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
     
-    const marginHeader = hasMargin ? '<th style="text-align: right;">Margin</th>' : '';
-    const discountHeader = hasDiscount ? '<th style="text-align: right;">Discount</th>' : '';
+    const discountHeader = '<th style="text-align: right;">Discount</th>';
     const colSpanTotal = colCount - 1;
     
     const thermalPadding = noMargin ? '2px 4px' : '6px 8px';
@@ -2632,7 +2640,6 @@ function generateQuotationPrintHTML(quotation, printType) {
                 <th>Item</th>
                 <th style="text-align: right;">Qty</th>
                 <th style="text-align: right;">Price/Unit (excl. VAT)</th>
-                ${marginHeader}
                 ${discountHeader}
                 <th style="text-align: right;">VAT</th>
                 <th style="text-align: right;">Total</th>

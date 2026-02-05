@@ -35,6 +35,7 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     unit_cost_used: Optional[Decimal]
     item_name: Optional[str] = None
     item_code: Optional[str] = None
+    unit_display_short: Optional[str] = None  # P/W/S for display/print only
     created_at: datetime
 
     class Config:
@@ -220,6 +221,7 @@ class QuotationItemResponse(QuotationItemBase):
     item_code: Optional[str] = None
     unit_cost_used: Optional[Decimal] = None
     margin_percent: Optional[Decimal] = None
+    unit_display_short: Optional[str] = None  # P/W/S for display/print only
     created_at: datetime
 
     class Config:

@@ -23,6 +23,7 @@ from app.services.inventory_service import InventoryService
 from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
 from app.services.order_book_service import OrderBookService
+from app.services.item_units_helper import get_unit_display_short
 
 router = APIRouter()
 
@@ -237,7 +238,7 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     if not hasattr(invoice, 'cashier_approved'):
         invoice.cashier_approved = invoice.status == 'PAID'
     
-    # Use cached item_name/item_code if available, otherwise fallback to item relationship
+    # Use cached item_name/item_code if available; set unit_display_short (P/W/S) for print
     for invoice_item in invoice.items:
         if not hasattr(invoice_item, 'item_name') or not invoice_item.item_name:
             if invoice_item.item:
@@ -245,6 +246,10 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
         if not hasattr(invoice_item, 'item_code') or not invoice_item.item_code:
             if invoice_item.item:
                 invoice_item.item_code = invoice_item.item.sku or ''
+        if invoice_item.item:
+            invoice_item.unit_display_short = get_unit_display_short(
+                invoice_item.item, invoice_item.unit_name or ''
+            )
     
     return invoice
 

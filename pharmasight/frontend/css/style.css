@@ -30,6 +30,7 @@ body {
     background-color: var(--bg-color);
     color: var(--text-primary);
     line-height: 1.6;
+    overflow-x: hidden; /* Single horizontal scroll in .page-content only */
 }
 
 .app-container {
@@ -463,6 +464,7 @@ body {
 .main-content {
     flex: 1;
     margin-left: 260px;
+    min-width: 0; /* Allow flex child to shrink so horizontal scroll works */
     display: flex;
     flex-direction: column;
     transition: margin-left 0.3s ease;
@@ -539,12 +541,15 @@ body {
     padding: 1rem 2rem;
     border-bottom: 1px solid var(--border-color);
     display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
     justify-content: space-between;
     align-items: center;
     box-shadow: var(--shadow);
     position: sticky;
     top: 0;
     z-index: 100;
+    min-height: 3.5rem;
 }
 
 .menu-toggle {
@@ -563,8 +568,14 @@ body {
 
 .page-content {
     flex: 1;
+    min-height: 0; /* Allow flex child to shrink so scrollbars appear */
     padding: 2rem;
+    overflow-x: auto;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch; /* Smooth scroll on iOS */
+    scroll-behavior: smooth;
+    /* Visible scrollbars for desktop mouse users (overlay scrollbars can hide) */
+    scrollbar-gutter: stable;
 }
 
 .page {
@@ -641,6 +652,8 @@ body {
 
 .card-header {
     display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 1rem;
@@ -696,12 +709,15 @@ body {
     font-size: 0.875rem;
 }
 
-/* Tables */
+/* Tables - scrollable on all devices; visible scrollbars for mouse users */
 .table-container {
     overflow-x: auto;
+    overflow-y: auto;
     background: var(--card-bg);
     border-radius: 0.5rem;
     box-shadow: var(--shadow);
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
 }
 
 table {
@@ -938,6 +954,33 @@ tbody tr:hover {
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+}
+
+/* Scrollbar visibility for desktop (mouse) - optional; works in modern browsers */
+.page-content::-webkit-scrollbar,
+.table-container::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+}
+.page-content::-webkit-scrollbar-track,
+.table-container::-webkit-scrollbar-track {
+    background: var(--bg-color);
+    border-radius: 6px;
+}
+.page-content::-webkit-scrollbar-thumb,
+.table-container::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 6px;
+}
+.page-content::-webkit-scrollbar-thumb:hover,
+.table-container::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+}
+/* Firefox */
+.page-content,
+.table-container {
+    scrollbar-width: auto;
+    scrollbar-color: var(--border-color) var(--bg-color);
 }
 
 /* Responsive */

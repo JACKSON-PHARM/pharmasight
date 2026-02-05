@@ -1935,3 +1935,25 @@ window.renderAppLayout = renderAppLayout;
 window.renderAuthLayout = renderAuthLayout;
 window.isAuthenticated = isAuthenticated;
 
+// Desktop mouse: Shift+wheel scrolls horizontally in scrollable areas (no trackpad/touch)
+(function() {
+    function findScrollableX(el) {
+        while (el && el !== document.body) {
+            var style = window.getComputedStyle(el);
+            var ox = style.overflowX;
+            if ((ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth) {
+                return el;
+            }
+            el = el.parentElement;
+        }
+        return null;
+    }
+    document.addEventListener('wheel', function(e) {
+        if (!e.shiftKey) return;
+        var target = findScrollableX(e.target);
+        if (!target) return;
+        e.preventDefault();
+        target.scrollLeft += e.deltaY;
+    }, { passive: false });
+})();
+
