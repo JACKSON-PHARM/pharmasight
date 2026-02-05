@@ -239,6 +239,7 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
         invoice.cashier_approved = invoice.status == 'PAID'
     
     # Use cached item_name/item_code if available; set unit_display_short (P/W/S) for print
+    from app.models.inventory import InventoryLedger
     for invoice_item in invoice.items:
         if not hasattr(invoice_item, 'item_name') or not invoice_item.item_name:
             if invoice_item.item:
@@ -257,7 +258,16 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
                 )
             except Exception:
                 invoice_item.unit_cost_base = None
-    
+        # Batch/expiry for receipt print (from ledger when batched)
+        if getattr(invoice_item, 'batch_id', None):
+            ledger = db.query(InventoryLedger).filter(InventoryLedger.id == invoice_item.batch_id).first()
+            if ledger:
+                invoice_item.batch_number = ledger.batch_number
+                invoice_item.expiry_date = ledger.expiry_date.isoformat() if getattr(ledger, 'expiry_date', None) else None
+        else:
+            invoice_item.batch_number = None
+            invoice_item.expiry_date = None
+
     return invoice
 
 

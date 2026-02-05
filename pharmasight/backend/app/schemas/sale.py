@@ -37,6 +37,8 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     item_name: Optional[str] = None
     item_code: Optional[str] = None
     unit_display_short: Optional[str] = None  # P/W/S for display/print only
+    batch_number: Optional[str] = None  # From ledger when batched, for receipt print
+    expiry_date: Optional[str] = None  # ISO date from ledger when batched, for receipt print
     created_at: datetime
 
     class Config:

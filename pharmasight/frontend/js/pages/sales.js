@@ -2382,27 +2382,61 @@ function getPrintOpt(key, def) {
     return def;
 }
 
+function formatExpiryForPrint(exp) {
+    if (!exp) return '';
+    try {
+        const d = typeof exp === 'string' ? new Date(exp) : exp;
+        return isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch (_) { return ''; }
+}
+
+function buildBatchExpiryLine(item, showBatch, showExp) {
+    if (!showBatch && !showExp) return '';
+    const allocs = item.batch_allocations && Array.isArray(item.batch_allocations) ? item.batch_allocations : null;
+    if (allocs && allocs.length > 0) {
+        const lines = allocs.map(a => {
+            const b = showBatch && (a.batch_number != null) ? `Batch: ${escapeHtml(String(a.batch_number))}` : '';
+            const e = showExp && a.expiry_date ? `Exp: ${formatExpiryForPrint(a.expiry_date)}` : '';
+            const q = (a.quantity != null) ? ` (${formatQuantityForPrint(a.quantity)})` : '';
+            return [b, e].filter(Boolean).join(' ') + q;
+        }).filter(Boolean);
+        if (lines.length === 0) return '';
+        return '<div class="item-sub">' + lines.join('</div><div class="item-sub">') + '</div>';
+    }
+    const b = showBatch && (item.batch_number != null && item.batch_number !== '') ? `Batch: ${escapeHtml(String(item.batch_number))}` : '';
+    const e = showExp && item.expiry_date ? `Exp: ${formatExpiryForPrint(item.expiry_date)}` : '';
+    const line = [b, e].filter(Boolean).join(' ');
+    return line ? '<div class="item-sub">' + line + '</div>' : '';
+}
+
 function generateInvoicePrintHTML(invoice, printType) {
     const isThermal = (printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal') === 'thermal';
     const noMargin = getPrintOpt('PRINT_REMOVE_MARGIN', false);
     const autoCut = getPrintOpt('PRINT_AUTO_CUT', false);
+    const theme = getPrintOpt('PRINT_THEME', 'theme1');
+    const headerAlign = (theme === 'theme2' || theme === 'theme4') ? 'center' : 'left';
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
     const showCompany = getPrintOpt('PRINT_HEADER_COMPANY', true);
     const showAddress = getPrintOpt('PRINT_HEADER_ADDRESS', true);
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
     const showItemCode = getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
+    const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
+    const showBatch = getPrintOpt('PRINT_ITEM_BATCH', false);
+    const showExp = getPrintOpt('PRINT_ITEM_EXP', false);
 
     const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString();
-    const colCount = 6; /* Item, Qty, Price/Unit, Discount, VAT, Total */
+    const colCount = showVat ? 6 : 5;
 
     const itemsHTML = invoice.items && invoice.items.length > 0
         ? invoice.items.map(item => {
             const itemName = item.item_name || item.item?.name || 'Item';
             const itemCode = item.item_code || item.item?.sku || '';
-            const nameCell = showItemCode && itemCode
+            const nameContent = showItemCode && itemCode
                 ? `${escapeHtml(itemName)} (${escapeHtml(itemCode)})`
                 : escapeHtml(itemName);
+            const batchExpiryLine = buildBatchExpiryLine(item, showBatch, showExp);
+            const nameCell = batchExpiryLine ? `<td>${nameContent}${batchExpiryLine}</td>` : `<td>${nameContent}</td>`;
             const qtyUnit = (item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : (item.unit_name || '');
             const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
             const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
@@ -2411,13 +2445,14 @@ function generateInvoicePrintHTML(invoice, printType) {
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
+            const vatCell = showVat ? `<td style="text-align: right;">${vatDisplay}</td>` : '';
             return `
                 <tr>
-                    <td>${nameCell}</td>
+                    ${nameCell}
                     <td style="text-align: right;">${qtyCell}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
                     ${discountCell}
-                    <td style="text-align: right;">${vatDisplay}</td>
+                    ${vatCell}
                     <td style="text-align: right;">${formatCurrency(lineTotal)}</td>
                 </tr>
             `;
@@ -2425,6 +2460,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
 
     const discountHeader = '<th style="text-align: right;">Discount</th>';
+    const vatHeader = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const colSpanTotal = colCount - 1;
 
     const companyName = invoice.company_name || 'PharmaSight';
@@ -2433,19 +2469,21 @@ function generateInvoicePrintHTML(invoice, printType) {
     const thermalPadding = noMargin ? '2px 4px' : '5px';
     const thermalBodyPad = noMargin ? '2px 4px' : '8px';
     const maxW = Math.min(88, Math.max(58, pageWidthMm)) - 8;
-    /* Auto-adjust to content: size Xmm auto + no min-height on body so no wasted lower margin */
     const pageStyle = isThermal
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 9px; max-width: ${maxW}mm; padding: ${thermalBodyPad}; margin: 0 auto; }
-           .header { padding-bottom: 4px; margin-bottom: 6px; }
+           .header { padding-bottom: 4px; margin-bottom: 6px; text-align: ${headerAlign}; }
            .invoice-info { margin: 4px 0; }
            .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
            th, td { padding: ${thermalPadding}; font-size: 9px; }
+           .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
            table { margin: 4px 0; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
+           .header { text-align: ${headerAlign}; }
+           .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
            th, td { padding: 8px; }`;
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
@@ -2464,7 +2502,7 @@ function generateInvoicePrintHTML(invoice, printType) {
     <style>
         @media print { ${pageStyle} }
         body { font-family: Arial, sans-serif; }
-        .header { text-align: center; border-bottom: 2px solid #000; }
+        .header { border-bottom: 2px solid #000; }
         .invoice-info { margin: 10px 0; }
         table { width: 100%; border-collapse: collapse; margin: 10px 0; }
         th, td { padding: 5px; border-bottom: 1px solid #ddd; text-align: left; }
@@ -2489,7 +2527,7 @@ function generateInvoicePrintHTML(invoice, printType) {
                 <th style="text-align: right;">Qty</th>
                 <th style="text-align: right;">Price/Unit (excl. VAT)</th>
                 ${discountHeader}
-                <th style="text-align: right;">VAT</th>
+                ${vatHeader}
                 <th style="text-align: right;">Total</th>
             </tr>
         </thead>
@@ -2567,11 +2605,16 @@ function generateQuotationPrintHTML(quotation, printType) {
     const isThermal = printType === 'thermal';
     const noMargin = getPrintOpt('PRINT_REMOVE_MARGIN', false);
     const autoCut = getPrintOpt('PRINT_AUTO_CUT', false);
+    const theme = getPrintOpt('PRINT_THEME', 'theme1');
+    const headerAlign = (theme === 'theme2' || theme === 'theme4') ? 'center' : 'left';
     const showCompany = getPrintOpt('PRINT_HEADER_COMPANY', true);
     const showAddress = getPrintOpt('PRINT_HEADER_ADDRESS', true);
     const showPhone = getPrintOpt('PRINT_HEADER_PHONE', true);
     const showItemCode = getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
+    const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
+    const showBatch = getPrintOpt('PRINT_ITEM_BATCH', false);
+    const showExp = getPrintOpt('PRINT_ITEM_EXP', false);
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
 
     const quotationDate = new Date(quotation.quotation_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
@@ -2586,13 +2629,15 @@ function generateQuotationPrintHTML(quotation, printType) {
     const createdByUser = quotation.created_by_username || '';
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
 
-    const colCount = 6;
+    const colCount = showVat ? 6 : 5;
 
     const itemsHTML = quotation.items && quotation.items.length > 0
         ? quotation.items.map(item => {
             const itemName = item.item_name || item.item?.name || '';
             const itemCode = item.item_code || item.item?.sku || '';
-            const nameCell = showItemCode && itemCode ? `${escapeHtml(itemName)} (${escapeHtml(itemCode)})` : escapeHtml(itemName);
+            const nameContent = showItemCode && itemCode ? `${escapeHtml(itemName)} (${escapeHtml(itemCode)})` : escapeHtml(itemName);
+            const batchExpiryLine = buildBatchExpiryLine(item, showBatch, showExp);
+            const nameCell = batchExpiryLine ? `<td>${nameContent}${batchExpiryLine}</td>` : `<td>${nameContent}</td>`;
             const qtyUnit = (item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : (item.unit_name || '');
             const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
             const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
@@ -2601,13 +2646,14 @@ function generateQuotationPrintHTML(quotation, printType) {
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
+            const vatCell = showVat ? `<td style="text-align: right;">${vatDisplay}</td>` : '';
             return `
                 <tr>
-                    <td>${nameCell}</td>
+                    ${nameCell}
                     <td style="text-align: right;">${qtyCell}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
                     ${discountCell}
-                    <td style="text-align: right;">${vatDisplay}</td>
+                    ${vatCell}
                     <td style="text-align: right;">${formatCurrency(lineTotal)}</td>
                 </tr>
             `;
@@ -2615,6 +2661,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
 
     const discountHeader = '<th style="text-align: right;">Discount</th>';
+    const vatHeader = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const colSpanTotal = colCount - 1;
 
     const thermalPadding = noMargin ? '2px 4px' : '6px 8px';
@@ -2624,15 +2671,18 @@ function generateQuotationPrintHTML(quotation, printType) {
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 9px; max-width: ${maxW}mm; padding: ${thermalBodyPad}; margin: 0 auto; }
-           .header { padding-bottom: 4px; margin-bottom: 6px; }
+           .header { padding-bottom: 4px; margin-bottom: 6px; text-align: ${headerAlign}; }
            .header .company-name { font-size: 1em; }
            .quotation-info { margin: 4px 0; }
            .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
            th, td { padding: ${thermalPadding}; font-size: 9px; }
+           .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
            table { margin: 4px 0; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
+           .header { text-align: ${headerAlign}; }
+           .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
            th, td { padding: 8px; }`;
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
@@ -2681,7 +2731,7 @@ function generateQuotationPrintHTML(quotation, printType) {
                 <th style="text-align: right;">Qty</th>
                 <th style="text-align: right;">Price/Unit (excl. VAT)</th>
                 ${discountHeader}
-                <th style="text-align: right;">VAT</th>
+                ${vatHeader}
                 <th style="text-align: right;">Total</th>
             </tr>
         </thead>

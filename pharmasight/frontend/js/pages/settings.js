@@ -1782,12 +1782,10 @@ function getPrintConfigFromForm(form) {
         print_item_sno: bool('print_item_sno'),
         print_item_unit: bool('print_item_unit'),
         print_item_code: bool('print_item_code'),
-        print_item_mrp: bool('print_item_mrp'),
         print_item_description: bool('print_item_description'),
         print_item_batch: bool('print_item_batch'),
         print_item_exp: bool('print_item_exp'),
-        print_item_mfg: bool('print_item_mfg'),
-        print_item_size: bool('print_item_size'),
+        print_show_vat: bool('print_show_vat'),
         print_total_qty: bool('print_total_qty'),
         print_received: bool('print_received'),
         print_balance: bool('print_balance'),
@@ -1814,12 +1812,10 @@ function applyPrintConfigToCONFIG(opts) {
     CONFIG.PRINT_ITEM_SNO = opts.print_item_sno !== false;
     CONFIG.PRINT_ITEM_UNIT = opts.print_item_unit !== false;
     CONFIG.PRINT_ITEM_CODE = opts.print_item_code !== false;
-    CONFIG.PRINT_ITEM_MRP = !!opts.print_item_mrp;
     CONFIG.PRINT_ITEM_DESCRIPTION = !!opts.print_item_description;
     CONFIG.PRINT_ITEM_BATCH = !!opts.print_item_batch;
     CONFIG.PRINT_ITEM_EXP = !!opts.print_item_exp;
-    CONFIG.PRINT_ITEM_MFG = !!opts.print_item_mfg;
-    CONFIG.PRINT_ITEM_SIZE = !!opts.print_item_size;
+    CONFIG.PRINT_SHOW_VAT = !!opts.print_show_vat;
     CONFIG.PRINT_TOTAL_QTY = opts.print_total_qty !== false;
     CONFIG.PRINT_RECEIVED = opts.print_received !== false;
     CONFIG.PRINT_BALANCE = opts.print_balance !== false;
@@ -1829,35 +1825,52 @@ function applyPrintConfigToCONFIG(opts) {
     CONFIG.PRINT_FOOTER_TERMS = opts.print_footer_terms !== false;
 }
 
-/** Build sample receipt HTML for live preview (uses CONFIG for options, auto height so no wasted margin) */
+/** Build sample receipt HTML for live preview (uses CONFIG for options, theme, paper size, auto height) */
 function buildPrintPreviewHTML() {
     const isThermal = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) === 'thermal';
     const noMargin = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN) === true;
+    const theme = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_THEME) || 'theme1';
     const pageWidthMm = isThermal ? (Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80))) : 210;
-    const maxW = isThermal ? pageWidthMm - 8 : 202;
+    const maxW = isThermal ? (pageWidthMm - 8) : 202;
     const pad = noMargin ? '2px 4px' : '8px';
     const bodyPad = noMargin ? '2px 4px' : '8px';
     const showCompany = CONFIG.PRINT_HEADER_COMPANY !== false;
     const showAddress = CONFIG.PRINT_HEADER_ADDRESS !== false;
+    const showVat = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_SHOW_VAT) === true;
+    const showUnit = CONFIG.PRINT_ITEM_UNIT !== false;
     const msg = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
+    const headerAlign = (theme === 'theme2' || theme === 'theme4') ? 'center' : 'left';
     const pageStyle = isThermal
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 9px; max-width: ${maxW}mm; padding: ${bodyPad}; margin: 0 auto; }
-           .header { padding-bottom: 4px; margin-bottom: 6px; }
+           .header { padding-bottom: 4px; margin-bottom: 6px; text-align: ${headerAlign}; }
            .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
            th, td { padding: ${pad}; font-size: 9px; }
            table { margin: 4px 0; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${bodyPad}; margin: 0 auto; }
-           th, td { padding: 8px; }`;
+           th, td { padding: 8px; }
+           .header { text-align: ${headerAlign}; }`;
     const headerHtml = showCompany || showAddress
         ? `<div class="header">
         ${showCompany ? '<div class="company-name">PharmaSight</div>' : ''}
         ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@pharmasight.com</div>' : ''}
         <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
     </div>` : '<div class="header"><p style="margin: 0;">Sales Quotation</p></div>';
+    const qtyCol = showUnit ? '<th style="text-align: right;">Qty</th>' : '<th style="text-align: right;">Qty</th>';
+    const vatCol = showVat ? '<th style="text-align: right;">VAT</th>' : '';
+    const rows = [
+        { name: 'DOLOPAR CAP', qty: '10 P', price: '85.00', vat: '—', total: '850.00' },
+        { name: 'FEVEROL TABS', qty: '20 P', price: '50.00', vat: '—', total: '1,000.00' },
+        { name: 'KLOFENAC GEL', qty: '25 P', price: '2.00', vat: '—', total: '50.00' },
+    ];
+    const rowHtml = rows.map(r => {
+        const vatCell = showVat ? `<td style="text-align: right;">${r.vat}</td>` : '';
+        return `<tr><td>${r.name}</td><td style="text-align: right;">${showUnit ? r.qty : r.qty.split(' ')[0]}</td><td style="text-align: right;">Ksh ${r.price}</td>${vatCell}<td style="text-align: right;">Ksh ${r.total}</td></tr>`;
+    }).join('');
+    const colspan = showVat ? 4 : 3;
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
         @media print { ${pageStyle} }
         body { font-family: Arial, sans-serif; }
@@ -1876,16 +1889,12 @@ function buildPrintPreviewHTML() {
         <p><strong>Customer:</strong> Sample Customer</p>
     </div>
     <table>
-        <thead><tr><th>Item</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Price</th><th style="text-align: right;">Total</th></tr></thead>
-        <tbody>
-            <tr><td>DOLOPAR CAP</td><td style="text-align: right;">10</td><td style="text-align: right;">Ksh 85.00</td><td style="text-align: right;">Ksh 850.00</td></tr>
-            <tr><td>FEVEROL TABS</td><td style="text-align: right;">20</td><td style="text-align: right;">Ksh 50.00</td><td style="text-align: right;">Ksh 1,000.00</td></tr>
-            <tr><td>KLOFENAC GEL</td><td style="text-align: right;">25</td><td style="text-align: right;">Ksh 2.00</td><td style="text-align: right;">Ksh 50.00</td></tr>
-        </tbody>
-        <tfoot><tr><td colspan="3" class="total">Total:</td><td class="total" style="text-align: right;">Ksh 1,900.00</td></tr></tfoot>
+        <thead><tr><th>Item</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Price</th>${vatCol}<th style="text-align: right;">Total</th></tr></thead>
+        <tbody>${rowHtml}</tbody>
+        <tfoot><tr><td colspan="${colspan}" class="total">Total:</td><td class="total" style="text-align: right;">Ksh 1,900.00</td></tr></tfoot>
     </table>
     <div class="footer">
-        ${msg ? '<p>' + (typeof escapeHtml === 'function' ? escapeHtml(msg) : msg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')) + '</p>' : ''}
+        ${msg ? '<p>' + (typeof escapeHtml === 'function' ? escapeHtml(msg) : String(msg).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')) + '</p>' : ''}
         <p>Generated: ${new Date().toLocaleString()}</p>
     </div>
 </body></html>`;
@@ -1937,7 +1946,10 @@ async function renderPrintSettingsPage() {
                         <div id="thermalOptions" style="display: ${thermalActive ? 'block' : 'none'};">
                             <h4 style="margin: 1rem 0 0.5rem 0;">Layout / Theme</h4>
                             <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;">
-                                ${[1,2,3,4].map(n => `<label class="form-checkbox" style="margin-right: 0.5rem;"><input type="radio" name="print_theme" value="theme${n}" ${theme === 'theme' + n ? 'checked' : ''}> Theme ${n}</label>`).join('')}
+                                <label class="form-checkbox" style="margin-right: 0.5rem;"><input type="radio" name="print_theme" value="theme1" ${theme === 'theme1' ? 'checked' : ''}> Default</label>
+                                <label class="form-checkbox" style="margin-right: 0.5rem;"><input type="radio" name="print_theme" value="theme2" ${theme === 'theme2' ? 'checked' : ''}> Centered header</label>
+                                <label class="form-checkbox" style="margin-right: 0.5rem;"><input type="radio" name="print_theme" value="theme3" ${theme === 'theme3' ? 'checked' : ''}> Compact</label>
+                                <label class="form-checkbox" style="margin-right: 0.5rem;"><input type="radio" name="print_theme" value="theme4" ${theme === 'theme4' ? 'checked' : ''}> Minimal</label>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Page width (thermal)</label>
@@ -1977,14 +1989,12 @@ async function renderPrintSettingsPage() {
 
                         <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Item table</h4>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_sno" ${cb('PRINT_ITEM_SNO')}> S.No</label></div>
-                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_unit" ${cb('PRINT_ITEM_UNIT')}> Units of measurement</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_unit" ${cb('PRINT_ITEM_UNIT')}> Unit (P/W/S)</label></div>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_code" ${cb('PRINT_ITEM_CODE')}> Item code</label></div>
-                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_mrp" ${cb('PRINT_ITEM_MRP')}> MRP</label></div>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_description" ${cb('PRINT_ITEM_DESCRIPTION')}> Description</label></div>
-                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_batch" ${cb('PRINT_ITEM_BATCH')}> Batch No.</label></div>
-                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_exp" ${cb('PRINT_ITEM_EXP')}> Exp. Date</label></div>
-                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_mfg" ${cb('PRINT_ITEM_MFG')}> Mfg. Date</label></div>
-                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_size" ${cb('PRINT_ITEM_SIZE')}> Size</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_batch" ${cb('PRINT_ITEM_BATCH')}> Batch No. under item (faint)</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_exp" ${cb('PRINT_ITEM_EXP')}> Exp. Date under item (faint)</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_show_vat" ${cb('PRINT_SHOW_VAT')}> Show VAT column</label></div>
 
                         <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Totals &amp; taxes</h4>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_total_qty" ${cb('PRINT_TOTAL_QTY')}> Total item quantity</label></div>
@@ -2061,12 +2071,10 @@ function savePrintSettingsFromForm(form) {
     CONFIG.PRINT_ITEM_SNO = opts.print_item_sno !== false;
     CONFIG.PRINT_ITEM_UNIT = opts.print_item_unit !== false;
     CONFIG.PRINT_ITEM_CODE = opts.print_item_code !== false;
-    CONFIG.PRINT_ITEM_MRP = !!opts.print_item_mrp;
     CONFIG.PRINT_ITEM_DESCRIPTION = !!opts.print_item_description;
     CONFIG.PRINT_ITEM_BATCH = !!opts.print_item_batch;
     CONFIG.PRINT_ITEM_EXP = !!opts.print_item_exp;
-    CONFIG.PRINT_ITEM_MFG = !!opts.print_item_mfg;
-    CONFIG.PRINT_ITEM_SIZE = !!opts.print_item_size;
+    CONFIG.PRINT_SHOW_VAT = !!opts.print_show_vat;
     CONFIG.PRINT_TOTAL_QTY = opts.print_total_qty !== false;
     CONFIG.PRINT_RECEIVED = opts.print_received !== false;
     CONFIG.PRINT_BALANCE = opts.print_balance !== false;
