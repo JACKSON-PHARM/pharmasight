@@ -1052,12 +1052,9 @@ async function renderCreateSalesQuotationPage() {
     const quotationId = currentQuotation?.id || null;
     const quotationStatus = quotationData?.status || 'draft';
     const canEdit = quotationStatus === 'draft';
-    
-    // If not editing, reset quotation state
-    if (!isEditMode) {
-        currentQuotation = null;
-        quotationItems = [];
-    }
+
+    // Always reset quotation items when rendering this page so we never show stale or duplicated rows
+    quotationItems = [];
     
     const today = new Date().toISOString().split('T')[0];
     const validUntil = new Date();
@@ -1196,38 +1193,45 @@ async function renderCreateSalesQuotationPage() {
     // Initialize TransactionItemsTable component for quotations (mode: 'quotation' - no stock validation)
     initializeSalesQuotationItemsTable();
     
-    // If in edit mode, populate items after table is initialized
+    // If in edit mode, populate items after table is initialized (single run, dedupe to avoid duplicate rows)
     if (isEditMode && quotationData && quotationData.items && quotationData.items.length > 0) {
-        setTimeout(() => {
-            // Map quotation items to component format
-            quotationItems = quotationData.items.map(item => ({
-                item_id: item.item_id,
-                item_name: item.item_name || item.item?.name || '',
-                item_sku: item.item_code || item.item?.sku || '',
-                item_code: item.item_code || item.item?.sku || '',
-                unit_name: item.unit_name,
-                quantity: item.quantity,
-                unit_price: item.unit_price_exclusive || 0,
-                // IMPORTANT: purchase_price must be base (wholesale) cost; never pass unit_cost_used here
-                purchase_price: item.unit_cost_base != null ? parseFloat(item.unit_cost_base) : null,
-                discount_percent: item.discount_percent || 0,
-                total: item.line_total_inclusive || 0,
-                is_empty: false
-            }));
-            
-            // Update TransactionItemsTable with items and ensure one empty row for adding more
-            if (salesQuotationItemsTable && quotationItems.length > 0) {
-                salesQuotationItemsTable.items = salesQuotationItemsTable.normalizeItems(quotationItems);
-                const last = salesQuotationItemsTable.items[salesQuotationItemsTable.items.length - 1];
-                const hasEmptyRow = last && !last.item_id && !last.item_name;
-                if (!hasEmptyRow) {
-                    salesQuotationItemsTable.items.push(salesQuotationItemsTable.createEmptyItem());
-                }
-                salesQuotationItemsTable.render();
-                salesQuotationItemsTable.attachEventListeners();
-                updateSalesQuotationSummary();
+        const seen = new Set();
+        const deduped = quotationData.items.filter(item => {
+            const key = `${item.item_id || ''}|${item.unit_name || ''}|${item.quantity}|${item.unit_price_exclusive || 0}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+        quotationItems = deduped.map(item => ({
+            item_id: item.item_id,
+            item_name: item.item_name || item.item?.name || '',
+            item_sku: item.item_code || item.item?.sku || '',
+            item_code: item.item_code || item.item?.sku || '',
+            unit_name: item.unit_name,
+            quantity: item.quantity,
+            unit_price: item.unit_price_exclusive || 0,
+            purchase_price: item.unit_cost_base != null ? parseFloat(item.unit_cost_base) : null,
+            discount_percent: item.discount_percent || 0,
+            total: item.line_total_inclusive || 0,
+            is_empty: false
+        }));
+        const runPopulate = () => {
+            if (!salesQuotationItemsTable) return;
+            salesQuotationItemsTable.items = salesQuotationItemsTable.normalizeItems(quotationItems.slice());
+            const last = salesQuotationItemsTable.items[salesQuotationItemsTable.items.length - 1];
+            const hasEmptyRow = last && !last.item_id && !last.item_name;
+            if (!hasEmptyRow) {
+                salesQuotationItemsTable.items.push(salesQuotationItemsTable.createEmptyItem());
             }
-        }, 300);
+            salesQuotationItemsTable.render();
+            salesQuotationItemsTable.attachEventListeners();
+            updateSalesQuotationSummary();
+        };
+        if (salesQuotationItemsTable) {
+            runPopulate();
+        } else {
+            setTimeout(runPopulate, 150);
+        }
     }
     
     // Set form submit handler for edit mode
@@ -1318,18 +1322,21 @@ function initializeSalesQuotationItemsTable() {
     }, 150);
 }
 
-// Update sales quotation summary (Net, VAT, Total)
+// Update sales quotation summary (Net, VAT, Total) — debounced so totals don't flicker
+let _quotationSummaryDebounce = null;
 function updateSalesQuotationSummary() {
     if (!salesQuotationItemsTable) return;
-    
-    const summary = salesQuotationItemsTable.calculateSummary();
-    const nettEl = document.getElementById('quotationSummaryNett');
-    const vatEl = document.getElementById('quotationSummaryVat');
-    const totalEl = document.getElementById('quotationSummaryTotal');
-    
-    if (nettEl) nettEl.textContent = formatCurrency(summary.nett);
-    if (vatEl) vatEl.textContent = formatCurrency(summary.vat);
-    if (totalEl) totalEl.textContent = formatCurrency(summary.total);
+    clearTimeout(_quotationSummaryDebounce);
+    _quotationSummaryDebounce = setTimeout(() => {
+        _quotationSummaryDebounce = null;
+        const summary = salesQuotationItemsTable.calculateSummary();
+        const nettEl = document.getElementById('quotationSummaryNett');
+        const vatEl = document.getElementById('quotationSummaryVat');
+        const totalEl = document.getElementById('quotationSummaryTotal');
+        if (nettEl) nettEl.textContent = formatCurrency(summary.nett);
+        if (vatEl) vatEl.textContent = formatCurrency(summary.vat);
+        if (totalEl) totalEl.textContent = formatCurrency(summary.total);
+    }, 80);
 }
 
 async function saveSalesQuotation(event) {
@@ -1337,10 +1344,10 @@ async function saveSalesQuotation(event) {
     const form = event.target;
     const formData = new FormData(form);
     
-    // Get items from the component instance
+    // Get items from the component instance and dedupe so we never save duplicates
     let validItems = [];
     if (salesQuotationItemsTable && typeof salesQuotationItemsTable.getItems === 'function') {
-        validItems = salesQuotationItemsTable.getItems();
+        validItems = dedupeQuotationItems(salesQuotationItemsTable.getItems());
     }
     
     if (validItems.length === 0) {
@@ -1379,6 +1386,17 @@ async function saveSalesQuotation(event) {
     }
 }
 
+/** Dedupe line items by full line (item_id + unit + qty + price) so we never save or display duplicate rows */
+function dedupeQuotationItems(items) {
+    const seen = new Set();
+    return items.filter(item => {
+        const key = `${item.item_id || ''}|${(item.unit_name || '').trim()}|${item.quantity}|${item.unit_price || 0}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
 // Update Sales Quotation
 async function updateSalesQuotation(event, quotationId) {
     event.preventDefault();
@@ -1386,10 +1404,10 @@ async function updateSalesQuotation(event, quotationId) {
     const form = event.target;
     const formData = new FormData(form);
     
-    // Get items from the component instance
+    // Get items from the component instance and dedupe so we never save duplicates
     let validItems = [];
     if (salesQuotationItemsTable && typeof salesQuotationItemsTable.getItems === 'function') {
-        validItems = salesQuotationItemsTable.getItems();
+        validItems = dedupeQuotationItems(salesQuotationItemsTable.getItems());
     }
     
     if (validItems.length === 0) {
@@ -1441,7 +1459,8 @@ async function autoSaveQuotation() {
     }
     
     const formData = new FormData(form);
-    const items = salesQuotationItemsTable ? salesQuotationItemsTable.getItems() : [];
+    let items = salesQuotationItemsTable ? salesQuotationItemsTable.getItems() : [];
+    items = dedupeQuotationItems(items);
     
     if (items.length === 0) {
         return; // Don't auto-save empty quotations
@@ -2428,8 +2447,21 @@ function generateInvoicePrintHTML(invoice, printType) {
     const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString();
     const colCount = showVat ? 6 : 5;
 
-    const itemsHTML = invoice.items && invoice.items.length > 0
-        ? invoice.items.map(item => {
+    // Dedupe items for print so total always matches printed rows
+    const rawInvItems = invoice.items && invoice.items.length > 0 ? invoice.items : [];
+    const printInvItems = (() => {
+        const seen = new Set();
+        return rawInvItems.filter(item => {
+            const key = `${item.item_id || ''}|${(item.unit_name || '').trim()}|${item.quantity}|${item.unit_price_exclusive || 0}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    })();
+
+    let printTotalInv = 0;
+    const itemsHTML = printInvItems.length > 0
+        ? printInvItems.map(item => {
             const itemName = item.item_name || item.item?.name || 'Item';
             const itemCode = item.item_code || item.item?.sku || '';
             const nameContent = showItemCode && itemCode
@@ -2445,6 +2477,7 @@ function generateInvoicePrintHTML(invoice, printType) {
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
+            printTotalInv += lineTotal;
             const vatCell = showVat ? `<td style="text-align: right;">${vatDisplay}</td>` : '';
             return `
                 <tr>
@@ -2537,7 +2570,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         <tfoot>
             <tr>
                 <td colspan="${colSpanTotal}" class="total">Total:</td>
-                <td class="total" style="text-align: right;">${formatCurrency(invoice.total_inclusive || 0)}</td>
+                <td class="total" style="text-align: right;">${formatCurrency(printTotalInv)}</td>
             </tr>
         </tfoot>
     </table>
@@ -2631,8 +2664,21 @@ function generateQuotationPrintHTML(quotation, printType) {
 
     const colCount = showVat ? 6 : 5;
 
-    const itemsHTML = quotation.items && quotation.items.length > 0
-        ? quotation.items.map(item => {
+    // Dedupe items for print so total always matches printed rows (no duplicate rows, no wrong total)
+    const rawItems = quotation.items && quotation.items.length > 0 ? quotation.items : [];
+    const printItems = (() => {
+        const seen = new Set();
+        return rawItems.filter(item => {
+            const key = `${item.item_id || ''}|${(item.unit_name || '').trim()}|${item.quantity}|${item.unit_price_exclusive || 0}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    })();
+
+    let printTotal = 0;
+    const itemsHTML = printItems.length > 0
+        ? printItems.map(item => {
             const itemName = item.item_name || item.item?.name || '';
             const itemCode = item.item_code || item.item?.sku || '';
             const nameContent = showItemCode && itemCode ? `${escapeHtml(itemName)} (${escapeHtml(itemCode)})` : escapeHtml(itemName);
@@ -2646,6 +2692,7 @@ function generateQuotationPrintHTML(quotation, printType) {
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
+            printTotal += lineTotal;
             const vatCell = showVat ? `<td style="text-align: right;">${vatDisplay}</td>` : '';
             return `
                 <tr>
@@ -2741,7 +2788,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         <tfoot>
             <tr>
                 <td colspan="${colSpanTotal}" class="total">Total:</td>
-                <td class="total" style="text-align: right;">${formatCurrency(quotation.total_inclusive || 0)}</td>
+                <td class="total" style="text-align: right;">${formatCurrency(printTotal)}</td>
             </tr>
         </tfoot>
     </table>
