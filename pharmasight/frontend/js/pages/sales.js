@@ -2372,20 +2372,39 @@ function formatQuantityForPrint(q) {
     return Number(n.toFixed(2)).toString();
 }
 
+/** Get print option from CONFIG with default (safe when CONFIG missing) */
+function getPrintOpt(key, def) {
+    if (typeof CONFIG === 'undefined') return def;
+    const v = CONFIG[key];
+    if (v === true || v === false) return v;
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') return v;
+    return def;
+}
+
 function generateInvoicePrintHTML(invoice, printType) {
     const isThermal = (printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal') === 'thermal';
-    const noMargin = typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN === true;
-    const autoCut = typeof CONFIG !== 'undefined' && CONFIG.PRINT_AUTO_CUT === true;
+    const noMargin = getPrintOpt('PRINT_REMOVE_MARGIN', false);
+    const autoCut = getPrintOpt('PRINT_AUTO_CUT', false);
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
-    
+    const showCompany = getPrintOpt('PRINT_HEADER_COMPANY', true);
+    const showAddress = getPrintOpt('PRINT_HEADER_ADDRESS', true);
+    const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
+    const showItemCode = getPrintOpt('PRINT_ITEM_CODE', true);
+    const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
+
     const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString();
-    /* Margin is internal-only; never in print. Always show Discount column (same as quotation). */
     const colCount = 6; /* Item, Qty, Price/Unit, Discount, VAT, Total */
-    
-    const itemsHTML = invoice.items && invoice.items.length > 0 
+
+    const itemsHTML = invoice.items && invoice.items.length > 0
         ? invoice.items.map(item => {
             const itemName = item.item_name || item.item?.name || 'Item';
             const itemCode = item.item_code || item.item?.sku || '';
+            const nameCell = showItemCode && itemCode
+                ? `${escapeHtml(itemName)} (${escapeHtml(itemCode)})`
+                : escapeHtml(itemName);
+            const qtyUnit = (item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : (item.unit_name || '');
+            const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
             const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
             const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
             const discountCell = `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>`;
@@ -2394,8 +2413,8 @@ function generateInvoicePrintHTML(invoice, printType) {
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
             return `
                 <tr>
-                    <td>${escapeHtml(itemName)} ${itemCode ? `(${escapeHtml(itemCode)})` : ''}</td>
-                    <td style="text-align: right;">${formatQuantityForPrint(item.quantity)} ${(item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : escapeHtml(item.unit_name || '')}</td>
+                    <td>${nameCell}</td>
+                    <td style="text-align: right;">${qtyCell}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
                     ${discountCell}
                     <td style="text-align: right;">${vatDisplay}</td>
@@ -2404,29 +2423,39 @@ function generateInvoicePrintHTML(invoice, printType) {
             `;
         }).join('')
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
-    
+
     const discountHeader = '<th style="text-align: right;">Discount</th>';
     const colSpanTotal = colCount - 1;
-    
+
     const companyName = invoice.company_name || 'PharmaSight';
     const branchName = invoice.branch_name || '';
-    
+
     const thermalPadding = noMargin ? '2px 4px' : '5px';
     const thermalBodyPad = noMargin ? '2px 4px' : '8px';
-    const pageStyle = isThermal 
-        ? `@page { size: 80mm auto; margin: 0; }
-           body { font-size: 9px; max-width: 72mm; padding: ${thermalBodyPad}; margin: 0 auto; }
+    const maxW = Math.min(88, Math.max(58, pageWidthMm)) - 8;
+    /* Auto-adjust to content: size Xmm auto + no min-height on body so no wasted lower margin */
+    const pageStyle = isThermal
+        ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
+           html, body { height: auto !important; min-height: 0 !important; }
+           body { font-size: 9px; max-width: ${maxW}mm; padding: ${thermalBodyPad}; margin: 0 auto; }
            .header { padding-bottom: 4px; margin-bottom: 6px; }
            .invoice-info { margin: 4px 0; }
            .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
            th, td { padding: ${thermalPadding}; font-size: 9px; }
            table { margin: 4px 0; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
+           html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
            th, td { padding: 8px; }`;
-    
+
     const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
-    
+    const headerBlock = showCompany || showAddress
+        ? `<div class="header">
+        ${showCompany ? `<h2>${escapeHtml(companyName)}</h2>` : ''}
+        ${showAddress && branchName ? `<p style="margin: 0; font-size: 0.9em;">${escapeHtml(branchName)}</p>` : ''}
+        <p style="margin: 4px 0 0 0;">Sales Invoice</p>
+    </div>` : '<div class="header"><p style="margin: 0;">Sales Invoice</p></div>';
+
     return `
 <!DOCTYPE html>
 <html>
@@ -2445,18 +2474,14 @@ function generateInvoicePrintHTML(invoice, printType) {
     </style>
 </head>
 <body>
-    <div class="header">
-        <h2>${escapeHtml(companyName)}</h2>
-        ${branchName ? `<p style="margin: 0; font-size: 0.9em;">${escapeHtml(branchName)}</p>` : ''}
-        <p style="margin: 4px 0 0 0;">Sales Invoice</p>
-    </div>
-    
+    ${headerBlock}
+
     <div class="invoice-info">
         <p><strong>Invoice #:</strong> ${escapeHtml(invoice.invoice_no)} &nbsp; <strong>Date:</strong> ${invoiceDate}</p>
         ${invoice.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(invoice.customer_name)}</p>` : ''}
         <p><strong>Status:</strong> ${invoice.status || 'DRAFT'}</p>
     </div>
-    
+
     <table>
         <thead>
             <tr>
@@ -2478,7 +2503,7 @@ function generateInvoicePrintHTML(invoice, printType) {
             </tr>
         </tfoot>
     </table>
-    
+
     <div class="footer">
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
         <p>Generated: ${new Date().toLocaleString()}</p>
@@ -2540,12 +2565,19 @@ async function printQuotation(quotationId, printType) {
 
 function generateQuotationPrintHTML(quotation, printType) {
     const isThermal = printType === 'thermal';
-    const noMargin = typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN === true;
-    const autoCut = typeof CONFIG !== 'undefined' && CONFIG.PRINT_AUTO_CUT === true;
+    const noMargin = getPrintOpt('PRINT_REMOVE_MARGIN', false);
+    const autoCut = getPrintOpt('PRINT_AUTO_CUT', false);
+    const showCompany = getPrintOpt('PRINT_HEADER_COMPANY', true);
+    const showAddress = getPrintOpt('PRINT_HEADER_ADDRESS', true);
+    const showPhone = getPrintOpt('PRINT_HEADER_PHONE', true);
+    const showItemCode = getPrintOpt('PRINT_ITEM_CODE', true);
+    const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
+    const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
+
     const quotationDate = new Date(quotation.quotation_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     const validUntil = quotation.valid_until ? new Date(quotation.valid_until).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A';
     const generatedTime = new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
-    
+
     const companyName = quotation.company_name || 'PharmaSight';
     const companyAddress = quotation.company_address || '';
     const branchName = quotation.branch_name || '';
@@ -2553,14 +2585,16 @@ function generateQuotationPrintHTML(quotation, printType) {
     const branchPhone = quotation.branch_phone || '';
     const createdByUser = quotation.created_by_username || '';
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
-    
-    /* Margin is internal-only; never show in customer-facing print. Always show Discount column. */
-    const colCount = 6; /* Item, Qty, Price/Unit, Discount, VAT, Total */
-    
-    const itemsHTML = quotation.items && quotation.items.length > 0 
+
+    const colCount = 6;
+
+    const itemsHTML = quotation.items && quotation.items.length > 0
         ? quotation.items.map(item => {
             const itemName = item.item_name || item.item?.name || '';
             const itemCode = item.item_code || item.item?.sku || '';
+            const nameCell = showItemCode && itemCode ? `${escapeHtml(itemName)} (${escapeHtml(itemCode)})` : escapeHtml(itemName);
+            const qtyUnit = (item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : (item.unit_name || '');
+            const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
             const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
             const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
             const discountCell = `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>`;
@@ -2569,8 +2603,8 @@ function generateQuotationPrintHTML(quotation, printType) {
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
             return `
                 <tr>
-                    <td>${escapeHtml(itemName)}${itemCode ? ' (' + escapeHtml(itemCode) + ')' : ''}</td>
-                    <td style="text-align: right;">${formatQuantityForPrint(item.quantity)} ${(item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : escapeHtml(item.unit_name || '')}</td>
+                    <td>${nameCell}</td>
+                    <td style="text-align: right;">${qtyCell}</td>
                     <td style="text-align: right;">${formatCurrency(item.unit_price_exclusive || 0)}</td>
                     ${discountCell}
                     <td style="text-align: right;">${vatDisplay}</td>
@@ -2579,15 +2613,17 @@ function generateQuotationPrintHTML(quotation, printType) {
             `;
         }).join('')
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
-    
+
     const discountHeader = '<th style="text-align: right;">Discount</th>';
     const colSpanTotal = colCount - 1;
-    
+
     const thermalPadding = noMargin ? '2px 4px' : '6px 8px';
     const thermalBodyPad = noMargin ? '2px 4px' : '8px';
-    const pageStyle = isThermal 
-        ? `@page { size: 80mm auto; margin: 0; }
-           body { font-size: 9px; max-width: 72mm; padding: ${thermalBodyPad}; margin: 0 auto; }
+    const maxW = Math.min(88, Math.max(58, pageWidthMm)) - 8;
+    const pageStyle = isThermal
+        ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
+           html, body { height: auto !important; min-height: 0 !important; }
+           body { font-size: 9px; max-width: ${maxW}mm; padding: ${thermalBodyPad}; margin: 0 auto; }
            .header { padding-bottom: 4px; margin-bottom: 6px; }
            .header .company-name { font-size: 1em; }
            .quotation-info { margin: 4px 0; }
@@ -2595,11 +2631,21 @@ function generateQuotationPrintHTML(quotation, printType) {
            th, td { padding: ${thermalPadding}; font-size: 9px; }
            table { margin: 4px 0; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
+           html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
            th, td { padding: 8px; }`;
-    
+
     const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
-    
+
+    const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
+    const headerBlock = `<div class="header">
+        ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
+        ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
+        ${branchLine}
+        ${createdByUser ? `<div class="company-details"><strong>Prepared by:</strong> ${escapeHtml(createdByUser)}</div>` : ''}
+        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
+    </div>`;
+
     return `
 <!DOCTYPE html>
 <html>
@@ -2620,20 +2666,14 @@ function generateQuotationPrintHTML(quotation, printType) {
     </style>
 </head>
 <body>
-    <div class="header">
-        <div class="company-name">${escapeHtml(companyName)}</div>
-        ${companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
-        ${branchName ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName)}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : ''}
-        ${createdByUser ? `<div class="company-details"><strong>Prepared by:</strong> ${escapeHtml(createdByUser)}</div>` : ''}
-        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
-    </div>
-    
+    ${headerBlock}
+
     <div class="quotation-info">
         <p><strong>Quotation #:</strong> ${escapeHtml(quotation.quotation_no)} &nbsp; <strong>Date:</strong> ${quotationDate} &nbsp; <strong>Valid Until:</strong> ${validUntil}</p>
         ${quotation.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(quotation.customer_name)}</p>` : ''}
         <p><strong>Status:</strong> ${(quotation.status || 'draft')}</p>
     </div>
-    
+
     <table>
         <thead>
             <tr>
@@ -2655,7 +2695,7 @@ function generateQuotationPrintHTML(quotation, printType) {
             </tr>
         </tfoot>
     </table>
-    
+
     <div class="footer">
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
         <p>Generated: ${generatedTime}</p>

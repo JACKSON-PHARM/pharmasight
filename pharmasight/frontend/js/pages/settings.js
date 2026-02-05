@@ -1760,103 +1760,320 @@ async function confirmDeleteUser(userId, email) {
 }
 
 // =====================================================
-// PRINT SETTINGS PAGE (thermal / normal, transaction message)
+// PRINT SETTINGS PAGE (thermal / normal, themes, what to print, live preview)
 // =====================================================
+
+function getPrintConfigFromForm(form) {
+    if (!form) return {};
+    const fd = new FormData(form);
+    const bool = (name) => fd.get(name) === 'on';
+    return {
+        print_type: fd.get('print_type') || 'normal',
+        transaction_message: fd.get('transaction_message') || '',
+        print_remove_margin: bool('print_remove_margin'),
+        print_copies: Math.max(1, parseInt(fd.get('print_copies'), 10) || 1),
+        print_auto_cut: bool('print_auto_cut'),
+        print_theme: fd.get('print_theme') || 'theme1',
+        print_page_width_mm: Math.min(88, Math.max(58, parseInt(fd.get('print_page_width_mm'), 10) || 80)),
+        print_header_company: bool('print_header_company'),
+        print_header_address: bool('print_header_address'),
+        print_header_email: bool('print_header_email'),
+        print_header_phone: bool('print_header_phone'),
+        print_item_sno: bool('print_item_sno'),
+        print_item_unit: bool('print_item_unit'),
+        print_item_code: bool('print_item_code'),
+        print_item_mrp: bool('print_item_mrp'),
+        print_item_description: bool('print_item_description'),
+        print_item_batch: bool('print_item_batch'),
+        print_item_exp: bool('print_item_exp'),
+        print_item_mfg: bool('print_item_mfg'),
+        print_item_size: bool('print_item_size'),
+        print_total_qty: bool('print_total_qty'),
+        print_received: bool('print_received'),
+        print_balance: bool('print_balance'),
+        print_tax_details: bool('print_tax_details'),
+        print_amount_in_words: bool('print_amount_in_words'),
+        print_amount_grouping: bool('print_amount_grouping'),
+        print_footer_terms: bool('print_footer_terms'),
+    };
+}
+
+function applyPrintConfigToCONFIG(opts) {
+    if (!opts) return;
+    CONFIG.PRINT_TYPE = opts.print_type || CONFIG.PRINT_TYPE;
+    CONFIG.TRANSACTION_MESSAGE = opts.transaction_message != null ? opts.transaction_message : CONFIG.TRANSACTION_MESSAGE;
+    CONFIG.PRINT_REMOVE_MARGIN = !!opts.print_remove_margin;
+    CONFIG.PRINT_COPIES = Math.max(1, parseInt(opts.print_copies, 10) || 1);
+    CONFIG.PRINT_AUTO_CUT = !!opts.print_auto_cut;
+    CONFIG.PRINT_THEME = opts.print_theme || 'theme1';
+    CONFIG.PRINT_PAGE_WIDTH_MM = Math.min(88, Math.max(58, parseInt(opts.print_page_width_mm, 10) || 80));
+    CONFIG.PRINT_HEADER_COMPANY = opts.print_header_company !== false;
+    CONFIG.PRINT_HEADER_ADDRESS = opts.print_header_address !== false;
+    CONFIG.PRINT_HEADER_EMAIL = opts.print_header_email !== false;
+    CONFIG.PRINT_HEADER_PHONE = opts.print_header_phone !== false;
+    CONFIG.PRINT_ITEM_SNO = opts.print_item_sno !== false;
+    CONFIG.PRINT_ITEM_UNIT = opts.print_item_unit !== false;
+    CONFIG.PRINT_ITEM_CODE = opts.print_item_code !== false;
+    CONFIG.PRINT_ITEM_MRP = !!opts.print_item_mrp;
+    CONFIG.PRINT_ITEM_DESCRIPTION = !!opts.print_item_description;
+    CONFIG.PRINT_ITEM_BATCH = !!opts.print_item_batch;
+    CONFIG.PRINT_ITEM_EXP = !!opts.print_item_exp;
+    CONFIG.PRINT_ITEM_MFG = !!opts.print_item_mfg;
+    CONFIG.PRINT_ITEM_SIZE = !!opts.print_item_size;
+    CONFIG.PRINT_TOTAL_QTY = opts.print_total_qty !== false;
+    CONFIG.PRINT_RECEIVED = opts.print_received !== false;
+    CONFIG.PRINT_BALANCE = opts.print_balance !== false;
+    CONFIG.PRINT_TAX_DETAILS = opts.print_tax_details !== false;
+    CONFIG.PRINT_AMOUNT_IN_WORDS = !!opts.print_amount_in_words;
+    CONFIG.PRINT_AMOUNT_GROUPING = opts.print_amount_grouping !== false;
+    CONFIG.PRINT_FOOTER_TERMS = opts.print_footer_terms !== false;
+}
+
+/** Build sample receipt HTML for live preview (uses CONFIG for options, auto height so no wasted margin) */
+function buildPrintPreviewHTML() {
+    const isThermal = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) === 'thermal';
+    const noMargin = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN) === true;
+    const pageWidthMm = isThermal ? (Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80))) : 210;
+    const maxW = isThermal ? pageWidthMm - 8 : 202;
+    const pad = noMargin ? '2px 4px' : '8px';
+    const bodyPad = noMargin ? '2px 4px' : '8px';
+    const showCompany = CONFIG.PRINT_HEADER_COMPANY !== false;
+    const showAddress = CONFIG.PRINT_HEADER_ADDRESS !== false;
+    const msg = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
+    const pageStyle = isThermal
+        ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
+           html, body { height: auto !important; min-height: 0 !important; }
+           body { font-size: 9px; max-width: ${maxW}mm; padding: ${bodyPad}; margin: 0 auto; }
+           .header { padding-bottom: 4px; margin-bottom: 6px; }
+           .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
+           th, td { padding: ${pad}; font-size: 9px; }
+           table { margin: 4px 0; }`
+        : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
+           html, body { height: auto !important; min-height: 0 !important; }
+           body { font-size: 12px; max-width: 210mm; padding: ${bodyPad}; margin: 0 auto; }
+           th, td { padding: 8px; }`;
+    const headerHtml = showCompany || showAddress
+        ? `<div class="header">
+        ${showCompany ? '<div class="company-name">PharmaSight</div>' : ''}
+        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@pharmasight.com</div>' : ''}
+        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
+    </div>` : '<div class="header"><p style="margin: 0;">Sales Quotation</p></div>';
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+        @media print { ${pageStyle} }
+        body { font-family: Arial, sans-serif; }
+        .header { border-bottom: 2px solid #000; }
+        .company-name { font-size: 1.25em; font-weight: bold; margin-bottom: 4px; }
+        .company-details { font-size: 0.9em; color: #333; line-height: 1.4; }
+        table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+        th, td { border-bottom: 1px solid #ddd; text-align: left; padding: 4px; font-size: ${isThermal ? '9px' : '12px'}; }
+        th { background: #f0f0f0; font-weight: bold; }
+        .total { font-weight: bold; border-top: 2px solid #000; padding-top: 6px; }
+        .footer { text-align: center; font-size: 0.85em; border-top: 1px solid #ddd; color: #555; }
+    </style></head><body>
+    ${headerHtml}
+    <div class="quotation-info" style="margin: 6px 0;">
+        <p><strong>Quotation #:</strong> QT-001 &nbsp; <strong>Date:</strong> ${new Date().toLocaleDateString()} &nbsp; <strong>Valid Until:</strong> ${new Date(Date.now() + 7*86400000).toLocaleDateString()}</p>
+        <p><strong>Customer:</strong> Sample Customer</p>
+    </div>
+    <table>
+        <thead><tr><th>Item</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Price</th><th style="text-align: right;">Total</th></tr></thead>
+        <tbody>
+            <tr><td>DOLOPAR CAP</td><td style="text-align: right;">10</td><td style="text-align: right;">Ksh 85.00</td><td style="text-align: right;">Ksh 850.00</td></tr>
+            <tr><td>FEVEROL TABS</td><td style="text-align: right;">20</td><td style="text-align: right;">Ksh 50.00</td><td style="text-align: right;">Ksh 1,000.00</td></tr>
+            <tr><td>KLOFENAC GEL</td><td style="text-align: right;">25</td><td style="text-align: right;">Ksh 2.00</td><td style="text-align: right;">Ksh 50.00</td></tr>
+        </tbody>
+        <tfoot><tr><td colspan="3" class="total">Total:</td><td class="total" style="text-align: right;">Ksh 1,900.00</td></tr></tfoot>
+    </table>
+    <div class="footer">
+        ${msg ? '<p>' + (typeof escapeHtml === 'function' ? escapeHtml(msg) : msg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')) + '</p>' : ''}
+        <p>Generated: ${new Date().toLocaleString()}</p>
+    </div>
+</body></html>`;
+}
+
+function refreshPrintPreview() {
+    const form = document.getElementById('printSettingsForm');
+    const opts = form ? getPrintConfigFromForm(form) : null;
+    if (opts) applyPrintConfigToCONFIG(opts);
+    const iframe = document.getElementById('printPreviewFrame');
+    if (iframe) {
+        const html = buildPrintPreviewHTML();
+        iframe.srcdoc = html;
+    }
+}
 
 async function renderPrintSettingsPage() {
     const page = document.getElementById('settings');
     if (!page) return;
-    
+
     const printType = CONFIG.PRINT_TYPE || 'normal';
     const transactionMessage = CONFIG.TRANSACTION_MESSAGE || '';
     const removeMargin = CONFIG.PRINT_REMOVE_MARGIN === true;
     const printCopies = Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1);
     const autoCut = CONFIG.PRINT_AUTO_CUT === true;
-    
+    const theme = CONFIG.PRINT_THEME || 'theme1';
+    const pageWidthMm = Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80));
+    const cb = (key) => CONFIG[key] === true ? 'checked' : '';
+    const thermalActive = printType === 'thermal';
+
     page.innerHTML = `
-        <div class="card">
+        <div class="card" style="max-width: none;">
             <div class="card-header">
                 <h3 class="card-title"><i class="fas fa-print"></i> Print Settings</h3>
             </div>
-            <div class="card-body">
-                <form id="printSettingsForm">
-                    <h4 style="margin-bottom: 1rem;">Default Print Format</h4>
-                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-                        Choose how quotations, sales invoices, and credit notes are laid out when printing.
-                    </p>
-                    <div class="form-group">
-                        <label class="form-label">Print type</label>
-                        <select class="form-input" name="print_type">
-                            <option value="normal" ${printType === 'normal' ? 'selected' : ''}>Normal (A4 / full page)</option>
-                            <option value="thermal" ${printType === 'thermal' ? 'selected' : ''}>Thermal (narrow receipt, e.g. 80mm)</option>
-                        </select>
-                        <small style="color: var(--text-secondary);">
-                            Normal: standard A4. Thermal: narrow width for receipt printers.
-                        </small>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-checkbox">
-                            <input type="checkbox" name="print_remove_margin" ${removeMargin ? 'checked' : ''}>
-                            <span>Remove margins on printed documents (saves paper on thermal)</span>
-                        </label>
-                        <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
-                            Minimizes top/bottom and side space so content fits better on receipt paper.
-                        </small>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Default print copies</label>
-                        <input type="number" class="form-input" name="print_copies" min="1" max="99" value="${printCopies}" style="max-width: 6rem;">
-                        <small style="color: var(--text-secondary);">
-                            Set number of copies in the print dialog when printing.
-                        </small>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-checkbox">
-                            <input type="checkbox" name="print_auto_cut" ${autoCut ? 'checked' : ''}>
-                            <span>Auto-cut receipts (thermal)</span>
-                        </label>
-                        <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
-                            Adds a short feed at the end so the printer cuts after the receipt. Enable in your printer driver if supported.
-                        </small>
-                    </div>
-                    
-                    <h4 style="margin-top: 2rem; margin-bottom: 1rem;">Transaction Message</h4>
-                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-                        Optional text shown on printed documents (quotations, sales invoices, credit notes). Leave blank for no message.
-                    </p>
-                    <div class="form-group">
-                        <label class="form-label">Message on printed documents</label>
-                        <textarea class="form-textarea" name="transaction_message" rows="3" 
-                                  placeholder="e.g. Thanks for your business!">${escapeHtml(transactionMessage)}</textarea>
-                    </div>
-                    
-                    <div style="margin-top: 2rem;">
-                        <button type="submit" class="btn btn-primary" id="printSettingsSaveBtn">
-                            <i class="fas fa-save"></i> Save Print Settings
-                        </button>
-                    </div>
-                </form>
+            <div class="card-body" style="display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: flex-start;">
+                <div style="flex: 1; min-width: 320px;">
+                    <form id="printSettingsForm">
+                        <div class="form-group" style="margin-bottom: 1rem;">
+                            <label class="form-label">Print type</label>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button type="button" class="btn ${printType === 'normal' ? 'btn-primary' : 'btn-outline'}" data-print-type="normal" onclick="window._setPrintType('normal')">Regular Printer</button>
+                                <button type="button" class="btn ${printType === 'thermal' ? 'btn-primary' : 'btn-outline'}" data-print-type="thermal" onclick="window._setPrintType('thermal')">Thermal Printer</button>
+                            </div>
+                            <input type="hidden" name="print_type" value="${printType}">
+                            <small style="color: var(--text-secondary);">Regular: A4. Thermal: narrow receipt (e.g. 80mm).</small>
+                        </div>
+
+                        <div id="thermalOptions" style="display: ${thermalActive ? 'block' : 'none'};">
+                            <h4 style="margin: 1rem 0 0.5rem 0;">Layout / Theme</h4>
+                            <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;">
+                                ${[1,2,3,4].map(n => `<label class="form-checkbox" style="margin-right: 0.5rem;"><input type="radio" name="print_theme" value="theme${n}" ${theme === 'theme' + n ? 'checked' : ''}> Theme ${n}</label>`).join('')}
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Page width (thermal)</label>
+                                <select class="form-input" name="print_page_width_mm" style="max-width: 12rem;">
+                                    <option value="58" ${pageWidthMm === 58 ? 'selected' : ''}>2 inch (58mm)</option>
+                                    <option value="68" ${pageWidthMm === 68 ? 'selected' : ''}>3 inch (68mm)</option>
+                                    <option value="80" ${pageWidthMm === 80 ? 'selected' : ''}>80mm</option>
+                                    <option value="88" ${pageWidthMm === 88 ? 'selected' : ''}>4 inch (88mm)</option>
+                                </select>
+                                <small style="color: var(--text-secondary);">Receipt width. Print height auto-adjusts to content (no wasted margin).</small>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-checkbox">
+                                <input type="checkbox" name="print_remove_margin" ${removeMargin ? 'checked' : ''}>
+                                <span>Remove margins (saves paper on thermal)</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Default print copies</label>
+                            <input type="number" class="form-input" name="print_copies" min="1" max="99" value="${printCopies}" style="max-width: 6rem;">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-checkbox">
+                                <input type="checkbox" name="print_auto_cut" ${autoCut ? 'checked' : ''}>
+                                <span>Auto-cut receipts (thermal)</span>
+                            </label>
+                        </div>
+
+                        <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Company / Header</h4>
+                        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.5rem;">Choose what appears at the top of receipts.</p>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_header_company" ${cb('PRINT_HEADER_COMPANY')}> Company name</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_header_address" ${cb('PRINT_HEADER_ADDRESS')}> Address</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_header_email" ${cb('PRINT_HEADER_EMAIL')}> Email</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_header_phone" ${cb('PRINT_HEADER_PHONE')}> Phone</label></div>
+
+                        <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Item table</h4>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_sno" ${cb('PRINT_ITEM_SNO')}> S.No</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_unit" ${cb('PRINT_ITEM_UNIT')}> Units of measurement</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_code" ${cb('PRINT_ITEM_CODE')}> Item code</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_mrp" ${cb('PRINT_ITEM_MRP')}> MRP</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_description" ${cb('PRINT_ITEM_DESCRIPTION')}> Description</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_batch" ${cb('PRINT_ITEM_BATCH')}> Batch No.</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_exp" ${cb('PRINT_ITEM_EXP')}> Exp. Date</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_mfg" ${cb('PRINT_ITEM_MFG')}> Mfg. Date</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_size" ${cb('PRINT_ITEM_SIZE')}> Size</label></div>
+
+                        <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Totals &amp; taxes</h4>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_total_qty" ${cb('PRINT_TOTAL_QTY')}> Total item quantity</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_received" ${cb('PRINT_RECEIVED')}> Received amount</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_balance" ${cb('PRINT_BALANCE')}> Balance amount</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_tax_details" ${cb('PRINT_TAX_DETAILS')}> Tax details</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_amount_in_words" ${cb('PRINT_AMOUNT_IN_WORDS')}> Amount in words</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_amount_grouping" ${cb('PRINT_AMOUNT_GROUPING')}> Print amount with grouping</label></div>
+
+                        <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Footer</h4>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_footer_terms" ${cb('PRINT_FOOTER_TERMS')}> Terms and conditions</label></div>
+
+                        <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Transaction message</h4>
+                        <div class="form-group">
+                            <textarea class="form-textarea" name="transaction_message" rows="2" placeholder="e.g. Thanks for your business!">${escapeHtml(transactionMessage)}</textarea>
+                        </div>
+
+                        <div style="margin-top: 1.5rem;">
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Print Settings</button>
+                        </div>
+                    </form>
+                </div>
+                <div style="flex: 0 0 320px; position: sticky; top: 1rem;">
+                    <label class="form-label" style="margin-bottom: 0.5rem;">Preview — how your receipt will look</label>
+                    <iframe id="printPreviewFrame" title="Print preview" style="width: 100%; min-height: 420px; border: 1px solid var(--border-color, #dee2e6); border-radius: 0.25rem; background: #fff;"></iframe>
+                </div>
             </div>
         </div>
     `;
-    
+
     const form = document.getElementById('printSettingsForm');
     if (form) {
         form.onsubmit = function(e) {
             e.preventDefault();
             savePrintSettingsFromForm(form);
         };
+        form.addEventListener('change', refreshPrintPreview);
+        form.addEventListener('input', function() {
+            clearTimeout(window._printPreviewTimeout);
+            window._printPreviewTimeout = setTimeout(refreshPrintPreview, 200);
+        });
     }
+
+    window._setPrintType = function(type) {
+        const form = document.getElementById('printSettingsForm');
+        if (form) {
+            form.querySelector('input[name="print_type"]').value = type;
+            form.querySelectorAll('[data-print-type]').forEach(btn => {
+                btn.classList.toggle('btn-primary', btn.dataset.printType === type);
+                btn.classList.toggle('btn-outline', btn.dataset.printType !== type);
+            });
+            document.getElementById('thermalOptions').style.display = type === 'thermal' ? 'block' : 'none';
+            refreshPrintPreview();
+        }
+    };
+
+    refreshPrintPreview();
 }
 
 function savePrintSettingsFromForm(form) {
     if (!form) return;
-    const formData = new FormData(form);
-    CONFIG.PRINT_TYPE = formData.get('print_type') || 'normal';
-    CONFIG.TRANSACTION_MESSAGE = formData.get('transaction_message') || '';
-    CONFIG.PRINT_REMOVE_MARGIN = formData.get('print_remove_margin') === 'on';
-    CONFIG.PRINT_COPIES = Math.max(1, parseInt(formData.get('print_copies'), 10) || 1);
-    CONFIG.PRINT_AUTO_CUT = formData.get('print_auto_cut') === 'on';
+    const opts = getPrintConfigFromForm(form);
+    CONFIG.PRINT_TYPE = opts.print_type || 'normal';
+    CONFIG.TRANSACTION_MESSAGE = opts.transaction_message || '';
+    CONFIG.PRINT_REMOVE_MARGIN = !!opts.print_remove_margin;
+    CONFIG.PRINT_COPIES = Math.max(1, parseInt(opts.print_copies, 10) || 1);
+    CONFIG.PRINT_AUTO_CUT = !!opts.print_auto_cut;
+    CONFIG.PRINT_THEME = opts.print_theme || 'theme1';
+    CONFIG.PRINT_PAGE_WIDTH_MM = Math.min(88, Math.max(58, parseInt(opts.print_page_width_mm, 10) || 80));
+    CONFIG.PRINT_HEADER_COMPANY = opts.print_header_company !== false;
+    CONFIG.PRINT_HEADER_ADDRESS = opts.print_header_address !== false;
+    CONFIG.PRINT_HEADER_EMAIL = opts.print_header_email !== false;
+    CONFIG.PRINT_HEADER_PHONE = opts.print_header_phone !== false;
+    CONFIG.PRINT_ITEM_SNO = opts.print_item_sno !== false;
+    CONFIG.PRINT_ITEM_UNIT = opts.print_item_unit !== false;
+    CONFIG.PRINT_ITEM_CODE = opts.print_item_code !== false;
+    CONFIG.PRINT_ITEM_MRP = !!opts.print_item_mrp;
+    CONFIG.PRINT_ITEM_DESCRIPTION = !!opts.print_item_description;
+    CONFIG.PRINT_ITEM_BATCH = !!opts.print_item_batch;
+    CONFIG.PRINT_ITEM_EXP = !!opts.print_item_exp;
+    CONFIG.PRINT_ITEM_MFG = !!opts.print_item_mfg;
+    CONFIG.PRINT_ITEM_SIZE = !!opts.print_item_size;
+    CONFIG.PRINT_TOTAL_QTY = opts.print_total_qty !== false;
+    CONFIG.PRINT_RECEIVED = opts.print_received !== false;
+    CONFIG.PRINT_BALANCE = opts.print_balance !== false;
+    CONFIG.PRINT_TAX_DETAILS = opts.print_tax_details !== false;
+    CONFIG.PRINT_AMOUNT_IN_WORDS = !!opts.print_amount_in_words;
+    CONFIG.PRINT_AMOUNT_GROUPING = opts.print_amount_grouping !== false;
+    CONFIG.PRINT_FOOTER_TERMS = opts.print_footer_terms !== false;
     try {
         if (typeof saveConfig === 'function') saveConfig();
         if (typeof showToast === 'function') showToast('Print settings saved', 'success');

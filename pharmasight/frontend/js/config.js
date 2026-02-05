@@ -32,6 +32,34 @@ const CONFIG = {
     PRINT_COPIES: 1,
     // Auto-cut receipts: add extra feed so thermal printer cuts at end of content
     PRINT_AUTO_CUT: false,
+    // Thermal receipt theme: 'theme1' | 'theme2' | 'theme3' | 'theme4' (layout/style)
+    PRINT_THEME: 'theme1',
+    // Thermal page width in mm: 58 (2"), 68 (3"), 80, 88 (4")
+    PRINT_PAGE_WIDTH_MM: 80,
+    // Header: what to print
+    PRINT_HEADER_COMPANY: true,
+    PRINT_HEADER_ADDRESS: true,
+    PRINT_HEADER_EMAIL: true,
+    PRINT_HEADER_PHONE: true,
+    // Item table columns
+    PRINT_ITEM_SNO: true,
+    PRINT_ITEM_UNIT: true,
+    PRINT_ITEM_CODE: true,
+    PRINT_ITEM_MRP: false,
+    PRINT_ITEM_DESCRIPTION: false,
+    PRINT_ITEM_BATCH: false,
+    PRINT_ITEM_EXP: false,
+    PRINT_ITEM_MFG: false,
+    PRINT_ITEM_SIZE: false,
+    // Totals & taxes
+    PRINT_TOTAL_QTY: true,
+    PRINT_RECEIVED: true,
+    PRINT_BALANCE: true,
+    PRINT_TAX_DETAILS: true,
+    PRINT_AMOUNT_IN_WORDS: false,
+    PRINT_AMOUNT_GROUPING: true,
+    // Footer
+    PRINT_FOOTER_TERMS: true,
 };
 
 // Load config from localStorage
@@ -54,6 +82,7 @@ function loadConfig() {
 
 // Save config to localStorage
 function saveConfig() {
+    const printBool = (k) => CONFIG[k] === true;
     localStorage.setItem('pharmasight_config', JSON.stringify({
         COMPANY_ID: CONFIG.COMPANY_ID,
         BRANCH_ID: CONFIG.BRANCH_ID,
@@ -61,9 +90,31 @@ function saveConfig() {
         VAT_RATE: CONFIG.VAT_RATE,
         PRINT_TYPE: CONFIG.PRINT_TYPE,
         TRANSACTION_MESSAGE: CONFIG.TRANSACTION_MESSAGE || '',
-        PRINT_REMOVE_MARGIN: CONFIG.PRINT_REMOVE_MARGIN === true,
+        PRINT_REMOVE_MARGIN: printBool('PRINT_REMOVE_MARGIN'),
         PRINT_COPIES: Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1),
-        PRINT_AUTO_CUT: CONFIG.PRINT_AUTO_CUT === true,
+        PRINT_AUTO_CUT: printBool('PRINT_AUTO_CUT'),
+        PRINT_THEME: CONFIG.PRINT_THEME || 'theme1',
+        PRINT_PAGE_WIDTH_MM: Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80)),
+        PRINT_HEADER_COMPANY: printBool('PRINT_HEADER_COMPANY'),
+        PRINT_HEADER_ADDRESS: printBool('PRINT_HEADER_ADDRESS'),
+        PRINT_HEADER_EMAIL: printBool('PRINT_HEADER_EMAIL'),
+        PRINT_HEADER_PHONE: printBool('PRINT_HEADER_PHONE'),
+        PRINT_ITEM_SNO: printBool('PRINT_ITEM_SNO'),
+        PRINT_ITEM_UNIT: printBool('PRINT_ITEM_UNIT'),
+        PRINT_ITEM_CODE: printBool('PRINT_ITEM_CODE'),
+        PRINT_ITEM_MRP: printBool('PRINT_ITEM_MRP'),
+        PRINT_ITEM_DESCRIPTION: printBool('PRINT_ITEM_DESCRIPTION'),
+        PRINT_ITEM_BATCH: printBool('PRINT_ITEM_BATCH'),
+        PRINT_ITEM_EXP: printBool('PRINT_ITEM_EXP'),
+        PRINT_ITEM_MFG: printBool('PRINT_ITEM_MFG'),
+        PRINT_ITEM_SIZE: printBool('PRINT_ITEM_SIZE'),
+        PRINT_TOTAL_QTY: printBool('PRINT_TOTAL_QTY'),
+        PRINT_RECEIVED: printBool('PRINT_RECEIVED'),
+        PRINT_BALANCE: printBool('PRINT_BALANCE'),
+        PRINT_TAX_DETAILS: printBool('PRINT_TAX_DETAILS'),
+        PRINT_AMOUNT_IN_WORDS: printBool('PRINT_AMOUNT_IN_WORDS'),
+        PRINT_AMOUNT_GROUPING: printBool('PRINT_AMOUNT_GROUPING'),
+        PRINT_FOOTER_TERMS: printBool('PRINT_FOOTER_TERMS'),
     }));
 }
 
