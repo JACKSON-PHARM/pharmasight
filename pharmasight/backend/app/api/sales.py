@@ -22,6 +22,7 @@ from app.schemas.sale import (
 from app.services.inventory_service import InventoryService
 from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
+from app.services.document_items_helper import deduplicate_sales_invoice_items
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short
 
@@ -64,6 +65,11 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
         db, invoice.company_id, invoice.branch_id
     )
     
+    # Ensure no duplicate lines per (item_id, unit_name); merge before saving
+    items_to_save = deduplicate_sales_invoice_items(invoice.items)
+    if not items_to_save:
+        raise HTTPException(status_code=400, detail="At least one line item is required")
+
     # Calculate totals
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
@@ -76,7 +82,7 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
     inspector = inspect(SalesInvoice)
     has_customer_phone = 'customer_phone' in [col.name for col in inspector.columns]
     
-    for item_data in invoice.items:
+    for item_data in items_to_save:
         # Get item
         item = db.query(Item).filter(Item.id == item_data.item_id).first()
         if not item:

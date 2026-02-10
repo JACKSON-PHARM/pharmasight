@@ -26,6 +26,7 @@ from app.schemas.sale import (
 from app.services.pricing_service import PricingService
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
+from app.services.document_items_helper import deduplicate_quotation_items
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
 
@@ -42,6 +43,11 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
         db, quotation.company_id, quotation.branch_id
     )
     
+    # Ensure no duplicate lines per (item_id, unit_name); merge before saving
+    items_to_save = deduplicate_quotation_items(quotation.items)
+    if not items_to_save:
+        raise HTTPException(status_code=400, detail="At least one line item is required")
+
     # Calculate totals
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
@@ -49,7 +55,7 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
     # Process each item (NO stock allocation - quotations don't affect inventory)
     quotation_items = []
     
-    for item_data in quotation.items:
+    for item_data in items_to_save:
         # Get item details
         item = db.query(Item).filter(Item.id == item_data.item_id).first()
         if not item:
@@ -228,6 +234,11 @@ def update_quotation(quotation_id: UUID, quotation: QuotationUpdate, db: Session
     
     # Update items if provided
     if quotation.items is not None:
+        # Ensure no duplicate lines per (item_id, unit_name); merge before saving
+        items_to_save = deduplicate_quotation_items(quotation.items)
+        if not items_to_save:
+            raise HTTPException(status_code=400, detail="At least one line item is required")
+
         # Delete existing items
         db.query(QuotationItem).filter(QuotationItem.quotation_id == quotation_id).delete()
         
@@ -236,7 +247,7 @@ def update_quotation(quotation_id: UUID, quotation: QuotationUpdate, db: Session
         total_vat = Decimal("0")
         quotation_items = []
         
-        for item_data in quotation.items:
+        for item_data in items_to_save:
             item = db.query(Item).filter(Item.id == item_data.item_id).first()
             if not item:
                 raise HTTPException(
