@@ -14,15 +14,17 @@ from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
     Item, InvoicePayment
 )
+from app.models.company import Company, Branch
+from app.models.user import User
 from app.schemas.sale import (
     SalesInvoiceCreate, SalesInvoiceResponse,
     SalesInvoiceItemCreate, SalesInvoiceUpdate,
+    BatchSalesInvoiceRequest,
     InvoicePaymentCreate, InvoicePaymentResponse
 )
 from app.services.inventory_service import InventoryService
 from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
-from app.services.document_items_helper import deduplicate_sales_invoice_items
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short
 
@@ -65,10 +67,14 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
         db, invoice.company_id, invoice.branch_id
     )
     
-    # Ensure no duplicate lines per (item_id, unit_name); merge before saving
-    items_to_save = deduplicate_sales_invoice_items(invoice.items)
-    if not items_to_save:
-        raise HTTPException(status_code=400, detail="At least one line item is required")
+    # Enforce one line per item per invoice: reject duplicate item_id in request
+    item_ids = [it.item_id for it in invoice.items]
+    if len(item_ids) != len(set(item_ids)):
+        raise HTTPException(
+            status_code=400,
+            detail="Duplicate item in request. Each item can only appear once per invoice."
+        )
+    items_to_save = invoice.items
 
     # Calculate totals
     total_exclusive = Decimal("0")
@@ -274,7 +280,183 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
             invoice_item.batch_number = None
             invoice_item.expiry_date = None
 
+    # Print letterhead: company, branch, user (like quotation)
+    company = db.query(Company).filter(Company.id == invoice.company_id).first()
+    if company:
+        invoice.company_name = company.name
+        invoice.company_address = getattr(company, "address", None) or ""
+    branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
+    if branch:
+        invoice.branch_name = branch.name
+        invoice.branch_address = getattr(branch, "address", None) or ""
+        invoice.branch_phone = getattr(branch, "phone", None) or ""
+    creator = db.query(User).filter(User.id == invoice.created_by).first()
+    if creator:
+        invoice.created_by_username = creator.username or getattr(creator, "full_name", None) or ""
+
     return invoice
+
+
+@router.post("/invoice/{invoice_id}/items", response_model=SalesInvoiceResponse)
+def add_sales_invoice_item(
+    invoice_id: UUID,
+    item_data: SalesInvoiceItemCreate,
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Add one line item to an existing DRAFT invoice. Auto-save.
+    Returns 400 "Item already exists in this invoice" if that item is already on the invoice.
+    """
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy.exc import IntegrityError
+
+    invoice = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items))
+        .filter(SalesInvoice.id == invoice_id)
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot add items to invoice with status {invoice.status}. Only DRAFT invoices can be edited."
+        )
+    # Reject if this item already exists on the invoice (one line per item per invoice)
+    for line in invoice.items:
+        if line.item_id == item_data.item_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Item already exists in this invoice. Edit the existing line or remove it first."
+            )
+
+    item = db.query(Item).filter(Item.id == item_data.item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+
+    item_vat_rate = Decimal(str(item.vat_rate or 0))
+    is_available, available, required = InventoryService.check_stock_availability(
+        db, item_data.item_id, invoice.branch_id,
+        float(item_data.quantity), item_data.unit_name
+    )
+    if not is_available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient stock for {item.name}. Available: {available}, Required: {required}"
+        )
+
+    sales_type = getattr(invoice, 'sales_type', 'RETAIL') or 'RETAIL'
+    pricing_tier = 'wholesale' if sales_type == 'WHOLESALE' else ('supplier' if sales_type == 'SUPPLIER' else 'retail')
+    unit_price = item_data.unit_price_exclusive
+    unit_cost_used = None
+    if not unit_price:
+        price_info = PricingService.calculate_recommended_price(
+            db, item_data.item_id, invoice.branch_id,
+            invoice.company_id, item_data.unit_name, tier=pricing_tier
+        )
+        if not price_info and pricing_tier == 'supplier':
+            price_info = PricingService.calculate_recommended_price(
+                db, item_data.item_id, invoice.branch_id,
+                invoice.company_id, item_data.unit_name, tier='wholesale'
+            )
+        if price_info:
+            unit_price = price_info["recommended_unit_price"]
+            unit_cost_used = price_info["unit_cost_used"]
+        else:
+            raise HTTPException(status_code=400, detail=f"Price not available for {item.name}")
+    else:
+        cost_info = PricingService.get_item_cost(db, item_data.item_id, invoice.branch_id)
+        if cost_info:
+            unit_cost_used = cost_info
+
+    line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
+    discount_amount = item_data.discount_amount or (line_total_exclusive * item_data.discount_percent / Decimal("100"))
+    line_total_exclusive -= discount_amount
+    line_vat = line_total_exclusive * item_vat_rate / Decimal("100")
+    line_total_inclusive = line_total_exclusive + line_vat
+
+    new_line = SalesInvoiceItem(
+        sales_invoice_id=invoice_id,
+        item_id=item_data.item_id,
+        batch_id=None,
+        unit_name=item_data.unit_name,
+        quantity=item_data.quantity,
+        unit_price_exclusive=unit_price,
+        discount_percent=item_data.discount_percent,
+        discount_amount=discount_amount,
+        vat_rate=item_vat_rate,
+        vat_amount=line_vat,
+        line_total_exclusive=line_total_exclusive,
+        line_total_inclusive=line_total_inclusive,
+        unit_cost_used=unit_cost_used,
+        item_name=item.name,
+        item_code=item.sku or "",
+    )
+    db.add(new_line)
+    db.flush()
+
+    # Recalculate invoice totals
+    total_exclusive = invoice.total_exclusive + line_total_exclusive
+    total_vat = invoice.vat_amount + line_vat
+    total_inclusive = total_exclusive + total_vat
+    invoice.total_exclusive = total_exclusive
+    invoice.vat_amount = total_vat
+    invoice.total_inclusive = total_inclusive
+    if total_exclusive > 0:
+        invoice.vat_rate = (total_vat / total_exclusive * Decimal("100"))
+
+    try:
+        db.commit()
+        db.refresh(invoice)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Item already exists in this invoice. Edit the existing line or remove it first."
+        )
+
+    # Return full invoice (same shape as get)
+    return get_sales_invoice(invoice_id, db)
+
+
+@router.delete("/invoice/{invoice_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_sales_invoice_item(
+    invoice_id: UUID,
+    item_id: UUID,
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Remove one line item from a DRAFT invoice. Only DRAFT invoices can be edited.
+    """
+    from sqlalchemy.orm import selectinload
+    invoice = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items))
+        .filter(SalesInvoice.id == invoice_id)
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot remove items from invoice with status {invoice.status}. Only DRAFT invoices can be edited.",
+        )
+    line = next((i for i in invoice.items if i.item_id == item_id), None)
+    if not line:
+        raise HTTPException(status_code=404, detail="Item not found on this invoice")
+    # Subtract this line's totals from invoice before deleting
+    invoice.total_exclusive -= line.line_total_exclusive
+    invoice.vat_amount -= line.vat_amount
+    invoice.total_inclusive -= line.line_total_inclusive
+    if invoice.total_exclusive and invoice.total_exclusive > 0:
+        invoice.vat_rate = (invoice.vat_amount / invoice.total_exclusive * Decimal("100"))
+    else:
+        invoice.vat_rate = Decimal("0")
+    db.delete(line)
+    db.commit()
+    return None
 
 
 @router.get("/branch/{branch_id}/today-summary", response_model=dict)
@@ -432,111 +614,166 @@ def update_sales_invoice(
 
 
 @router.post("/invoice/{invoice_id}/batch", response_model=SalesInvoiceResponse)
-def batch_sales_invoice(invoice_id: UUID, batched_by: UUID, db: Session = Depends(get_tenant_db)):
+def batch_sales_invoice(
+    invoice_id: UUID,
+    batched_by: UUID,
+    body: Optional[BatchSalesInvoiceRequest] = None,
+    db: Session = Depends(get_tenant_db),
+):
     """
     Batch Sales Invoice - Reduce Stock from Inventory
-    
-    This endpoint processes a DRAFT invoice and reduces stock from inventory based on FEFO allocation.
-    Only DRAFT invoices can be batched. Once batched, status changes to BATCHED.
+
+    Single transaction with row-level lock on the invoice to prevent double-batch and race conditions.
+    If body.items is provided, draft line items are updated to match (quantity, unit_name, unit_price, etc.)
+    so the batched invoice matches the frontend. Then validates stock, deducts stock, sets BATCHED, and commits.
     """
     from sqlalchemy.orm import selectinload
     from datetime import datetime
-    
+
+    # Lock invoice row for update so concurrent batch requests for same invoice are serialized
     invoice = (
         db.query(SalesInvoice)
         .options(selectinload(SalesInvoice.items))
         .filter(SalesInvoice.id == invoice_id)
+        .with_for_update()
         .first()
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+
     if invoice.status == "BATCHED":
         raise HTTPException(
             status_code=400,
             detail="Invoice is already batched. Stock has already been reduced from inventory."
         )
-    
+
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
             detail=f"Cannot batch invoice with status {invoice.status}. Only DRAFT invoices can be batched."
         )
-    
+
     if not invoice.items or len(invoice.items) == 0:
         raise HTTPException(
             status_code=400,
             detail="Invoice has no line items. Add items before batching."
         )
-    
-    # Process each item and reduce stock based on FEFO allocation
+
+    # If frontend sent current items, update each draft line to match (quantity, unit, price, discount)
+    if body and body.items and len(body.items) > 0:
+        payload_by_item = {str(it.item_id): it for it in body.items}
+        total_exclusive = Decimal("0")
+        total_vat = Decimal("0")
+        for line in invoice.items:
+            payload = payload_by_item.get(str(line.item_id))
+            if not payload:
+                total_exclusive += line.line_total_exclusive
+                total_vat += line.vat_amount
+                continue
+            item = db.query(Item).filter(Item.id == line.item_id).first()
+            if not item:
+                total_exclusive += line.line_total_exclusive
+                total_vat += line.vat_amount
+                continue
+            line.quantity = payload.quantity
+            line.unit_name = payload.unit_name
+            line.unit_price_exclusive = payload.unit_price_exclusive or Decimal("0")
+            line.discount_percent = payload.discount_percent or Decimal("0")
+            line.discount_amount = payload.discount_amount or Decimal("0")
+            line_vat_rate = Decimal(str(item.vat_rate or 0))
+            line.line_total_exclusive = (
+                line.unit_price_exclusive * line.quantity
+                - (line.unit_price_exclusive * line.quantity * line.discount_percent / Decimal("100"))
+                - line.discount_amount
+            )
+            line.vat_rate = line_vat_rate
+            line.vat_amount = line.line_total_exclusive * line_vat_rate / Decimal("100")
+            line.line_total_inclusive = line.line_total_exclusive + line.vat_amount
+            total_exclusive += line.line_total_exclusive
+            total_vat += line.vat_amount
+        invoice.total_exclusive = total_exclusive
+        invoice.vat_amount = total_vat
+        invoice.total_inclusive = total_exclusive + total_vat
+        if total_exclusive and total_exclusive > 0:
+            invoice.vat_rate = total_vat / total_exclusive * Decimal("100")
+        else:
+            invoice.vat_rate = Decimal("0")
+        db.flush()
+
+    # Process each item and reduce stock based on FEFO allocation (all in same transaction)
     ledger_entries = []
-    
-    for invoice_item in invoice.items:
-        item = db.query(Item).filter(Item.id == invoice_item.item_id).first()
-        if not item:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Item {invoice_item.item_id} not found. Cannot batch."
+
+    try:
+        for invoice_item in invoice.items:
+            item = db.query(Item).filter(Item.id == invoice_item.item_id).first()
+            if not item:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Item {invoice_item.item_id} not found. Cannot batch."
+                )
+
+            quantity_base = InventoryService.convert_to_base_units(
+                db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
             )
-        
-        # Convert quantity to base units
-        quantity_base = InventoryService.convert_to_base_units(
-            db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
-        )
-        
-        # Check availability again (stock may have changed since DRAFT creation)
-        is_available, available, required = InventoryService.check_stock_availability(
-            db, invoice_item.item_id, invoice.branch_id,
-            float(invoice_item.quantity), invoice_item.unit_name
-        )
-        if not is_available:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient stock for {invoice_item.item_name or item.name}. Available: {available}, Required: {required}"
+
+            is_available, available, required = InventoryService.check_stock_availability(
+                db, invoice_item.item_id, invoice.branch_id,
+                float(invoice_item.quantity), invoice_item.unit_name
             )
-        
-        # Allocate stock (FEFO)
-        allocations = InventoryService.allocate_stock_fefo(
-            db, invoice_item.item_id, invoice.branch_id,
-            quantity_base, invoice_item.unit_name
-        )
-        
-        # Update invoice item with batch_id from first allocation
-        if allocations:
-            invoice_item.batch_id = allocations[0]["ledger_entry_id"]
-        
-        # Create ledger entries (negative for sales)
-        for allocation in allocations:
-            ledger_entry = InventoryLedger(
-                company_id=invoice.company_id,
-                branch_id=invoice.branch_id,
-                item_id=invoice_item.item_id,
-                batch_number=allocation["batch_number"],
-                expiry_date=allocation["expiry_date"],
-                transaction_type="SALE",
-                reference_type="sales_invoice",
-                reference_id=invoice.id,
-                quantity_delta=-allocation["quantity"],  # Negative
-                unit_cost=Decimal(str(allocation["unit_cost"])),
-                total_cost=Decimal(str(allocation["unit_cost"])) * allocation["quantity"],
-                created_by=batched_by
+            if not is_available:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient stock for {invoice_item.item_name or item.name}. Available: {available}, Required: {required}"
+                )
+
+            allocations = InventoryService.allocate_stock_fefo(
+                db, invoice_item.item_id, invoice.branch_id,
+                quantity_base, invoice_item.unit_name
             )
-            ledger_entries.append(ledger_entry)
-    
-    # Update invoice status to BATCHED
-    invoice.status = "BATCHED"
-    invoice.batched = True
-    invoice.batched_by = batched_by
-    invoice.batched_at = datetime.utcnow()
-    
-    # Add ledger entries
-    for entry in ledger_entries:
-        db.add(entry)
-    
-    db.commit()
-    
-    # After stock is reduced, check if items should be added to order book
+
+            if allocations:
+                invoice_item.batch_id = allocations[0]["ledger_entry_id"]
+
+            for allocation in allocations:
+                qty = Decimal(str(allocation["quantity"]))
+                uc = Decimal(str(allocation["unit_cost"]))
+                ledger_entry = InventoryLedger(
+                    company_id=invoice.company_id,
+                    branch_id=invoice.branch_id,
+                    item_id=invoice_item.item_id,
+                    batch_number=allocation["batch_number"],
+                    expiry_date=allocation["expiry_date"],
+                    transaction_type="SALE",
+                    reference_type="sales_invoice",
+                    reference_id=invoice.id,
+                    quantity_delta=-qty,
+                    unit_cost=uc,
+                    total_cost=uc * qty,
+                    created_by=batched_by
+                )
+                ledger_entries.append(ledger_entry)
+
+        invoice.status = "BATCHED"
+        invoice.batched = True
+        invoice.batched_by = batched_by
+        invoice.batched_at = datetime.utcnow()
+
+        for entry in ledger_entries:
+            db.add(entry)
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Batch failed: {str(e)}"
+        )
+
+    db.refresh(invoice)
+
     try:
         order_book_entries = OrderBookService.process_sale_for_order_book(
             db=db,
@@ -546,12 +783,11 @@ def batch_sales_invoice(invoice_id: UUID, batched_by: UUID, db: Session = Depend
             user_id=batched_by
         )
         if order_book_entries:
-            logger.info(f"✅ Auto-added {len(order_book_entries)} items to order book from invoice {invoice_id}")
-    except Exception as e:
-        logger.error(f"Error processing order book after sale: {e}", exc_info=True)
-        # Don't fail the sale if order book check fails
-    
-    db.refresh(invoice)
+            import logging
+            logging.getLogger(__name__).info("Auto-added %s items to order book from invoice %s", len(order_book_entries), invoice_id)
+    except Exception:
+        pass
+
     return invoice
 
 

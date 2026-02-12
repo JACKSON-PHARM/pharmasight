@@ -126,6 +126,8 @@ class ItemResponse(ItemBase):
     default_cost: Optional[float] = Field(None, description="Cost per wholesale unit from ledger (API only)")
     default_cost_per_base: Optional[float] = Field(None, description="Fallback cost per base unit when no ledger data")
     default_supplier_id: Optional[UUID] = Field(None, description="Fallback supplier ID when no purchase history")
+    stock_display: Optional[str] = Field(None, description="3-tier stock string when branch_id provided (e.g. '2 packet (200 tablet)')")
+    current_stock: Optional[float] = Field(None, description="Current stock in base units when branch_id provided")
 
     @model_validator(mode="after")
     def coerce_numeric_base_unit_for_display(self):

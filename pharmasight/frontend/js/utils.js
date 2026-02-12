@@ -1,5 +1,43 @@
 // Utility Functions
 
+/**
+ * Run an async action with button disabled and single-flight guard.
+ * Prevents double submission and re-enables button on success or error.
+ * @param {string|HTMLElement} buttonOrId - Button element or its id
+ * @param {string} inFlightKey - Optional key for dedup (e.g. 'batch-' + id). If same key runs again while in flight, skip.
+ * @param {() => Promise<any>} fn - Async function to run
+ * @returns {Promise<any>}
+ */
+async function safeSubmit(buttonOrId, inFlightKey, fn) {
+    if (typeof inFlightKey === 'function') {
+        fn = inFlightKey;
+        inFlightKey = null;
+    }
+    const btn = typeof buttonOrId === 'string' ? document.getElementById(buttonOrId) : buttonOrId;
+    const key = inFlightKey || 'safeSubmit';
+    if (window.__safeSubmitInFlight && window.__safeSubmitInFlight[key]) {
+        return;
+    }
+    if (window.__safeSubmitInFlight === undefined) window.__safeSubmitInFlight = {};
+    window.__safeSubmitInFlight[key] = true;
+    if (btn) {
+        btn.disabled = true;
+        btn.setAttribute('data-original-html', btn.innerHTML);
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Please wait...';
+    }
+    try {
+        const result = await fn();
+        return result;
+    } finally {
+        delete window.__safeSubmitInFlight[key];
+        if (btn) {
+            btn.disabled = false;
+            const orig = btn.getAttribute('data-original-html');
+            if (orig) btn.innerHTML = orig;
+        }
+    }
+}
+
 // Show toast notification
 function showToast(message, type = 'info') {
     // Error noise reduction: suppress error toasts during navigation transition

@@ -5,6 +5,19 @@ let filteredItemsList = [];
 let itemsSearchTimeout = null;
 let isSearching = false;
 
+/** Single source for branch when loading stock: CONFIG first, then localStorage (so Items and Sales show same stock). */
+function getBranchIdForStock() {
+    if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) return CONFIG.BRANCH_ID;
+    try {
+        const saved = localStorage.getItem('pharmasight_config');
+        if (saved) {
+            const c = JSON.parse(saved);
+            if (c.BRANCH_ID) return c.BRANCH_ID;
+        }
+    } catch (e) { /* ignore */ }
+    return null;
+}
+
 async function loadItems() {
     const page = document.getElementById('items');
     
@@ -28,6 +41,11 @@ async function loadItems() {
         `;
         return;
     }
+    // Sync branch from localStorage so stock matches Sales (single source of truth)
+    if (!CONFIG.BRANCH_ID) {
+        const branchId = getBranchIdForStock();
+        if (branchId) CONFIG.BRANCH_ID = branchId;
+    }
     
     page.innerHTML = `
         <div class="card">
@@ -48,6 +66,11 @@ async function loadItems() {
                     </button>
                 </div>
             </div>
+            ${!getBranchIdForStock() ? `
+            <div class="alert alert-info" style="margin: 0 1rem 0.5rem; padding: 0.5rem 1rem;">
+                <i class="fas fa-info-circle"></i> Current stock and last supplier are shown per branch. Select a branch in <a href="#settings" onclick="loadPage('settings')">Settings</a> to see them here.
+            </div>
+            ` : ''}
             <div style="padding: 1rem; border-bottom: 1px solid var(--border-color); display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
                 <div class="form-group" style="margin: 0; flex: 1; min-width: 300px;">
                     <input 
@@ -148,9 +171,9 @@ async function loadAllItems() {
         }
         
         // OPTIMIZED: Load items with overview data (includes stock, supplier, etc.)
-        // This is for management, so we need full data
-        // For 20k+ items, we'll load first 500, user can search for more
-        itemsList = await API.items.overview(CONFIG.COMPANY_ID, CONFIG.BRANCH_ID);
+        // Use same branch as Sales so stock is a single source of truth
+        const branchId = getBranchIdForStock();
+        itemsList = await API.items.overview(CONFIG.COMPANY_ID, branchId);
         
         // If we have many items, limit display to first 500 for performance
         // User can still search for specific items
@@ -239,12 +262,13 @@ async function filterItems() {
         isSearching = true;
         
         try {
-            // OPTIMIZED: Check cache first
+            // OPTIMIZED: Check cache first (use same branch as Sales for stock)
+            const branchId = getBranchIdForStock();
             const cache = window.searchCache || null;
             let searchResults = null;
             
             if (cache) {
-                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20);
+                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, branchId, 20);
             }
             
             if (!searchResults) {
@@ -261,8 +285,8 @@ async function filterItems() {
                 }
                 
                 try {
-                    // Search API has max limit of 20, use that for performance
-                    searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 20, CONFIG.BRANCH_ID || null, false);
+                    // Search with branch_id for stock (same as Sales); include_pricing=true for last_supplier and costs
+                    searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 20, branchId, true);
                 } catch (apiError) {
                     console.error('Search API error:', apiError);
                     // Check if it's a 422 validation error
@@ -281,26 +305,27 @@ async function filterItems() {
                     throw apiError;
                 }
                 
-                // Cache the results
+                // Cache the results (keyed by same branch so cache matches stock context)
                 if (cache && searchResults) {
-                    cache.set(searchTerm, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20, searchResults);
+                    cache.set(searchTerm, CONFIG.COMPANY_ID, branchId, 20, searchResults);
                 }
             }
             
-            // Convert search results to display format
-            // Note: Search results don't have stock info, so we'll show basic info
-            // For full overview with stock, user can click on item
+            // Convert search results to display format (use stock_display/current_stock/last_supplier from API when branch_id was sent)
             filteredItemsList = searchResults.map(item => ({
                 id: item.id,
                 name: item.name,
                 sku: item.sku || '',
                 base_unit: item.base_unit,
                 category: item.category || '',
-                current_stock: null, // Stock not included in search for performance
+                current_stock: item.current_stock != null ? item.current_stock : null,
+                stock_display: item.stock_display || null,
+                stock_availability: item.stock_availability || null,
                 last_supplier: item.last_supplier || '',
-                last_unit_cost: item.purchase_price || null,
+                last_unit_cost: item.purchase_price != null ? item.purchase_price : null,
                 default_cost: item.price || 0,
-                is_active: item.is_active !== undefined ? item.is_active : true
+                is_active: item.is_active !== undefined ? item.is_active : true,
+                pricing_3tier: item.pricing_3tier || {}
             }));
             
             renderItemsTable();
@@ -368,14 +393,14 @@ function renderItemsTable() {
                         const wholesalePrice = pricing3tier.wholesale_price;
                         const retailPrice = pricing3tier.retail_price;
                         
-                        // Format stock display (packets + individual units)
+                        // Format stock display (3-tier from API or simple number)
                         let stockDisplay = '—';
                         if (item.stock_availability && item.stock_availability.unit_breakdown && item.stock_availability.unit_breakdown.length > 0) {
-                            // Use unit breakdown for better display (e.g., "8 boxes + 40 tablets")
                             const display = item.stock_availability.unit_breakdown[0].display;
                             stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${display}</strong>`;
+                        } else if (item.stock_display) {
+                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${escapeHtml(item.stock_display)}</strong>`;
                         } else if (item.current_stock !== null && item.current_stock !== undefined) {
-                            // Fallback to simple number display
                             stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${formatNumber(item.current_stock)} ${item.base_unit}</strong>`;
                         }
                         
@@ -555,13 +580,13 @@ function showAddItemModal() {
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">Pack Size (retail per wholesale) *</label>
-                        <input type="number" class="form-input" name="pack_size" min="1" value="30" required placeholder="e.g. 30">
-                        <small style="color: var(--text-secondary); font-size: 0.85rem;">1 wholesale = N retail (e.g. 30 tablets per box)</small>
+                        <input type="number" class="form-input" name="pack_size" min="1" step="1" value="30" required placeholder="e.g. 30">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">1 wholesale = N retail (whole numbers only, e.g. 30 tablets per box)</small>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Wholesale per supplier</label>
-                        <input type="number" class="form-input" name="wholesale_units_per_supplier" min="0.0001" step="0.01" value="1" placeholder="e.g. 10">
-                        <small style="color: var(--text-secondary); font-size: 0.85rem;">1 supplier = N wholesale (e.g. 10 boxes per carton). Default 1.</small>
+                        <input type="number" class="form-input" name="wholesale_units_per_supplier" min="1" step="1" value="1" placeholder="e.g. 10">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">1 supplier = N wholesale (whole numbers only, e.g. 10 boxes per carton)</small>
                     </div>
                     <div class="form-group" style="display: flex; align-items: flex-end; padding-bottom: 0.5rem;">
                         <label class="checkbox-item">
@@ -810,6 +835,13 @@ function removeUnitRow(index) {
 async function saveItem(event) {
     event.preventDefault();
     const form = event.target;
+    // Disable submit immediately to prevent duplicate submissions (e.g. slow network double-clicks)
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn && !submitBtn.disabled) {
+        submitBtn.disabled = true;
+        submitBtn.dataset.originalText = submitBtn.innerHTML;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
+    }
     const formData = new FormData(form);
     
     const packSize = parseInt(formData.get('pack_size') || '1', 10) || 1;
@@ -828,7 +860,7 @@ async function saveItem(event) {
         wholesale_unit: formData.get('wholesale_unit') || 'packet',
         retail_unit: formData.get('retail_unit') || 'tablet',
         pack_size: packSize,
-        wholesale_units_per_supplier: Math.max(0.0001, parseFloat(formData.get('wholesale_units_per_supplier') || 1)),
+        wholesale_units_per_supplier: Math.max(1, parseInt(formData.get('wholesale_units_per_supplier'), 10) || 1),
         can_break_bulk: canBreakBulk,
         vat_category: formData.get('vat_category') || 'ZERO_RATED',
         vat_category: formData.get('vat_category') || 'ZERO_RATED',
@@ -864,14 +896,6 @@ async function saveItem(event) {
     }
     
     try {
-        // Show loading state
-        const submitBtn = form.querySelector('button[type="submit"]');
-        const originalBtnText = submitBtn?.innerHTML;
-        if (submitBtn) {
-            submitBtn.disabled = true;
-            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
-        }
-        
         const createdItem = await API.items.create(itemData);
         showToast('Item created successfully!', 'success');
         closeModal();
@@ -905,14 +929,24 @@ async function saveItem(event) {
         }
     } catch (error) {
         console.error('Error saving item:', error);
-        showToast(error.message || 'Error creating item', 'error');
-        
-        // Re-enable button on error
+        // Re-enable button on error so user can fix and retry
         const submitBtn = form.querySelector('button[type="submit"]');
         if (submitBtn) {
             submitBtn.disabled = false;
-            submitBtn.innerHTML = '<i class="fas fa-save"></i> Save Item';
+            submitBtn.innerHTML = submitBtn.dataset.originalText || '<i class="fas fa-save"></i> Save Item';
         }
+        // Duplicate name (409): show message and similar items
+        if (error.status === 409 && error.data && error.data.detail) {
+            const detail = error.data.detail;
+            const message = typeof detail === 'string' ? detail : (detail.message || error.message);
+            const similar = (typeof detail === 'object' && detail.similar_items) ? detail.similar_items : [];
+            const similarText = similar.length
+                ? ' Similar items: ' + similar.map(function (i) { return i.name || i.sku || ''; }).filter(Boolean).slice(0, 8).join(', ')
+                : '';
+            showToast(message + similarText, 'error');
+            return;
+        }
+        showToast(error.message || 'Error creating item', 'error');
     }
 }
 
@@ -1663,131 +1697,153 @@ async function editItem(itemId) {
                 </div>
             </div>
 
-            <!-- Base Unit Section (Locked if has transactions) -->
+            <!-- 3-Tier Unit System (clear wholesale / retail / supplier) -->
             <div class="form-section">
                 <div class="form-section-title">
-                    <i class="fas fa-ruler"></i> Unit Configuration
+                    <i class="fas fa-layer-group"></i> Unit Setup — Wholesale, Retail &amp; Supplier
                     ${isLocked ? '<i class="fas fa-lock" style="color: #dc3545; margin-left: 0.5rem;" title="Locked after first transaction"></i>' : ''}
                 </div>
-                <div class="form-group">
-                    <label class="form-label">
-                        Base Unit (Wholesale) *
-                        ${isLocked ? '<i class="fas fa-lock" style="color: #dc3545; margin-left: 0.25rem;" title="Cannot be modified after item has transactions"></i>' : ''}
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                    Define how units relate: <strong>wholesale</strong> is the base (stock and prices are per wholesale unit). Then set conversion to <strong>retail</strong> and to <strong>supplier</strong>.
+                </p>
+
+                <!-- 1) Wholesale unit (base) -->
+                <div class="form-group" style="padding: 0.75rem; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.25rem; margin-bottom: 1rem;">
+                    <label class="form-label" style="margin-bottom: 0.25rem;">
+                        <i class="fas fa-cube"></i> Wholesale unit (base)
                     </label>
-                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0.25rem 0 0.5rem 0;">Reference unit for stock and pricing (e.g. bottle, piece, box). This is your <strong>wholesale</strong> unit.</p>
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">One unit of this is the base. Stock and prices are per wholesale unit (e.g. 1 pack).</p>
                     <select 
                         class="form-select" 
                         name="base_unit" 
+                        id="edit_base_unit"
                         required
                         ${isLocked ? 'disabled style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
-                        title="${isLocked ? 'Base unit is locked because item has inventory transactions' : 'Base unit (wholesale) for this item'}"
                     >
-                        <option value="tablet" ${item.base_unit === 'tablet' ? 'selected' : ''}>Tablet</option>
-                        <option value="capsule" ${item.base_unit === 'capsule' ? 'selected' : ''}>Capsule</option>
-                        <option value="ml" ${item.base_unit === 'ml' ? 'selected' : ''}>ML (Milliliter)</option>
-                        <option value="gram" ${item.base_unit === 'gram' ? 'selected' : ''}>Gram</option>
-                        <option value="piece" ${item.base_unit === 'piece' ? 'selected' : ''}>Piece</option>
-                        <option value="packet" ${item.base_unit === 'packet' ? 'selected' : ''}>Packet</option>
-                        <option value="bottle" ${item.base_unit === 'bottle' ? 'selected' : ''}>Bottle</option>
-                        <option value="tube" ${item.base_unit === 'tube' ? 'selected' : ''}>Tube</option>
-                        <option value="sachet" ${item.base_unit === 'sachet' ? 'selected' : ''}>Sachet</option>
-                        <option value="vial" ${item.base_unit === 'vial' ? 'selected' : ''}>Vial</option>
-                        <option value="box" ${item.base_unit === 'box' ? 'selected' : ''}>Box</option>
+                        <option value="piece" ${(item.wholesale_unit || item.base_unit || 'piece') === 'piece' ? 'selected' : ''}>Piece</option>
+                        <option value="packet" ${(item.wholesale_unit || item.base_unit) === 'packet' ? 'selected' : ''}>Packet</option>
+                        <option value="box" ${(item.wholesale_unit || item.base_unit) === 'box' ? 'selected' : ''}>Box</option>
+                        <option value="bottle" ${(item.wholesale_unit || item.base_unit) === 'bottle' ? 'selected' : ''}>Bottle</option>
+                        <option value="strip" ${(item.wholesale_unit || item.base_unit) === 'strip' ? 'selected' : ''}>Strip</option>
+                        <option value="carton" ${(item.wholesale_unit || item.base_unit) === 'carton' ? 'selected' : ''}>Carton</option>
+                        <option value="tube" ${(item.wholesale_unit || item.base_unit) === 'tube' ? 'selected' : ''}>Tube</option>
+                        <option value="vial" ${(item.wholesale_unit || item.base_unit) === 'vial' ? 'selected' : ''}>Vial</option>
+                        <option value="sachet" ${(item.wholesale_unit || item.base_unit) === 'sachet' ? 'selected' : ''}>Sachet</option>
+                        <option value="tablet" ${(item.wholesale_unit || item.base_unit) === 'tablet' ? 'selected' : ''}>Tablet</option>
+                        <option value="capsule" ${(item.wholesale_unit || item.base_unit) === 'capsule' ? 'selected' : ''}>Capsule</option>
+                        <option value="ml" ${(item.wholesale_unit || item.base_unit) === 'ml' ? 'selected' : ''}>ML (Milliliter)</option>
+                        <option value="gram" ${(item.wholesale_unit || item.base_unit) === 'gram' ? 'selected' : ''}>Gram</option>
                     </select>
-                    ${isLocked ? '<input type="hidden" name="base_unit" value="' + escapeHtml(item.base_unit) + '">' : ''}
+                    ${isLocked ? '<input type="hidden" name="base_unit" value="' + escapeHtml(item.wholesale_unit || item.base_unit || 'piece') + '">' : ''}
                 </div>
-                
-                <!-- Units Display - Editable -->
-                <div class="form-group" style="margin-top: 1rem;">
-                    <label class="form-label">Unit Conversions (Retail & Supplier tiers)</label>
-                    <p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0.5rem 0;">
-                        Base (wholesale): <strong>${escapeHtml(item.base_unit)}</strong> — Prices and stock are per ${escapeHtml(item.base_unit)}. Other rows are <strong>retail</strong> or <strong>supplier</strong> units with conversion to base.
-                    </p>
-                    <div id="unitsEditContainer" style="margin-top: 0.5rem;">
-                        ${(item.units && item.units.length > 0) ? `
-                            ${item.units.map((u, idx) => {
-                                const multiplier = Number(u.multiplier_to_base);
-                                const isLargerUnit = multiplier >= 1;
-                                return `
-                                <div class="unit-edit-row" data-unit-id="${u.id || ''}" style="display: flex; gap: 0.5rem; align-items: center; padding: 0.75rem; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.25rem; margin-bottom: 0.5rem;">
-                                    <div style="flex: 1;">
-                                        <label class="form-label" style="font-size: 0.875rem; margin-bottom: 0.25rem;">Unit Name</label>
-                                        <input 
-                                            type="text" 
-                                            class="form-input unit-name-input" 
-                                            value="${escapeHtml(u.unit_name)}" 
-                                            placeholder="e.g., TAB, CARTON"
-                                            ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
-                                            data-unit-id="${u.id || ''}"
-                                        >
-                                    </div>
-                                    <div style="flex: 1;">
-                                        <label class="form-label" style="font-size: 0.875rem; margin-bottom: 0.25rem;">
-                                            ${isLargerUnit ? `1 ${escapeHtml(u.unit_name)} = ? ${escapeHtml(item.base_unit)}` : `1 ${escapeHtml(item.base_unit)} = ? ${escapeHtml(u.unit_name)}`}
-                                        </label>
-                                        <input 
-                                            type="number" 
-                                            class="form-input unit-multiplier-input" 
-                                            value="${isLargerUnit ? multiplier : (1 / multiplier)}" 
-                                            step="0.01" 
-                                            min="0.01"
-                                            placeholder="Enter rate"
-                                            ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
-                                            data-unit-id="${u.id || ''}"
-                                            data-is-larger="${isLargerUnit}"
-                                        >
-                                    </div>
-                                    <div style="display: flex; flex-direction: column; gap: 0.25rem; align-items: center; min-width: 120px;">
-                                        <label class="checkbox-item" style="margin: 0;">
-                                            <input 
-                                                type="checkbox" 
-                                                class="unit-default-checkbox" 
-                                                ${u.is_default ? 'checked' : ''}
-                                                ${isLocked ? 'disabled' : ''}
-                                                data-unit-id="${u.id || ''}"
-                                            >
-                                            <span style="font-size: 0.875rem;">Default</span>
-                                        </label>
-                                        ${!isLocked ? `
-                                            <button 
-                                                type="button" 
-                                                class="btn btn-outline btn-sm remove-unit-btn" 
-                                                style="padding: 0.25rem 0.5rem; font-size: 0.75rem;"
-                                                data-unit-id="${u.id || ''}"
-                                                onclick="removeEditUnitRow(this)"
-                                            >
-                                                <i class="fas fa-trash"></i> Remove
-                                            </button>
-                                        ` : ''}
-                                    </div>
-                                    <input type="hidden" class="unit-id-input" value="${u.id || ''}">
-                                </div>
-                            `;
-                            }).join('')}
-                        ` : `
-                            <p style="color: var(--text-secondary); padding: 0.75rem; background: var(--bg-color); border-radius: 0.25rem; text-align: center;">
-                                No secondary units. Item uses base unit (${escapeHtml(item.base_unit)}) only.
-                            </p>
-                        `}
-                    </div>
-                    ${!isLocked ? `
-                        <button 
-                            type="button" 
-                            class="btn btn-outline" 
-                            onclick="addEditUnitRow('${itemId}', '${escapeHtml(item.base_unit)}')"
-                            style="margin-top: 0.5rem;"
-                        >
-                            <i class="fas fa-plus"></i> Add Secondary Unit
-                        </button>
-                    ` : ''}
-                    ${isLocked ? `
-                        <div class="alert alert-info" style="margin-top: 0.5rem;">
-                            <i class="fas fa-lock"></i>
-                            Unit conversions cannot be modified after item has inventory transactions. 
-                            View units using the <i class="fas fa-cubes"></i> button.
+
+                <!-- 2) Conversion to retail -->
+                <div class="form-group" style="padding: 0.75rem; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.25rem; margin-bottom: 1rem;">
+                    <label class="form-label" style="margin-bottom: 0.25rem;">
+                        <i class="fas fa-shopping-cart"></i> Conversion to retail
+                    </label>
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">1 wholesale unit = how many retail units (e.g. 100 tablets per pack).</p>
+                    <div class="form-row" style="align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;">
+                            <span>1</span>
+                            <span id="editRetailWholesaleLabel">${escapeHtml(item.wholesale_unit || item.base_unit || 'piece')}</span>
+                            <span>=</span>
                         </div>
-                    ` : ''}
+                        <div class="form-group" style="margin-bottom: 0; flex: 0 0 100px;">
+                            <input 
+                                type="number" 
+                                class="form-input" 
+                                name="pack_size" 
+                                min="1" 
+                                step="1"
+                                value="${Math.max(1, parseInt(item.pack_size, 10) || 1)}"
+                                placeholder="e.g. 100"
+                                ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                            >
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0; flex: 0 0 140px;">
+                            <select 
+                                class="form-select" 
+                                name="retail_unit" 
+                                ${isLocked ? 'disabled style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                            >
+                                <option value="tablet" ${(item.retail_unit || 'tablet') === 'tablet' ? 'selected' : ''}>Tablet</option>
+                                <option value="capsule" ${(item.retail_unit || '') === 'capsule' ? 'selected' : ''}>Capsule</option>
+                                <option value="ml" ${(item.retail_unit || '') === 'ml' ? 'selected' : ''}>ML</option>
+                                <option value="gram" ${(item.retail_unit || '') === 'gram' ? 'selected' : ''}>Gram</option>
+                                <option value="piece" ${(item.retail_unit || '') === 'piece' ? 'selected' : ''}>Piece</option>
+                                <option value="sachet" ${(item.retail_unit || '') === 'sachet' ? 'selected' : ''}>Sachet</option>
+                            </select>
+                        </div>
+                    </div>
+                    ${isLocked ? '<input type="hidden" name="pack_size" value="' + (Math.max(1, parseInt(item.pack_size, 10) || 1)) + '"><input type="hidden" name="retail_unit" value="' + escapeHtml(item.retail_unit || 'tablet') + '">' : ''}
                 </div>
+
+                <!-- 3) Conversion to supplier -->
+                <div class="form-group" style="padding: 0.75rem; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.25rem; margin-bottom: 1rem;">
+                    <label class="form-label" style="margin-bottom: 0.25rem;">
+                        <i class="fas fa-truck"></i> Conversion to supplier
+                    </label>
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">1 supplier unit = how many wholesale units (e.g. 12 packs per carton).</p>
+                    <div class="form-row" style="align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;">
+                            <span>1</span>
+                            <select 
+                                class="form-select" 
+                                name="supplier_unit" 
+                                style="min-width: 100px;"
+                                ${isLocked ? 'disabled style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                            >
+                                <option value="carton" ${(item.supplier_unit || 'carton') === 'carton' ? 'selected' : ''}>Carton</option>
+                                <option value="box" ${(item.supplier_unit || '') === 'box' ? 'selected' : ''}>Box</option>
+                                <option value="packet" ${(item.supplier_unit || '') === 'packet' ? 'selected' : ''}>Packet</option>
+                                <option value="bottle" ${(item.supplier_unit || '') === 'bottle' ? 'selected' : ''}>Bottle</option>
+                                <option value="piece" ${(item.supplier_unit || '') === 'piece' ? 'selected' : ''}>Piece</option>
+                                <option value="crate" ${(item.supplier_unit || '') === 'crate' ? 'selected' : ''}>Crate</option>
+                            </select>
+                            <span>=</span>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0; flex: 0 0 100px;">
+                            <input 
+                                type="number" 
+                                class="form-input" 
+                                name="wholesale_units_per_supplier" 
+                                min="1" 
+                                step="1"
+                                value="${Math.max(1, parseInt(item.wholesale_units_per_supplier, 10) || 1)}"
+                                placeholder="e.g. 12"
+                                ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                            >
+                        </div>
+                        <span id="editSupplierWholesaleLabel">${escapeHtml(item.wholesale_unit || item.base_unit || 'piece')}</span>
+                    </div>
+                    ${isLocked ? '<input type="hidden" name="supplier_unit" value="' + escapeHtml(item.supplier_unit || 'carton') + '"><input type="hidden" name="wholesale_units_per_supplier" value="' + (Math.max(1, parseInt(item.wholesale_units_per_supplier, 10) || 1)) + '">' : ''}
+                </div>
+
+                <!-- Break bulk & Track expiry -->
+                <div class="form-group" style="margin-top: 1rem;">
+                    <label class="form-label">Options</label>
+                    <div class="checkbox-group">
+                        <label class="checkbox-item">
+                            <input type="checkbox" name="can_break_bulk" ${item.can_break_bulk ? 'checked' : ''} ${isLocked ? 'disabled' : ''}>
+                            <span>Can break bulk</span>
+                        </label>
+                        <small style="display: block; color: var(--text-secondary); font-size: 0.8rem; margin-left: 1.5rem;">Allow selling individual retail units (e.g. tablets). Requires pack size &gt; 1.</small>
+                        <label class="checkbox-item" style="margin-top: 0.75rem;">
+                            <input type="checkbox" name="track_expiry" ${item.track_expiry ? 'checked' : ''}>
+                            <span>Track expiry dates</span>
+                        </label>
+                        <small style="display: block; color: var(--text-secondary); font-size: 0.8rem; margin-left: 1.5rem;">Record batch/expiry when receiving and selling this item.</small>
+                    </div>
+                    ${isLocked ? '<input type="hidden" name="can_break_bulk" value="' + (item.can_break_bulk ? 'on' : '') + '">' : ''}
+                </div>
+
+                ${isLocked ? `
+                    <div class="alert alert-info" style="margin-top: 0.5rem;">
+                        <i class="fas fa-lock"></i>
+                        Unit conversions and break bulk cannot be modified after item has inventory transactions.
+                    </div>
+                ` : ''}
             </div>
 
             <!-- Unit cost (from ledger): derive per wholesale / retail / supplier -->
@@ -1896,7 +1952,23 @@ async function editItem(itemId) {
         }
     }, 0);
 
-    // Add event listeners to existing unit name inputs for dynamic label updates
+    // Sync wholesale unit label in "Conversion to retail" and "Conversion to supplier" when base unit dropdown changes
+    setTimeout(() => {
+        const baseUnitSelect = document.getElementById('edit_base_unit');
+        const retailLabel = document.getElementById('editRetailWholesaleLabel');
+        const supplierLabel = document.getElementById('editSupplierWholesaleLabel');
+        if (baseUnitSelect && retailLabel && supplierLabel) {
+            function syncWholesaleLabel() {
+                const name = baseUnitSelect.options[baseUnitSelect.selectedIndex]?.text || baseUnitSelect.value || 'piece';
+                retailLabel.textContent = name;
+                supplierLabel.textContent = name;
+            }
+            baseUnitSelect.addEventListener('change', syncWholesaleLabel);
+            syncWholesaleLabel();
+        }
+    }, 0);
+
+    // Legacy: Add event listeners to existing unit name inputs for dynamic label updates (only if rows exist)
     setTimeout(() => {
         const allNameInputs = document.querySelectorAll('.unit-name-input');
         allNameInputs.forEach(input => {
@@ -1979,44 +2051,20 @@ async function updateItem(event, itemId) {
         category: formData.get('category') || null,
         vat_rate: parseFloat(formData.get('vat_rate')) || 0,
         vat_category: formData.get('vat_category') || null,
-        is_active: formData.has('is_active')
+        is_active: formData.has('is_active'),
+        track_expiry: formData.has('track_expiry')
     };
-    
-    // Only include base_unit if item doesn't have transactions
-    if (!hasTransactions && formData.get('base_unit')) {
-        updateData.base_unit = formData.get('base_unit');
-    }
-    
-    // Collect units data (only if not locked)
+
+    // 3-tier unit fields (only if item doesn't have transactions)
     if (!hasTransactions) {
-        const units = [];
-        const unitRows = document.querySelectorAll('.unit-edit-row');
-        
-        unitRows.forEach(row => {
-            const unitId = row.querySelector('.unit-id-input')?.value || null;
-            const unitName = row.querySelector('.unit-name-input')?.value?.trim();
-            const multiplierInput = row.querySelector('.unit-multiplier-input');
-            const multiplierValue = parseFloat(multiplierInput?.value);
-            const isLarger = multiplierInput?.dataset.isLarger === 'true';
-            const isDefault = row.querySelector('.unit-default-checkbox')?.checked || false;
-            
-            if (unitName && multiplierValue && multiplierValue > 0) {
-                // Convert multiplier based on unit type
-                // If isLarger: multiplier is already correct (e.g., 100 means 1 CARTON = 100 packets)
-                // If not isLarger: we need to invert (e.g., if user enters 100, it means 1 packet = 100 tabs, so multiplier = 1/100 = 0.01)
-                const multiplier = isLarger ? multiplierValue : (1 / multiplierValue);
-                
-                units.push({
-                    id: unitId || null,
-                    unit_name: unitName,
-                    multiplier_to_base: multiplier,
-                    is_default: isDefault
-                });
-            }
-        });
-        
-        // Only include units if there are any (or if explicitly empty to remove all)
-        updateData.units = units;
+        const baseUnit = formData.get('base_unit') || formData.get('wholesale_unit') || 'piece';
+        updateData.base_unit = baseUnit;
+        updateData.wholesale_unit = baseUnit;
+        updateData.retail_unit = formData.get('retail_unit') || 'tablet';
+        updateData.supplier_unit = formData.get('supplier_unit') || 'carton';
+        updateData.pack_size = Math.max(1, parseInt(formData.get('pack_size'), 10) || 1);
+        updateData.wholesale_units_per_supplier = Math.max(1, parseInt(formData.get('wholesale_units_per_supplier'), 10) || 1);
+        updateData.can_break_bulk = formData.has('can_break_bulk');
     }
     
     // SKU is never included (immutable)

@@ -7,6 +7,7 @@ let salesInvoices = [];
 let salesDocuments = [];
 let currentQuotation = null; // For quotation edit mode
 let quotationItems = []; // For quotation items
+let salesDraftCreateTimeout = null; // Debounce draft creation so quantity (e.g. 10 tablets) is captured
 
 // Initialize sales page
 async function loadSales() {
@@ -538,17 +539,9 @@ function renderSalesInvoicesTableBody() {
                 <td style="padding: 0.75rem;">${escapeHtml(invoice.payment_mode || 'Cash')}</td>
                 <td style="padding: 0.75rem;" onclick="event.stopPropagation();">
                     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                        <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.viewSalesInvoice) window.viewSalesInvoice('${invoice.id}')" title="View">
-                            <i class="fas fa-eye"></i>
+                        <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.viewSalesInvoice) window.viewSalesInvoice('${invoice.id}')" title="Open (view, batch or delete from there)">
+                            <i class="fas fa-eye"></i> Open
                         </button>
-                        ${status === 'DRAFT' ? `
-                            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); if(window.batchSalesInvoice) window.batchSalesInvoice('${invoice.id}')" title="Batch & Print">
-                                <i class="fas fa-check"></i> Batch
-                            </button>
-                            <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); if(window.deleteSalesInvoice) window.deleteSalesInvoice('${invoice.id}')" title="Delete">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        ` : ''}
                         ${status === 'BATCHED' && invoice.payment_status !== 'PAID' ? `
                             <button class="btn btn-sm btn-success" onclick="event.stopPropagation(); if(window.collectPayment) window.collectPayment('${invoice.id}')" title="Collect Payment">
                                 <i class="fas fa-money-bill-wave"></i> Pay
@@ -604,10 +597,15 @@ async function renderCreateSalesInvoicePage() {
     let invoiceData = isEditMode ? currentInvoice.invoiceData : null;
     const invoiceId = currentInvoice?.id || null;
     
-    // If not editing, reset document state
+    // If not editing, reset document state and draft-sync tracking
     if (!isEditMode) {
         currentInvoice = null;
         documentItems = [];
+        salesInvoiceSyncedItemIds = new Set();
+        salesInvoiceCreatingDraft = false;
+        salesInvoiceAddItemInFlight = new Set();
+    } else if (invoiceData && invoiceData.items && invoiceData.items.length > 0) {
+        salesInvoiceSyncedItemIds = new Set(invoiceData.items.map(i => i.item_id));
     }
     
     const today = new Date().toISOString().split('T')[0];
@@ -616,10 +614,10 @@ async function renderCreateSalesInvoicePage() {
     // Prepare buttons for top bar based on mode
     const topButtonsHtml = isEditMode ? `
         <div style="display: flex; gap: 0.5rem;">
-            <button type="button" class="btn btn-primary" onclick="if(window.saveSalesInvoice) { const form = document.getElementById('salesInvoiceForm'); if(form) saveSalesInvoice({preventDefault:()=>{},target:form}); }">
+            <button type="button" class="btn btn-primary" id="salesUpdateInvoiceBtn" onclick="if(window.saveSalesInvoice) { const form = document.getElementById('salesInvoiceForm'); if(form) saveSalesInvoice({preventDefault:()=>{},target:form}); }">
                 <i class="fas fa-save"></i> Update Invoice
             </button>
-            <button type="button" class="btn btn-success" onclick="if(window.batchSalesInvoice) window.batchSalesInvoice('${invoiceId}')" title="Batch & Print">
+            <button type="button" class="btn btn-success" id="salesBatchInvoiceBtn" onclick="if(window.batchSalesInvoice) window.batchSalesInvoice('${invoiceId}', this)" title="Batch & Print">
                 <i class="fas fa-check"></i> Batch & Print
             </button>
             <button type="button" class="btn btn-info" onclick="if(window.convertSalesInvoiceToQuotation) window.convertSalesInvoiceToQuotation('${invoiceId}')" title="Convert to Quotation">
@@ -633,12 +631,10 @@ async function renderCreateSalesInvoicePage() {
             </button>
         </div>
     ` : `
-        <button type="submit" class="btn btn-primary" form="salesInvoiceForm">
-            <i class="fas fa-save"></i> Save Invoice
-        </button>
         <button type="button" class="btn btn-secondary" onclick="loadSalesSubPage('invoices')">
             <i class="fas fa-arrow-left"></i> Back to Invoices
         </button>
+        <span class="text-muted" style="margin-left: 0.5rem; font-size: 0.9rem;">Add items below — first item creates the draft invoice automatically.</span>
     `;
     
     page.innerHTML = `
@@ -652,7 +648,7 @@ async function renderCreateSalesInvoicePage() {
             </div>
             
             <div class="card-body" style="padding: 1.5rem;">
-                <form id="salesInvoiceForm" onsubmit="saveSalesInvoice(event)">
+                <form id="salesInvoiceForm" onsubmit="event.preventDefault(); if(currentInvoice && currentInvoice.id) saveSalesInvoice(event);">
                     <!-- Document Header -->
                     <div style="margin-bottom: 1.5rem; padding: 1rem; background: #f8f9fa; border-radius: 0.5rem;">
                         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">
@@ -744,15 +740,7 @@ async function renderCreateSalesInvoicePage() {
                     </div>
                     
                     ${!isEditMode ? `
-                    <!-- Form Actions -->
-                    <div style="display: flex; gap: 1rem; justify-content: flex-end; padding-top: 1rem; border-top: 1px solid var(--border-color);">
-                        <button type="button" class="btn btn-secondary" onclick="loadSalesSubPage('invoices')">
-                            Cancel
-                        </button>
-                        <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-save"></i> Save Sales Invoice
-                        </button>
-                    </div>
+                    <!-- No Save button: first item creates DRAFT automatically -->
                     ` : ''}
                 </form>
             </div>
@@ -820,6 +808,10 @@ function handlePaymentModeChange() {
 
 // Initialize TransactionItemsTable for Sales Invoice
 let salesInvoiceItemsTable = null;
+// Track which item_ids have been synced to the server (for draft auto-create + add-item flow)
+let salesInvoiceSyncedItemIds = new Set();
+let salesInvoiceCreatingDraft = false;
+let salesInvoiceAddItemInFlight = new Set(); // item_id -> avoid duplicate in-flight add
 
 // Update sales invoice summary (Net, VAT, Total)
 function updateSalesInvoiceSummary() {
@@ -833,6 +825,154 @@ function updateSalesInvoiceSummary() {
     if (nettEl) nettEl.textContent = formatCurrency(summary.nett);
     if (vatEl) vatEl.textContent = formatCurrency(summary.vat);
     if (totalEl) totalEl.textContent = formatCurrency(summary.total);
+}
+
+function getSalesInvoiceFormData() {
+    const form = document.getElementById('salesInvoiceForm');
+    if (!form) return null;
+    const fd = new FormData(form);
+    return {
+        invoice_date: fd.get('invoice_date') || new Date().toISOString().split('T')[0],
+        customer_name: fd.get('customer_name') || null,
+        customer_pin: fd.get('customer_pin') || null,
+        customer_phone: fd.get('customer_phone') || null,
+        payment_mode: fd.get('payment_mode') || 'cash',
+        sales_type: fd.get('sales_type') || 'RETAIL',
+        payment_status: 'UNPAID',
+        status: 'DRAFT',
+        discount_amount: 0
+    };
+}
+
+function mapTableItemToApiItem(item) {
+    return {
+        item_id: item.item_id,
+        unit_name: item.unit_name,
+        quantity: parseFloat(item.quantity) || 1,
+        unit_price_exclusive: item.unit_price,
+        discount_percent: item.discount_percent || 0,
+        discount_amount: item.discount_amount || 0
+    };
+}
+
+async function createSalesDraftWithFirstItem(firstItem) {
+    const formData = getSalesInvoiceFormData();
+    if (!formData) throw new Error('Form not found');
+    const paymentMode = formData.payment_mode || 'cash';
+    if (paymentMode === 'credit') {
+        if (!formData.customer_name || !formData.customer_name.trim()) {
+            showToast('Customer name is required when payment mode is Credit', 'error');
+            throw new Error('Validation failed');
+        }
+        if (!formData.customer_phone || !formData.customer_phone.trim()) {
+            showToast('Customer phone is required when payment mode is Credit', 'error');
+            throw new Error('Validation failed');
+        }
+        const digits = (formData.customer_phone || '').replace(/\D/g, '');
+        if (digits.length < 9) {
+            showToast('Customer phone must be valid (at least 9 digits)', 'error');
+            throw new Error('Validation failed');
+        }
+    }
+    const payload = {
+        company_id: CONFIG.COMPANY_ID,
+        branch_id: CONFIG.BRANCH_ID,
+        created_by: CONFIG.USER_ID,
+        ...formData,
+        items: [mapTableItemToApiItem(firstItem)]
+    };
+    const invoice = await API.sales.createInvoice(payload);
+    return invoice;
+}
+
+async function onSalesInvoiceItemsChange(validItems) {
+    documentItems = validItems.map(item => ({
+        item_id: item.item_id,
+        item_name: item.item_name,
+        item_sku: item.item_sku,
+        item_code: item.item_code || item.item_sku,
+        unit_name: item.unit_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        discount_percent: item.discount_percent || 0,
+        tax_percent: item.tax_percent || 0,
+        total: item.total
+    }));
+    updateSalesInvoiceSummary();
+
+    const draftId = currentInvoice && currentInvoice.id;
+    if (!draftId && validItems.length >= 1 && !salesInvoiceCreatingDraft) {
+        if (salesDraftCreateTimeout) clearTimeout(salesDraftCreateTimeout);
+        salesDraftCreateTimeout = setTimeout(async () => {
+            salesDraftCreateTimeout = null;
+            if (currentInvoice && currentInvoice.id) return;
+            salesInvoiceCreatingDraft = true;
+            try {
+                showToast('Creating invoice...', 'info');
+                const invoice = await createSalesDraftWithFirstItem(validItems[0]);
+                salesInvoiceCreatingDraft = false;
+                currentInvoice = { id: invoice.id, mode: 'edit', invoiceData: invoice };
+                salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
+                documentItems = (invoice.items || []).map(i => ({
+                    item_id: i.item_id,
+                    item_name: i.item_name,
+                    item_sku: i.item_code,
+                    item_code: i.item_code,
+                    unit_name: i.unit_name,
+                    quantity: i.quantity,
+                    unit_price: i.unit_price_exclusive,
+                    discount_percent: i.discount_percent || 0,
+                    tax_percent: i.vat_rate || 0,
+                    total: i.line_total_inclusive
+                }));
+                showToast('Draft invoice created. Add more items or click Batch when ready.', 'success');
+                renderCreateSalesInvoicePage();
+            } catch (e) {
+                salesInvoiceCreatingDraft = false;
+                showToast(e.message || 'Failed to create draft invoice', 'error');
+            }
+        }, 1500);
+        return;
+    }
+    if (draftId) {
+        const validItemIds = new Set(validItems.filter(i => i.item_id).map(i => i.item_id));
+        // Remove from server any line that was deleted in the UI
+        const toRemove = [...salesInvoiceSyncedItemIds].filter(id => !validItemIds.has(id));
+        for (const itemId of toRemove) {
+            try {
+                await API.sales.deleteInvoiceItem(draftId, itemId);
+                salesInvoiceSyncedItemIds.delete(itemId);
+            } catch (err) {
+                const msg = (err && err.message) || String(err);
+                showToast(msg || 'Failed to remove item from invoice', 'error');
+            }
+        }
+        // Add new items that are not yet synced
+        if (validItems.length > 0) {
+            const newItems = validItems.filter(i => i.item_id && !salesInvoiceSyncedItemIds.has(i.item_id));
+            for (const item of newItems) {
+                if (salesInvoiceAddItemInFlight.has(item.item_id)) continue;
+                salesInvoiceAddItemInFlight.add(item.item_id);
+                try {
+                    await API.sales.addInvoiceItem(draftId, mapTableItemToApiItem(item));
+                    salesInvoiceSyncedItemIds.add(item.item_id);
+                } catch (err) {
+                    const msg = (err && err.message) || String(err);
+                    if (msg.indexOf('already exists') !== -1) {
+                        showToast('Item already exists in this invoice. Edit the existing line.', 'warning');
+                        if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.highlightRowByItemId === 'function') {
+                            salesInvoiceItemsTable.highlightRowByItemId(item.item_id);
+                        }
+                    } else {
+                        showToast(msg, 'error');
+                    }
+                    salesInvoiceSyncedItemIds.delete(item.item_id);
+                } finally {
+                    salesInvoiceAddItemInFlight.delete(item.item_id);
+                }
+            }
+        }
+    }
 }
 
 function initializeSalesInvoiceItemsTable() {
@@ -862,21 +1002,7 @@ function initializeSalesInvoiceItemsTable() {
         mode: 'sale',
         items: items,
         priceType: 'sale_price',
-        onItemsChange: (validItems) => {
-            documentItems = validItems.map(item => ({
-                item_id: item.item_id,
-                item_name: item.item_name,
-                item_sku: item.item_sku,
-                item_code: item.item_code || item.item_sku,
-                unit_name: item.unit_name,
-                quantity: item.quantity,
-                unit_price: item.unit_price,
-                discount_percent: item.discount_percent || 0,
-                tax_percent: item.tax_percent || 0,
-                total: item.total
-            }));
-            updateSalesInvoiceSummary();
-        },
+        onItemsChange: onSalesInvoiceItemsChange,
         onTotalChange: (total) => {
             console.log('Sales invoice total changed:', total);
             updateSalesInvoiceSummary();
@@ -2061,32 +2187,49 @@ function showInvoiceDetails(invoice) {
 // SALES INVOICE ACTIONS (BATCH, DELETE, PAYMENT)
 // =====================================================
 
-async function batchSalesInvoice(invoiceId) {
+async function batchSalesInvoice(invoiceId, buttonEl) {
     if (!confirm('Batch this invoice? This will reduce stock from inventory and make it ready for payment collection.')) {
         return;
     }
-    
-    try {
+    const run = async () => {
         showToast('Batching invoice...', 'info');
         const userId = CONFIG.USER_ID;
-        if (!userId) {
-            throw new Error('User ID not found. Please log in again.');
+        if (!userId) throw new Error('User ID not found. Please log in again.');
+        // Send current table items so backend updates draft lines before batching (print matches what you see)
+        let body = null;
+        if (currentInvoice && currentInvoice.id === invoiceId && salesInvoiceItemsTable && typeof salesInvoiceItemsTable.getItems === 'function') {
+            const validItems = salesInvoiceItemsTable.getItems();
+            if (validItems && validItems.length > 0) {
+                body = {
+                    items: validItems.map(item => ({
+                        item_id: item.item_id,
+                        unit_name: item.unit_name || '',
+                        quantity: parseFloat(item.quantity) || 1,
+                        unit_price_exclusive: item.unit_price != null ? item.unit_price : 0,
+                        discount_percent: item.discount_percent || 0,
+                        discount_amount: item.discount_amount || 0
+                    }))
+                };
+            }
         }
-        
-        const invoice = await API.sales.batchInvoice(invoiceId, userId);
+        const invoice = await API.sales.batchInvoice(invoiceId, userId, body);
         showToast('Invoice batched successfully! Stock has been reduced.', 'success');
-        
-        // Refresh the invoices list
+        if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.refreshStockForAllItems === 'function') {
+            await salesInvoiceItemsTable.refreshStockForAllItems();
+        }
         await fetchAndRenderSalesInvoicesData();
-        
-        // Optionally print receipt
-        if (confirm('Print thermal receipt?')) {
-            await printSalesInvoice(invoiceId);
+        if (confirm('Print thermal receipt?')) await printSalesInvoice(invoiceId);
+        return invoice;
+    };
+    try {
+        if (typeof safeSubmit === 'function' && buttonEl) {
+            await safeSubmit(buttonEl, 'batch-' + invoiceId, run);
+        } else {
+            await run();
         }
     } catch (error) {
         console.error('Error batching invoice:', error);
-        const errorMsg = error.message || 'Failed to batch invoice';
-        showToast(errorMsg, 'error');
+        showToast(error.message || 'Failed to batch invoice', 'error');
     }
 }
 
@@ -2437,14 +2580,14 @@ function generateInvoicePrintHTML(invoice, printType) {
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
     const showCompany = getPrintOpt('PRINT_HEADER_COMPANY', true);
     const showAddress = getPrintOpt('PRINT_HEADER_ADDRESS', true);
+    const showPhone = getPrintOpt('PRINT_HEADER_PHONE', true);
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
     const showItemCode = getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
     const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
-    const showBatch = getPrintOpt('PRINT_ITEM_BATCH', false);
-    const showExp = getPrintOpt('PRINT_ITEM_EXP', false);
+    const showBatch = getPrintOpt('PRINT_ITEM_BATCH', true); // Default to true for invoices
+    const showExp = getPrintOpt('PRINT_ITEM_EXP', true); // Default to true for invoices
 
-    const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString();
     const colCount = showVat ? 6 : 5;
 
     // Dedupe items for print so total always matches printed rows
@@ -2497,9 +2640,15 @@ function generateInvoicePrintHTML(invoice, printType) {
     const colSpanTotal = colCount - 1;
 
     const companyName = invoice.company_name || 'PharmaSight';
+    const companyAddress = invoice.company_address || '';
     const branchName = invoice.branch_name || '';
+    const branchAddress = invoice.branch_address || '';
+    const branchPhone = invoice.branch_phone || '';
+    const createdByUser = invoice.created_by_username || invoice.created_by_name || '';
+    const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    const generatedTime = new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 
-    const thermalPadding = noMargin ? '2px 4px' : '5px';
+    const thermalPadding = noMargin ? '2px 4px' : '6px 8px';
     const thermalBodyPad = noMargin ? '2px 4px' : '8px';
     const maxW = Math.min(88, Math.max(58, pageWidthMm)) - 8;
     const pageStyle = isThermal
@@ -2507,6 +2656,7 @@ function generateInvoicePrintHTML(invoice, printType) {
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 9px; max-width: ${maxW}mm; padding: ${thermalBodyPad}; margin: 0 auto; }
            .header { padding-bottom: 4px; margin-bottom: 6px; text-align: ${headerAlign}; }
+           .header .company-name { font-size: 1em; }
            .invoice-info { margin: 4px 0; }
            .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
            th, td { padding: ${thermalPadding}; font-size: 9px; }
@@ -2516,16 +2666,19 @@ function generateInvoicePrintHTML(invoice, printType) {
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
            .header { text-align: ${headerAlign}; }
+           .company-name { font-size: 1.25em; font-weight: bold; margin-bottom: 4px; }
+           .company-details { font-size: 0.9em; color: #333; line-height: 1.4; }
            .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
            th, td { padding: 8px; }`;
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
-    const headerBlock = showCompany || showAddress
-        ? `<div class="header">
-        ${showCompany ? `<h2>${escapeHtml(companyName)}</h2>` : ''}
-        ${showAddress && branchName ? `<p style="margin: 0; font-size: 0.9em;">${escapeHtml(branchName)}</p>` : ''}
-        <p style="margin: 4px 0 0 0;">Sales Invoice</p>
-    </div>` : '<div class="header"><p style="margin: 0;">Sales Invoice</p></div>';
+    const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
+    const headerBlock = `<div class="header">
+        ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
+        ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
+        ${branchLine}
+        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
+    </div>`;
 
     return `
 <!DOCTYPE html>
@@ -2550,6 +2703,7 @@ function generateInvoicePrintHTML(invoice, printType) {
     <div class="invoice-info">
         <p><strong>Invoice #:</strong> ${escapeHtml(invoice.invoice_no)} &nbsp; <strong>Date:</strong> ${invoiceDate}</p>
         ${invoice.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(invoice.customer_name)}</p>` : ''}
+        ${invoice.customer_phone ? `<p><strong>Phone:</strong> ${escapeHtml(invoice.customer_phone)}</p>` : ''}
         <p><strong>Status:</strong> ${invoice.status || 'DRAFT'}</p>
     </div>
 
@@ -2577,7 +2731,8 @@ function generateInvoicePrintHTML(invoice, printType) {
 
     <div class="footer">
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
-        <p>Generated: ${new Date().toLocaleString()}</p>
+        ${createdByUser ? `<p><strong>Served by:</strong> ${escapeHtml(createdByUser)}</p>` : ''}
+        <p>Generated: ${generatedTime}</p>
     </div>
     ${autoCutSpacer}
 </body>
@@ -2739,7 +2894,6 @@ function generateQuotationPrintHTML(quotation, printType) {
         ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
         ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
         ${branchLine}
-        ${createdByUser ? `<div class="company-details"><strong>Prepared by:</strong> ${escapeHtml(createdByUser)}</div>` : ''}
         <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
     </div>`;
 
@@ -2795,6 +2949,7 @@ function generateQuotationPrintHTML(quotation, printType) {
 
     <div class="footer">
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
+        ${createdByUser ? `<p><strong>Served by:</strong> ${escapeHtml(createdByUser)}</p>` : ''}
         <p>Generated: ${generatedTime}</p>
     </div>
     ${autoCutSpacer}

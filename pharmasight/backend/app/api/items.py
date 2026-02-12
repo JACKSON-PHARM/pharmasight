@@ -29,7 +29,7 @@ from app.schemas.item import (
     AdjustStockRequest, AdjustStockResponse
 )
 from app.services.pricing_service import PricingService
-from app.services.items_service import create_item as svc_create_item
+from app.services.items_service import create_item as svc_create_item, DuplicateItemNameError
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.inventory_service import InventoryService
 
@@ -133,9 +133,33 @@ def generate_sku(company_id: UUID, db: Session) -> str:
 
 @router.post("/", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
 def create_item(item: ItemCreate, db: Session = Depends(get_tenant_db)):
-    """Create a new item with 3-tier units. SKU auto-generated if not provided."""
+    """Create a new item with 3-tier units. SKU auto-generated if not provided. Rejects duplicate names (same company)."""
     try:
         db_item = svc_create_item(db, item)
+    except DuplicateItemNameError as e:
+        # Return similar items so the user can see existing items with same/similar names
+        name_pattern = f"%{(e.name or '').strip()}%"
+        similar = (
+            db.query(Item.id, Item.name, Item.sku)
+            .filter(
+                Item.company_id == e.company_id,
+                Item.name.ilike(name_pattern),
+            )
+            .order_by(func.lower(Item.name))
+            .limit(10)
+            .all()
+        )
+        similar_items = [
+            {"id": str(r.id), "name": r.name, "sku": r.sku or ""}
+            for r in similar
+        ]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": str(e),
+                "similar_items": similar_items,
+            },
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     db.commit()
@@ -387,11 +411,22 @@ def search_items(
     if branch_id:
         cost_from_ledger_map = CanonicalPricingService.get_best_available_cost_batch(db, item_ids, branch_id, company_id)
     
+    # Get full item objects for stock_display calculation (only when branch_id provided)
+    items_full_map = {}
+    if branch_id:
+        items_full = db.query(Item).filter(Item.id.in_(item_ids)).all()
+        items_full_map = {item.id: item for item in items_full}
+    
     result = []
     for item in items:
         price_from_ledger = float(cost_from_ledger_map.get(item.id, 0)) if branch_id else 0.0
         purchase_price_val = purchase_price_map.get(item.id, price_from_ledger) if include_pricing else price_from_ledger
         last_unit_cost_val = last_unit_cost_ledger_map.get(item.id, purchase_price_map.get(item.id, price_from_ledger)) if context == 'purchase_order' else None
+        
+        # Calculate stock_display using 3-tier units when branch_id is provided
+        stock_display = None
+        if branch_id and item.id in items_full_map:
+            stock_display = InventoryService.get_stock_display(db, item.id, branch_id)
         
         item_data = {
             "id": str(item.id),
@@ -402,6 +437,7 @@ def search_items(
             "category": getattr(item, 'category', None) or "",
             "is_active": getattr(item, 'is_active', True),
             "current_stock": stock_map.get(item.id, 0) if branch_id else None,
+            "stock_display": stock_display,  # 3-tier formatted stock display
             "vat_rate": float(item.vat_rate) if item.vat_rate else 0.0,
             "vat_category": getattr(item, 'vat_category', None) or "ZERO_RATED",
             "purchase_price": purchase_price_val,
@@ -474,6 +510,9 @@ def get_item(
     ) if branch_id else 0.0
     data = _item_to_response_dict(item, default_cost=default_cost)
     data["units"] = _display_units_from_item(item)
+    if branch_id:
+        data["stock_display"] = InventoryService.get_stock_display(db, item.id, branch_id)
+        data["current_stock"] = float(InventoryService.get_current_stock(db, item.id, branch_id))
     resp = ItemResponse.model_validate(data)
     return resp
 
@@ -905,7 +944,8 @@ def adjust_stock(
         )
         if unit_cost is None or unit_cost <= 0:
             unit_cost = Decimal("0")
-    total_cost = unit_cost * abs(quantity_delta)
+    # quantity_delta is float from convert_to_base_units; Decimal * float is invalid
+    total_cost = unit_cost * Decimal(str(abs(quantity_delta)))
 
     expiry_date_parsed = None
     if body.expiry_date and body.expiry_date.strip():

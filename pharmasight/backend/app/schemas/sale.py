@@ -23,6 +23,14 @@ class SalesInvoiceItemCreate(SalesInvoiceItemBase):
     pass
 
 
+class BatchSalesInvoiceRequest(BaseModel):
+    """Optional body for batch endpoint: sync invoice lines from frontend before batching."""
+    items: Optional[List[SalesInvoiceItemCreate]] = Field(
+        default=None,
+        description="Current line items from UI (quantity, unit_name, unit_price_exclusive, etc.). If provided, draft lines are updated to match before stock deduction."
+    )
+
+
 class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     """Sales invoice item response"""
     id: UUID
@@ -60,9 +68,9 @@ class SalesInvoiceBase(BaseModel):
 
 
 class SalesInvoiceCreate(SalesInvoiceBase):
-    """Create sales invoice request"""
+    """Create sales invoice request. Use for first item: creates DRAFT with that line. No duplicate item_id allowed."""
     company_id: UUID
-    items: List[SalesInvoiceItemCreate] = Field(..., min_items=1)
+    items: List[SalesInvoiceItemCreate] = Field(..., min_length=1)
     created_by: UUID
 
 
@@ -76,7 +84,7 @@ class SalesInvoiceUpdate(BaseModel):
 
 
 class SalesInvoiceResponse(SalesInvoiceBase):
-    """Sales invoice response"""
+    """Sales invoice response (includes company/branch/user for print letterhead)"""
     id: UUID
     company_id: UUID
     invoice_no: str
@@ -96,6 +104,13 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     created_at: datetime
     updated_at: datetime
     items: List[SalesInvoiceItemResponse] = []
+    # Print letterhead (populated by API when fetching single invoice)
+    company_name: Optional[str] = None
+    company_address: Optional[str] = None
+    branch_name: Optional[str] = None
+    branch_address: Optional[str] = None
+    branch_phone: Optional[str] = None
+    created_by_username: Optional[str] = None
 
     class Config:
         from_attributes = True

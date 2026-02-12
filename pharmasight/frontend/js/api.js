@@ -249,10 +249,14 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/today-summary`, userId != null ? { user_id: userId } : {}),
         updateInvoice: (invoiceId, data) => 
             api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
+        addInvoiceItem: (invoiceId, item) =>
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/items`, item),
+        deleteInvoiceItem: (invoiceId, itemId) =>
+            api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/items/${itemId}`),
         deleteInvoice: (invoiceId) => 
             api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`),
-        batchInvoice: (invoiceId, batchedBy) => 
-            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/batch?batched_by=${batchedBy}`, null),
+        batchInvoice: (invoiceId, batchedBy, body = null) =>
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/batch?batched_by=${batchedBy}`, body),
         // Split payments
         addPayment: (invoiceId, payment) => 
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/payments`, payment),

@@ -81,7 +81,17 @@
         // Render
         this.render();
         this.attachEventListeners();
-        
+        // For sale/quotation: load cost and stock for rows restored from draft (no purchase_price/stock_display)
+        if (this.mode === 'sale' || this.mode === 'quotation') {
+            const self = this;
+            setTimeout(function() {
+                for (let i = 0; i < self.items.length; i++) {
+                    const it = self.items[i];
+                    if (it.item_id && (it.stock_display == null || (it.purchase_price == null && it.unit_price != null)))
+                        self.loadUnitsForRow(i);
+                }
+            }, 400);
+        }
         // Auto-focus on first ITEM NAME field after render
         this.autoFocusFirstItemField();
     }
@@ -262,7 +272,21 @@
                                    data-row="${index}"
                                    data-field="quantity"
                                    ${!this.canEdit ? 'disabled' : ''}>
-                            ${this.mode === 'sale' && typeof item.available_stock === 'number' ? (() => {
+                            ${this.mode === 'sale' && (item.stock_display || typeof item.available_stock === 'number') ? (() => {
+                                // Use stock_display (3-tier format) if available, otherwise fallback to available_stock
+                                if (item.stock_display) {
+                                    const stockNum = typeof item.available_stock === 'number' ? item.available_stock : 0;
+                                    let color = 'var(--success-color, #16a34a)';
+                                    if (stockNum <= 0) {
+                                        color = 'var(--danger-color, #dc2626)';
+                                    } else if (stockNum > 0 && stockNum < 5) {
+                                        color = 'var(--warning-color, #d97706)';
+                                    }
+                                    return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; font-weight: 500; color: ${color}; display: block; margin-top: 0.25rem;">
+                                        Stock: ${escapeHtml(item.stock_display)}
+                                    </span>`;
+                                }
+                                // Fallback to old format if stock_display not available
                                 const stock = this.getAvailableInSelectedUnit(item);
                                 if (stock == null) return '';
                                 let color = 'var(--success-color, #16a34a)';
@@ -271,7 +295,7 @@
                                 } else if (stock > 0 && stock < 5) {
                                     color = 'var(--warning-color, #d97706)';
                                 }
-                                return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; font-weight: 500; color: ${color};">
+                                return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; font-weight: 500; color: ${color}; display: block; margin-top: 0.25rem;">
                                     Available: ${this.getFormatNumber()(stock)}
                                 </span>`;
                             })() : ''}
@@ -778,6 +802,7 @@
                 const salePrice = suggestion.sale_price || 0;
                 const purchasePrice = suggestion.purchase_price || 0;
                 const stock = typeof suggestion.current_stock === 'number' ? suggestion.current_stock : (suggestion.stock || 0);
+                const stockDisplayStr = suggestion.stock_display || null; // 3-tier formatted stock display
                 const vatRate = typeof suggestion.vat_rate === 'number' ? suggestion.vat_rate : (suggestion.vatRate || 0);
                 const vatCode = suggestion.vat_category || suggestion.vat_code || '';
                 const lastSupplier = suggestion.last_supplier || '';
@@ -797,9 +822,22 @@
                 const displayPrice = (this.mode === 'sale' || this.mode === 'quotation') ? effectiveSalePrice : purchasePrice;
                 const priceLabel = (this.mode === 'sale' || this.mode === 'quotation') ? 'Price' : 'Cost';
                 
-                // Build stock display with color coding
+                // Build stock display with color coding (use 3-tier format if available)
                 let stockDisplay = '';
-                if (typeof stock === 'number') {
+                if (stockDisplayStr) {
+                    // Use 3-tier formatted stock display
+                    let stockColor = 'var(--text-secondary, #666)';
+                    if (typeof stock === 'number') {
+                        if (stock <= 0) {
+                            stockColor = 'var(--danger-color, #dc2626)';
+                        } else if (stock > 0 && stock < 5) {
+                            stockColor = 'var(--warning-color, #d97706)';
+                        } else {
+                            stockColor = 'var(--success-color, #16a34a)';
+                        }
+                    }
+                    stockDisplay = `<span style="color: ${stockColor}; font-weight: 500;">Stock: ${escapeHtml(stockDisplayStr)}</span>`;
+                } else if (typeof stock === 'number') {
                     let stockColor = 'var(--text-secondary, #666)';
                     if (stock <= 0) {
                         stockColor = 'var(--danger-color, #dc2626)';
@@ -837,6 +875,7 @@
                              data-purchase-price="${lastUnitCost}"
                              data-vat-rate="${vatRate}"
                              data-stock="${stock}"
+                             data-stock-display="${stockDisplayStr || ''}"
                              style="padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6); cursor: pointer; min-height: 4rem;"
                              onmouseover="this.style.background='#f8f9fa'" 
                              onmouseout="this.style.background='white'">
@@ -904,6 +943,7 @@
                              data-purchase-price="${this.context === 'purchase_order' ? lastUnitCost : purchasePrice}"
                              data-vat-rate="${vatRate}"
                              data-stock="${stock}"
+                             data-stock-display="${stockDisplayStr || ''}"
                              style="padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6); cursor: pointer; min-height: 3rem;"
                              onmouseover="this.style.background='#f8f9fa'" 
                              onmouseout="this.style.background='white'">
@@ -918,7 +958,7 @@
                                     ${additionalInfo}
                                 </div>
                                 <div style="text-align: center;">
-                                    <span style="color: ${typeof stock === 'number' && stock > 0 ? (stock < 5 ? 'var(--warning-color, #d97706)' : 'var(--success-color, #16a34a)') : 'var(--danger-color, #dc2626)'}; font-weight: 500;">Stock: ${typeof stock === 'number' ? this.getFormatNumber()(stock) : 'N/A'} ${escapeHtml(baseUnit)}</span>
+                                    ${stockDisplay}
                                 </div>
                                 <div style="text-align: right;">
                                     <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.15rem;">${priceLabel}:</div>
@@ -965,8 +1005,27 @@
      * Handle item selection
      */
     TransactionItemsTable.prototype.handleSelectItem = function(suggestionEl, rowIndex) {
+        const selectedItemId = suggestionEl.dataset.itemId;
+        // In sale/quotation: prevent duplicate item in same document; direct user to edit existing line
+        if (this.mode === 'sale' || this.mode === 'quotation') {
+            for (let i = 0; i < this.items.length; i++) {
+                if (i !== rowIndex && this.items[i].item_id === selectedItemId) {
+                    this.closeSuggestions();
+                    if (typeof showToast === 'function') {
+                        showToast('Item already in this invoice. Edit the existing line or remove it first.', 'warning');
+                    }
+                    const rowEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${i}"]`);
+                    if (rowEl) {
+                        rowEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        rowEl.classList.add('highlight-row-duplicate');
+                        setTimeout(function() { rowEl.classList.remove('highlight-row-duplicate'); }, 2500);
+                    }
+                    return;
+                }
+            }
+        }
         const item = {
-            item_id: suggestionEl.dataset.itemId,
+            item_id: selectedItemId,
             item_name: suggestionEl.dataset.itemName,
             item_sku: suggestionEl.dataset.itemSku,
             item_code: suggestionEl.dataset.itemCode,
@@ -989,6 +1048,7 @@
             available_stock: typeof suggestionEl.dataset.stock !== 'undefined'
                 ? parseFloat(suggestionEl.dataset.stock)
                 : null,
+            stock_display: suggestionEl.dataset.stockDisplay || null, // 3-tier formatted stock display
             is_empty: false,
             available_units: null, // Populated below from API
             unit_multiplier: 1
@@ -1247,16 +1307,27 @@
             this.updateMarginDisplay(rowIndex);
         }
         
-        // Update stock indicator (available in selected unit) when unit or data changes
+        // Update stock indicator (3-tier display or available in selected unit) when unit or data changes
         const stockIndicator = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .stock-indicator`);
-        if (stockIndicator && this.mode === 'sale' && typeof item.available_stock === 'number') {
-            const avail = this.getAvailableInSelectedUnit(item);
-            if (avail != null) {
+        if (stockIndicator && this.mode === 'sale' && (item.stock_display || typeof item.available_stock === 'number')) {
+            if (item.stock_display) {
+                // Use 3-tier formatted stock display
+                const stockNum = typeof item.available_stock === 'number' ? item.available_stock : 0;
                 let color = 'var(--success-color, #16a34a)';
-                if (avail <= 0) color = 'var(--danger-color, #dc2626)';
-                else if (avail < 5) color = 'var(--warning-color, #d97706)';
+                if (stockNum <= 0) color = 'var(--danger-color, #dc2626)';
+                else if (stockNum < 5) color = 'var(--warning-color, #d97706)';
                 stockIndicator.style.color = color;
-                stockIndicator.textContent = 'Available: ' + this.getFormatNumber()(avail);
+                stockIndicator.textContent = 'Stock: ' + item.stock_display;
+            } else {
+                // Fallback to old format
+                const avail = this.getAvailableInSelectedUnit(item);
+                if (avail != null) {
+                    let color = 'var(--success-color, #16a34a)';
+                    if (avail <= 0) color = 'var(--danger-color, #dc2626)';
+                    else if (avail < 5) color = 'var(--warning-color, #d97706)';
+                    stockIndicator.style.color = color;
+                    stockIndicator.textContent = 'Available: ' + this.getFormatNumber()(avail);
+                }
             }
         }
         
@@ -1327,7 +1398,7 @@
     };
     
     /**
-     * Show dropdown for already-selected item: details, "Search for different item", "View full item details"
+     * Show dropdown for already-selected item. In sale mode shows Batch & Expiry (FEFO) instead of margin/VAT.
      */
     TransactionItemsTable.prototype.showSelectedItemDropdown = function(rowIndex) {
         const item = this.items[rowIndex];
@@ -1361,21 +1432,14 @@
         const escapeHtml = this.getEscapeHtml();
         const code = item.item_code || item.item_sku || '';
         const availInUnit = this.getAvailableInSelectedUnit(item);
-        const stock = availInUnit != null ? this.getFormatNumber()(availInUnit) : (typeof item.available_stock === 'number' ? this.getFormatNumber()(item.available_stock) : 'N/A');
-        const sellingPrice = formatCurrency(item.unit_price || 0);
-        const costPrice = (item.purchase_price != null && item.purchase_price !== '') ? formatCurrency(item.purchase_price) : null;
-        const margin = (this.mode === 'sale' || this.mode === 'quotation') ? this.formatMargin(this.calculateMargin(item)) : null;
-        const vat = (item.tax_percent || 0).toFixed(1) + '%';
-        const priceLine = (this.mode === 'sale' || this.mode === 'quotation') && costPrice
-            ? `Selling: ${sellingPrice} &nbsp;|&nbsp; Cost: ${costPrice} &nbsp;|&nbsp; Margin: ${margin}`
-            : `Price: ${sellingPrice}`;
-        
+        const stockStr = item.stock_display || (availInUnit != null ? this.getFormatNumber()(availInUnit) : (typeof item.available_stock === 'number' ? this.getFormatNumber()(item.available_stock) : 'N/A'));
         dropdown.innerHTML = `
             <div class="selected-item-details" style="padding: 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6);">
                 <div style="font-weight: 600; margin-bottom: 0.35rem;">${escapeHtml(item.item_name || '')}</div>
                 <div style="color: var(--text-secondary, #666); font-size: 0.8rem;">
-                    Code: ${escapeHtml(code)} &nbsp;|&nbsp; Stock: ${stock} &nbsp;|&nbsp; ${priceLine} &nbsp;|&nbsp; VAT: ${vat}
+                    Code: ${escapeHtml(code)} &nbsp;|&nbsp; Stock: ${stockStr}
                 </div>
+                <div id="${this.instanceId}_selected_batches_${rowIndex}" style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-secondary, #666);">Loading batch/expiry…</div>
             </div>
             <div class="suggestion-item selected-item-action" data-action="search-different" data-row="${rowIndex}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center; border-bottom: 1px solid var(--border-color, #dee2e6);" onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='white'">
                 <i class="fas fa-search" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
@@ -1388,6 +1452,46 @@
         `;
         
         this.activeSelectedItemRow = rowIndex;
+        
+        // In sale mode: fetch batches (FEFO) and show Batch # and Expiry — what will be deducted first
+        const batchPlaceholder = document.getElementById(`${this.instanceId}_selected_batches_${rowIndex}`);
+        if (this.mode === 'sale' && batchPlaceholder) {
+            const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : null;
+            const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
+            const branchId = config && config.BRANCH_ID ? config.BRANCH_ID : null;
+            if (api && api.inventory && api.inventory.getBatches && branchId) {
+                api.inventory.getBatches(item.item_id, branchId).then(function(batches) {
+                    if (!batchPlaceholder.parentNode) return;
+                    if (!batches || batches.length === 0) {
+                        batchPlaceholder.innerHTML = '<span style="color: var(--text-secondary, #666);">No batch/expiry info</span>';
+                        return;
+                    }
+                    const formatExpiry = function(d) {
+                        if (!d) return '—';
+                        try { return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); } catch (e) { return d; }
+                    };
+                    let html = '<strong style="display: block; margin-bottom: 0.25rem;">Batch &amp; Expiry (FEFO — deducted first):</strong>';
+                    batches.forEach(function(b, idx) {
+                        const batchNum = (b.batch_number || '—');
+                        const exp = formatExpiry(b.expiry_date);
+                        const qty = typeof b.quantity === 'number' ? b.quantity : '';
+                        html += '<div style="margin-bottom: 0.15rem;">' + (idx + 1) + '. Batch ' + escapeHtml(batchNum) + ' &nbsp; Expiry: ' + escapeHtml(exp) + (qty !== '' ? ' &nbsp; Qty: ' + qty : '') + '</div>';
+                    });
+                    batchPlaceholder.innerHTML = html;
+                }).catch(function() {
+                    if (batchPlaceholder.parentNode) batchPlaceholder.innerHTML = '<span style="color: var(--text-secondary, #666);">Batch/expiry unavailable</span>';
+                });
+            } else {
+                batchPlaceholder.innerHTML = '<span style="color: var(--text-secondary, #666);">Batch/expiry unavailable</span>';
+            }
+        } else if (batchPlaceholder) {
+            const sellingPrice = formatCurrency(item.unit_price || 0);
+            const costPrice = (item.purchase_price != null && item.purchase_price !== '') ? formatCurrency(item.purchase_price) : null;
+            const margin = (this.mode === 'quotation') ? this.formatMargin(this.calculateMargin(item)) : null;
+            const vat = (item.tax_percent || 0).toFixed(1) + '%';
+            const priceLine = costPrice ? `Selling: ${sellingPrice} &nbsp;|&nbsp; Cost: ${costPrice} &nbsp;|&nbsp; Margin: ${margin} &nbsp;|&nbsp; VAT: ${vat}` : `Price: ${sellingPrice} &nbsp;|&nbsp; VAT: ${vat}`;
+            batchPlaceholder.innerHTML = priceLine;
+        }
         
         dropdown.querySelectorAll('.selected-item-action').forEach(el => {
             el.addEventListener('click', (e) => {
@@ -1454,11 +1558,20 @@
         if (!item || !item.item_id) return;
         const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
         if (!api || !api.items || !api.items.get) return;
+        const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
+        const branchId = config && config.BRANCH_ID ? config.BRANCH_ID : null;
         try {
-            const full = await api.items.get(item.item_id);
+            const full = await api.items.get(item.item_id, branchId);
             // Prefer API units if we have more than one; otherwise build from 3-tier columns so user can always choose
             let units = full.units && full.units.length > 1 ? full.units : this.buildUnitsFrom3Tier(full);
             item.available_units = units;
+            // Cost per base (wholesale) unit for margin calculation
+            if (typeof full.default_cost === 'number' && full.default_cost >= 0) {
+                item.purchase_price = full.default_cost;
+            }
+            // Stock from API so row shows correct stock (avoids N/A when branch has stock)
+            if (full.stock_display != null) item.stock_display = full.stock_display;
+            if (typeof full.current_stock === 'number') item.available_stock = full.current_stock;
             // Default to wholesale (first unit) so user can change to retail/supplier if they want
             const wholesaleUnit = (units[0] && units[0].unit_name) || full.wholesale_unit || full.base_unit || 'piece';
             const currentUnit = item.unit_name || wholesaleUnit;
@@ -1473,6 +1586,47 @@
             item.available_units = [{ unit_name: item.unit_name || 'unit', multiplier_to_base: 1 }];
             item.unit_multiplier = 1;
             this.updateRowUnitSelect(rowIndex);
+        }
+    };
+    
+    /**
+     * Refresh stock display for all items (called after batching invoice)
+     */
+    TransactionItemsTable.prototype.refreshStockForAllItems = async function() {
+        const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
+        if (!api || !api.items || !api.items.search) return;
+        const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
+        if (!config || !config.COMPANY_ID || !config.BRANCH_ID) return;
+        
+        // Refresh stock for each item that has an item_id
+        for (let i = 0; i < this.items.length; i++) {
+            const item = this.items[i];
+            if (item && item.item_id) {
+                try {
+                    // Search for the item to get updated stock_display
+                    const results = await api.items.search(item.item_name || '', config.COMPANY_ID, 1, config.BRANCH_ID, false);
+                    const updated = results.find(r => r.id === item.item_id);
+                    if (updated && updated.stock_display) {
+                        item.stock_display = updated.stock_display;
+                        item.available_stock = updated.current_stock;
+                        this.updateRowDisplay(i);
+                    }
+                } catch (err) {
+                    console.warn('TransactionItemsTable: could not refresh stock for item', item.item_id, err);
+                }
+            }
+        }
+    };
+    
+    /**
+     * Refresh cost, units and stock for all filled rows (e.g. after sales type / 3-tier unit change).
+     * Re-fetches each item so unit list and cost are correct for current tier.
+     */
+    TransactionItemsTable.prototype.refreshPrices = async function() {
+        for (let i = 0; i < this.items.length; i++) {
+            if (this.items[i].item_id) {
+                await this.loadUnitsForRow(i);
+            }
         }
     };
     

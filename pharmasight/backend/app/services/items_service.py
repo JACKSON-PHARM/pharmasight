@@ -12,12 +12,21 @@ import logging
 from decimal import Decimal
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Item
 from app.schemas.item import ItemCreate, ItemUpdate
 
 logger = logging.getLogger(__name__)
+
+
+class DuplicateItemNameError(ValueError):
+    """Raised when creating an item whose name already exists for the company (case-insensitive)."""
+    def __init__(self, name: str, company_id: UUID):
+        self.name = name
+        self.company_id = company_id
+        super().__init__(f"An item with the name '{name}' already exists for this company.")
 
 
 def _is_numeric_unit_value(value) -> bool:
@@ -71,11 +80,25 @@ def create_item(db: Session, data: ItemCreate) -> Item:
 
     - Validates pack_size >= 1 and breakable => pack_size > 1 (done in schema).
     - Sets base_unit = wholesale_unit (reference). Cost/price from inventory_ledger only.
+    - Rejects duplicate item names (same company, case-insensitive) to avoid duplicates from double-submit.
     """
     if data.pack_size < 1:
         raise ValueError("Pack size must be at least 1")
     if data.can_break_bulk and data.pack_size < 2:
         raise ValueError("Breakable items must have pack_size > 1")
+
+    name_normalized = (data.name or "").strip()
+    if name_normalized:
+        existing = (
+            db.query(Item)
+            .filter(
+                Item.company_id == data.company_id,
+                func.lower(Item.name) == name_normalized.lower(),
+            )
+            .first()
+        )
+        if existing:
+            raise DuplicateItemNameError(name=name_normalized, company_id=data.company_id)
 
     dump = data.model_dump(exclude={"units", "company_id"}) if hasattr(data, "model_dump") else data.dict(exclude={"units", "company_id"})
     dump["company_id"] = data.company_id

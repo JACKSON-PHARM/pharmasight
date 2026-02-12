@@ -1,7 +1,7 @@
 """
 Sales models (KRA Compliant)
 """
-from sqlalchemy import Column, String, Numeric, Date, ForeignKey, Text, Boolean
+from sqlalchemy import Column, String, Numeric, Date, ForeignKey, Text, Boolean, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -56,8 +56,11 @@ class SalesInvoice(Base):
 
 
 class SalesInvoiceItem(Base):
-    """Sales Invoice line items"""
+    """Sales Invoice line items. One line per item per invoice (unique invoice_id + item_id)."""
     __tablename__ = "sales_invoice_items"
+    __table_args__ = (
+        UniqueConstraint("sales_invoice_id", "item_id", name="uq_sales_invoice_items_invoice_item"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     sales_invoice_id = Column(UUID(as_uuid=True), ForeignKey("sales_invoices.id", ondelete="CASCADE"), nullable=False)

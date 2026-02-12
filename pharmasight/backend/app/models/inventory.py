@@ -28,7 +28,7 @@ class InventoryLedger(Base):
     transaction_type = Column(String(50), nullable=False)  # PURCHASE, SALE, ADJUSTMENT, TRANSFER, OPENING_BALANCE
     reference_type = Column(String(50))  # supplier_invoice (was purchase_invoice), sales_invoice, adjustment, grn
     reference_id = Column(UUID(as_uuid=True))
-    quantity_delta = Column(Integer, nullable=False)  # Positive = add, Negative = remove (BASE UNITS ONLY)
+    quantity_delta = Column(Numeric(20, 4), nullable=False)  # Positive = add, Negative = remove (base units; fractional for retail e.g. -0.2)
     unit_cost = Column(Numeric(20, 4), nullable=False)  # Cost per base unit
     total_cost = Column(Numeric(20, 4), nullable=False)  # quantity_delta * unit_cost
     created_by = Column(UUID(as_uuid=True), nullable=False)  # User ID

@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 
 def get_unit_multiplier_from_item(item: "Item", unit_name: str) -> Optional[Decimal]:
     """
-    Return multiplier to base (wholesale) for the given unit name.
-    Base = wholesale_unit; 1 base unit = 1 wholesale.
-    - wholesale_unit -> 1
-    - retail_unit -> 1/pack_size (one retail = 1/pack_size wholesale)
-    - supplier_unit -> wholesale_units_per_supplier (one supplier = N wholesale)
+    Return multiplier to base (retail) for the given unit name.
+    Base = retail (smallest unit); 1 base unit = 1 retail (e.g. 1 tablet).
+    - retail_unit -> 1
+    - wholesale_unit -> pack_size (one pack = pack_size retail)
+    - supplier_unit -> pack_size * wholesale_units_per_supplier (one carton = N retail)
     Returns None if unit_name is not one of the item's three tiers (case-insensitive).
     """
     if not item or not (unit_name and str(unit_name).strip()):
@@ -33,12 +33,12 @@ def get_unit_multiplier_from_item(item: "Item", unit_name: str) -> Optional[Deci
     pack = max(1, int(item.pack_size or 1))
     wups = max(Decimal("0.0001"), Decimal(str(item.wholesale_units_per_supplier or 1)))
 
-    if u == wholesale:
-        return Decimal("1")
     if retail and u == retail:
-        return Decimal("1") / Decimal(str(pack))
+        return Decimal("1")
+    if u == wholesale:
+        return Decimal(str(pack))
     if supplier and u == supplier:
-        return wups
+        return Decimal(str(pack)) * wups
     return None
 
 
@@ -53,6 +53,7 @@ def get_unit_multiplier_from_item_row(
 ) -> Optional[Decimal]:
     """
     Same as get_unit_multiplier_from_item but takes scalar values (e.g. from a row or dict).
+    Multiplier is to base (retail): retail->1, wholesale->pack_size, supplier->pack_size*wups.
     """
     if not unit_name or not str(unit_name).strip():
         return None
@@ -63,12 +64,12 @@ def get_unit_multiplier_from_item_row(
     pack = max(1, int(pack_size or 1))
     wups = max(Decimal("0.0001"), Decimal(str(wholesale_units_per_supplier or 1)))
 
-    if u == wholesale:
-        return Decimal("1")
     if retail and u == retail:
-        return Decimal("1") / Decimal(str(pack))
+        return Decimal("1")
+    if u == wholesale:
+        return Decimal(str(pack))
     if supplier and u == supplier:
-        return wups
+        return Decimal(str(pack)) * wups
     return None
 
 

@@ -1364,3 +1364,13 @@ tbody tr:hover {
         opacity: 1;
     }
 }
+
+/* Sales invoice: highlight row when user tries to add duplicate item */
+tr.highlight-row-duplicate {
+    background-color: rgba(245, 158, 11, 0.25) !important;
+    animation: highlight-row-pulse 0.5s ease 2;
+}
+@keyframes highlight-row-pulse {
+    0%, 100% { background-color: rgba(245, 158, 11, 0.25); }
+    50% { background-color: rgba(245, 158, 11, 0.45); }
+}
