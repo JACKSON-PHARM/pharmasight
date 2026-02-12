@@ -91,6 +91,11 @@ function setBranchInternal(branch, shouldBroadcast = true) {
         saveConfig();
     }
     
+    // Clear search cache so Items/Inventory don't show stale stock from previous branch
+    if (typeof window !== 'undefined' && window.searchCache && typeof window.searchCache.clear === 'function') {
+        window.searchCache.clear();
+    }
+    
     // Broadcast to other tabs
     if (shouldBroadcast) {
         broadcastBranchChange(branch);

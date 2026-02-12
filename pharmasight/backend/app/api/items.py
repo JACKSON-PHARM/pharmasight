@@ -275,6 +275,12 @@ def search_items(
         # Get last purchase info - OPTIMIZED: Use window function for reliable results
         from sqlalchemy import desc
         from sqlalchemy.sql import func as sql_func
+        last_purchase_filters = [
+            SupplierInvoiceItem.item_id.in_(item_ids),
+            SupplierInvoice.company_id == company_id
+        ]
+        if branch_id:
+            last_purchase_filters.append(SupplierInvoice.branch_id == branch_id)
         last_purchase_subq = (
             db.query(
                 SupplierInvoiceItem.item_id,
@@ -287,10 +293,7 @@ def search_items(
                 ).label('rn')
             )
             .join(SupplierInvoice, SupplierInvoiceItem.purchase_invoice_id == SupplierInvoice.id)
-            .filter(
-                SupplierInvoiceItem.item_id.in_(item_ids),
-                SupplierInvoice.company_id == company_id
-            )
+            .filter(*last_purchase_filters)
             .subquery()
         )
         last_purchases = (
@@ -742,8 +745,14 @@ def get_items_overview(
     items_with_transactions = {row[0] for row in items_with_transactions}
     
     # Get last supplier and cost from purchase invoices (optimized subquery)
-    # Use purchase_invoice_items joined with purchase_invoices to get supplier
+    # When branch_id is set: last supplier/cost for this branch only (branch-specific)
     from sqlalchemy import desc
+    overview_purchase_filters = [
+        SupplierInvoiceItem.item_id.in_(item_ids),
+        SupplierInvoice.company_id == company_id
+    ]
+    if branch_id:
+        overview_purchase_filters.append(SupplierInvoice.branch_id == branch_id)
     last_purchase_subq = (
         db.query(
             SupplierInvoiceItem.item_id,
@@ -756,10 +765,7 @@ def get_items_overview(
             ).label('rn')
         )
         .join(SupplierInvoice, SupplierInvoiceItem.purchase_invoice_id == SupplierInvoice.id)
-        .filter(
-            SupplierInvoiceItem.item_id.in_(item_ids),
-            SupplierInvoice.company_id == company_id
-        )
+        .filter(*overview_purchase_filters)
         .subquery()
     )
     

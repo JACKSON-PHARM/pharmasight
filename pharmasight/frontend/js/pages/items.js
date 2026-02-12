@@ -5,8 +5,10 @@ let filteredItemsList = [];
 let itemsSearchTimeout = null;
 let isSearching = false;
 
-/** Single source for branch when loading stock: CONFIG first, then localStorage (so Items and Sales show same stock). */
+/** Branch for stock/last supplier: session branch (same as header), then CONFIG, then localStorage. */
 function getBranchIdForStock() {
+    const branch = typeof BranchContext !== 'undefined' && BranchContext.getBranch ? BranchContext.getBranch() : null;
+    if (branch && branch.id) return branch.id;
     if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) return CONFIG.BRANCH_ID;
     try {
         const saved = localStorage.getItem('pharmasight_config');
@@ -41,10 +43,11 @@ async function loadItems() {
         `;
         return;
     }
-    // Sync branch from localStorage so stock matches Sales (single source of truth)
-    if (!CONFIG.BRANCH_ID) {
-        const branchId = getBranchIdForStock();
-        if (branchId) CONFIG.BRANCH_ID = branchId;
+    // Use session branch (same as header) for stock and last supplier
+    const sessionBranchId = getBranchIdForStock();
+    if (sessionBranchId && CONFIG.BRANCH_ID !== sessionBranchId) {
+        CONFIG.BRANCH_ID = sessionBranchId;
+        if (typeof saveConfig === 'function') saveConfig();
     }
     
     page.innerHTML = `
@@ -262,13 +265,18 @@ async function filterItems() {
         isSearching = true;
         
         try {
-            // OPTIMIZED: Check cache first (use same branch as Sales for stock)
+            // Use session branch so stock/last supplier match header
             const branchId = getBranchIdForStock();
             const cache = window.searchCache || null;
             let searchResults = null;
             
             if (cache) {
                 searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, branchId, 20);
+                // If we have a branch but cached results have no stock, refetch (avoid stale cache from before branch was set)
+                if (searchResults && branchId && searchResults.length > 0) {
+                    const hasNoStock = searchResults.every(it => (it.current_stock == null && !it.stock_display));
+                    if (hasNoStock) searchResults = null;
+                }
             }
             
             if (!searchResults) {
@@ -311,19 +319,19 @@ async function filterItems() {
                 }
             }
             
-            // Convert search results to display format (use stock_display/current_stock/last_supplier from API when branch_id was sent)
+            // Map API response to display; preserve current_stock and stock_display so table shows them (not dashes)
             filteredItemsList = searchResults.map(item => ({
                 id: item.id,
                 name: item.name,
                 sku: item.sku || '',
                 base_unit: item.base_unit,
                 category: item.category || '',
-                current_stock: item.current_stock != null ? item.current_stock : null,
-                stock_display: item.stock_display || null,
+                current_stock: (item.current_stock !== undefined && item.current_stock !== null) ? Number(item.current_stock) : null,
+                stock_display: (item.stock_display !== undefined && item.stock_display !== null && item.stock_display !== '') ? String(item.stock_display) : null,
                 stock_availability: item.stock_availability || null,
-                last_supplier: item.last_supplier || '',
+                last_supplier: item.last_supplier != null ? String(item.last_supplier) : '',
                 last_unit_cost: item.purchase_price != null ? item.purchase_price : null,
-                default_cost: item.price || 0,
+                default_cost: item.price != null ? item.price : 0,
                 is_active: item.is_active !== undefined ? item.is_active : true,
                 pricing_3tier: item.pricing_3tier || {}
             }));

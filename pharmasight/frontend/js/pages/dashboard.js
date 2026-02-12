@@ -1,5 +1,20 @@
 // Dashboard Page
 
+/** Branch for stock/counts: session branch (same as header), then CONFIG, then localStorage. */
+function getBranchIdForStock() {
+    const branch = typeof BranchContext !== 'undefined' && BranchContext.getBranch ? BranchContext.getBranch() : null;
+    if (branch && branch.id) return branch.id;
+    if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) return CONFIG.BRANCH_ID;
+    try {
+        const saved = localStorage.getItem('pharmasight_config');
+        if (saved) {
+            const c = JSON.parse(saved);
+            if (c.BRANCH_ID) return c.BRANCH_ID;
+        }
+    } catch (e) { /* ignore */ }
+    return null;
+}
+
 async function loadDashboard() {
     // Strict page ownership: only run dashboard logic when dashboard is the active page
     const active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
@@ -21,6 +36,9 @@ async function loadDashboard() {
         return;
     }
 
+    // Use session branch (same as header) so dashboard matches branch context
+    const branchId = getBranchIdForStock();
+
     // Placeholders first
     document.getElementById('totalItems').textContent = '0';
     document.getElementById('totalStock').textContent = formatCurrency(0);
@@ -29,9 +47,9 @@ async function loadDashboard() {
 
     try {
         // Total items in stock (distinct items with stock > 0 at this branch)
-        if (CONFIG.BRANCH_ID && API.inventory && typeof API.inventory.getItemsInStockCount === 'function') {
+        if (branchId && API.inventory && typeof API.inventory.getItemsInStockCount === 'function') {
             try {
-                const countData = await API.inventory.getItemsInStockCount(CONFIG.BRANCH_ID);
+                const countData = await API.inventory.getItemsInStockCount(branchId);
                 document.getElementById('totalItems').textContent = countData.count != null ? countData.count : 0;
             } catch (err) {
                 console.warn('Items-in-stock count failed:', err);
@@ -39,10 +57,10 @@ async function loadDashboard() {
         }
 
         // Today's sales for the logged-in user (per-user)
-        if (CONFIG.BRANCH_ID && API.sales && typeof API.sales.getTodaySummary === 'function') {
+        if (branchId && API.sales && typeof API.sales.getTodaySummary === 'function') {
             try {
                 const userId = CONFIG.USER_ID || null;
-                const summary = await API.sales.getTodaySummary(CONFIG.BRANCH_ID, userId);
+                const summary = await API.sales.getTodaySummary(branchId, userId);
                 const total = parseFloat(summary.total_inclusive || summary.total_exclusive || 0);
                 document.getElementById('todaySales').textContent = formatCurrency(total);
             } catch (err) {
@@ -50,18 +68,22 @@ async function loadDashboard() {
             }
         }
 
-        // Load stock value summary
-        if (CONFIG.BRANCH_ID && API.inventory && typeof API.inventory.getAllStock === 'function') {
+        // Load stock summary: show total units in stock (getAllStock returns items with stock > 0)
+        if (branchId && API.inventory && typeof API.inventory.getAllStock === 'function') {
             try {
-                const stock = await API.inventory.getAllStock(CONFIG.BRANCH_ID);
-                // TODO: total value from stock * cost if needed
-                document.getElementById('totalStock').textContent = formatCurrency(0);
+                const stockList = await API.inventory.getAllStock(branchId);
+                const totalUnits = (stockList && Array.isArray(stockList)) ? stockList.reduce((sum, row) => sum + (Number(row.stock) || 0), 0) : 0;
+                // totalStock card: show unit count (e.g. "1,234 units")
+                const totalStockEl = document.getElementById('totalStock');
+                if (totalStockEl) totalStockEl.textContent = totalUnits.toLocaleString() + ' unit' + (totalUnits !== 1 ? 's' : '');
             } catch (error) {
                 console.warn('Failed to load stock summary:', error);
-                document.getElementById('totalStock').textContent = formatCurrency(0);
+                const totalStockEl = document.getElementById('totalStock');
+                if (totalStockEl) totalStockEl.textContent = formatCurrency(0);
             }
         } else {
-            document.getElementById('totalStock').textContent = formatCurrency(0);
+            const totalStockEl = document.getElementById('totalStock');
+            if (totalStockEl) totalStockEl.textContent = formatCurrency(0);
         }
     } catch (error) {
         console.error('Error loading dashboard:', error);

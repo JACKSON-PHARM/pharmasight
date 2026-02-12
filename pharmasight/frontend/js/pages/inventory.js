@@ -2,6 +2,21 @@
 
 let currentInventorySubPage = 'items'; // items, batch, expiry, movement, stock
 
+/** Branch for stock/last supplier: session branch (same as header), then CONFIG, then localStorage. */
+function getBranchIdForStock() {
+    const branch = typeof BranchContext !== 'undefined' && BranchContext.getBranch ? BranchContext.getBranch() : null;
+    if (branch && branch.id) return branch.id;
+    if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) return CONFIG.BRANCH_ID;
+    try {
+        const saved = localStorage.getItem('pharmasight_config');
+        if (saved) {
+            const c = JSON.parse(saved);
+            if (c.BRANCH_ID) return c.BRANCH_ID;
+        }
+    } catch (e) { /* ignore */ }
+    return null;
+}
+
 // Declare functions first (hoisting)
 async function loadInventory() {
     console.log('loadInventory called');
@@ -26,6 +41,12 @@ async function loadInventory() {
                 </div>
             `;
             return;
+        }
+        // Use session branch (same as header) for stock and last supplier
+        const sessionBranchId = getBranchIdForStock();
+        if (sessionBranchId && CONFIG.BRANCH_ID !== sessionBranchId) {
+            CONFIG.BRANCH_ID = sessionBranchId;
+            if (typeof saveConfig === 'function') saveConfig();
         }
         
         // Initialize with Items sub-page
@@ -261,36 +282,42 @@ async function filterItems() {
         isInventorySearching = true;
         
         try {
-            // OPTIMIZED: Check cache first
+            // Use session branch so stock/last supplier match header (same as Items page)
+            const branchId = getBranchIdForStock();
             const cache = window.searchCache || null;
             let searchResults = null;
             
             if (cache) {
-                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20);
-            }
-            
-            if (!searchResults) {
-                // OPTIMIZED: Use search API (fast, no pricing needed for list view)
-                // API max limit is 20, so use that for performance
-                searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 20, CONFIG.BRANCH_ID || null, false);
-                
-                // Cache the results
-                if (cache && searchResults) {
-                    cache.set(searchTerm, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20, searchResults);
+                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, branchId, 20);
+                // If we have a branch but cached results have no stock, refetch (avoid stale cache)
+                if (searchResults && branchId && searchResults.length > 0) {
+                    const hasNoStock = searchResults.every(it => (it.current_stock == null && !(it.stock_display != null && it.stock_display !== '')));
+                    if (hasNoStock) searchResults = null;
                 }
             }
             
-            // Convert search results to display format
+            if (!searchResults) {
+                // Search with branch_id for stock; include_pricing=true for last_supplier and costs
+                searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 20, branchId || null, true);
+                
+                if (cache && searchResults) {
+                    cache.set(searchTerm, CONFIG.COMPANY_ID, branchId, 20, searchResults);
+                }
+            }
+            
+            // Map API response to display; preserve current_stock and stock_display so table shows them (not dashes)
             inventoryFilteredItemsList = searchResults.map(item => ({
                 id: item.id,
                 name: item.name,
                 sku: item.sku || '',
                 base_unit: item.base_unit,
                 category: item.category || '',
-                current_stock: null, // Stock not included in search for performance
-                last_supplier: item.last_supplier || '',
-                last_unit_cost: item.purchase_price || null,
-                default_cost: item.price || 0,
+                current_stock: (item.current_stock !== undefined && item.current_stock !== null) ? Number(item.current_stock) : null,
+                stock_display: (item.stock_display !== undefined && item.stock_display !== null && item.stock_display !== '') ? String(item.stock_display) : null,
+                last_supplier: item.last_supplier != null ? String(item.last_supplier) : '',
+                last_unit_cost: item.purchase_price != null ? item.purchase_price : null,
+                default_cost: item.price != null ? item.price : 0,
+                minimum_stock: item.minimum_stock != null ? item.minimum_stock : null,
                 is_active: item.is_active !== undefined ? item.is_active : true
             }));
             
@@ -346,17 +373,19 @@ function renderItemsTable() {
                     ${displayList.map(item => {
                         const isLowStock = item.minimum_stock !== null && item.current_stock !== null && item.current_stock < item.minimum_stock;
                         const rowClass = isLowStock ? 'style="background-color: #fff3cd;"' : '';
+                        let stockDisplay = '—';
+                        if (item.stock_display != null && item.stock_display !== '') {
+                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${escapeHtml(item.stock_display)}</strong>`;
+                        } else if (item.current_stock !== null && item.current_stock !== undefined) {
+                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${formatNumber(item.current_stock)} ${item.base_unit}</strong>`;
+                        }
                         return `
                         <tr ${rowClass}>
                             <td>${escapeHtml(item.name)}</td>
                             <td><code>${escapeHtml(item.sku || '—')}</code></td>
                             <td>${escapeHtml(item.base_unit)}</td>
                             <td>${escapeHtml(item.category || '—')}</td>
-                            <td>
-                                ${item.current_stock !== null && item.current_stock !== undefined 
-                                    ? `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${formatNumber(item.current_stock)} ${item.base_unit}</strong>`
-                                    : '—'}
-                            </td>
+                            <td>${stockDisplay}</td>
                             <td>${escapeHtml(item.last_supplier || '—')}</td>
                             <td>${item.last_unit_cost !== null && item.last_unit_cost !== undefined ? formatCurrency(item.last_unit_cost) : '—'}</td>
                             <td>${formatCurrency(item.default_cost || 0)}</td>
@@ -392,7 +421,8 @@ function renderItemsTable() {
 // ADJUST STOCK MODAL
 // ============================================
 async function showAdjustStockModal(itemId) {
-    if (!CONFIG.BRANCH_ID) {
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
         if (typeof showToast === 'function') showToast('Please select a branch first.', 'warning');
         else alert('Please select a branch first.');
         return;
@@ -403,8 +433,8 @@ async function showAdjustStockModal(itemId) {
         return;
     }
     try {
-        const branchId = CONFIG.BRANCH_ID != null ? (typeof CONFIG.BRANCH_ID === 'string' ? CONFIG.BRANCH_ID : (CONFIG.BRANCH_ID && (CONFIG.BRANCH_ID.id || CONFIG.BRANCH_ID))) : null;
-        const data = await API.items.get(itemId, branchId);
+        const branchIdNormalized = typeof branchId === 'string' ? branchId : (branchId && (branchId.id || branchId));
+        const data = await API.items.get(itemId, branchIdNormalized);
         const itemName = (data && data.name) ? String(data.name) : 'Item';
         const units = (data && data.units && data.units.length) ? data.units : [{ unit_name: data.base_unit || 'piece', multiplier_to_base: 1 }];
         const lastCost = (data && (data.default_cost != null || data.default_cost_per_base != null)) ? (data.default_cost ?? data.default_cost_per_base) : 0;
@@ -488,7 +518,8 @@ async function submitAdjustStock(itemId) {
     const batchEl = document.getElementById('adjustStockBatch');
     const expiryEl = document.getElementById('adjustStockExpiry');
     const notesEl = document.getElementById('adjustStockNotes');
-    const branchIdRaw = CONFIG.BRANCH_ID != null ? (typeof CONFIG.BRANCH_ID === 'string' ? CONFIG.BRANCH_ID : (CONFIG.BRANCH_ID && (CONFIG.BRANCH_ID.id || CONFIG.BRANCH_ID))) : null;
+    const branchId = getBranchIdForStock();
+    const branchIdRaw = branchId != null ? (typeof branchId === 'string' ? branchId : (branchId && (branchId.id || branchId))) : null;
     const userIdRaw = CONFIG.USER_ID != null ? (typeof CONFIG.USER_ID === 'string' ? CONFIG.USER_ID : (CONFIG.USER_ID && (CONFIG.USER_ID.id || CONFIG.USER_ID))) : null;
     const payload = {
         branch_id: branchIdRaw,
@@ -540,7 +571,16 @@ function renderItemMovementSubPage() {
 }
 
 function renderCurrentStockSubPage() {
-    return '<div><h2>Current Stock</h2><p>Current stock functionality coming soon...</p></div>';
+    return `
+        <div>
+            <h2 style="margin-bottom: 1rem;"><i class="fas fa-chart-bar"></i> Current Stock</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Stock on hand for the selected branch (session branch).</p>
+            <div id="currentStockContainer">
+                <div class="spinner" style="margin: 1rem auto;"></div>
+                <p style="text-align: center; color: var(--text-secondary);">Loading...</p>
+            </div>
+        </div>
+    `;
 }
 
 async function loadBatchTrackingData() {
@@ -556,7 +596,43 @@ async function loadItemMovementData() {
 }
 
 async function loadCurrentStockData() {
-    // TODO
+    const container = document.getElementById('currentStockContainer');
+    if (!container) return;
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
+        container.innerHTML = '<div class="alert alert-warning"><i class="fas fa-exclamation-triangle"></i> Select a branch to see current stock.</div>';
+        return;
+    }
+    try {
+        const list = await API.inventory.getAllStock(branchId);
+        if (!list || list.length === 0) {
+            container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No stock on hand at this branch.</p>';
+            return;
+        }
+        const rows = list.map(row => `
+            <tr>
+                <td>${escapeHtml(row.item_name || '—')}</td>
+                <td>${formatNumber(row.stock)} ${escapeHtml(row.base_unit || '')}</td>
+            </tr>
+        `).join('');
+        container.innerHTML = `
+            <div class="table-container" style="max-height: 60vh; overflow-y: auto;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead style="position: sticky; top: 0; background: white; z-index: 1;">
+                        <tr>
+                            <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>
+                            <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Quantity</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <p style="margin-top: 0.75rem; color: var(--text-secondary);">${list.length} item(s) with stock</p>
+        `;
+    } catch (err) {
+        console.error('Current stock load failed:', err);
+        container.innerHTML = '<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Failed to load current stock. ' + (err.message || '') + '</div>';
+    }
 }
 
 // Helper functions
