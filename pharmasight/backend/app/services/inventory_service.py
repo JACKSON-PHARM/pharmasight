@@ -292,5 +292,39 @@ class InventoryService:
         if wholesale_whole > 0:
             parts.append(f"{wholesale_whole} {wholesale_unit}")
         if retail_remainder > 0 or not parts:
+            # Never use "—" or empty as unit; use "piece" if invalid
+            unit = (retail_unit or "piece").strip() if retail_unit else "piece"
+            if not unit or unit in ("—", "-", "–"):
+                unit = "piece"
+            parts.append(f"{retail_remainder} {unit}")
+        return " + ".join(parts) if parts else "0"
+
+    @staticmethod
+    def format_quantity_display(quantity_retail: float, item: Item) -> str:
+        """
+        Format a quantity (in retail/base units) for display using 3-tier breakdown.
+        E.g. 12 tablets -> "12 tablet"; 110 tablets (pack=100) -> "1 packet 10 tablet"
+        """
+        if not item or quantity_retail <= 0:
+            return "0"
+        total_retail = float(quantity_retail)
+        wholesale_unit = (getattr(item, "wholesale_unit", None) or item.base_unit or "piece") or "piece"
+        retail_unit = str(getattr(item, "retail_unit", None) or "piece").strip() or "piece"
+        if not retail_unit or retail_unit in ("—", "-", "–"):
+            retail_unit = "piece"
+        supplier_unit = (getattr(item, "supplier_unit", None) or "piece") or "piece"
+        pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
+        wups = max(0.0001, float(getattr(item, "wholesale_units_per_supplier", None) or 1))
+        units_per_supplier = pack_size * wups
+        supplier_whole = int(total_retail // units_per_supplier) if units_per_supplier >= 1 else 0
+        remainder_after_supplier = total_retail - (supplier_whole * units_per_supplier)
+        wholesale_whole = int(remainder_after_supplier // pack_size) if pack_size >= 1 else 0
+        retail_remainder = int(remainder_after_supplier % pack_size) if pack_size >= 1 else int(total_retail)
+        parts = []
+        if supplier_whole > 0:
+            parts.append(f"{supplier_whole} {supplier_unit}")
+        if wholesale_whole > 0:
+            parts.append(f"{wholesale_whole} {wholesale_unit}")
+        if retail_remainder > 0 or not parts:
             parts.append(f"{retail_remainder} {retail_unit}")
         return " + ".join(parts) if parts else "0"

@@ -305,21 +305,8 @@ async function filterItems() {
                 }
             }
             
-            // Map API response to display; preserve current_stock and stock_display so table shows them (not dashes)
-            inventoryFilteredItemsList = searchResults.map(item => ({
-                id: item.id,
-                name: item.name,
-                sku: item.sku || '',
-                base_unit: item.base_unit,
-                category: item.category || '',
-                current_stock: (item.current_stock !== undefined && item.current_stock !== null) ? Number(item.current_stock) : null,
-                stock_display: (item.stock_display !== undefined && item.stock_display !== null && item.stock_display !== '') ? String(item.stock_display) : null,
-                last_supplier: item.last_supplier != null ? String(item.last_supplier) : '',
-                last_unit_cost: item.purchase_price != null ? item.purchase_price : null,
-                default_cost: item.price != null ? item.price : 0,
-                minimum_stock: item.minimum_stock != null ? item.minimum_stock : null,
-                is_active: item.is_active !== undefined ? item.is_active : true
-            }));
+            // Map API response to display via shared utility
+            inventoryFilteredItemsList = searchResults.map(mapApiItemToDisplay);
             
             renderItemsTable();
         } catch (error) {
@@ -373,12 +360,7 @@ function renderItemsTable() {
                     ${displayList.map(item => {
                         const isLowStock = item.minimum_stock !== null && item.current_stock !== null && item.current_stock < item.minimum_stock;
                         const rowClass = isLowStock ? 'style="background-color: #fff3cd;"' : '';
-                        let stockDisplay = '—';
-                        if (item.stock_display != null && item.stock_display !== '') {
-                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${escapeHtml(item.stock_display)}</strong>`;
-                        } else if (item.current_stock !== null && item.current_stock !== undefined) {
-                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${formatNumber(item.current_stock)} ${item.base_unit}</strong>`;
-                        }
+                        const stockDisplay = typeof formatStockCell === 'function' ? formatStockCell(item) : '—';
                         return `
                         <tr ${rowClass}>
                             <td>${escapeHtml(item.name)}</td>

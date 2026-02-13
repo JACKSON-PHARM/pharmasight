@@ -709,6 +709,11 @@ body {
     font-size: 0.875rem;
 }
 
+.stat-card-clickable:hover {
+    background: var(--bg-secondary, #f8f9fa);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
 /* Tables - scrollable on all devices; visible scrollbars for mouse users */
 .table-container {
     overflow-x: auto;

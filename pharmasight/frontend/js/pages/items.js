@@ -176,7 +176,8 @@ async function loadAllItems() {
         // OPTIMIZED: Load items with overview data (includes stock, supplier, etc.)
         // Use same branch as Sales so stock is a single source of truth
         const branchId = getBranchIdForStock();
-        itemsList = await API.items.overview(CONFIG.COMPANY_ID, branchId);
+        const overviewResults = await API.items.overview(CONFIG.COMPANY_ID, branchId);
+        itemsList = overviewResults.map(mapApiItemToDisplay);
         
         // If we have many items, limit display to first 500 for performance
         // User can still search for specific items
@@ -319,22 +320,8 @@ async function filterItems() {
                 }
             }
             
-            // Map API response to display; preserve current_stock and stock_display so table shows them (not dashes)
-            filteredItemsList = searchResults.map(item => ({
-                id: item.id,
-                name: item.name,
-                sku: item.sku || '',
-                base_unit: item.base_unit,
-                category: item.category || '',
-                current_stock: (item.current_stock !== undefined && item.current_stock !== null) ? Number(item.current_stock) : null,
-                stock_display: (item.stock_display !== undefined && item.stock_display !== null && item.stock_display !== '') ? String(item.stock_display) : null,
-                stock_availability: item.stock_availability || null,
-                last_supplier: item.last_supplier != null ? String(item.last_supplier) : '',
-                last_unit_cost: item.purchase_price != null ? item.purchase_price : null,
-                default_cost: item.price != null ? item.price : 0,
-                is_active: item.is_active !== undefined ? item.is_active : true,
-                pricing_3tier: item.pricing_3tier || {}
-            }));
+            // Map API response to display via shared utility
+            filteredItemsList = searchResults.map(mapApiItemToDisplay);
             
             renderItemsTable();
         } catch (error) {
@@ -400,17 +387,7 @@ function renderItemsTable() {
                         const supplierPrice = pricing3tier.supplier_price;
                         const wholesalePrice = pricing3tier.wholesale_price;
                         const retailPrice = pricing3tier.retail_price;
-                        
-                        // Format stock display (3-tier from API or simple number)
-                        let stockDisplay = '—';
-                        if (item.stock_availability && item.stock_availability.unit_breakdown && item.stock_availability.unit_breakdown.length > 0) {
-                            const display = item.stock_availability.unit_breakdown[0].display;
-                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${display}</strong>`;
-                        } else if (item.stock_display) {
-                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${escapeHtml(item.stock_display)}</strong>`;
-                        } else if (item.current_stock !== null && item.current_stock !== undefined) {
-                            stockDisplay = `<strong ${isLowStock ? 'style="color: #dc3545;"' : ''}>${formatNumber(item.current_stock)} ${item.base_unit}</strong>`;
-                        }
+                        const stockDisplay = typeof formatStockCell === 'function' ? formatStockCell(item) : '—';
                         
                         return `
                         <tr ${rowClass}>

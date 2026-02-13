@@ -230,6 +230,12 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/items-in-stock-count`),
         getStockOverview: (branchId) =>
             api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/overview`),
+        getExpiringCount: (branchId, days = 365) =>
+            api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/expiring-count?days=${days}`),
+        getExpiringList: (branchId, days = 365) =>
+            api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/expiring?days=${days}`),
+        getTotalStockValue: (branchId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/total-value`),
         allocateFEFO: (itemId, branchId, quantity, unitName) => 
             api.post(`${CONFIG.API_ENDPOINTS.inventory}/allocate-fefo`, {
                 item_id: itemId,
@@ -279,17 +285,6 @@ const API = {
             api.post(`/api/quotations/${quotationId}/convert-to-invoice`, data),
     },
 
-    // Inventory
-    inventory: {
-        getStock: (itemId, branchId) => api.get(`/api/inventory/stock/${itemId}/${branchId}`),
-        getAvailability: (itemId, branchId) => api.get(`/api/inventory/availability/${itemId}/${branchId}`),
-        getBatches: (itemId, branchId) => api.get(`/api/inventory/batches/${itemId}/${branchId}`),
-        getAllStock: (branchId) => api.get(`/api/inventory/branch/${branchId}/all`),
-        getItemsInStockCount: (branchId) => api.get(`/api/inventory/branch/${branchId}/items-in-stock-count`),
-        allocateFEFO: (itemId, branchId, quantity, unitName) => 
-            api.post(`/api/inventory/allocate-fefo?item_id=${itemId}&branch_id=${branchId}&quantity=${quantity}&unit_name=${encodeURIComponent(unitName)}`, null),
-    },
-    
     // Purchases
     purchases: {
         createGRN: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/grn`, data),

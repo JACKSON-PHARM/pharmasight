@@ -266,3 +266,62 @@ class CanonicalPricingService:
 
         # 5) Zero for any remaining
         return {iid: (result[iid] if result[iid] is not None else Decimal('0')) for iid in item_ids}
+
+    @staticmethod
+    def get_cost_per_retail_for_valuation_batch(
+        db: Session,
+        item_ids: List[UUID],
+        branch_id: UUID,
+        company_id: UUID,
+    ) -> Dict[UUID, Decimal]:
+        """
+        Get cost per RETAIL unit for stock valuation. Respects three-tier units.
+        - PURCHASE ledger: unit_cost is already per retail → use as-is
+        - OPENING_BALANCE / default: unit_cost is per wholesale → cost_per_retail = cost / pack_size
+        Formula: value = quantity_retail * cost_per_retail (e.g. 98 tablets * 0.54 = 52.92 when cost is 54/packet of 100)
+        """
+        if not item_ids:
+            return {}
+        items = {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
+        result = {}
+
+        # 1) Last PURCHASE cost (already per retail)
+        last_purchase_subq = (
+            db.query(
+                InventoryLedger.item_id,
+                InventoryLedger.unit_cost,
+                sql_func.row_number()
+                .over(
+                    partition_by=InventoryLedger.item_id,
+                    order_by=desc(InventoryLedger.created_at),
+                )
+                .label("rn"),
+            )
+            .filter(
+                InventoryLedger.item_id.in_(item_ids),
+                InventoryLedger.branch_id == branch_id,
+                InventoryLedger.company_id == company_id,
+                InventoryLedger.transaction_type == "PURCHASE",
+                InventoryLedger.quantity_delta > 0,
+            )
+        ).subquery()
+        for row in (
+            db.query(last_purchase_subq.c.item_id, last_purchase_subq.c.unit_cost)
+            .filter(last_purchase_subq.c.rn == 1)
+            .all()
+        ):
+            result[row.item_id] = Decimal(str(row.unit_cost)) if row.unit_cost else Decimal("0")
+
+        # 2) OPENING_BALANCE / weighted avg / default: cost is per WHOLESALE → divide by pack_size
+        missing = [iid for iid in item_ids if iid not in result]
+        if missing:
+            cost_raw = CanonicalPricingService.get_best_available_cost_batch(
+                db, missing, branch_id, company_id
+            )
+            for iid in missing:
+                cost = cost_raw.get(iid) or Decimal("0")
+                item = items.get(iid)
+                pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
+                result[iid] = cost / Decimal(str(pack_size))
+
+        return result
