@@ -1,21 +1,30 @@
 """
 Company and Branch API routes
 """
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+import json
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 import os
 import shutil
 from pathlib import Path
+from pydantic import BaseModel
 from app.dependencies import get_tenant_db
 from app.models.company import Company, Branch
+from app.models.settings import CompanySetting
 from app.schemas.company import (
     CompanyCreate, CompanyResponse, CompanyUpdate,
     BranchCreate, BranchResponse, BranchUpdate
 )
 
 router = APIRouter()
+
+
+class CompanySettingUpdate(BaseModel):
+    """Body for upserting a company setting"""
+    key: str
+    value: Any  # string, number, bool, or dict (stored as JSON)
 
 # Logo upload directory
 UPLOAD_DIR = Path("uploads/logos")
@@ -105,6 +114,81 @@ def update_company(company_id: UUID, company_update: CompanyUpdate, db: Session 
     db.commit()
     db.refresh(company)
     return company
+
+
+# Company settings (e.g. print_config for receipts - set by admin, applies to all users)
+@router.get("/companies/{company_id}/settings")
+def get_company_settings(
+    company_id: UUID,
+    key: Optional[str] = Query(None, description="Setting key, e.g. 'print_config'. Omit to get all."),
+    db: Session = Depends(get_tenant_db)
+) -> Dict[str, Any]:
+    """Get company-level settings. Admin configures print layout here."""
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    q = db.query(CompanySetting).filter(
+        CompanySetting.company_id == company_id,
+    )
+    if key:
+        q = q.filter(CompanySetting.setting_key == key)
+    rows = q.all()
+    if key and rows:
+        r = rows[0]
+        if r.setting_type == "json":
+            try:
+                return {"key": r.setting_key, "value": json.loads(r.setting_value or "{}")}
+            except json.JSONDecodeError:
+                return {"key": r.setting_key, "value": r.setting_value}
+        return {"key": r.setting_key, "value": r.setting_value}
+    if key:
+        return {"key": key, "value": None}
+    out = {}
+    for r in rows:
+        if r.setting_type == "json":
+            try:
+                out[r.setting_key] = json.loads(r.setting_value or "{}")
+            except json.JSONDecodeError:
+                out[r.setting_key] = r.setting_value
+        else:
+            out[r.setting_key] = r.setting_value
+    return {"settings": out}
+
+
+@router.put("/companies/{company_id}/settings")
+def update_company_setting(
+    company_id: UUID,
+    body: CompanySettingUpdate,
+    db: Session = Depends(get_tenant_db)
+) -> Dict[str, Any]:
+    """Upsert a company setting (e.g. print_config). Used by admin in Settings > Print."""
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    val = body.value
+    if isinstance(val, (dict, list)):
+        setting_type = "json"
+        setting_value = json.dumps(val)
+    else:
+        setting_type = "string"
+        setting_value = str(val) if val is not None else None
+    row = db.query(CompanySetting).filter(
+        CompanySetting.company_id == company_id,
+        CompanySetting.setting_key == body.key,
+    ).first()
+    if row:
+        row.setting_value = setting_value
+        row.setting_type = setting_type
+    else:
+        row = CompanySetting(
+            company_id=company_id,
+            setting_key=body.key,
+            setting_value=setting_value,
+            setting_type=setting_type,
+        )
+        db.add(row)
+    db.commit()
+    return {"key": body.key, "value": val}
 
 
 @router.post("/companies/{company_id}/logo", response_model=CompanyResponse)

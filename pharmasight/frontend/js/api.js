@@ -150,6 +150,9 @@ const API = {
         get: (companyId) => api.get(`/api/companies/${companyId}`),
         create: (data) => api.post('/api/companies', data),
         update: (companyId, data) => api.put(`/api/companies/${companyId}`, data),
+        getSettings: (companyId, key = null) =>
+            api.get(`/api/companies/${companyId}/settings`, key ? { key } : {}),
+        updateSetting: (companyId, data) => api.put(`/api/companies/${companyId}/settings`, data),
         uploadLogo: (companyId, file) => {
             const formData = new FormData();
             formData.append('file', file);
@@ -463,6 +466,7 @@ const API = {
             const queryParams = userId ? `?user_id=${userId}` : '';
             return api.post(`/api/stock-take/branch/${branchId}/complete${queryParams}`, null);
         },
+        getVarianceReport: (branchId, sessionId) => api.get(`/api/stock-take/branch/${branchId}/variance-report`, { session_id: sessionId }),
         cancelForBranch: (branchId, userId) => {
             const queryParams = userId ? `?user_id=${userId}` : '';
             return api.post(`/api/stock-take/branch/${branchId}/cancel${queryParams}`, null);
@@ -504,7 +508,9 @@ const API = {
                     const detail = data.detail;
                     if (detail) msg += ': ' + (typeof detail === 'string' ? detail : (detail.msg || JSON.stringify(detail)));
                 } catch (_) {}
-                throw new Error(msg);
+                const err = new Error(msg);
+                err.status = res.status;
+                throw err;
             }
             const blob = await res.blob();
             const a = document.createElement('a');
@@ -513,6 +519,8 @@ const API = {
             a.click();
             URL.revokeObjectURL(a.href);
         },
+        /** URL for printable HTML template (fallback when PDF is unavailable). */
+        getTemplateHtmlUrl: () => `${api.baseURL}/api/stock-take/template/html`,
     },
     
     // Order Book

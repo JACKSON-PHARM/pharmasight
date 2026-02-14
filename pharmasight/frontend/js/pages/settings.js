@@ -1972,6 +1972,11 @@ async function renderPrintSettingsPage() {
     const page = document.getElementById('settings');
     if (!page) return;
 
+    // Load company-level print settings (admin config, applies to all users)
+    if (typeof loadCompanyPrintSettings === 'function') {
+        await loadCompanyPrintSettings();
+    }
+
     const printType = CONFIG.PRINT_TYPE || 'normal';
     const transactionMessage = CONFIG.TRANSACTION_MESSAGE || '';
     const removeMargin = CONFIG.PRINT_REMOVE_MARGIN === true;
@@ -1986,6 +1991,7 @@ async function renderPrintSettingsPage() {
         <div class="card" style="max-width: none;">
             <div class="card-header">
                 <h3 class="card-title"><i class="fas fa-print"></i> Print Settings</h3>
+                <p style="margin: 0.25rem 0 0 0; font-size: 0.875rem; color: var(--text-secondary);">Company-level settings. Configured by admin and applied to all users.</p>
             </div>
             <div class="card-body" style="display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: flex-start;">
                 <div style="flex: 1; min-width: 320px;">
@@ -2141,6 +2147,10 @@ function savePrintSettingsFromForm(form) {
     CONFIG.PRINT_FOOTER_TERMS = opts.print_footer_terms !== false;
     try {
         if (typeof saveConfig === 'function') saveConfig();
+        // Persist to company-level settings so all users get admin-configured layout
+        if (typeof saveCompanyPrintSettings === 'function') {
+            saveCompanyPrintSettings().catch(() => {});
+        }
         if (typeof showToast === 'function') showToast('Print settings saved', 'success');
     } catch (err) {
         console.error('Save print settings error:', err);

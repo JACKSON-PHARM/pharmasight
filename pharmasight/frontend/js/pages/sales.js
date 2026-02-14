@@ -2661,7 +2661,9 @@ function generateInvoicePrintHTML(invoice, printType) {
            .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
            th, td { padding: ${thermalPadding}; font-size: 9px; }
            .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
-           table { margin: 4px 0; }`
+           table { margin: 4px 0; }
+           .no-print { display: none !important; }
+           .print-content-wrap { margin-top: 0 !important; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
@@ -2669,10 +2671,13 @@ function generateInvoicePrintHTML(invoice, printType) {
            .company-name { font-size: 1.25em; font-weight: bold; margin-bottom: 4px; }
            .company-details { font-size: 0.9em; color: #333; line-height: 1.4; }
            .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
-           th, td { padding: 8px; }`;
+           th, td { padding: 8px; }
+           .no-print { display: none !important; }
+           .print-content-wrap { margin-top: 0 !important; }`;
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
+    const layoutLabel = isThermal ? `Thermal (${pageWidthMm}mm)` : 'Regular (A4)';
     const headerBlock = `<div class="header">
         ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
         ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
@@ -2698,6 +2703,17 @@ function generateInvoicePrintHTML(invoice, printType) {
     </style>
 </head>
 <body>
+    <div class="no-print" style="position: fixed; top: 0; left: 0; right: 0; background: #f0f0f0; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; z-index: 9999; border-bottom: 1px solid #ccc; font-family: Arial, sans-serif; font-size: 14px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="color: #555;">Layout: <strong>${layoutLabel}</strong></span>
+            ${!isThermal ? '<span style="color: #856404; font-size: 12px;">For receipt printers (e.g. XP-80), switch to Thermal in Print Settings to avoid paper waste.</span>' : ''}
+        </div>
+        <div style="display: flex; gap: 8px;">
+            <a href="#" onclick="if(window.opener){window.opener.focus();window.opener.loadPage(\'settings-print\');} return false;" style="padding: 6px 12px; background: #0066cc; color: white; text-decoration: none; border-radius: 4px; font-size: 13px;">&#9881; Customize Print Settings</a>
+            <button type="button" onclick="window.print();" style="padding: 6px 16px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">Print</button>
+        </div>
+    </div>
+    <div class="print-content-wrap" style="margin-top: 48px;">
     ${headerBlock}
 
     <div class="invoice-info">
@@ -2735,6 +2751,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         <p>Generated: ${generatedTime}</p>
     </div>
     ${autoCutSpacer}
+    </div>
 </body>
 </html>
     `;

@@ -89,6 +89,10 @@ function setBranchInternal(branch, shouldBroadcast = true) {
         CONFIG.BRANCH_ID = branch.id;
         CONFIG.COMPANY_ID = branch.company_id;
         saveConfig();
+        // Load company-level print settings (admin configures in Settings > Print)
+        if (typeof window.loadCompanyPrintSettings === 'function') {
+            window.loadCompanyPrintSettings().catch(() => {});
+        }
     } else {
         CONFIG.BRANCH_ID = null;
         saveConfig();

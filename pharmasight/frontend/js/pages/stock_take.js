@@ -20,6 +20,27 @@ if (typeof window.stockTake === 'undefined') {
     };
 }
 
+// Show user-friendly message; avoid raw SQL or long technical detail in alerts
+function stockTakeErrorMessage(err, defaultText) {
+    let raw = (err && err.message) ? err.message : '';
+    if (Array.isArray(raw)) raw = raw.map(function (m) { return m && (m.msg || m.message || String(m)); }).join('. ');
+    raw = String(raw || '');
+    if (!raw) return defaultText || 'Something went wrong. Please try again.';
+    if (raw.length > 300) {
+        if (raw.includes('does not exist') || raw.includes('UndefinedColumn')) {
+            return 'A required database update is pending. Please restart the application so migrations can run, then try again.';
+        }
+        return defaultText ? defaultText + ' If the problem continues, contact support.' : 'Something went wrong. If the problem continues, contact support.';
+    }
+    if (raw.includes('column ') && raw.includes(' does not exist')) {
+        return 'A required database update is pending. Please restart the application so migrations can run, then try again.';
+    }
+    if (raw.includes('Failed to fetch') || raw.includes('Network error')) {
+        return 'Unable to connect to the server. Please check your connection.';
+    }
+    return raw;
+}
+
 // Main Load Function
 async function loadStockTake() {
     console.log('[STOCK TAKE] loadStockTake called');
@@ -162,7 +183,25 @@ async function renderBranchNormalInterface() {
                     </div>
                 </div>
             </div>
+            <div class="card" style="margin-top: 1.5rem;">
+                <div style="padding: 1rem; border-bottom: 1px solid var(--border-color);">
+                    <h4 style="margin: 0;"><i class="fas fa-chart-bar"></i> Stock Take Variance Report</h4>
+                </div>
+                <div style="padding: 1rem;">
+                    <p style="color: var(--text-secondary); margin-bottom: 1rem;">View system vs counted quantities and zeroed items for a completed stock take.</p>
+                    <button class="btn btn-outline-primary" onclick="openVarianceReportForLastSession()">
+                        <i class="fas fa-file-alt"></i> View last variance report
+                    </button>
+                </div>
+            </div>
         `;
+        // If we just completed, auto-open variance report when "View last" is available
+        if (window.lastCompletedStockTakeSessionId) {
+            setTimeout(function () {
+                openVarianceReportForLastSession();
+                window.lastCompletedStockTakeSessionId = null;
+            }, 500);
+        }
     } else if (isVerifier) {
         // Verifier sees message that no stock take is active
         page.innerHTML = `
@@ -272,7 +311,8 @@ async function startBranchStockTake() {
     }
 }
 
-// Download A4 PDF recording template (paper form for counts, then key in later)
+// Download A4 PDF recording template (paper form for counts, then key in later).
+// On PDF failure (e.g. reportlab not installed), opens printable HTML in a new tab.
 async function downloadStockTakeTemplate() {
     try {
         if (typeof API === 'undefined' || !API.stockTake || !API.stockTake.downloadTemplatePdf) {
@@ -284,8 +324,18 @@ async function downloadStockTakeTemplate() {
             showNotification('Template downloaded.', 'success');
         }
     } catch (e) {
-        console.error('[STOCK TAKE] Template download error:', e);
-        alert('Failed to download template. ' + (e.message || 'Please try again.'));
+        console.warn('[STOCK TAKE] Template PDF failed, opening printable HTML fallback:', e);
+        const htmlUrl = API.stockTake.getTemplateHtmlUrl && API.stockTake.getTemplateHtmlUrl();
+        if (htmlUrl) {
+            window.open(htmlUrl, '_blank', 'noopener');
+            if (typeof showNotification === 'function') {
+                showNotification('PDF unavailable. Opened printable template — use Print or Save as PDF.', 'info');
+            } else {
+                alert('PDF is not available. A printable template has been opened in a new tab. Use your browser\'s Print (Ctrl+P) or "Save as PDF" to save it.');
+            }
+        } else {
+            alert('Failed to download template. ' + (e.message || 'Please try again.'));
+        }
     }
 }
 
@@ -1430,18 +1480,7 @@ async function saveCount(itemId) {
             saveBtn.innerHTML = '<i class="fas fa-save"></i> Save Count';
         }
         
-        // Show user-friendly error
-        let errorMessage = 'Error saving count. ';
-        if (error.message) {
-            if (error.message.includes('Failed to fetch') || error.message.includes('Network error')) {
-                errorMessage += 'Unable to connect to server. Please check your connection.';
-            } else {
-                errorMessage += error.message;
-            }
-        } else {
-            errorMessage += 'Please try again.';
-        }
-        
+        const errorMessage = 'Error saving count. ' + stockTakeErrorMessage(error, 'Please try again.');
         alert(errorMessage);
     }
 }
@@ -1504,6 +1543,61 @@ async function cancelStockTake() {
     }
 }
 
+// Variance report: open for last completed session or given session id
+async function openVarianceReportForLastSession() {
+    let sessionId = window.lastCompletedStockTakeSessionId;
+    if (!sessionId) {
+        try {
+            const list = await API.stockTake.listSessions(CONFIG.BRANCH_ID, 'COMPLETED');
+            const sessions = list && (list.sessions || list) || [];
+            const completed = Array.isArray(sessions) ? sessions : [];
+            if (completed.length === 0) {
+                if (typeof showNotification === 'function') {
+                    showNotification('No completed stock take session found.', 'info');
+                } else {
+                    alert('No completed stock take session found.');
+                }
+                return;
+            }
+            sessionId = completed[0].id || completed[0].session_id;
+        } catch (e) {
+            console.error('[STOCK TAKE] List completed sessions error:', e);
+            alert('Could not load completed sessions. Please try again.');
+            return;
+        }
+    }
+    if (sessionId) await showVarianceReportModal(sessionId);
+}
+
+function showVarianceReportModal(sessionId) {
+    const modal = document.createElement('div');
+    modal.id = 'varianceReportModal';
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem;';
+    modal.innerHTML = '<div style="background:white;border-radius:8px;max-width:90vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 4px 20px rgba(0,0,0,0.2);"><div style="padding:1rem;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;"><h3 style="margin:0;"><i class="fas fa-chart-bar"></i> Stock Take Variance Report</h3><button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById(\'varianceReportModal\').remove();">Close</button></div><div id="varianceReportContent" style="padding:1rem;overflow:auto;flex:1;"><div class="spinner"></div><p>Loading report...</p></div></div>';
+    document.body.appendChild(modal);
+    modal.onclick = function (e) { if (e.target === modal) modal.remove(); };
+
+    API.stockTake.getVarianceReport(CONFIG.BRANCH_ID, sessionId)
+        .then(function (data) {
+            const content = document.getElementById('varianceReportContent');
+            if (!content) return;
+            const rows = data.rows || [];
+            const completedAt = data.completed_at ? new Date(data.completed_at).toLocaleString() : '';
+            let html = '<p style="color:var(--text-secondary);margin-bottom:1rem;">Completed: ' + (completedAt || '—') + '</p>';
+            html += '<table class="table" style="width:100%;font-size:0.875rem;"><thead><tr><th>Item</th><th>System (before)</th><th>Counted</th><th>Variance</th><th>Zeroed</th></tr></thead><tbody>';
+            rows.forEach(function (r) {
+                html += '<tr' + (r.zeroed_out ? ' style="background:#fff8e6;"' : '') + '><td>' + (r.item_name || '—') + '</td><td>' + (r.system_quantity ?? '—') + '</td><td>' + (r.counted_quantity ?? '—') + '</td><td>' + (r.variance ?? '—') + '</td><td>' + (r.zeroed_out ? 'Yes' : '') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+            content.innerHTML = html;
+        })
+        .catch(function (err) {
+            const content = document.getElementById('varianceReportContent');
+            if (content) content.innerHTML = '<p style="color:var(--danger-color);">Failed to load report: ' + (err.message || 'Unknown error') + '</p>';
+        });
+}
+
 // Complete Stock Take (Admin only)
 async function completeStockTake() {
     if (!confirm('Complete stock take? This will update inventory with counted quantities and end the session.')) {
@@ -1527,17 +1621,24 @@ async function completeStockTake() {
         
         if (result && result.success !== false) {
             const itemsUpdated = result.items_updated || 0;
+            const itemsZeroed = result.items_zeroed || 0;
             const totalCounts = result.total_counts || 0;
-            showNotification(`Stock take completed! ${itemsUpdated} item(s) updated in inventory.`, 'success');
+            const sessionId = result.session_id;
+            let msg = `Stock take completed! ${itemsUpdated} item(s) updated from counts.`;
+            if (itemsZeroed > 0) msg += ` ${itemsZeroed} uncounted item(s) zeroed out.`;
+            showNotification(msg, 'success');
             
             if (result.warnings && result.warnings.length > 0) {
                 console.warn('[STOCK TAKE] Completion warnings:', result.warnings);
             }
             
-            // Redirect to inventory after delay
-            setTimeout(() => {
-                window.location.hash = '#inventory';
-            }, 2000);
+            if (sessionId && API.stockTake.getVarianceReport) {
+                window.lastCompletedStockTakeSessionId = sessionId;
+                showNotification('View variance report below or in Reports.', 'info');
+            }
+            
+            // Reload stock take page to show completed state and variance report link
+            await loadStockTake();
         } else {
             throw new Error(result?.message || result?.detail || 'Failed to complete stock take');
         }
@@ -1551,18 +1652,7 @@ async function completeStockTake() {
             completeBtn.innerHTML = '<i class="fas fa-check-circle"></i> Complete Stock Take';
         }
         
-        // Show user-friendly error
-        let errorMessage = 'Error completing stock take. ';
-        if (error.message) {
-            if (error.message.includes('Failed to fetch') || error.message.includes('Network error')) {
-                errorMessage += 'Unable to connect to server. Please check your connection.';
-            } else {
-                errorMessage += error.message;
-            }
-        } else {
-            errorMessage += 'Please try again.';
-        }
-        
+        const errorMessage = 'Error completing stock take. ' + stockTakeErrorMessage(error, 'Please try again.');
         alert(errorMessage);
     }
 }

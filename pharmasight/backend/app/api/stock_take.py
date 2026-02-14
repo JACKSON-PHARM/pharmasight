@@ -4,7 +4,7 @@ Stock Take API routes for multi-user stock take sessions
 import io
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func, desc
 from typing import List, Optional
@@ -112,12 +112,12 @@ def cleanup_expired_locks(db: Session):
 # ============================================
 
 def _build_stock_take_template_pdf() -> bytes:
-    """Build A4 PDF template for recording counted drugs (manual key-in later)."""
+    """Build A4 PDF template: front + back pages with headers for more items."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
@@ -126,10 +126,14 @@ def _build_stock_take_template_pdf() -> bytes:
     title_style = ParagraphStyle(
         name="Title", parent=styles["Heading1"], fontSize=16, spaceAfter=12
     )
+    sub_style = ParagraphStyle(
+        name="Sub", parent=styles["Normal"], fontSize=10, spaceAfter=6
+    )
     flow = []
+    # ----- Page 1 (Front) -----
     flow.append(Paragraph("Stock Take Recording Sheet", title_style))
+    flow.append(Paragraph("Front", sub_style))
     flow.append(Spacer(1, 6 * mm))
-    # Placeholder row for shelf / who did what
     placeholders = [
         ["Shelf Name:", "_________________________", "Counted By:", "_________________________"],
         ["Verified By:", "_________________________", "Keyed In By:", "_________________________"],
@@ -143,14 +147,13 @@ def _build_stock_take_template_pdf() -> bytes:
     ]))
     flow.append(t_place)
     flow.append(Spacer(1, 8 * mm))
-    # Data table: Item Name, Wholesale Units, Retail Units, Expiry Date, Batch Number
     headers = ["#", "Item Name", "Wholesale Units", "Retail Units", "Expiry Date", "Batch Number"]
     col_widths = [8 * mm, 55 * mm, 28 * mm, 26 * mm, 28 * mm, 35 * mm]
-    data = [headers]
-    for i in range(1, 28):  # 27 blank rows on first page
-        data.append([str(i), "", "", "", "", ""])
-    tbl = Table(data, colWidths=col_widths, repeatRows=1)
-    tbl.setStyle(TableStyle([
+    data1 = [headers]
+    for i in range(1, 28):
+        data1.append([str(i), "", "", "", "", ""])
+    tbl1 = Table(data1, colWidths=col_widths, repeatRows=1)
+    tbl1.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
@@ -158,9 +161,83 @@ def _build_stock_take_template_pdf() -> bytes:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
     ]))
-    flow.append(tbl)
+    flow.append(tbl1)
+    flow.append(PageBreak())
+    # ----- Page 2 (Back) -----
+    flow.append(Paragraph("Stock Take Recording Sheet", title_style))
+    flow.append(Paragraph("Back", sub_style))
+    flow.append(Spacer(1, 6 * mm))
+    flow.append(Table(placeholders, colWidths=[22 * mm, 65 * mm, 22 * mm, 65 * mm]))
+    flow.append(Spacer(1, 8 * mm))
+    data2 = [headers]
+    for i in range(28, 55):  # rows 28–54 on back
+        data2.append([str(i), "", "", "", "", ""])
+    tbl2 = Table(data2, colWidths=col_widths, repeatRows=1)
+    tbl2.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    flow.append(tbl2)
     doc.build(flow)
     return buf.getvalue()
+
+
+def _build_stock_take_template_html() -> str:
+    """Build printable HTML template: front + back pages with headers (same as PDF)."""
+    meta = """<table class="meta">
+        <tr><td class="label">Shelf Name:</td><td style="width:32%">_________________________</td><td class="label">Counted By:</td><td style="width:32%">_________________________</td></tr>
+        <tr><td class="label">Verified By:</td><td>_________________________</td><td class="label">Keyed In By:</td><td>_________________________</td></tr>
+    </table>"""
+    thead = "<thead><tr><th>#</th><th>Item Name</th><th>Wholesale Units</th><th>Retail Units</th><th>Expiry Date</th><th>Batch Number</th></tr></thead>"
+    rows_front = "".join(f'<tr><td>{i}</td><td></td><td></td><td></td><td></td><td></td></tr>' for i in range(1, 28))
+    rows_back = "".join(f'<tr><td>{i}</td><td></td><td></td><td></td><td></td><td></td></tr>' for i in range(28, 55))
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Take Recording Sheet</title>
+    <style>
+        @media print {{ body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }} .page-break {{ page-break-before: always; }} }}
+        body {{ font-family: Helvetica, Arial, sans-serif; font-size: 12px; margin: 15mm; max-width: 210mm; }}
+        h1 {{ font-size: 16px; margin-bottom: 4px; }}
+        .page-title {{ font-size: 10px; color: #666; margin-bottom: 8px; }}
+        .meta {{ margin-bottom: 10px; border-collapse: collapse; width: 100%; }}
+        .meta td {{ padding: 4px 8px; border: 1px solid #ccc; }}
+        .meta .label {{ width: 22%; background: #f5f5f5; }}
+        table {{ border-collapse: collapse; width: 100%; margin-top: 8px; }}
+        th, td {{ border: 1px solid #999; padding: 3px 6px; text-align: left; font-size: 11px; }}
+        th {{ background: #e8e8e8; }}
+        .no-print {{ margin-top: 16px; }}
+        @media print {{ .no-print {{ display: none; }} }}
+    </style>
+</head>
+<body>
+    <div class="sheet">
+        <h1>Stock Take Recording Sheet</h1>
+        <p class="page-title">Front</p>
+        {meta}
+        <table>
+            {thead}
+            <tbody>{rows_front}</tbody>
+        </table>
+    </div>
+    <div class="sheet page-break">
+        <h1>Stock Take Recording Sheet</h1>
+        <p class="page-title">Back</p>
+        {meta}
+        <table>
+            {thead}
+            <tbody>{rows_back}</tbody>
+        </table>
+    </div>
+    <p class="no-print">Print both pages (Ctrl+P / Cmd+P) or &quot;Save as PDF&quot; to keep a copy.</p>
+</body>
+</html>"""
 
 
 @router.get("/template/pdf")
@@ -189,6 +266,15 @@ def download_stock_take_template():
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=stock-take-recording-sheet.pdf"},
     )
+
+
+@router.get("/template/html", response_class=HTMLResponse)
+def get_stock_take_template_html():
+    """
+    Printable HTML template (same layout as PDF). Use when PDF is unavailable
+    or user prefers to print from browser (Print → Save as PDF).
+    """
+    return HTMLResponse(content=_build_stock_take_template_html())
 
 
 # ============================================
@@ -1619,25 +1705,40 @@ def complete_branch_stock_take(
             logger.warning(f"No user_id available for completing stock take session {session.id}")
             completing_user_id = session.created_by  # Fallback to session creator
         
-        # Update inventory for each count
+        # Item IDs that were counted (any count in this session)
+        counted_item_ids = {c.item_id for c in counts}
+
+        # Uncounted items with stock: zero out (record in ledger so stock becomes 0)
+        # Compute BEFORE applying count adjustments so we use pre-completion stock.
+        items_with_stock = db.query(InventoryLedger.item_id).filter(
+            and_(
+                InventoryLedger.branch_id == branch_id,
+            )
+        ).group_by(InventoryLedger.item_id).having(
+            func.sum(InventoryLedger.quantity_delta) > 0
+        ).all()
+        items_with_stock_ids = {r[0] for r in items_with_stock}
+        uncounted_with_stock = [
+            (item_id, InventoryService.get_current_stock(db, item_id, branch_id))
+            for item_id in (items_with_stock_ids - counted_item_ids)
+        ]
+        uncounted_with_stock = [(iid, q) for iid, q in uncounted_with_stock if q > 0]
+
+        from app.services.canonical_pricing import CanonicalPricingService
+
+        # 1) Update inventory for each count (variance adjustments)
         items_updated = 0
         errors = []
         for count in counts:
             try:
                 variance = count.variance
                 if variance != 0:
-                    # Get item for cost
                     item = db.query(Item).filter(Item.id == count.item_id).first()
                     if not item:
                         logger.warning(f"Item {count.item_id} not found when completing stock take")
                         continue
-                    
-                    # Cost from inventory_ledger only (CanonicalPricingService)
-                    from app.services.canonical_pricing import CanonicalPricingService
                     unit_cost = CanonicalPricingService.get_best_available_cost(db, count.item_id, branch_id, branch.company_id)
                     total_cost = abs(variance) * unit_cost
-                    
-                    # Create inventory ledger entry for adjustment
                     ledger_entry = InventoryLedger(
                         company_id=branch.company_id,
                         branch_id=branch_id,
@@ -1645,10 +1746,11 @@ def complete_branch_stock_take(
                         transaction_type='ADJUSTMENT',
                         reference_type='STOCK_TAKE',
                         reference_id=session.id,
-                        quantity_delta=variance,  # Can be positive or negative
+                        quantity_delta=variance,
                         unit_cost=unit_cost,
                         total_cost=total_cost,
-                        created_by=completing_user_id
+                        created_by=completing_user_id,
+                        notes='Stock take count adjustment'
                     )
                     db.add(ledger_entry)
                     items_updated += 1
@@ -1656,25 +1758,55 @@ def complete_branch_stock_take(
                 logger.error(f"Error updating inventory for item {count.item_id}: {str(e)}")
                 errors.append(f"Item {count.item_id}: {str(e)}")
                 continue
-        
+
+        # 2) Zero out uncounted items: one ADJUSTMENT per item to bring stock to 0
+        items_zeroed = 0
+        for item_id, current_stock in uncounted_with_stock:
+            try:
+                if current_stock <= 0:
+                    continue
+                unit_cost = CanonicalPricingService.get_best_available_cost(db, item_id, branch_id, branch.company_id)
+                total_cost = abs(Decimal(str(current_stock))) * unit_cost
+                ledger_entry = InventoryLedger(
+                    company_id=branch.company_id,
+                    branch_id=branch_id,
+                    item_id=item_id,
+                    transaction_type='ADJUSTMENT',
+                    reference_type='STOCK_TAKE',
+                    reference_id=session.id,
+                    quantity_delta=-Decimal(str(current_stock)),
+                    unit_cost=unit_cost,
+                    total_cost=total_cost,
+                    created_by=completing_user_id,
+                    notes='Stock take: uncounted item zeroed out'
+                )
+                db.add(ledger_entry)
+                items_zeroed += 1
+            except Exception as e:
+                logger.error(f"Error zeroing item {item_id}: {str(e)}")
+                errors.append(f"Item {item_id} (zero out): {str(e)}")
+
         # Mark session as completed
         session.status = 'COMPLETED'
         session.completed_at = datetime.utcnow()
         db.commit()
-        
-        logger.info(f"Stock take session {session.id} completed for branch {branch_id}. {items_updated} items updated.")
-        
+
+        logger.info(
+            f"Stock take session {session.id} completed for branch {branch_id}. "
+            f"Items updated from counts: {items_updated}, items zeroed (uncounted): {items_zeroed}"
+        )
+
         result = {
             "success": True,
             "message": "Stock take completed and inventory updated",
+            "session_id": str(session.id),
             "items_updated": items_updated,
+            "items_zeroed": items_zeroed,
             "total_counts": len(counts)
         }
-        
         if errors:
             result["warnings"] = errors
             result["message"] = f"Stock take completed with {len(errors)} warnings"
-        
         return result
         
     except HTTPException:
@@ -1756,6 +1888,92 @@ def cancel_branch_stock_take(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to cancel stock take: {str(e)}"
         )
+
+
+@router.get("/branch/{branch_id}/variance-report")
+def get_stock_take_variance_report(
+    branch_id: UUID,
+    session_id: UUID = Query(..., description="Completed stock take session ID"),
+    db: Session = Depends(get_tenant_db)
+):
+    """
+    Variance report for a completed stock take: counted items (system vs counted vs variance)
+    and uncounted items that were zeroed out. Use for follow-up and auditing.
+    """
+    session = db.query(StockTakeSession).filter(
+        and_(
+            StockTakeSession.id == session_id,
+            StockTakeSession.branch_id == branch_id,
+            StockTakeSession.status == 'COMPLETED'
+        )
+    ).first()
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Completed stock take session not found for this branch"
+        )
+
+    # Counted items: from stock_take_counts (aggregate by item: use latest or sum by item)
+    counts_by_item = {}
+    for c in db.query(StockTakeCount).filter(StockTakeCount.session_id == session_id).order_by(desc(StockTakeCount.counted_at)):
+        # Keep latest count per item (or sum counted_quantity if multiple shelves)
+        if c.item_id not in counts_by_item:
+            counts_by_item[c.item_id] = {
+                "system_quantity": c.system_quantity,
+                "counted_quantity": c.counted_quantity,
+                "variance": c.variance,
+            }
+        else:
+            counts_by_item[c.item_id]["counted_quantity"] += c.counted_quantity
+            counts_by_item[c.item_id]["variance"] = counts_by_item[c.item_id]["counted_quantity"] - counts_by_item[c.item_id]["system_quantity"]
+
+    counted_item_ids = set(counts_by_item.keys())
+
+    # Zeroed items: ledger entries for this session with negative delta and item not in counts
+    zeroed = db.query(InventoryLedger).filter(
+        and_(
+            InventoryLedger.reference_type == 'STOCK_TAKE',
+            InventoryLedger.reference_id == session_id,
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.quantity_delta < 0
+        )
+    ).all()
+    zeroed_by_item = {}
+    for row in zeroed:
+        if row.item_id in counted_item_ids:
+            continue
+        if row.item_id not in zeroed_by_item:
+            zeroed_by_item[row.item_id] = 0
+        zeroed_by_item[row.item_id] += abs(float(row.quantity_delta))
+
+    rows = []
+    for item_id, data in counts_by_item.items():
+        item = db.query(Item).filter(Item.id == item_id).first()
+        rows.append({
+            "item_id": str(item_id),
+            "item_name": item.name if item else None,
+            "system_quantity": data["system_quantity"],
+            "counted_quantity": data["counted_quantity"],
+            "variance": data["variance"],
+            "zeroed_out": False,
+        })
+    for item_id, prev_qty in zeroed_by_item.items():
+        item = db.query(Item).filter(Item.id == item_id).first()
+        rows.append({
+            "item_id": str(item_id),
+            "item_name": item.name if item else None,
+            "system_quantity": int(prev_qty),
+            "counted_quantity": 0,
+            "variance": -int(prev_qty),
+            "zeroed_out": True,
+        })
+
+    return {
+        "session_id": str(session_id),
+        "branch_id": str(branch_id),
+        "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+        "rows": sorted(rows, key=lambda r: (r["zeroed_out"], (r["item_name"] or "").lower())),
+    }
 
 
 @router.get("/counts/{count_id}")
