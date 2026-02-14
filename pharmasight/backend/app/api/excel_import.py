@@ -8,7 +8,7 @@ import threading
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Body
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from uuid import UUID
 import pandas as pd
 from io import BytesIO
@@ -36,12 +36,11 @@ def process_import_job(
     force_mode: Optional[str],
     column_mapping: Optional[Dict[str, str]] = None,
     database_url: Optional[str] = None,
-):
+) -> Optional[Dict[str, Any]]:
     """
-    Background task to process Excel import.
-    Updates ImportJob progress as it processes.
-    column_mapping: optional dict Excel header -> system field id (Vyper-style).
-    database_url: when set (tenant request), use this DB so items/ledger go to tenant DB; else use default DB.
+    Process Excel import (sync or background). Updates ImportJob in DB.
+    Returns final job state dict (status, processed_rows, stats, error_message, etc.)
+    so sync callers can respond without re-using a possibly-dead request session.
     """
     from app.database import SessionLocal
 
@@ -51,23 +50,30 @@ def process_import_job(
         db = _session_factory_for_url(database_url)()
     else:
         db = SessionLocal()
+
+    total_rows = len(excel_data)
+    out: Dict[str, Any] = {
+        "status": "unknown",
+        "processed_rows": 0,
+        "stats": None,
+        "error_message": None,
+        "total_rows": total_rows,
+        "completed_at": None,
+    }
+
     try:
-        # Get job record
         job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
         if not job:
             logger.error(f"❌ Import job {job_id} not found in database")
-            return
-        
+            return out
+
         logger.info(f"✅ Found job {job_id}, status: {job.status}, total_rows: {job.total_rows}")
-        
-        # Update status to processing
+
         job.status = "processing"
         job.started_at = datetime.now(timezone.utc)
         db.commit()
         logger.info(f"📊 Job {job_id} status updated to 'processing'")
-        
-        # Import with progress tracking
-        logger.info(f"🔄 Starting Excel import for job {job_id}...")
+
         result = ExcelImportService.import_excel_data(
             db=db,
             company_id=company_id,
@@ -78,38 +84,43 @@ def process_import_job(
             job_id=job_id,
             column_mapping=column_mapping
         )
-        
+
         logger.info(f"✅ Import completed for job {job_id}, result: {result}")
-        
-        # Refresh job to get latest state
+
         db.refresh(job)
-        
-        # Update job with results
         job.status = "completed"
         job.completed_at = datetime.now(timezone.utc)
         job.processed_rows = job.total_rows
-        job.stats = result.get('stats', {})
+        job.stats = result.get("stats", {})
         db.commit()
-        
+
+        out["status"] = "completed"
+        out["processed_rows"] = job.total_rows
+        out["stats"] = job.stats
+        out["completed_at"] = job.completed_at.isoformat() if job.completed_at else None
         logger.info(f"🎉 Import job {job_id} completed successfully - {job.processed_rows}/{job.total_rows} rows processed")
-        
+        return out
+
     except Exception as e:
         logger.error(f"❌ Import job {job_id} failed: {str(e)}", exc_info=True)
         import traceback
         error_traceback = traceback.format_exc()
         logger.error(f"Full traceback for job {job_id}:\n{error_traceback}")
+        err_msg = str(e)[:1000]
+        out["status"] = "failed"
+        out["error_message"] = err_msg
+        out["completed_at"] = datetime.now(timezone.utc).isoformat()
         try:
-            # Refresh job
-            db.refresh(job) if 'job' in locals() else None
             job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
             if job:
                 job.status = "failed"
-                job.error_message = str(e)[:1000]  # Limit error message length
+                job.error_message = err_msg
                 job.completed_at = datetime.now(timezone.utc)
                 db.commit()
                 logger.error(f"❌ Job {job_id} marked as failed in database")
         except Exception as db_error:
             logger.error(f"❌ Failed to update job status in database: {db_error}")
+        return out
     finally:
         db.close()
         logger.info(f"🔒 Database session closed for job {job_id}")
@@ -206,10 +217,12 @@ async def import_excel(
         run_sync = str(sync or "0").strip().lower() in ("1", "true", "yes")
         
         if run_sync:
-            # Run import in this request (blocking). Ensures data is written before response; no background thread.
+            # Run import in this request (blocking). process_import_job uses its own DB session.
+            # It returns the final job state so we do NOT re-query with the request's db (that
+            # connection may be closed by the server after a long idle during import).
             logger.info(f"📤 Running import SYNCHRONOUSLY for job {job.id} with {len(excel_data)} rows (database={('tenant' if tenant else 'default')})")
             try:
-                process_import_job(
+                r = process_import_job(
                     job.id, company_id, branch_id, user_id, excel_data,
                     force_mode, mapping_dict, tenant_db_url
                 )
@@ -219,16 +232,11 @@ async def import_excel(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Import failed: {str(sync_error)}"
                 ) from sync_error
-            # Reload job from DB (process_import_job uses its own session)
-            row = db.execute(
-                text("""
-                    SELECT id, status, total_rows, processed_rows, stats, error_message,
-                           started_at, completed_at
-                    FROM import_jobs WHERE id = :id
-                """),
-                {"id": job.id},
-            ).first()
-            r = row._mapping if row else {}
+            if not r:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Import job not found or did not return result.",
+                )
             status_val = r.get("status", "unknown")
             return {
                 "success": status_val == "completed",
@@ -351,25 +359,45 @@ def get_import_progress(
 def get_import_mode(company_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Get the current import mode for a company.
-    
+    If the database is unreachable (e.g. timeout to Supabase), returns a safe default
+    so the frontend can still proceed with import and get a clear error from the import step if needed.
+
     Returns:
         - mode: 'AUTHORITATIVE' or 'NON_DESTRUCTIVE'
         - has_live_transactions: bool
+        - mode_detection_failed: bool (true when DB was unreachable; frontend can show a warning)
     """
-    has_live = ExcelImportService.has_live_transactions(db, company_id)
-    mode = ExcelImportService.detect_import_mode(db, company_id)
-    
-    return {
-        'mode': mode,
-        'has_live_transactions': has_live,
-        'message': 'AUTHORITATIVE mode allows reset. NON_DESTRUCTIVE mode preserves existing data.'
-    }
+    try:
+        has_live = ExcelImportService.has_live_transactions(db, company_id)
+        mode = ExcelImportService.detect_import_mode(db, company_id)
+        return {
+            'mode': mode,
+            'has_live_transactions': has_live,
+            'mode_detection_failed': False,
+            'message': 'AUTHORITATIVE mode allows reset. NON_DESTRUCTIVE mode preserves existing data.'
+        }
+    except OperationalError as e:
+        logger.warning("Import mode detection failed (database unreachable): %s", e)
+        return {
+            'mode': 'AUTHORITATIVE',
+            'has_live_transactions': False,
+            'mode_detection_failed': True,
+            'message': 'Could not detect mode (database connection issue). Proceeding with default. If import fails, check database connectivity.'
+        }
+    except Exception as e:
+        logger.warning("Import mode detection failed: %s", e)
+        return {
+            'mode': 'AUTHORITATIVE',
+            'has_live_transactions': False,
+            'mode_detection_failed': True,
+            'message': 'Could not detect mode. Proceeding with default.'
+        }
 
 
 class ClearForReimportBody(BaseModel):
     """Body for clear-for-reimport: company_id only."""
 
-    company_id: UUID = Field(..., description="Company to clear (only when no live transactions)")
+    company_id: UUID = Field(..., description="Company to clear (all data including transactions)")
 
 
 @router.post("/clear-for-reimport")
@@ -378,24 +406,12 @@ def clear_for_reimport(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Clear all company data (items, inventory, sales, purchases, etc.) so you can run a fresh Excel import.
+    Clear all company data (items, inventory, sales, purchases, quotations, ledger, etc.) so you can run a fresh Excel import.
 
-    **Only allowed when there are no live transactions** (no sales, purchases, or stock movements beyond opening balance).
-    If the company has any live transactions, returns 403 and does not delete anything.
-
-    Call this from the UI before re-importing when you want to start from a clean slate.
+    Deletes all transactional and master data for the company; table schemas are left intact.
+    Companies, branches, and users are NOT deleted.
     """
     company_id = body.company_id
-    has_live = ExcelImportService.has_live_transactions(db, company_id)
-    if has_live:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Cannot clear: company has live transactions (sales, purchases, or stock movements). "
-                "Clear is only allowed when there are no transactions yet. "
-                "Use NON_DESTRUCTIVE import to add/update data without clearing."
-            ),
-        )
     success, messages = run_clear_for_reimport(company_id)
     if not success:
         raise HTTPException(

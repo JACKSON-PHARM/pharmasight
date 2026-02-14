@@ -2,6 +2,9 @@
 
 let currentInventorySubPage = 'items'; // items, batch, expiry, movement, stock
 
+/** Last valuation result for Current Stock export (CSV/Excel/Print). */
+let lastCurrentStockValuation = null;
+
 /** Branch for stock/last supplier: session branch (same as header), then CONFIG, then localStorage. */
 function getBranchIdForStock() {
     const branch = typeof BranchContext !== 'undefined' && BranchContext.getBranch ? BranchContext.getBranch() : null;
@@ -18,8 +21,8 @@ function getBranchIdForStock() {
 }
 
 // Declare functions first (hoisting)
-async function loadInventory() {
-    console.log('loadInventory called');
+async function loadInventory(optionalSubPage) {
+    console.log('loadInventory called', optionalSubPage != null ? 'subPage=' + optionalSubPage : '');
     const page = document.getElementById('inventory');
     
     if (!page) {
@@ -49,8 +52,13 @@ async function loadInventory() {
             if (typeof saveConfig === 'function') saveConfig();
         }
         
-        // Initialize with Items sub-page
-        currentInventorySubPage = 'items';
+        // Respect URL subpage so Current Stock (and others) persist and aren't overwritten by hashchange
+        const validSubPages = ['items', 'batch', 'expiry', 'movement', 'stock'];
+        if (optionalSubPage && validSubPages.includes(optionalSubPage)) {
+            currentInventorySubPage = optionalSubPage;
+        } else {
+            currentInventorySubPage = 'items';
+        }
         renderInventoryPage();
     } catch (error) {
         console.error('Error loading inventory page:', error);
@@ -164,8 +172,8 @@ function renderItemsSubPage() {
                     <button class="btn btn-outline" onclick="downloadItemTemplate()">
                         <i class="fas fa-download"></i> Download Template
                     </button>
-                    <button class="btn btn-outline" onclick="clearForReimport()" id="clearForReimportBtn" title="Clear all items and data for this company so you can run a fresh Excel import (only when no sales/purchases yet)">
-                        <i class="fas fa-broom"></i> Clear for re-import
+                    <button class="btn btn-outline" onclick="clearForReimport()" id="clearForReimportBtn" title="Clear all company data (items, inventory, sales, purchases, etc.) so you can run a fresh Excel import. Schema is kept.">
+                        <i class="fas fa-broom"></i> Clear data
                     </button>
                     <button class="btn btn-secondary" onclick="showImportExcelModal()">
                         <i class="fas fa-file-excel"></i> Import Excel
@@ -203,22 +211,32 @@ let inventorySearchTimeout = null;
 let isInventorySearching = false;
 
 async function loadSubPageData() {
-    switch(currentInventorySubPage) {
-        case 'items':
-            await loadItemsData();
-            break;
-        case 'batch':
-            await loadBatchTrackingData();
-            break;
-        case 'expiry':
-            await loadExpiryReportData();
-            break;
-        case 'movement':
-            await loadItemMovementData();
-            break;
-        case 'stock':
-            await loadCurrentStockData();
-            break;
+    try {
+        switch(currentInventorySubPage) {
+            case 'items':
+                await loadItemsData();
+                break;
+            case 'batch':
+                await loadBatchTrackingData();
+                break;
+            case 'expiry':
+                await loadExpiryReportData();
+                break;
+            case 'movement':
+                await loadItemMovementData();
+                break;
+            case 'stock':
+                await loadCurrentStockData();
+                break;
+        }
+    } catch (err) {
+        console.error('Error loading inventory sub-page data:', err);
+        if (currentInventorySubPage === 'stock') {
+            var container = document.getElementById('currentStockContainer');
+            if (container) {
+                container.innerHTML = '<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Failed to load. ' + (err && err.message ? escapeHtml(err.message) : 'Unknown error') + '</div>';
+            }
+        }
     }
 }
 
@@ -421,13 +439,15 @@ async function showAdjustStockModal(itemId) {
         const units = (data && data.units && data.units.length) ? data.units : [{ unit_name: data.base_unit || 'piece', multiplier_to_base: 1 }];
         const lastCost = (data && (data.default_cost != null || data.default_cost_per_base != null)) ? (data.default_cost ?? data.default_cost_per_base) : 0;
         const unitOptions = units.map(u => `<option value="${escapeHtml(u.unit_name)}">${escapeHtml(u.unit_name)}</option>`).join('');
+        const currentStockDisplay = (data && data.stock_display) ? String(data.stock_display) : (data && data.current_stock != null ? String(data.current_stock) + ' ' + (data.base_unit || '') : '—');
 
         const content = `
             <div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-secondary, #f5f5f5); border-radius: 6px;">
                 <strong>${escapeHtml(itemName)}</strong>
+                <div style="margin-top: 0.5rem; font-size: 0.9rem; color: var(--text-secondary, #666);">Current stock: <strong>${escapeHtml(currentStockDisplay)}</strong> — adjustments add to or reduce this balance.</div>
             </div>
             <div class="form-group">
-                <label>Unit (Box, Tablets, Pieces, etc.)</label>
+                <label>Unit (Box, Packet, Sachet, etc.)</label>
                 <select id="adjustStockUnit" class="form-input">
                     ${unitOptions}
                 </select>
@@ -447,12 +467,12 @@ async function showAdjustStockModal(itemId) {
                 <label>Unit cost (per base unit) — optional; defaults to last purchase cost</label>
                 <input type="number" id="adjustStockCost" class="form-input" min="0" step="0.01" value="${lastCost}" placeholder="0 = use last price">
             </div>
-            <div class="form-group">
-                <label>Batch / Lot number</label>
+            <div class="form-group" id="adjustBatchGroup">
+                <label>Batch / Lot number <span id="adjustBatchRequired" style="color: var(--danger-color, #dc3545);">*</span></label>
                 <input type="text" id="adjustStockBatch" class="form-input" maxlength="200" placeholder="e.g. BATCH-2024-001">
             </div>
-            <div class="form-group">
-                <label>Expiry date</label>
+            <div class="form-group" id="adjustExpiryGroup">
+                <label>Expiry date <span id="adjustExpiryRequired" style="color: var(--danger-color, #dc3545);">*</span></label>
                 <input type="date" id="adjustStockExpiry" class="form-input" value="" placeholder="YYYY-MM-DD">
             </div>
             <div class="form-group">
@@ -474,6 +494,24 @@ async function showAdjustStockModal(itemId) {
         if (submitBtn) {
             submitBtn.onclick = async () => submitAdjustStock(itemId);
         }
+        // When Add is selected, batch and expiry are required
+        const directionRadios = document.querySelectorAll('input[name="adjustDirection"]');
+        const batchInput = document.getElementById('adjustStockBatch');
+        const expiryInput = document.getElementById('adjustStockExpiry');
+        const batchReq = document.getElementById('adjustBatchRequired');
+        const expiryReq = document.getElementById('adjustExpiryRequired');
+        function toggleAddRequired() {
+            const addChecked = document.querySelector('input[name="adjustDirection"][value="add"]:checked');
+            const isAdd = !!addChecked;
+            if (batchInput) batchInput.required = isAdd;
+            if (expiryInput) expiryInput.required = isAdd;
+            if (batchReq) batchReq.style.visibility = isAdd ? 'visible' : 'hidden';
+            if (expiryReq) expiryReq.style.visibility = isAdd ? 'visible' : 'hidden';
+        }
+        toggleAddRequired();
+        directionRadios.forEach(function (r) {
+            if (r) r.addEventListener('change', toggleAddRequired);
+        });
     } catch (err) {
         const msg = err.message || (err.data && err.data.detail) || 'Failed to load item';
         if (typeof showToast === 'function') showToast(msg, 'error');
@@ -496,9 +534,21 @@ async function submitAdjustStock(itemId) {
         else alert('Enter a valid quantity.');
         return;
     }
-    const unit_cost = costEl ? parseFloat(costEl.value) : null;
     const batchEl = document.getElementById('adjustStockBatch');
     const expiryEl = document.getElementById('adjustStockExpiry');
+    if (dir === 'add') {
+        if (!batchEl || !batchEl.value.trim()) {
+            if (typeof showToast === 'function') showToast('Batch number is required when adding stock.', 'warning');
+            else alert('Batch number is required when adding stock.');
+            return;
+        }
+        if (!expiryEl || !expiryEl.value) {
+            if (typeof showToast === 'function') showToast('Expiry date is required when adding stock.', 'warning');
+            else alert('Expiry date is required when adding stock.');
+            return;
+        }
+    }
+    const unit_cost = costEl ? parseFloat(costEl.value) : null;
     const notesEl = document.getElementById('adjustStockNotes');
     const branchId = getBranchIdForStock();
     const branchIdRaw = branchId != null ? (typeof branchId === 'string' ? branchId : (branchId && (branchId.id || branchId))) : null;
@@ -520,10 +570,11 @@ async function submitAdjustStock(itemId) {
         submitBtn.textContent = 'Applying...';
     }
     try {
-        await API.items.adjustStock(itemId, payload);
+        const res = await API.items.adjustStock(itemId, payload);
         if (typeof closeModal === 'function') closeModal();
-        if (typeof showToast === 'function') showToast('Stock adjusted successfully.', 'success');
-        else alert('Stock adjusted successfully.');
+        const msg = (res && res.message) ? res.message : 'Stock adjusted successfully.';
+        if (typeof showToast === 'function') showToast(msg, 'success');
+        else alert(msg);
         if (typeof filterItems === 'function') filterItems();
     } catch (err) {
         const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Adjustment failed';
@@ -553,13 +604,50 @@ function renderItemMovementSubPage() {
 }
 
 function renderCurrentStockSubPage() {
+    const branchId = getBranchIdForStock();
+    const branchIdStr = branchId ? (typeof branchId === 'string' ? branchId : branchId.id || branchId) : '';
+    const today = new Date().toISOString().slice(0, 10);
     return `
         <div>
-            <h2 style="margin-bottom: 1rem;"><i class="fas fa-chart-bar"></i> Current Stock</h2>
-            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Stock on hand for the selected branch (session branch).</p>
+            <h2 style="margin-bottom: 1rem;"><i class="fas fa-chart-bar"></i> Current Stock / Valuation</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Stock on hand for the selected branch. Choose options and click Apply to load.</p>
+            <div class="card" style="margin-bottom: 1.5rem;">
+                <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Branch</label>
+                        <select id="currentStockBranch" class="form-input" style="min-width: 200px;">
+                            <option value="">Loading branches…</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Date (snapshot)</label>
+                        <input type="date" id="currentStockDate" class="form-input" value="${today}">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Valuation</label>
+                        <select id="currentStockValuation" class="form-input">
+                            <option value="last_cost">Last unit cost</option>
+                            <option value="selling_price">Selling price</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Items</label>
+                        <select id="currentStockFilter" class="form-input">
+                            <option value="true">With stock only</option>
+                            <option value="false">All items</option>
+                        </select>
+                    </div>
+                    <button type="button" class="btn btn-primary" id="currentStockApplyBtn"><i class="fas fa-check"></i> Apply</button>
+                    <div style="display: flex; gap: 0.5rem; align-items: center; margin-left: auto;">
+                        <span style="color: var(--text-secondary); font-size: 0.875rem;">Export</span>
+                        <button type="button" class="btn btn-outline btn-sm" id="currentStockExportCsvBar" title="Export as CSV"><i class="fas fa-file-csv"></i> CSV</button>
+                        <button type="button" class="btn btn-outline btn-sm" id="currentStockExportExcelBar" title="Export for Excel"><i class="fas fa-file-excel"></i> Excel</button>
+                        <button type="button" class="btn btn-outline btn-sm" id="currentStockPrintBar" title="Print or save as PDF"><i class="fas fa-print"></i> Print / PDF</button>
+                    </div>
+                </div>
+            </div>
             <div id="currentStockContainer">
-                <div class="spinner" style="margin: 1rem auto;"></div>
-                <p style="text-align: center; color: var(--text-secondary);">Loading...</p>
+                <p style="text-align: center; color: var(--text-secondary);">Select branch and click Apply to load stock.</p>
             </div>
         </div>
     `;
@@ -579,41 +667,208 @@ async function loadItemMovementData() {
 
 async function loadCurrentStockData() {
     const container = document.getElementById('currentStockContainer');
+    const branchSelect = document.getElementById('currentStockBranch');
+    const applyBtn = document.getElementById('currentStockApplyBtn');
     if (!container) return;
-    const branchId = getBranchIdForStock();
+
+    if (branchSelect && branchSelect.options.length === 1 && branchSelect.options[0].value === '') {
+        try {
+            if (!CONFIG.COMPANY_ID) {
+                branchSelect.innerHTML = '<option value="">No company selected</option>';
+            } else {
+                const branches = await API.branch.list(CONFIG.COMPANY_ID);
+                const sessionBranchId = getBranchIdForStock();
+                const sid = sessionBranchId ? (typeof sessionBranchId === 'string' ? sessionBranchId : (sessionBranchId.id || sessionBranchId)) : null;
+                branchSelect.innerHTML = (branches || []).map(function (b) {
+                    const bid = b.id || b.branch_id;
+                    return '<option value="' + (bid || '') + '"' + (sid && String(bid) === String(sid) ? ' selected' : '') + '>' + escapeHtml(b.name || b.branch_name || 'Branch') + '</option>';
+                }).join('') || '<option value="">No branches</option>';
+            }
+        } catch (e) {
+            console.warn('Failed to load branches for Current Stock:', e);
+            branchSelect.innerHTML = '<option value="">Failed to load branches</option>';
+        }
+    }
+
+    if (applyBtn && !applyBtn._bound) {
+        applyBtn._bound = true;
+        applyBtn.addEventListener('click', function () { runCurrentStockValuation(); });
+    }
+    var csvBar = document.getElementById('currentStockExportCsvBar');
+    var excelBar = document.getElementById('currentStockExportExcelBar');
+    var printBar = document.getElementById('currentStockPrintBar');
+    if (csvBar) csvBar.onclick = function () { exportCurrentStockCsv(); };
+    if (excelBar) excelBar.onclick = function () { exportCurrentStockExcel(); };
+    if (printBar) printBar.onclick = function () { printCurrentStock(); };
+
+    var bid = branchSelect && branchSelect.value ? branchSelect.value : getBranchIdForStock();
+    if (bid) {
+        bid = typeof bid === 'string' ? bid : (bid && (bid.id || bid));
+        runCurrentStockValuation(bid);
+    } else {
+        container.innerHTML = '<div class="alert alert-warning"><i class="fas fa-exclamation-triangle"></i> Select a branch and click Apply to load current stock.</div>';
+    }
+}
+
+async function runCurrentStockValuation(overrideBranchId) {
+    const container = document.getElementById('currentStockContainer');
+    const branchSelect = document.getElementById('currentStockBranch');
+    const dateEl = document.getElementById('currentStockDate');
+    const valuationEl = document.getElementById('currentStockValuation');
+    const filterEl = document.getElementById('currentStockFilter');
+    const applyBtn = document.getElementById('currentStockApplyBtn');
+    if (!container) return;
+    var branchId = overrideBranchId || (branchSelect && branchSelect.value);
     if (!branchId) {
-        container.innerHTML = '<div class="alert alert-warning"><i class="fas fa-exclamation-triangle"></i> Select a branch to see current stock.</div>';
+        container.innerHTML = '<div class="alert alert-warning"><i class="fas fa-exclamation-triangle"></i> Select a branch and click Apply.</div>';
         return;
     }
+    if (applyBtn) applyBtn.disabled = true;
+    container.innerHTML = '<div class="spinner" style="margin: 1rem auto;"></div><p style="text-align: center; color: var(--text-secondary);">Loading…</p>';
+    var useValuationApi = typeof API !== 'undefined' && API.inventory && typeof API.inventory.getValuation === 'function';
     try {
-        const list = await API.inventory.getAllStock(branchId);
-        if (!list || list.length === 0) {
-            container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No stock on hand at this branch.</p>';
-            return;
+        if (useValuationApi) {
+            var params = {
+                branch_id: branchId,
+                as_of_date: dateEl && dateEl.value ? dateEl.value : new Date().toISOString().slice(0, 10),
+                valuation: valuationEl && valuationEl.value ? valuationEl.value : 'last_cost',
+                stock_only: !(filterEl && filterEl.value === 'false')
+            };
+            var res = await API.inventory.getValuation(params);
+            var rows = (res && res.rows) ? res.rows : [];
+            var totalValue = (res && res.total_value != null) ? res.total_value : 0;
+            var totalItems = (res && res.total_items != null) ? res.total_items : rows.length;
+            if (rows.length === 0) {
+                lastCurrentStockValuation = null;
+                container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items match the criteria. Try "All items" or another branch.</p>';
+            } else {
+                lastCurrentStockValuation = {
+                    rows: rows,
+                    total_value: totalValue,
+                    total_items: totalItems,
+                    branch_name: (res && res.branch_name) ? res.branch_name : '',
+                    as_of_date: (res && res.as_of_date) ? res.as_of_date : '',
+                    valuation: (res && res.valuation) ? res.valuation : 'last_cost'
+                };
+                var tableRows = rows.map(function (row) {
+                    return '<tr><td>' + escapeHtml(row.item_name || '—') + '</td><td>' + escapeHtml(row.stock_display || (formatNumber(row.stock) + ' ' + (row.base_unit || ''))) + '</td><td style="text-align: right;">' + formatNumber(row.unit_cost) + '</td><td style="text-align: right;">' + formatNumber(row.value) + '</td></tr>';
+                }).join('');
+                container.innerHTML =
+                    '<div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">' +
+                    '<span style="color: var(--text-secondary); font-size: 0.875rem;">Export</span>' +
+                    '<div>' +
+                    '<button type="button" class="btn btn-outline btn-sm" id="currentStockExportCsv"><i class="fas fa-file-csv"></i> CSV</button> ' +
+                    '<button type="button" class="btn btn-outline btn-sm" id="currentStockExportExcel"><i class="fas fa-file-excel"></i> Excel</button> ' +
+                    '<button type="button" class="btn btn-outline btn-sm" id="currentStockPrint"><i class="fas fa-print"></i> Print / PDF</button>' +
+                    '</div></div>' +
+                    '<div class="table-container" style="max-height: 60vh; overflow-y: auto;" id="currentStockTableWrap">' +
+                    '<table style="width: 100%; border-collapse: collapse;">' +
+                    '<thead style="position: sticky; top: 0; background: white; z-index: 1;">' +
+                    '<tr><th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>' +
+                    '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Stock</th>' +
+                    '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Unit cost</th>' +
+                    '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Value</th></tr>' +
+                    '</thead><tbody>' + tableRows + '</tbody></table></div>' +
+                    '<p style="margin-top: 0.75rem; color: var(--text-secondary);">' + totalItems + ' item(s) · Total value: <strong>' + formatNumber(totalValue) + ' KES</strong></p>';
+                var csvBtn = document.getElementById('currentStockExportCsv');
+                var excelBtn = document.getElementById('currentStockExportExcel');
+                var printBtn = document.getElementById('currentStockPrint');
+                if (csvBtn) csvBtn.onclick = function () { exportCurrentStockCsv(); };
+                if (excelBtn) excelBtn.onclick = function () { exportCurrentStockExcel(); };
+                if (printBtn) printBtn.onclick = function () { printCurrentStock(); };
+            }
+        } else {
+            var list = await API.inventory.getAllStock(branchId);
+            if (!list || list.length === 0) {
+                container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No stock on hand at this branch.</p>';
+            } else {
+                var simpleRows = list.map(function (row) {
+                    return '<tr><td>' + escapeHtml(row.item_name || '—') + '</td><td style="text-align: right;">' + formatNumber(row.stock) + ' ' + escapeHtml(row.base_unit || '') + '</td></tr>';
+                }).join('');
+                container.innerHTML =
+                    '<div class="table-container" style="max-height: 60vh; overflow-y: auto;">' +
+                    '<table style="width: 100%; border-collapse: collapse;">' +
+                    '<thead style="position: sticky; top: 0; background: white; z-index: 1;">' +
+                    '<tr><th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>' +
+                    '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Quantity</th></tr>' +
+                    '</thead><tbody>' + simpleRows + '</tbody></table></div>' +
+                    '<p style="margin-top: 0.75rem; color: var(--text-secondary);">' + list.length + ' item(s) with stock</p>';
+            }
         }
-        const rows = list.map(row => `
-            <tr>
-                <td>${escapeHtml(row.item_name || '—')}</td>
-                <td>${formatNumber(row.stock)} ${escapeHtml(row.base_unit || '')}</td>
-            </tr>
-        `).join('');
-        container.innerHTML = `
-            <div class="table-container" style="max-height: 60vh; overflow-y: auto;">
-                <table style="width: 100%; border-collapse: collapse;">
-                    <thead style="position: sticky; top: 0; background: white; z-index: 1;">
-                        <tr>
-                            <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>
-                            <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Quantity</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
-            </div>
-            <p style="margin-top: 0.75rem; color: var(--text-secondary);">${list.length} item(s) with stock</p>
-        `;
     } catch (err) {
-        console.error('Current stock load failed:', err);
-        container.innerHTML = '<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Failed to load current stock. ' + (err.message || '') + '</div>';
+        console.error('Current stock valuation failed:', err);
+        var msg = (err && (err.message || (err.detail && (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))))) || (typeof err === 'string' ? err : (err && typeof err === 'object' ? JSON.stringify(err) : String(err)));
+        if (msg.indexOf('fetch') !== -1 || msg.indexOf('Network') !== -1) {
+            msg += ' Please check if the backend server is running on ' + (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL ? CONFIG.API_BASE_URL : 'http://localhost:8000') + '.';
+        }
+        container.innerHTML = '<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Failed to load current stock. ' + escapeHtml(msg) + '</div>';
+    } finally {
+        if (applyBtn) applyBtn.disabled = false;
+    }
+}
+
+// --- Current Stock export (CSV, Excel, Print/PDF) ---
+function exportCurrentStockCsv() {
+    if (!lastCurrentStockValuation || !lastCurrentStockValuation.rows || lastCurrentStockValuation.rows.length === 0) {
+        if (typeof showToast === 'function') showToast('No data to export. Click Apply to load stock first.', 'warning');
+        return;
+    }
+    var escapeCsv = function (v) {
+        if (v == null) return '';
+        var s = String(v);
+        if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) return '"' + s.replace(/"/g, '""') + '"';
+        return s;
+    };
+    var headers = ['Item', 'Stock', 'Unit cost', 'Value'];
+    var rows = lastCurrentStockValuation.rows.map(function (r) {
+        var stockD = (r.stock_display != null) ? r.stock_display : (formatNumber(r.stock) + ' ' + (r.base_unit || ''));
+        return [r.item_name || '—', stockD, r.unit_cost, r.value].map(escapeCsv).join(',');
+    });
+    var csv = [headers.map(escapeCsv).join(','), rows.join('\n')].join('\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'current-stock-' + (lastCurrentStockValuation.as_of_date || new Date().toISOString().slice(0, 10)) + '.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+    if (typeof showToast === 'function') showToast('CSV exported.', 'success');
+}
+
+function exportCurrentStockExcel() {
+    if (!lastCurrentStockValuation || !lastCurrentStockValuation.rows || lastCurrentStockValuation.rows.length === 0) {
+        if (typeof showToast === 'function') showToast('No data to export. Click Apply to load stock first.', 'warning');
+        return;
+    }
+    var escapeCsv = function (v) {
+        if (v == null) return '';
+        var s = String(v);
+        if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) return '"' + s.replace(/"/g, '""') + '"';
+        return s;
+    };
+    var headers = ['Item', 'Stock', 'Unit cost', 'Value'];
+    var rows = lastCurrentStockValuation.rows.map(function (r) {
+        var stockD = (r.stock_display != null) ? r.stock_display : (formatNumber(r.stock) + ' ' + (r.base_unit || ''));
+        return [r.item_name || '—', stockD, r.unit_cost, r.value].map(escapeCsv).join(',');
+    });
+    var csv = '\uFEFF' + [headers.map(escapeCsv).join(','), rows.join('\n')].join('\n');
+    var blob = new Blob([csv], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'current-stock-' + (lastCurrentStockValuation.as_of_date || new Date().toISOString().slice(0, 10)) + '.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+    if (typeof showToast === 'function') showToast('Excel (CSV) exported. Open in Excel if needed.', 'success');
+}
+
+function printCurrentStock() {
+    var wrap = document.getElementById('currentStockTableWrap');
+    if (wrap) {
+        var prevTitle = document.title;
+        document.title = 'Current Stock / Valuation - ' + (lastCurrentStockValuation && lastCurrentStockValuation.branch_name ? lastCurrentStockValuation.branch_name : 'PharmaSight');
+        window.print();
+        document.title = prevTitle;
+    } else {
+        if (typeof showToast === 'function') showToast('No table to print. Click Apply to load stock first.', 'warning');
     }
 }
 
@@ -641,6 +896,11 @@ function formatNumber(num) {
             }
             if (typeof switchInventorySubPage === 'function') {
                 window.switchInventorySubPage = switchInventorySubPage;
+            }
+            if (typeof exportCurrentStockCsv === 'function') {
+                window.exportCurrentStockCsv = exportCurrentStockCsv;
+                window.exportCurrentStockExcel = exportCurrentStockExcel;
+                window.printCurrentStock = printCurrentStock;
             }
             if (typeof filterItems === 'function') {
                 window.filterItems = filterItems;

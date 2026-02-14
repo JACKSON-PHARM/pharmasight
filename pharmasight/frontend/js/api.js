@@ -91,7 +91,9 @@ class APIClient {
 
     get(endpoint, params = {}, requestOptions = {}) {
         const queryString = new URLSearchParams(params).toString();
-        const url = queryString ? `${endpoint}?${queryString}` : endpoint;
+        const url = queryString
+            ? (endpoint.includes('?') ? `${endpoint}&${queryString}` : `${endpoint}?${queryString}`)
+            : endpoint;
         return this.request(url, { method: 'GET', ...requestOptions });
     }
 
@@ -225,8 +227,16 @@ const API = {
                 quantity: quantity,
                 unit_name: unitName,
             }),
-        getAllStock: (branchId) => 
-            api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/all`),
+        getAllStock: (branchId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/all`, { timeout: 120000 }),
+        getValuation: (params) => {
+            const q = new URLSearchParams();
+            if (params.branch_id) q.set('branch_id', params.branch_id);
+            if (params.as_of_date) q.set('as_of_date', params.as_of_date);
+            if (params.valuation) q.set('valuation', params.valuation);
+            if (params.stock_only !== undefined) q.set('stock_only', params.stock_only ? 'true' : 'false');
+            return api.get(`${CONFIG.API_ENDPOINTS.inventory}/valuation?${q.toString()}`, {}, { timeout: 120000 });
+        },
         getItemsInStockCount: (branchId) =>
             api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/items-in-stock-count`),
         getStockOverview: (branchId) =>

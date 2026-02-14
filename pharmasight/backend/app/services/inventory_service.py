@@ -11,6 +11,17 @@ from app.models import InventoryLedger, Item, Branch
 from app.schemas.inventory import StockBalance, BatchStock, StockAvailability, UnitBreakdown
 from app.services.item_units_helper import get_unit_multiplier_from_item
 
+# Legacy/typo unit names we never show; display as "piece" (or caller's fallback) for consistency with 3-tier (box, packet, sachet).
+_LEGACY_UNIT_ALIASES = frozenset({"pair", "pairs", "—", "-", "–", ""})
+
+
+def _unit_for_display(unit: Optional[str], fallback: str = "piece") -> str:
+    """Return a safe display unit label; never show legacy values like 'pair'."""
+    u = (unit or "").strip().lower()
+    if not u or u in _LEGACY_UNIT_ALIASES:
+        return (fallback or "piece").strip() or "piece"
+    return (unit or fallback).strip()
+
 
 class InventoryService:
     """Service for inventory calculations and FEFO allocation"""
@@ -94,9 +105,10 @@ class InventoryService:
         if not item:
             return None
         
-        wholesale_name = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
-        retail_name = (item.retail_unit or "").strip() or "piece"
-        supplier_name = (item.supplier_unit or "").strip()
+        wholesale_name = _unit_for_display(item.wholesale_unit or item.base_unit, "piece")
+        retail_name = _unit_for_display(item.retail_unit, "piece")
+        supplier_raw = (item.supplier_unit or "").strip()
+        supplier_name = _unit_for_display(item.supplier_unit, "piece") if supplier_raw else ""
         pack = max(1, int(item.pack_size or 1))
         wups = max(0.0001, float(item.wholesale_units_per_supplier or 1))
         # Multipliers to base (retail): how many retail units per 1 unit of this tier
@@ -276,9 +288,11 @@ class InventoryService:
         if not item:
             return "0"
         total_retail = InventoryService.get_current_stock(db, item_id, branch_id)  # retail (base) qty
-        wholesale_unit = getattr(item, "wholesale_unit", None) or item.base_unit or "piece"
-        retail_unit = getattr(item, "retail_unit", None) or "piece"
-        supplier_unit = getattr(item, "supplier_unit", None) or "piece"
+        wholesale_unit = _unit_for_display(
+            getattr(item, "wholesale_unit", None) or item.base_unit, "piece"
+        )
+        retail_unit = _unit_for_display(getattr(item, "retail_unit", None), "piece")
+        supplier_unit = _unit_for_display(getattr(item, "supplier_unit", None), "piece")
         pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
         wups = max(0.0001, float(getattr(item, "wholesale_units_per_supplier", None) or 1))
         units_per_supplier = pack_size * wups
@@ -292,11 +306,7 @@ class InventoryService:
         if wholesale_whole > 0:
             parts.append(f"{wholesale_whole} {wholesale_unit}")
         if retail_remainder > 0 or not parts:
-            # Never use "—" or empty as unit; use "piece" if invalid
-            unit = (retail_unit or "piece").strip() if retail_unit else "piece"
-            if not unit or unit in ("—", "-", "–"):
-                unit = "piece"
-            parts.append(f"{retail_remainder} {unit}")
+            parts.append(f"{retail_remainder} {retail_unit}")
         return " + ".join(parts) if parts else "0"
 
     @staticmethod
@@ -308,11 +318,9 @@ class InventoryService:
         if not item or quantity_retail <= 0:
             return "0"
         total_retail = float(quantity_retail)
-        wholesale_unit = (getattr(item, "wholesale_unit", None) or item.base_unit or "piece") or "piece"
-        retail_unit = str(getattr(item, "retail_unit", None) or "piece").strip() or "piece"
-        if not retail_unit or retail_unit in ("—", "-", "–"):
-            retail_unit = "piece"
-        supplier_unit = (getattr(item, "supplier_unit", None) or "piece") or "piece"
+        wholesale_unit = _unit_for_display(getattr(item, "wholesale_unit", None) or item.base_unit, "piece")
+        retail_unit = _unit_for_display(getattr(item, "retail_unit", None), "piece")
+        supplier_unit = _unit_for_display(getattr(item, "supplier_unit", None), "piece")
         pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
         wups = max(0.0001, float(getattr(item, "wholesale_units_per_supplier", None) or 1))
         units_per_supplier = pack_size * wups

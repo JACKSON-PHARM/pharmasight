@@ -31,7 +31,8 @@ from app.schemas.item import (
 from app.services.pricing_service import PricingService
 from app.services.items_service import create_item as svc_create_item, DuplicateItemNameError
 from app.services.canonical_pricing import CanonicalPricingService
-from app.services.inventory_service import InventoryService
+from app.services.inventory_service import InventoryService, _unit_for_display
+from app.services.excel_import_service import ExcelImportService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -434,7 +435,7 @@ def search_items(
         item_data = {
             "id": str(item.id),
             "name": item.name,
-            "base_unit": item.base_unit,
+            "base_unit": _unit_for_display(item.base_unit, "piece"),
             "price": price_from_ledger,
             "sku": item.sku or "",
             "category": getattr(item, 'category', None) or "",
@@ -471,15 +472,15 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "sku": item.sku,
         "barcode": item.barcode,
         "category": item.category,
-        "base_unit": item.base_unit or "piece",
+        "base_unit": _unit_for_display(item.base_unit, "piece"),
         "vat_category": getattr(item, "vat_category", None) or "ZERO_RATED",
         "vat_rate": float(item.vat_rate) if item.vat_rate is not None else 0.0,
         "is_active": item.is_active,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
-        "supplier_unit": item.supplier_unit or "piece",
-        "wholesale_unit": item.wholesale_unit or item.base_unit or "piece",
-        "retail_unit": item.retail_unit or "piece",
+        "supplier_unit": _unit_for_display(item.supplier_unit, "piece"),
+        "wholesale_unit": _unit_for_display(item.wholesale_unit or item.base_unit, "piece"),
+        "retail_unit": _unit_for_display(item.retail_unit, "piece"),
         "pack_size": int(item.pack_size) if item.pack_size is not None else 1,
         "wholesale_units_per_supplier": float(item.wholesale_units_per_supplier) if item.wholesale_units_per_supplier is not None else 1.0,
         "can_break_bulk": item.can_break_bulk,
@@ -513,6 +514,7 @@ def get_item(
     ) if branch_id else 0.0
     data = _item_to_response_dict(item, default_cost=default_cost)
     data["units"] = _display_units_from_item(item)
+    data["has_transactions"] = item_id in ExcelImportService._get_items_with_real_transactions(db, item.company_id, [item_id])
     if branch_id:
         data["stock_display"] = InventoryService.get_stock_display(db, item.id, branch_id)
         data["current_stock"] = float(InventoryService.get_current_stock(db, item.id, branch_id))
@@ -735,14 +737,9 @@ def get_items_overview(
     
     stock_data = {row.item_id: float(row.total_stock or 0) for row in stock_query.group_by(InventoryLedger.item_id).all()}
     
-    # Check which items have transactions (for locking structural fields)
-    items_with_transactions = set(
-        db.query(InventoryLedger.item_id)
-        .filter(InventoryLedger.item_id.in_(item_ids))
-        .distinct()
-        .all()
-    )
-    items_with_transactions = {row[0] for row in items_with_transactions}
+    # Check which items have real transactions (sales, purchases, or ledger other than OPENING_BALANCE).
+    # Items with only OPENING_BALANCE (e.g. from Excel import) remain editable.
+    items_with_transactions = ExcelImportService._get_items_with_real_transactions(db, company_id, list(item_ids))
     
     # Get last supplier and cost from purchase invoices (optimized subquery)
     # When branch_id is set: last supplier/cost for this branch only (branch-specific)
@@ -932,13 +929,15 @@ def adjust_stock(
 
     quantity_delta = base_quantity if body.direction.lower() == "add" else -base_quantity
 
+    # Previous balance (so response can show: previous + delta = new; never overwrite)
+    previous_stock = InventoryService.get_current_stock(db, item_id, body.branch_id)
+
     # For reduce, check current stock
     if quantity_delta < 0:
-        current = InventoryService.get_current_stock(db, item_id, body.branch_id)
-        if current + quantity_delta < 0:
+        if previous_stock + quantity_delta < 0:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot reduce by {abs(quantity_delta)} base units: current stock is {current}.",
+                detail=f"Cannot reduce by {abs(quantity_delta)} base units: current stock is {previous_stock}.",
             )
 
     # Unit cost: use provided or last purchase/default
@@ -980,14 +979,17 @@ def adjust_stock(
     db.commit()
 
     new_stock = InventoryService.get_current_stock(db, item_id, body.branch_id)
+    new_stock_display = InventoryService.get_stock_display(db, item_id, body.branch_id)
     direction_label = "added" if quantity_delta > 0 else "reduced"
     return AdjustStockResponse(
         success=True,
-        message=f"Stock {direction_label}: {abs(quantity_delta)} base units. New stock: {new_stock}.",
+        message=f"Stock {direction_label}: {abs(quantity_delta):.0f} base units. Previous: {previous_stock:.0f} → New: {new_stock:.0f} ({new_stock_display}).",
         item_id=item_id,
         branch_id=body.branch_id,
-        quantity_delta=quantity_delta,
+        quantity_delta=float(quantity_delta),
+        previous_stock=previous_stock,
         new_stock=new_stock,
+        new_stock_display=new_stock_display,
     )
 
 
@@ -1003,8 +1005,9 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     
-    # Check if item has any transactions
-    has_transactions = db.query(InventoryLedger).filter(InventoryLedger.item_id == item_id).first() is not None
+    # Lock structural fields only when item has real transactions (sales, purchases, or non–opening-balance ledger).
+    # Items with only OPENING_BALANCE (e.g. from Excel import) can still be edited.
+    has_transactions = item_id in ExcelImportService._get_items_with_real_transactions(db, item.company_id, [item_id])
     
     update_data = item_update.model_dump(exclude_unset=True, exclude={'units'}) if hasattr(item_update, 'model_dump') else item_update.dict(exclude_unset=True, exclude={'units'})
     # Do not persist deprecated price fields — cost from inventory_ledger only
@@ -1018,14 +1021,14 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
             detail="SKU cannot be modified once created. Item code is immutable."
         )
     
-    # Business Rule 2: Base unit and 3-tier unit fields locked if item has transactions
+    # Business Rule 2: Base unit and 3-tier unit fields locked only if item has real transactions (sales/purchases/movements)
     if has_transactions:
         locked_fields = ['base_unit', 'supplier_unit', 'wholesale_unit', 'retail_unit', 'pack_size', 'can_break_bulk']
         attempted_locked = [f for f in locked_fields if f in update_data]
         if attempted_locked:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot modify {', '.join(attempted_locked)} after item has inventory transactions. "
+                detail=f"Cannot modify {', '.join(attempted_locked)} after item has been used in sales, purchases, or stock movements. "
                        f"These fields are locked to maintain data integrity."
             )
 
@@ -1304,11 +1307,12 @@ def has_transactions(
         )
     ).scalar() or 0
     
-    # Check for inventory movements (ledger entries)
+    # Check for inventory movements (ledger entries excluding OPENING_BALANCE — opening balance does not lock editing)
     ledger_count = db.query(func.count(InventoryLedger.id)).filter(
         and_(
             InventoryLedger.item_id == item_id,
-            InventoryLedger.branch_id == branch_id
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.transaction_type != 'OPENING_BALANCE'
         )
     ).scalar() or 0
     

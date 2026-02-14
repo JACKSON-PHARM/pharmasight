@@ -128,6 +128,7 @@ class ItemResponse(ItemBase):
     default_supplier_id: Optional[UUID] = Field(None, description="Fallback supplier ID when no purchase history")
     stock_display: Optional[str] = Field(None, description="3-tier stock string when branch_id provided (e.g. '2 packet (200 tablet)')")
     current_stock: Optional[float] = Field(None, description="Current stock in base units when branch_id provided")
+    has_transactions: Optional[bool] = Field(False, description="True if item has sales, purchases, or non–opening-balance ledger (locks unit fields)")
 
     @model_validator(mode="after")
     def coerce_numeric_base_unit_for_display(self):
@@ -205,35 +206,42 @@ class ItemOverviewResponse(ItemResponse):
     current_stock: Optional[float] = Field(default=None, description="Current stock in base units (aggregated from ledger)")
     last_supplier: Optional[str] = Field(default=None, description="Name of last supplier from purchase transactions")
     last_unit_cost: Optional[float] = Field(default=None, description="Last unit cost from purchase transactions")
-    has_transactions: bool = Field(default=False, description="Whether item has any inventory_ledger records (locks structural fields)")
+    has_transactions: bool = Field(default=False, description="Whether item has sales, purchases, or non–opening-balance ledger (locks unit fields)")
     minimum_stock: Optional[float] = Field(default=None, description="Minimum stock level (if configured)")
 
 
 class AdjustStockRequest(BaseModel):
-    """Request body for manual stock adjustment (add or reduce)."""
+    """Request body for manual stock adjustment (add or reduce). Always applies a delta; never overwrites."""
     branch_id: UUID = Field(..., description="Branch where stock is adjusted")
     user_id: UUID = Field(..., description="User performing the adjustment (must be ADMIN, Pharmacist, or Auditor)")
     unit_name: str = Field(..., min_length=1, description="Unit to use (e.g. box, tablet, piece - one of item's 3-tier units)")
     quantity: float = Field(..., gt=0, description="Quantity in the selected unit (always positive)")
     direction: str = Field(..., description="'add' or 'reduce'")
     unit_cost: Optional[float] = Field(None, ge=0, description="Cost per base unit; default = last purchase cost")
-    batch_number: Optional[str] = Field(None, max_length=200, description="Batch/lot number for this adjustment")
-    expiry_date: Optional[str] = Field(None, description="Expiry date (YYYY-MM-DD)")
+    batch_number: Optional[str] = Field(None, max_length=200, description="Batch/lot number (required when direction=add)")
+    expiry_date: Optional[str] = Field(None, description="Expiry date YYYY-MM-DD (required when direction=add)")
     notes: Optional[str] = Field(None, max_length=2000, description="Comments or details (e.g. source, reason)")
 
     @model_validator(mode="after")
-    def validate_direction(self):
+    def validate_direction_and_batch_expiry(self):
         if self.direction.lower() not in ("add", "reduce"):
             raise ValueError("direction must be 'add' or 'reduce'")
+        if self.direction.lower() == "add":
+            if not (self.batch_number and self.batch_number.strip()):
+                raise ValueError("Batch number is required when adding stock.")
+            if not (self.expiry_date and self.expiry_date.strip()):
+                raise ValueError("Expiry date is required when adding stock.")
         return self
 
 
 class AdjustStockResponse(BaseModel):
-    """Response after stock adjustment."""
+    """Response after stock adjustment. Confirms delta was applied (previous + delta = new)."""
     success: bool = True
     message: str = Field(..., description="Success message")
     item_id: UUID = Field(..., description="Item that was adjusted")
     branch_id: UUID = Field(..., description="Branch where stock was adjusted")
-    quantity_delta: int = Field(..., description="Change in base units (positive = add, negative = reduce)")
-    new_stock: int = Field(..., description="New total stock in base units after adjustment")
+    quantity_delta: float = Field(..., description="Change in base units (positive = add, negative = reduce)")
+    previous_stock: float = Field(..., description="Stock in base units before this adjustment")
+    new_stock: float = Field(..., description="New total stock in base units after adjustment")
+    new_stock_display: Optional[str] = Field(None, description="New stock in 3-tier form e.g. '1 packet + 1 sachet'")
 

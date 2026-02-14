@@ -60,7 +60,7 @@ async function loadItems() {
                         <i class="fas fa-download"></i> Download Template
                     </button>
                     ${isHq ? `
-                    <button class="btn btn-outline" onclick="clearForReimport()" id="clearForReimportBtn" title="Clear all items and data for this company so you can run a fresh Excel import (only when no sales/purchases yet)">
+                    <button class="btn btn-outline" onclick="clearForReimport()" id="clearForReimportBtn" title="Clear all company data (items, inventory, sales, purchases, etc.) so you can run a fresh Excel import. Schema is kept.">
                         <i class="fas fa-broom"></i> Clear for re-import
                     </button>
                     <button class="btn btn-secondary" onclick="showImportExcelModal()">
@@ -992,50 +992,95 @@ function downloadItemTemplate() {
     showToast('Template downloaded! Fill it with your items and upload.', 'success');
 }
 
-/** Clear company data for fresh Excel import. Only allowed when no live transactions (no sales/purchases). */
+/** Clear all company data (including transactions) for fresh Excel import. Schema is left intact. Requires password confirmation. */
 async function clearForReimport() {
-    const btn = document.getElementById('clearForReimportBtn');
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking...';
+    const ok = confirm(
+        'This will permanently delete ALL data for this company: items, inventory, sales, purchases, quotations, stock takes, and related records. ' +
+        'Table schemas are kept. You can then run a fresh Excel import.\n\nCompanies, branches, and users will NOT be deleted.\n\nContinue?'
+    );
+    if (!ok) return;
+
+    const user = (typeof AuthBootstrap !== 'undefined' && AuthBootstrap.getCurrentUser) ? AuthBootstrap.getCurrentUser() : null;
+    const userEmail = user && user.email ? user.email : (typeof Auth !== 'undefined' && Auth.getCurrentUser ? (await Auth.getCurrentUser())?.email : null);
+    if (!userEmail) {
+        showToast('You must be signed in to clear company data.', 'error');
+        return;
     }
+
+    const content = `
+        <div class="alert alert-warning" style="margin-bottom: 1rem;">
+            <i class="fas fa-exclamation-triangle"></i>
+            <strong>Confirm your identity</strong><br>
+            Enter your password to confirm you want to clear all company data. This action cannot be undone.
+        </div>
+        <div class="form-group">
+            <label class="form-label">Your password</label>
+            <input type="password" id="clearDataPasswordInput" class="form-input" placeholder="Enter your password" autocomplete="current-password">
+            <p id="clearDataPasswordError" style="color: var(--danger, #dc3545); font-size: 0.875rem; margin-top: 0.35rem; display: none;"></p>
+        </div>
+    `;
+    const footer = `
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        <button type="button" class="btn btn-danger" id="clearDataConfirmBtn" data-clear-user-email="${escapeHtml(userEmail)}" onclick="confirmClearDataWithPassword()">
+            <i class="fas fa-broom"></i> Clear data
+        </button>
+    `;
+    showModal('Confirm clear company data', content, footer);
+    const inputEl = document.getElementById('clearDataPasswordInput');
+    if (inputEl) {
+        inputEl.focus();
+        inputEl.onkeydown = function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                document.getElementById('clearDataConfirmBtn').click();
+            }
+        };
+    }
+}
+
+/** Called from password confirmation modal: re-authenticate then call clear API. */
+async function confirmClearDataWithPassword() {
+    const btn = document.getElementById('clearDataConfirmBtn');
+    const userEmail = (btn && btn.getAttribute('data-clear-user-email')) || '';
+    const inputEl = document.getElementById('clearDataPasswordInput');
+    const errEl = document.getElementById('clearDataPasswordError');
+    const password = inputEl ? inputEl.value : '';
+    if (!userEmail) {
+        if (errEl) { errEl.textContent = 'Session expired. Please close and try again.'; errEl.style.display = 'block'; }
+        return;
+    }
+    if (!password) {
+        if (errEl) { errEl.textContent = 'Please enter your password.'; errEl.style.display = 'block'; }
+        return;
+    }
+    if (errEl) errEl.style.display = 'none';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...'; }
     try {
-        const modeInfo = await API.excel.getMode(CONFIG.COMPANY_ID);
-        if (modeInfo.has_live_transactions) {
-            showToast(
-                'Cannot clear: company has live transactions (sales, purchases, or stock movements). Clear is only allowed when there are no transactions yet.',
-                'error'
-            );
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-broom"></i> Clear for re-import';
-            }
-            return;
+        const Auth = typeof window !== 'undefined' ? window.Auth : null;
+        if (Auth && Auth.signIn) {
+            await Auth.signIn(userEmail, password);
+        } else {
+            const supabase = (window.getSupabaseClient && window.getSupabaseClient()) || (window.initSupabaseClient && window.initSupabaseClient());
+            if (!supabase) throw new Error('Cannot verify password');
+            const { error } = await supabase.auth.signInWithPassword({ email: userEmail, password });
+            if (error) throw error;
         }
-        const ok = confirm(
-            'This will permanently delete all items, inventory, sales, purchases, and related data for this company. ' +
-            'You can then run a fresh Excel import. Companies, branches, and users will NOT be deleted.\n\nContinue?'
-        );
-        if (!ok) {
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-broom"></i> Clear for re-import';
-            }
-            return;
-        }
-        if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Clearing...';
+    } catch (err) {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-broom"></i> Clear data'; }
+        const msg = (err && err.message) || (err && err.error_description) || 'Incorrect password';
+        if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+        return;
+    }
+    if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Clearing...';
+    try {
         const result = await API.excel.clearForReimport(CONFIG.COMPANY_ID);
+        closeModal();
         showToast(result.message || 'Company data cleared. You can now run a fresh Excel import.', 'success');
-        loadItems();
+        if (typeof loadItems === 'function') loadItems();
     } catch (err) {
         const msg = (err.data && (err.data.detail || err.data.message)) || err.message || 'Clear failed';
         showToast(typeof msg === 'string' ? msg : (msg.detail || msg.message || 'Clear failed'), 'error');
-    } finally {
-        const btn = document.getElementById('clearForReimportBtn');
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-broom"></i> Clear for re-import';
-        }
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-broom"></i> Clear data'; }
     }
 }
 
@@ -1408,10 +1453,19 @@ async function importExcelFile() {
     let jobId = null;
     
     try {
-        // Check import mode first
-        const modeInfo = await API.excel.getMode(CONFIG.COMPANY_ID);
-        updateProgress(5, `Mode: ${modeInfo.mode} - Starting import...`);
-        
+        // Check import mode first (if DB is unreachable, backend returns safe default so we can still try import)
+        let modeInfo = { mode: 'AUTHORITATIVE', has_live_transactions: false, mode_detection_failed: false };
+        try {
+            modeInfo = await API.excel.getMode(CONFIG.COMPANY_ID);
+        } catch (modeErr) {
+            updateProgress(5, 'Starting import (could not reach server or database; trying anyway)...');
+        }
+        if (!modeInfo.mode_detection_failed) {
+            updateProgress(5, `Mode: ${modeInfo.mode} - Starting import...`);
+        } else {
+            updateProgress(5, 'Starting import (database connection issue; using default mode)...');
+        }
+
         // Upload file to backend. Sync=1: import runs in request, returns when done. Sync=0: returns job_id, poll progress.
         const useSync = document.getElementById('excelImportSyncCheckbox') ? document.getElementById('excelImportSyncCheckbox').checked : true;
         updateProgress(10, useSync ? 'Uploading and running import (this may take several minutes)...' : 'Uploading and starting import...');
@@ -2321,6 +2375,7 @@ window.removeUnitRow = removeUnitRow;
 window.saveItem = saveItem;
 window.editItem = editItem;
 window.updateItem = updateItem;
+window.confirmClearDataWithPassword = confirmClearDataWithPassword;
 window.viewItemUnits = viewItemUnits;
 window.filterItems = filterItems;
 window.loadAllItems = loadAllItems;

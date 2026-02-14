@@ -611,9 +611,8 @@ class ExcelImportService:
             ).delete(synchronize_session=False)
             logger.info(f"Deleted {deleted_count} existing opening balances")
             
-            # Process in batches using OPTIMIZED bulk operations
-            # Increased batch size for better performance (500 items per batch)
-            batch_size = 500  # Increased from 100 for better performance
+            # Process in batches using OPTIMIZED bulk operations (fewer batches = fewer commits and less overhead)
+            batch_size = 1000  # 10k items = 10 batches; keeps memory and transaction size reasonable
             total_rows = len(excel_data)
             total_batches = (total_rows + batch_size - 1) // batch_size
             
@@ -1285,6 +1284,25 @@ class ExcelImportService:
             ).all()
         }
         
+        # Step 3a: Create any missing suppliers NOW so we have their IDs when setting default_supplier_id on items
+        suppliers_to_create = []
+        for name in supplier_names:
+            if name and _safe_strip(name) and _safe_strip(name).lower() not in existing_suppliers:
+                suppliers_to_create.append({
+                    'id': uuid4(),
+                    'company_id': company_id,
+                    'name': _safe_strip(name),
+                    'is_active': True
+                })
+        if suppliers_to_create:
+            db.bulk_insert_mappings(Supplier, suppliers_to_create)
+            db.flush()
+            result['suppliers_created'] = len(suppliers_to_create)
+        
+        # Step 3b: ONE call to get all item ids that have real transactions (avoids N+1: was 500+ calls per batch)
+        existing_item_ids = [item.id for item in existing_items.values()]
+        items_with_real_tx_set = ExcelImportService._get_items_with_real_transactions(db, company_id, existing_item_ids) if existing_item_ids else set()
+        
         # Step 4: Prepare items for bulk insert/update
         items_to_insert = []
         update_mappings_replaceable = []  # full overwrite (no real transactions)
@@ -1303,9 +1321,7 @@ class ExcelImportService:
             if item_name_lower in existing_items:
                 # Existing item: decide replace vs safe update based on real transactions
                 item = existing_items[item_name_lower]
-                has_real_tx = item.id in ExcelImportService._get_items_with_real_transactions(
-                    db, company_id, [item.id]
-                )
+                has_real_tx = item.id in items_with_real_tx_set
                 if not has_real_tx:
                     replaceable_item_ids.add(item.id)
                     # Full overwrite mapping (includes structural fields)
@@ -1346,7 +1362,7 @@ class ExcelImportService:
                 item_dict = ExcelImportService._create_item_dict_for_bulk(company_id, row, item_name)
                 items_to_insert.append(item_dict)
         
-        # Step 4b: Build supplier name -> id (existing + to-create) and add default_supplier_id to item dicts
+        # Step 4b: Build supplier name -> id (existing + just-created) and add default_supplier_id to item dicts
         supplier_name_to_id = {n.lower(): s.id for n, s in existing_suppliers.items()}
         supplier_name_to_id.update({s['name'].lower(): s['id'] for s in suppliers_to_create})
         for item_dict in items_to_insert + update_mappings_replaceable:
@@ -1354,6 +1370,7 @@ class ExcelImportService:
             (_, row) = item_name_to_row.get(name_lower, (None, {}))
             supplier_name = _safe_strip(_normalize_column_name(row, ['Supplier', 'supplier', 'SUPPLIER', 'Supplier Name', 'supplier name', 'Vendor', 'Vendor Name', 'vendor']) or '')
             item_dict['default_supplier_id'] = supplier_name_to_id.get(supplier_name.lower()) if supplier_name else None
+        suppliers_to_create = []  # Already inserted in Step 3a; avoid double-insert in Step 10
         
         # Step 5: Bulk insert new items
         if items_to_insert:
@@ -1390,19 +1407,23 @@ class ExcelImportService:
             db.query(ItemPricing).filter(ItemPricing.item_id.in_(list(replaceable_item_ids))).delete(synchronize_session=False)
             db.flush()
         
+        # Step 7b: Bulk fetch existing ItemPricing for all items in this batch (ONE query instead of N)
+        all_item_ids_batch = [item.id for item in all_items_map.values()]
+        existing_pricing_list = db.query(ItemPricing).filter(ItemPricing.item_id.in_(all_item_ids_batch)).all() if all_item_ids_batch else []
+        existing_pricing_by_item = {p.item_id: p for p in existing_pricing_list}
+        
         # Step 8: Prepare pricing and opening balances
         for item_name_lower, (item_name, row) in item_name_to_row.items():
             if item_name_lower not in all_items_map:
                 continue
             
             item = all_items_map[item_name_lower]
-            locked_ids = ExcelImportService._get_items_with_real_transactions(db, company_id, [item.id])
-            is_locked = item.id in locked_ids
+            is_locked = item.id in items_with_real_tx_set
             
             # Prepare pricing
             try:
                 pricing_dict = ExcelImportService._prepare_pricing_for_bulk(item, row)
-                existing_pricing = db.query(ItemPricing).filter(ItemPricing.item_id == item.id).first()
+                existing_pricing = existing_pricing_by_item.get(item.id)
                 if existing_pricing:
                     # Update using raw SQL to avoid SQLAlchemy issues
                     db.execute(
@@ -1466,18 +1487,7 @@ class ExcelImportService:
             except Exception as e:
                 logger.warning(f"Could not prepare opening balance for {item_name}: {e}")
             
-            # Prepare suppliers
-            supplier_name = _normalize_column_name(row, ['Supplier', 'Supplier Name', 'supplier', 'Vendor', 'Vendor Name', 'vendor']) or ''
-            supplier_name = _safe_strip(supplier_name)
-            if supplier_name and supplier_name.lower() not in existing_suppliers:
-                # Check if already in suppliers_to_create
-                if not any(s['name'].lower() == supplier_name.lower() for s in suppliers_to_create):
-                    suppliers_to_create.append({
-                        'id': uuid4(),
-                        'company_id': company_id,
-                        'name': supplier_name,
-                        'is_active': True
-                    })
+            # Suppliers already created in Step 3a; no need to append to suppliers_to_create here
         
         # Step 9: Bulk insert/update pricing
         if pricing_to_insert:

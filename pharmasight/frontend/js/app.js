@@ -1112,14 +1112,9 @@ function showSubNav(pageKey, title) {
             
             // Load page
             if (subPage) {
-                // For inventory, set the sub-page
-                if (page === 'inventory' && window.switchInventorySubPage) {
-                    loadPage(page);
-                    setTimeout(() => {
-                        if (window.switchInventorySubPage) {
-                            window.switchInventorySubPage(subPage);
-                        }
-                    }, 100);
+                // For inventory, persist subpage in URL so hashchange doesn't overwrite with items
+                if (page === 'inventory') {
+                    loadPage(`${page}-${subPage}`);
                 } else if (page === 'purchases') {
                     // For purchases, load the page first, then switch to sub-page if specified
                     loadPage(page);
@@ -1722,9 +1717,9 @@ async function loadPage(pageName) {
             }
             break;
         case 'inventory':
-            console.log('Loading inventory page...');
+            console.log('Loading inventory page, subPage:', subPage);
             if (window.loadInventory) {
-                window.loadInventory();
+                window.loadInventory(subPage || null);
             } else {
                 console.error('loadInventory function not found on window object');
             }

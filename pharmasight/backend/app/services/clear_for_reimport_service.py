@@ -2,13 +2,13 @@
 Clear company-specific data so you can run an Excel import afresh.
 
 Used by:
-- API: POST /api/excel/clear-for-reimport (only when no live transactions)
+- API: POST /api/excel/clear-for-reimport
 - CLI: scripts/clear_company_for_reimport.py
 
-Deletes (in FK-safe order): import jobs, inventory ledger, stock take data,
-order book, GRNs, purchase invoices/orders, payments, credit notes, sales
-invoices, quotations, items (and item_pricing), suppliers. item_units is
-deprecated and left intact (no reads/writes).
+Deletes ALL company data (in FK-safe order): import jobs, inventory ledger,
+stock take data, order book, GRNs, purchase invoices/orders, payments,
+credit notes, sales invoices, quotations, items (and item_pricing), suppliers.
+Table schemas are left intact. item_units is deprecated and left intact.
 
 Does NOT delete: companies, branches, users, tenants, settings, document
 sequences.

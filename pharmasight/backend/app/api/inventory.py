@@ -1,16 +1,20 @@
 """
 Inventory API routes
 """
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from typing import List
+from sqlalchemy import func, and_
+from typing import List, Optional
 from uuid import UUID
+from decimal import Decimal
+
 from app.dependencies import get_tenant_db
 from app.models import Item, Branch, InventoryLedger
 from app.schemas.inventory import StockBalance, StockAvailability, BatchStock
-from app.services.inventory_service import InventoryService
+from app.services.inventory_service import InventoryService, _unit_for_display
+from app.services.canonical_pricing import CanonicalPricingService
+from app.services.pricing_service import PricingService
 
 router = APIRouter()
 
@@ -92,46 +96,41 @@ def check_stock_availability(
 
 @router.get("/branch/{branch_id}/all", response_model=List[dict])
 def get_all_stock(branch_id: UUID, db: Session = Depends(get_tenant_db)):
-    """Get stock for all items in a branch (OPTIMIZED - no N+1 queries)"""
-    # Get all items for the branch's company
+    """Get stock for all items in a branch. OPTIMIZED: only loads items that have stock > 0 (no 10k item load)."""
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
-    
-    items = db.query(Item).filter(Item.company_id == branch.company_id).all()
-    
-    if not items:
+
+    # 1) Get item_ids with stock > 0 in ONE query (avoids loading all company items)
+    stock_aggregates = (
+        db.query(
+            InventoryLedger.item_id,
+            func.sum(InventoryLedger.quantity_delta).label("total_stock"),
+        )
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+        )
+        .group_by(InventoryLedger.item_id)
+        .having(func.sum(InventoryLedger.quantity_delta) > 0)
+        .all()
+    )
+    if not stock_aggregates:
         return []
-    
-    item_ids = [item.id for item in items]
-    
-    # Aggregate stock for all items in ONE query (no N+1!)
-    from sqlalchemy import func
-    from app.models import InventoryLedger
-    
-    stock_aggregates = db.query(
-        InventoryLedger.item_id,
-        func.sum(InventoryLedger.quantity_delta).label('total_stock')
-    ).filter(
-        InventoryLedger.item_id.in_(item_ids),
-        InventoryLedger.branch_id == branch_id
-    ).group_by(InventoryLedger.item_id).all()
-    
-    # Build stock map
+
     stock_map = {row.item_id: int(row.total_stock or 0) for row in stock_aggregates}
-    
-    # Build response (only items with stock > 0)
-    stock_list = []
-    for item in items:
-        stock = stock_map.get(item.id, 0)
-        if stock > 0:
-            stock_list.append({
-                "item_id": item.id,
-                "item_name": item.name,
-                "base_unit": item.base_unit,
-                "stock": stock
-            })
-    
+    item_ids = list(stock_map.keys())
+
+    # 2) Load only items that have stock
+    items = db.query(Item).filter(Item.id.in_(item_ids)).all()
+    stock_list = [
+        {
+            "item_id": item.id,
+            "item_name": item.name,
+            "base_unit": item.base_unit or "piece",
+            "stock": stock_map.get(item.id, 0),
+        }
+        for item in items
+    ]
     return stock_list
 
 
@@ -387,4 +386,162 @@ def get_all_stock_overview(branch_id: UUID, db: Session = Depends(get_tenant_db)
             })
     
     return result
+
+
+@router.get("/valuation", response_model=dict)
+def get_stock_valuation(
+    branch_id: UUID = Query(..., description="Branch ID (session branch or selected branch)"),
+    as_of_date: Optional[str] = Query(None, description="Date for snapshot (YYYY-MM-DD). Default = today (now)."),
+    valuation: str = Query("last_cost", description="Valuation method: last_cost or selling_price"),
+    stock_only: bool = Query(True, description="If true, return only items with stock > 0; if false, all company items"),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Stock valuation report (PharmaCore-style). Apply filters then fetch.
+    - branch_id: which branch (default session branch in UI).
+    - as_of_date: snapshot date (default today).
+    - valuation: last_cost (unit cost from ledger) or selling_price (cost × markup).
+    - stock_only: items with stock only (faster) or all items.
+    """
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    # Parse as_of_date; default to today (use end of day for ledger filter)
+    if as_of_date and as_of_date.strip():
+        try:
+            snap_date = date.fromisoformat(as_of_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid as_of_date; use YYYY-MM-DD.")
+    else:
+        snap_date = date.today()
+    # Ledger filter: include all movements up to end of snap_date
+    end_of_day = datetime(snap_date.year, snap_date.month, snap_date.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
+
+    company_id = branch.company_id
+    if valuation not in ("last_cost", "selling_price"):
+        valuation = "last_cost"
+
+    # 1) Stock aggregates up to as_of_date (single query)
+    q = (
+        db.query(
+            InventoryLedger.item_id,
+            func.sum(InventoryLedger.quantity_delta).label("total_stock"),
+        )
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.company_id == company_id,
+            InventoryLedger.created_at <= end_of_day,
+        )
+        .group_by(InventoryLedger.item_id)
+    )
+    if stock_only:
+        q = q.having(func.sum(InventoryLedger.quantity_delta) > 0)
+    rows = q.all()
+    stock_map = {r.item_id: float(r.total_stock or 0) for r in rows}
+    item_ids_with_stock = [r.item_id for r in rows if (r.total_stock or 0) > 0]
+
+    if stock_only and not item_ids_with_stock:
+        return {
+            "branch_id": str(branch_id),
+            "branch_name": branch.name or "",
+            "as_of_date": snap_date.isoformat(),
+            "valuation": valuation,
+            "stock_only": stock_only,
+            "rows": [],
+            "total_value": 0.0,
+            "total_items": 0,
+        }
+
+    if stock_only:
+        item_ids = item_ids_with_stock
+    else:
+        # All company items: get item_ids from Item table
+        item_ids = [r[0] for r in db.query(Item.id).filter(Item.company_id == company_id).all()]
+        # Ensure stock_map has 0 for items not in ledger
+        for iid in item_ids:
+            if iid not in stock_map:
+                stock_map[iid] = 0.0
+
+    if not item_ids:
+        return {
+            "branch_id": str(branch_id),
+            "branch_name": branch.name or "",
+            "as_of_date": snap_date.isoformat(),
+            "valuation": valuation,
+            "stock_only": stock_only,
+            "rows": [],
+            "total_value": 0.0,
+            "total_items": 0,
+        }
+
+    # 2) Load items (only those we need)
+    items = db.query(Item).filter(Item.id.in_(item_ids)).all()
+    items_by_id = {item.id: item for item in items}
+
+    # 3) Cost per RETAIL unit (same as dashboard total-value) so totals match
+    cost_per_retail = CanonicalPricingService.get_cost_per_retail_for_valuation_batch(
+        db, item_ids, branch_id, company_id
+    )
+    if not cost_per_retail:
+        cost_per_retail = {}
+
+    # 4) Build rows with value (stock_qty is in retail/base units)
+    total_value = 0.0
+    result_rows = []
+    for item in items:
+        stock_qty = stock_map.get(item.id, 0.0)
+        if stock_only and stock_qty <= 0:
+            continue
+        cost = float(cost_per_retail.get(item.id) or 0)
+        if valuation == "selling_price":
+            markup = PricingService.get_markup_percent(db, item.id, company_id)
+            price = cost * (1.0 + float(markup or 0) / 100.0)
+        else:
+            price = cost
+        value = stock_qty * price
+        total_value += value
+        # Build stock_display from item + qty (avoid N+1 get_stock_display)
+        if stock_qty > 0:
+            wu = _unit_for_display(getattr(item, "wholesale_unit", None) or item.base_unit, "piece")
+            ru = _unit_for_display(getattr(item, "retail_unit", None), "piece")
+            su = _unit_for_display(getattr(item, "supplier_unit", None), "piece")
+            pack = max(1, int(getattr(item, "pack_size", None) or 1))
+            wups = max(0.0001, float(getattr(item, "wholesale_units_per_supplier", None) or 1))
+            u_per_supp = pack * wups
+            supp_whole = int(stock_qty // u_per_supp) if u_per_supp >= 1 else 0
+            rem = stock_qty - (supp_whole * u_per_supp)
+            wholesale_whole = int(rem // pack) if pack >= 1 else 0
+            retail_rem = int(rem % pack) if pack >= 1 else int(stock_qty)
+            parts = []
+            if supp_whole > 0:
+                parts.append(f"{supp_whole} {su}")
+            if wholesale_whole > 0:
+                parts.append(f"{wholesale_whole} {wu}")
+            if retail_rem > 0 or not parts:
+                parts.append(f"{retail_rem} {ru}")
+            stock_display = " + ".join(parts) if parts else "0"
+        else:
+            stock_display = "0"
+        result_rows.append({
+            "item_id": str(item.id),
+            "item_name": item.name or "—",
+            "base_unit": (item.base_unit or "piece").strip() or "piece",
+            "stock": round(stock_qty, 4),
+            "stock_display": stock_display,
+            "unit_cost": round(cost, 4),
+            "unit_price": round(price, 4),
+            "value": round(value, 2),
+        })
+
+    return {
+        "branch_id": str(branch_id),
+        "branch_name": branch.name or "",
+        "as_of_date": snap_date.isoformat(),
+        "valuation": valuation,
+        "stock_only": stock_only,
+        "rows": result_rows,
+        "total_value": round(total_value, 2),
+        "total_items": len(result_rows),
+    }
 

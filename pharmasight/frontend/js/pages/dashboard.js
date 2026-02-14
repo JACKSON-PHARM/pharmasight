@@ -46,7 +46,7 @@ async function loadDashboard() {
 
     // Placeholders first
     document.getElementById('totalItems').textContent = '0';
-    document.getElementById('totalStock').textContent = formatCurrency(0);
+    document.getElementById('totalStock').textContent = '0';
     if (document.getElementById('totalStockValue')) {
         document.getElementById('totalStockValue').textContent = '—';
     }
@@ -54,11 +54,25 @@ async function loadDashboard() {
     document.getElementById('expiringItems').textContent = '0';
 
     try {
-        // Total items in stock (distinct items with stock > 0 at this branch)
+        // Items in database (all company items, with or without stock)
+        if (CONFIG.COMPANY_ID && API.items && typeof API.items.count === 'function') {
+            try {
+                const itemsCountData = await API.items.count(CONFIG.COMPANY_ID);
+                const totalInDb = itemsCountData.count != null ? itemsCountData.count : 0;
+                const totalItemsEl = document.getElementById('totalItems');
+                if (totalItemsEl) totalItemsEl.textContent = totalInDb;
+            } catch (err) {
+                console.warn('Items count (database) failed:', err);
+            }
+        }
+
+        // Unique items in stock (distinct items with stock > 0 at this branch)
         if (branchId && API.inventory && typeof API.inventory.getItemsInStockCount === 'function') {
             try {
                 const countData = await API.inventory.getItemsInStockCount(branchId);
-                document.getElementById('totalItems').textContent = countData.count != null ? countData.count : 0;
+                const uniqueInStock = countData.count != null ? countData.count : 0;
+                const totalStockEl = document.getElementById('totalStock');
+                if (totalStockEl) totalStockEl.textContent = uniqueInStock;
             } catch (err) {
                 console.warn('Items-in-stock count failed:', err);
             }
@@ -88,23 +102,7 @@ async function loadDashboard() {
             }
         }
 
-        // Load stock summary: show total units in stock (getAllStock returns items with stock > 0)
-        if (branchId && API.inventory && typeof API.inventory.getAllStock === 'function') {
-            try {
-                const stockList = await API.inventory.getAllStock(branchId);
-                const totalUnits = (stockList && Array.isArray(stockList)) ? stockList.reduce((sum, row) => sum + (Number(row.stock) || 0), 0) : 0;
-                // totalStock card: show unit count (e.g. "1,234 units")
-                const totalStockEl = document.getElementById('totalStock');
-                if (totalStockEl) totalStockEl.textContent = totalUnits.toLocaleString() + ' unit' + (totalUnits !== 1 ? 's' : '');
-            } catch (error) {
-                console.warn('Failed to load stock summary:', error);
-                const totalStockEl = document.getElementById('totalStock');
-                if (totalStockEl) totalStockEl.textContent = formatCurrency(0);
-            }
-        } else {
-            const totalStockEl = document.getElementById('totalStock');
-            if (totalStockEl) totalStockEl.textContent = formatCurrency(0);
-        }
+        // totalStock card is set above from getItemsInStockCount (unique items); no separate API needed
 
         // Stock value in KES (monetary)
         if (branchId && API.inventory && typeof API.inventory.getTotalStockValue === 'function') {
