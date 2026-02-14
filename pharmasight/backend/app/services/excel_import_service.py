@@ -274,6 +274,25 @@ def convert_quantity_wholesale_to_retail(
     return quantity_wholesale * Decimal(str(pack))
 
 
+def _vat_from_row(row: Dict) -> Dict:
+    """
+    Parse VAT category and rate from Excel row with inference:
+    - If vat_rate > 0 is provided, set vat_category = STANDARD_RATED (so VAT is not zeroed).
+    - Unit cost from Excel is assumed exclusive of VAT.
+    """
+    vat_category_raw = _normalize_column_name(row, ['VAT_Category', 'VAT Category', 'vat_category']) or 'ZERO_RATED'
+    vat_category = (_safe_strip(vat_category_raw) or 'ZERO_RATED').upper()
+    vat_rate_raw = _normalize_column_name(row, ['VAT_Rate', 'VAT Rate', 'vat_rate', 'Tax Rate', 'Tax', 'VAT']) or '0'
+    vat_rate = ExcelImportService._parse_decimal(vat_rate_raw)
+    if vat_rate and vat_rate > 0:
+        vat_category = 'STANDARD_RATED'
+    elif vat_category == 'STANDARD_RATED' and (not vat_rate or vat_rate == 0):
+        vat_rate = Decimal('16.00')
+    elif vat_category == 'ZERO_RATED':
+        vat_rate = Decimal('0.00')
+    return {'vat_rate': vat_rate, 'vat_category': vat_category}
+
+
 class ExcelImportService:
     """Service for importing Excel data with inventory integrity enforcement"""
     
@@ -506,9 +525,14 @@ class ExcelImportService:
 
         vat_category_raw = _normalize_column_name(row, ['VAT_Category', 'VAT Category', 'vat_category']) or 'ZERO_RATED'
         vat_category = (_safe_strip(vat_category_raw) or 'ZERO_RATED').upper()
-        vat_rate_raw = _normalize_column_name(row, ['VAT_Rate', 'VAT Rate', 'vat_rate', 'Tax Rate']) or '0'
+        vat_rate_raw = _normalize_column_name(row, ['VAT_Rate', 'VAT Rate', 'vat_rate', 'Tax Rate', 'Tax', 'VAT']) or '0'
         vat_rate = ExcelImportService._parse_decimal(vat_rate_raw)
-        if vat_category == 'STANDARD_RATED' and vat_rate == 0:
+        # Infer category from rate when only rate is provided (e.g. Excel has "VAT Rate" = 16 but no category column)
+        if vat_rate and vat_rate > 0:
+            vat_category = 'STANDARD_RATED'
+            if vat_rate != Decimal('16.00'):
+                pass  # keep explicit rate (e.g. 16)
+        elif vat_category == 'STANDARD_RATED' and (not vat_rate or vat_rate == 0):
             vat_rate = Decimal('16.00')
         elif vat_category == 'ZERO_RATED':
             vat_rate = Decimal('0.00')
@@ -1015,13 +1039,16 @@ class ExcelImportService:
         can_break_bulk_raw = _normalize_column_name(row, ['Can_Break_Bulk', 'Can Break Bulk', 'can_break_bulk'])
         can_break_bulk = str(can_break_bulk_raw).lower() in ['true', '1', 'yes', 'y'] if can_break_bulk_raw else True
         
-        # VAT CLASSIFICATION
+        # VAT CLASSIFICATION (unit cost from Excel is assumed exclusive of VAT)
         vat_category_raw = _normalize_column_name(row, ['VAT_Category', 'VAT Category', 'vat_category']) or 'ZERO_RATED'
         vat_category = _safe_strip(vat_category_raw) or 'ZERO_RATED'
         vat_category = vat_category.upper() if vat_category else 'ZERO_RATED'
-        vat_rate_raw = _normalize_column_name(row, ['VAT_Rate', 'VAT Rate', 'vat_rate', 'Tax Rate']) or '0'
+        vat_rate_raw = _normalize_column_name(row, ['VAT_Rate', 'VAT Rate', 'vat_rate', 'Tax Rate', 'Tax', 'VAT']) or '0'
         vat_rate = ExcelImportService._parse_decimal(vat_rate_raw)
-        if vat_category == 'STANDARD_RATED' and vat_rate == 0:
+        # Infer STANDARD_RATED from positive rate when category not provided (e.g. only "VAT Rate" column with 16)
+        if vat_rate and vat_rate > 0:
+            vat_category = 'STANDARD_RATED'
+        elif vat_category == 'STANDARD_RATED' and (not vat_rate or vat_rate == 0):
             vat_rate = Decimal('16.00')
         elif vat_category == 'ZERO_RATED':
             vat_rate = Decimal('0.00')
@@ -1119,7 +1146,7 @@ class ExcelImportService:
         row: Dict
     ) -> Optional[UUID]:
         """Ensure supplier exists, return supplier ID"""
-        supplier_name_raw = _normalize_column_name(row, ['Supplier', 'supplier', 'SUPPLIER', 'Supplier Name', 'supplier name']) or ''
+        supplier_name_raw = _normalize_column_name(row, ['Supplier', 'supplier', 'SUPPLIER', 'Supplier Name', 'supplier name', 'Vendor', 'Vendor Name', 'vendor']) or ''
         supplier_name = _safe_strip(supplier_name_raw) or ''
         if not supplier_name:
             return None
@@ -1228,7 +1255,7 @@ class ExcelImportService:
                 item_names.append(item_name)
                 valid_rows.append((item_name, row))
             
-            supplier_name = _normalize_column_name(row, ['Supplier', 'Supplier Name', 'supplier']) or ''
+            supplier_name = _normalize_column_name(row, ['Supplier', 'Supplier Name', 'supplier', 'Vendor', 'Vendor Name', 'vendor']) or ''
             supplier_name = _safe_strip(supplier_name)
             if supplier_name:
                 supplier_names.add(supplier_name)
@@ -1325,7 +1352,7 @@ class ExcelImportService:
         for item_dict in items_to_insert + update_mappings_replaceable:
             name_lower = (item_dict.get('name') or '').lower()
             (_, row) = item_name_to_row.get(name_lower, (None, {}))
-            supplier_name = _safe_strip(_normalize_column_name(row, ['Supplier', 'supplier', 'SUPPLIER', 'Supplier Name', 'supplier name']) or '')
+            supplier_name = _safe_strip(_normalize_column_name(row, ['Supplier', 'supplier', 'SUPPLIER', 'Supplier Name', 'supplier name', 'Vendor', 'Vendor Name', 'vendor']) or '')
             item_dict['default_supplier_id'] = supplier_name_to_id.get(supplier_name.lower()) if supplier_name else None
         
         # Step 5: Bulk insert new items
@@ -1440,7 +1467,7 @@ class ExcelImportService:
                 logger.warning(f"Could not prepare opening balance for {item_name}: {e}")
             
             # Prepare suppliers
-            supplier_name = _normalize_column_name(row, ['Supplier', 'Supplier Name', 'supplier']) or ''
+            supplier_name = _normalize_column_name(row, ['Supplier', 'Supplier Name', 'supplier', 'Vendor', 'Vendor Name', 'vendor']) or ''
             supplier_name = _safe_strip(supplier_name)
             if supplier_name and supplier_name.lower() not in existing_suppliers:
                 # Check if already in suppliers_to_create
@@ -1494,8 +1521,7 @@ class ExcelImportService:
             'barcode': _safe_strip(_normalize_column_name(row, ['Barcode', 'barcode']) or ''),
             'category': _safe_strip(_normalize_column_name(row, ['Category', 'category']) or ''),
             'base_unit': _sanitize_unit_label(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit', 'Base_Unit', 'Base Unit', 'Base Unit (x)']), 'piece'),
-            'vat_rate': ExcelImportService._parse_decimal(_normalize_column_name(row, ['VAT_Rate', 'VAT Rate', 'Tax Rate']) or '0'),
-            'vat_category': _safe_strip(_normalize_column_name(row, ['VAT_Category', 'VAT Category']) or 'ZERO_RATED'),
+            **_vat_from_row(row),
             'is_active': True,
             'supplier_unit': _sanitize_unit_label(_normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit']), 'piece'),
             'wholesale_unit': _sanitize_unit_label(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit']), 'piece'),

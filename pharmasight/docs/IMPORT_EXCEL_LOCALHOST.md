@@ -25,9 +25,11 @@ Use this to load your Excel sheet into the **default database** so the **items**
 | **Opening balance (inventory_ledger)** | | |
 | Units in stock      | No        | **Current Stock Quantity**                  |
 | Unit cost (per wholesale unit) | No | **Wholesale Unit Price** (or Purchase Price per Supplier Unit) |
-| Supplier name       | No        | **Supplier**                                |
+| Supplier name       | No        | **Supplier** (or **Vendor** – map your supplier/vendor column here) |
 
+- **Unit cost**: All cost and price values from Excel are treated as **exclusive of VAT**. VAT is applied on top when selling.
 - **Items**: every row with an **Item Name** becomes (or updates) an item.
+- **VAT**: Map **VAT Rate** (or **Tax**, **VAT %**) and optionally **VAT Category** so standard-rated items get 16% VAT; if only VAT Rate is provided and it is 16 (or > 0), the item is set to standard-rated automatically.
 - **Opening balance**: for each item, if you map **Current Stock Quantity** and optionally **Wholesale Unit Price** (or **Purchase Price per Supplier Unit**) and **Supplier**, the import creates an `OPENING_BALANCE` row in `inventory_ledger` with:
   - `quantity_delta` = current stock quantity (in base/wholesale units)
   - `unit_cost` = cost per base (wholesale) unit

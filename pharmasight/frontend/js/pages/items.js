@@ -1111,8 +1111,9 @@ function suggestFieldForHeader(header, expectedFields) {
     // —— Explicit matches first (per discussion: VAT Category, VAT Rate, Supplier, etc.) ——
     if (n.includes('vat') && n.includes('category')) return 'vat_category';
     if (n.includes('vat') && n.includes('rate')) return 'vat_rate';
-    // "Supplier" as name only (not Supplier_Unit, Supplier_Item_Code, etc.)
-    if (n === 'supplier' || (n.includes('supplier') && !n.includes('unit') && !n.includes('item') && !n.includes('code') && !n.includes('last') && !n.includes('cost'))) return 'supplier';
+    if ((n.includes('tax') && !n.includes('category')) || n === 'vat' || n.startsWith('vat ')) return 'vat_rate';
+    // Supplier / Vendor (not Supplier_Unit, Supplier_Item_Code, etc.)
+    if (n.includes('vendor') || n === 'supplier' || (n.includes('supplier') && !n.includes('unit') && !n.includes('item') && !n.includes('code') && !n.includes('last') && !n.includes('cost'))) return 'supplier';
     // Item name / description / category (description must not be "vat description")
     if (n.includes('item') && n.includes('name')) return 'item_name';
     if ((n.includes('description') || n.includes('generic')) && !n.includes('vat')) return 'description';
