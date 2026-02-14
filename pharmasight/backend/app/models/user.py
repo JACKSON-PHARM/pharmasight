@@ -59,6 +59,7 @@ class UserRole(Base):
 
     # Relationships
     user_branch_roles = relationship("UserBranchRole", back_populates="role")
+    role_permissions = relationship("RolePermission", back_populates="role", cascade="all, delete-orphan")
 
 
 class UserBranchRole(Base):

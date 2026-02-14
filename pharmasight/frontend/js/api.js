@@ -161,6 +161,7 @@ const API = {
         get: (branchId) => api.get(`/api/branches/${branchId}`),
         create: (data) => api.post('/api/branches', data),
         update: (branchId, data) => api.put(`/api/branches/${branchId}`, data),
+        setAsHq: (branchId) => api.post(`/api/branches/${branchId}/set-hq`, null),
     },
 
     // Items
@@ -384,6 +385,14 @@ const API = {
         sendInvitation: (userId) => api.post(`/api/users/${userId}/send-invitation`, null),
         assignRole: (userId, roleData) => api.post(`/api/users/${userId}/roles`, roleData),
         listRoles: () => api.get('/api/users/roles'),
+        updateRole: (roleId, data) => api.patch(`/api/users/roles/${roleId}`, data),
+        getRolePermissions: (roleId) => api.get(`/api/users/roles/${roleId}/permissions`),
+        updateRolePermissions: (roleId, permissions) => api.put(`/api/users/roles/${roleId}/permissions`, { permissions }),
+    },
+    // Permissions (Vyapar-style matrix)
+    permissions: {
+        list: () => api.get('/api/permissions'),
+        hqOnly: () => api.get('/api/permissions/hq-only'),
     },
     
     // Stock Take (Multi-User)

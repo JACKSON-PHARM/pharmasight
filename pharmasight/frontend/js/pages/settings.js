@@ -368,13 +368,16 @@ async function renderBranchesPage() {
         }
     }
     
+    const currentBranch = branches.find(b => b.id === CONFIG.BRANCH_ID);
+    const canCreateBranch = currentBranch && currentBranch.is_hq;
+
     page.innerHTML = `
         <div class="card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                 <h3 class="card-title"><i class="fas fa-code-branch"></i> Branches</h3>
-                <button class="btn btn-primary" onclick="showCreateBranchModal()">
+                ${canCreateBranch ? `<button class="btn btn-primary" onclick="showCreateBranchModal()">
                     <i class="fas fa-plus"></i> New Branch
-                </button>
+                </button>` : '<span style="font-size: 0.875rem; color: var(--text-secondary);">Create branches at HQ only</span>'}
             </div>
             <div class="card-body">
                 ${branches.length === 0 ? `
@@ -386,11 +389,15 @@ async function renderBranchesPage() {
                         </button>
                     </div>
                 ` : `
+                    <div class="branch-hq-info" style="background: var(--bg-secondary); padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem; font-size: 0.875rem; color: var(--text-secondary);">
+                        <strong style="color: var(--text-primary);">HQ branch</strong> has exclusive access to: Create Items, Suppliers, Users, Roles, and Branches. Only the HQ can order from external suppliers. Other branches can use Sales, Purchases (receiving), Inventory, and Reports.
+                    </div>
                     <div class="table-container">
                         <table style="width: 100%; border-collapse: collapse;">
                             <thead>
                                 <tr>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Name</th>
+                                    <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Type</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Address</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Phone</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Actions</th>
@@ -403,14 +410,20 @@ async function renderBranchesPage() {
                                             <strong>${escapeHtml(branch.name)}</strong>
                                             ${branch.id === CONFIG.BRANCH_ID ? '<span class="badge badge-success" style="margin-left: 0.5rem;">Current</span>' : ''}
                                         </td>
+                                        <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                                            ${branch.is_hq ? '<span class="badge badge-warning" title="Headquarters – exclusive create items, suppliers, users, roles, branches"><i class="fas fa-building"></i> HQ</span>' : '<span class="badge badge-secondary">Branch</span>'}
+                                        </td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${escapeHtml(branch.address || '—')}</td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${escapeHtml(branch.phone || '—')}</td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                            <button class="btn btn-outline" onclick="editBranch('${branch.id}')" title="Edit">
+                                            ${!branch.is_hq ? `<button class="btn btn-outline btn-sm" onclick="setBranchAsHq('${branch.id}')" title="Set as HQ (Headquarters)">
+                                                <i class="fas fa-building"></i> Set as HQ
+                                            </button>` : ''}
+                                            <button class="btn btn-outline btn-sm" onclick="editBranch('${branch.id}')" title="Edit">
                                                 <i class="fas fa-edit"></i>
                                             </button>
                                             ${branch.id !== CONFIG.BRANCH_ID ? `
-                                                <button class="btn btn-outline" onclick="setCurrentBranch('${branch.id}')" title="Set as Current">
+                                                <button class="btn btn-outline btn-sm" onclick="setCurrentBranch('${branch.id}')" title="Set as Current">
                                                     <i class="fas fa-check"></i>
                                                 </button>
                                             ` : ''}
@@ -495,6 +508,20 @@ async function createBranch(event) {
     } catch (error) {
         console.error('Error creating branch:', error);
         showToast(error.message || 'Error creating branch', 'error');
+    }
+}
+
+async function setBranchAsHq(branchId) {
+    try {
+        await API.branch.setAsHq(branchId);
+        showToast('Branch set as HQ successfully', 'success');
+        await renderBranchesPage();
+        if (window.updateStatusBar) {
+            const user = await Auth.getCurrentUser();
+            if (user) window.updateStatusBar(user);
+        }
+    } catch (error) {
+        showToast(error.message || 'Failed to set HQ', 'error');
     }
 }
 
@@ -752,8 +779,9 @@ async function renderUsersPage() {
         } else if (view === 'rolesList') {
             renderRolesList(page, roles, canCreateRole);
         } else {
-            // Default: show users list
-            renderUsersList(page, users, roles, branches, errorMessage, isAdminUser, canCreateRole, isPrimaryAdminUser);
+            const currentBranch = branches.find(b => b.id === CONFIG.BRANCH_ID);
+            const isHq = !!(currentBranch && currentBranch.is_hq);
+            renderUsersList(page, users, roles, branches, errorMessage, isAdminUser, canCreateRole, isPrimaryAdminUser, isHq);
         }
         console.log('[USERS] Page rendered successfully!');
     } catch (error) {
@@ -778,7 +806,8 @@ async function renderUsersPage() {
     }
 }
 
-function renderUsersList(page, users, roles, branches, errorMessage, isAdminUser, canCreateRole, isPrimaryAdminUser) {
+function renderUsersList(page, users, roles, branches, errorMessage, isAdminUser, canCreateRole, isPrimaryAdminUser, isHq) {
+    const atHq = isHq !== false;
     // Separate active and deleted users
     const activeUsers = users.filter(u => !u.deleted_at);
     const deletedUsers = users.filter(u => u.deleted_at);
@@ -789,13 +818,15 @@ function renderUsersList(page, users, roles, branches, errorMessage, isAdminUser
         <div class="card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                 <h3 class="card-title"><i class="fas fa-users"></i> Users & Roles</h3>
-                <div style="display: flex; gap: 0.5rem;">
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    ${atHq ? `
                     <button class="btn btn-primary" onclick="showCreateUserForm()" title="Create a new user">
                         <i class="fas fa-plus"></i> Create User
                     </button>
                     <button class="btn btn-secondary" onclick="showCreateRoleForm()" title="Create a new role">
                         <i class="fas fa-user-tag"></i> Create Role
                     </button>
+                    ` : '<span style="font-size: 0.875rem; color: var(--text-secondary);">Create users/roles at HQ only</span>'}
                     <button class="btn btn-outline" onclick="showRolesList()" title="View all roles">
                         <i class="fas fa-list"></i> Manage Roles
                     </button>
@@ -970,6 +1001,13 @@ function renderUsersList(page, users, roles, branches, errorMessage, isAdminUser
 }
 
 async function renderCreateUserForm(page, roles, branches, isAdminUser) {
+    const isHq = !!(CONFIG.IS_HQ || (branches && branches.find(b => b.id === CONFIG.BRANCH_ID)?.is_hq));
+    if (!isHq) {
+        showToast('Create user is only available at the HQ branch', 'warning');
+        usersPageState.view = 'list';
+        await renderUsersPage();
+        return;
+    }
     if (!isAdminUser) {
         usersPageState.view = 'list';
         await renderUsersPage();
@@ -1153,13 +1191,7 @@ function renderRolesList(page, roles, canCreateRole) {
                                             ${escapeHtml(role.description || '—')}
                                         </td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                                                ${role.permissions ? `
-                                                    ${role.permissions.read ? '<span class="badge badge-info">Read</span>' : ''}
-                                                    ${role.permissions.write ? '<span class="badge badge-info">Write</span>' : ''}
-                                                    ${role.permissions.admin ? '<span class="badge badge-warning">Admin</span>' : ''}
-                                                ` : '<span class="badge badge-secondary">No permissions set</span>'}
-                                            </div>
+                                            <span class="badge badge-secondary">Edit to configure</span>
                                         </td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                                             <button class="btn btn-outline btn-sm" onclick="showEditRoleForm('${role.id}')" title="Edit Role">
@@ -1179,24 +1211,47 @@ function renderRolesList(page, roles, canCreateRole) {
 
 async function renderEditRoleForm(page, roleId, roles) {
     let role = null;
+    let permissionsByModule = [];
+    let rolePermissionNames = new Set();
     try {
-        // Try to find role in the list, or fetch from API if needed
-        role = roles.find(r => r.id === roleId);
-        if (!role && API && API.users && API.users.getRole) {
-            role = await API.users.getRole(roleId);
-        } else if (!role) {
-            // Fallback: create a basic role object
-            role = { id: roleId, role_name: 'Unknown', description: '', permissions: {} };
+        role = roles.find(r => r.id === roleId) || { id: roleId, role_name: 'Unknown', description: '' };
+        if (API && API.permissions && API.permissions.list) {
+            const permList = await API.permissions.list();
+            permissionsByModule = Array.isArray(permList) ? permList : [];
+        }
+        if (API && API.users && API.users.getRolePermissions) {
+            const rp = await API.users.getRolePermissions(roleId);
+            rolePermissionNames = new Set(rp.permissions || []);
         }
     } catch (error) {
-        console.error('Error loading role:', error);
-        showToast('Error loading role details', 'error');
+        console.error('Error loading role/permissions:', error);
+        showToast('Error loading role details. ' + (error.message || ''), 'error');
         usersPageState.view = 'list';
         usersPageState.editingRoleId = null;
         await renderUsersPage();
         return;
     }
-    
+
+    const actions = ['view', 'create', 'edit', 'delete'];
+    const actionLabels = { view: 'View', create: 'Create', edit: 'Edit', delete: 'Delete' };
+
+    const matrixRows = permissionsByModule.map(mod => {
+        const cells = actions.map(action => {
+            const perm = mod.permissions.find(p => p.action === action);
+            if (!perm) return '<td class="perm-cell perm-na"><span class="perm-na-label">—</span></td>';
+            const checked = rolePermissionNames.has(perm.name);
+            return `<td class="perm-cell">
+                <label class="perm-checkbox-label" title="${escapeHtml(perm.description || '')}">
+                    <input type="checkbox" class="perm-checkbox" data-permission="${escapeHtml(perm.name)}" ${checked ? 'checked' : ''}>
+                    <span class="perm-checkmark ${checked ? 'checked' : ''}"><i class="fas fa-check"></i></span>
+                </label>
+            </td>`;
+        }).join('');
+        return `<tr><td class="perm-module">${escapeHtml(mod.module)}</td>${cells}</tr>`;
+    }).join('');
+
+    const headerCells = actions.map(a => `<th class="perm-header">${actionLabels[a]}</th>`).join('');
+
     page.innerHTML = `
         <div class="card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -1214,40 +1269,42 @@ async function renderEditRoleForm(page, roleId, roles) {
                     </div>
                     <div class="form-group">
                         <label class="form-label">Description</label>
-                        <textarea class="form-textarea" name="description" rows="3" 
+                        <textarea class="form-textarea" name="description" rows="2" 
                                   placeholder="Describe the role's responsibilities">${escapeHtml(role.description || '')}</textarea>
                     </div>
                     <h4 style="margin-top: 1.5rem; margin-bottom: 1rem;">Permissions</h4>
-                    <div class="form-group">
-                        <label class="form-checkbox">
-                            <input type="checkbox" name="permission_read" ${role.permissions && role.permissions.read ? 'checked' : ''}>
-                            <span>Read</span>
-                        </label>
+                    <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">Toggle permissions for this role. Check = granted.</p>
+                    <div class="perm-matrix-container" style="overflow-x: auto; margin-bottom: 1.5rem;">
+                        <table class="perm-matrix">
+                            <thead>
+                                <tr><th class="perm-module-header">Module</th>${headerCells}</tr>
+                            </thead>
+                            <tbody>${matrixRows}</tbody>
+                        </table>
                     </div>
-                    <div class="form-group">
-                        <label class="form-checkbox">
-                            <input type="checkbox" name="permission_write" ${role.permissions && role.permissions.write ? 'checked' : ''}>
-                            <span>Write</span>
-                        </label>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-checkbox">
-                            <input type="checkbox" name="permission_admin" ${role.permissions && role.permissions.admin ? 'checked' : ''}>
-                            <span>Admin</span>
-                        </label>
-                    </div>
-                    <div style="margin-top: 2rem; display: flex; gap: 1rem;">
+                    <div style="display: flex; gap: 1rem; align-items: center;">
                         <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-save"></i> Update Role
+                            <i class="fas fa-save"></i> Save Role
                         </button>
-                        <button type="button" class="btn btn-secondary" onclick="cancelEditRole()">
-                            <i class="fas fa-times"></i> Cancel
-                        </button>
+                        <button type="button" class="btn btn-outline" onclick="selectAllPermissions(true)">Select All</button>
+                        <button type="button" class="btn btn-outline" onclick="selectAllPermissions(false)">Clear All</button>
+                        <button type="button" class="btn btn-secondary" onclick="cancelEditRole()">Cancel</button>
                     </div>
                 </form>
             </div>
         </div>
     `;
+
+    page.querySelectorAll('.perm-checkbox').forEach(cb => {
+        cb.addEventListener('change', function() {
+            this.closest('label').querySelector('.perm-checkmark').classList.toggle('checked', this.checked);
+        });
+    });
+}
+
+function selectAllPermissions(checked) {
+    document.querySelectorAll('#editRoleForm .perm-checkbox').forEach(cb => { cb.checked = checked; });
+    document.querySelectorAll('#editRoleForm .perm-checkmark').forEach(s => s.classList.toggle('checked', checked));
 }
 
 function cancelRolesList() {
@@ -1489,30 +1546,30 @@ async function handleEditRole(event, roleId) {
     event.preventDefault();
     const form = event.target;
     const formData = new FormData(form);
-    
-    const roleData = {
-        role_name: formData.get('role_name'),
-        description: formData.get('description') || null,
-        permissions: {
-            read: formData.get('permission_read') === 'on',
-            write: formData.get('permission_write') === 'on',
-            admin: formData.get('permission_admin') === 'on'
-        }
-    };
-    
+
+    const roleName = formData.get('role_name');
+    const description = formData.get('description') || null;
+
+    const permissionNames = [];
+    form.querySelectorAll('.perm-checkbox:checked').forEach(cb => {
+        const name = cb.getAttribute('data-permission');
+        if (name) permissionNames.push(name);
+    });
+
     try {
         if (API && API.users && API.users.updateRole) {
-            await API.users.updateRole(roleId, roleData);
-            showToast('Role updated successfully!', 'success');
-            usersPageState.view = 'list';
-            usersPageState.editingRoleId = null;
-            await renderUsersPage();
-        } else {
-            showToast('Role editing feature coming soon. Backend endpoint needed.', 'info');
+            await API.users.updateRole(roleId, { role_name: roleName, description });
         }
+        if (API && API.users && API.users.updateRolePermissions) {
+            await API.users.updateRolePermissions(roleId, permissionNames);
+        }
+        showToast('Role updated successfully!', 'success');
+        usersPageState.view = 'list';
+        usersPageState.editingRoleId = null;
+        await renderUsersPage();
     } catch (error) {
         console.error('Error updating role:', error);
-        showToast(error.message || 'Error updating role', 'error');
+        showToast((error.message || 'Error updating role') + (error.data?.detail ? ': ' + (typeof error.data.detail === 'string' ? error.data.detail : JSON.stringify(error.data.detail)) : ''), 'error');
     }
 }
 

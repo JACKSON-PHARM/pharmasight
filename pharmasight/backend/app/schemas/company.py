@@ -58,6 +58,7 @@ class BranchBase(BaseModel):
     address: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool = Field(default=True)
+    is_hq: bool = Field(default=False, description="HQ branch: exclusive create items, suppliers, users, roles, branches")
 
 
 class BranchCreate(BranchBase):
@@ -72,6 +73,7 @@ class BranchUpdate(BaseModel):
     address: Optional[str] = None
     phone: Optional[str] = None
     is_active: Optional[bool] = None
+    is_hq: Optional[bool] = None
 
 
 class BranchResponse(BranchBase):

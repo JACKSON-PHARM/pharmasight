@@ -75,10 +75,13 @@ function setBranchInternal(branch, shouldBroadcast = true) {
             id: branch.id,
             name: branch.name,
             company_id: branch.company_id,
-            code: branch.code
+            code: branch.code,
+            is_hq: !!branch.is_hq
         }));
+        if (typeof CONFIG !== 'undefined') CONFIG.IS_HQ = !!branch.is_hq;
     } else {
         localStorage.removeItem(BRANCH_STORAGE_KEY);
+        if (typeof CONFIG !== 'undefined') CONFIG.IS_HQ = false;
     }
     
     // Update CONFIG for backward compatibility
@@ -130,6 +133,7 @@ function loadBranchFromStorage() {
             selectedBranch = branch;
             CONFIG.BRANCH_ID = branch.id;
             CONFIG.COMPANY_ID = branch.company_id;
+            CONFIG.IS_HQ = !!branch.is_hq;
             return branch;
         }
     } catch (error) {

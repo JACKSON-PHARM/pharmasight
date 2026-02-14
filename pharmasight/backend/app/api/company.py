@@ -244,3 +244,26 @@ def update_branch(branch_id: UUID, branch_update: BranchUpdate, db: Session = De
     db.refresh(branch)
     return branch
 
+
+@router.post("/branches/{branch_id}/set-hq", response_model=BranchResponse)
+def set_branch_as_hq(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+    """
+    Set this branch as the HQ (headquarters) branch.
+    Only one branch per company can be HQ. HQ has exclusive access to:
+    create items, suppliers, users, roles, and other branches.
+    """
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    # Clear is_hq on all other branches of the same company
+    db.query(Branch).filter(
+        Branch.company_id == branch.company_id,
+        Branch.id != branch_id,
+    ).update({Branch.is_hq: False})
+
+    branch.is_hq = True
+    db.commit()
+    db.refresh(branch)
+    return branch
+

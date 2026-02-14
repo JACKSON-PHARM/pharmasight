@@ -1913,8 +1913,9 @@ async function updateStatusBar(user) {
     if (CONFIG.BRANCH_ID) {
         try {
             const branch = await API.branch.get(CONFIG.BRANCH_ID);
-            statusBranch.textContent = branch.name || 'Unknown Branch';
+            statusBranch.textContent = (branch.name || 'Unknown Branch') + (branch.is_hq ? ' (HQ)' : '');
             statusBranch.classList.remove('status-warning');
+            if (typeof CONFIG !== 'undefined') CONFIG.IS_HQ = !!branch.is_hq;
         } catch (error) {
             console.error('Error loading branch:', error);
             statusBranch.textContent = 'Branch Not Found';

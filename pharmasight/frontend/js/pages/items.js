@@ -50,14 +50,16 @@ async function loadItems() {
         if (typeof saveConfig === 'function') saveConfig();
     }
     
+    const isHq = !!(typeof CONFIG !== 'undefined' && CONFIG.IS_HQ);
     page.innerHTML = `
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title"><i class="fas fa-box"></i> Inventory Items</h3>
-                <div style="display: flex; gap: 0.5rem;">
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                     <button class="btn btn-outline" onclick="downloadItemTemplate()">
                         <i class="fas fa-download"></i> Download Template
                     </button>
+                    ${isHq ? `
                     <button class="btn btn-outline" onclick="clearForReimport()" id="clearForReimportBtn" title="Clear all items and data for this company so you can run a fresh Excel import (only when no sales/purchases yet)">
                         <i class="fas fa-broom"></i> Clear for re-import
                     </button>
@@ -67,6 +69,7 @@ async function loadItems() {
                     <button class="btn btn-primary" onclick="showAddItemModal()">
                         <i class="fas fa-plus"></i> New Item
                     </button>
+                    ` : '<span style="font-size: 0.875rem; color: var(--text-secondary); align-self: center;">Create/import items at HQ only</span>'}
                 </div>
             </div>
             ${!getBranchIdForStock() ? `
@@ -452,6 +455,10 @@ function formatNumber(num) {
 }
 
 function showAddItemModal() {
+    if (!(typeof CONFIG !== 'undefined' && CONFIG.IS_HQ)) {
+        if (typeof showToast === 'function') showToast('Create item is only available at the HQ branch', 'warning');
+        return;
+    }
     const content = `
         <form id="itemForm" onsubmit="saveItem(event)" style="max-height: 70vh; overflow-y: auto;">
             <!-- Item Details Section -->

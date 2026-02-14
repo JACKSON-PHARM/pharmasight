@@ -1379,3 +1379,75 @@ tr.highlight-row-duplicate {
     0%, 100% { background-color: rgba(245, 158, 11, 0.25); }
     50% { background-color: rgba(245, 158, 11, 0.45); }
 }
+
+/* Vyapar-style Permission Matrix */
+.perm-matrix-container {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: var(--card-bg);
+}
+.perm-matrix {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9375rem;
+}
+.perm-matrix th,
+.perm-matrix td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+    text-align: center;
+}
+.perm-matrix thead tr {
+    background: var(--sidebar-bg);
+}
+.perm-matrix thead th {
+    color: #ffffff !important;
+    font-weight: 600;
+}
+.perm-matrix th.perm-module-header,
+.perm-matrix td.perm-module {
+    text-align: left;
+    font-weight: 500;
+}
+.perm-matrix tbody tr:hover {
+    background: rgba(37, 99, 235, 0.04);
+}
+.perm-cell {
+    min-width: 90px;
+}
+.perm-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin: 0;
+}
+.perm-checkbox {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.perm-checkmark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: 2px solid var(--border-color);
+    border-radius: 0.25rem;
+    color: transparent;
+    transition: all 0.15s ease;
+}
+.perm-checkbox:checked + .perm-checkmark {
+    background: var(--success-color);
+    border-color: var(--success-color);
+    color: white;
+}
+.perm-checkbox:focus + .perm-checkmark {
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.3);
+}
+.perm-na-label {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}

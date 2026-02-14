@@ -18,6 +18,7 @@ from .settings import DocumentSequence, CompanySetting
 from .stock_take import StockTakeSession, StockTakeCount, StockTakeCounterLock, StockTakeAdjustment
 from .order_book import DailyOrderBook, OrderBookHistory
 from .import_job import ImportJob
+from .permission import Permission, RolePermission
 
 __all__ = [
     "Base",
@@ -56,4 +57,6 @@ __all__ = [
     "DailyOrderBook",
     "OrderBookHistory",
     "ImportJob",
+    "Permission",
+    "RolePermission",
 ]

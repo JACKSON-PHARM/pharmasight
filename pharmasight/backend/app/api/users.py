@@ -5,9 +5,10 @@ Handles user creation, listing, updating, activating/deactivating, and deletion.
 Admin-only endpoints for managing organization users.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 import secrets
 import hashlib
@@ -15,6 +16,7 @@ from datetime import datetime
 from app.dependencies import get_tenant_db
 from app.models.user import User, UserRole, UserBranchRole
 from app.models.company import Branch
+from app.models.permission import Permission, RolePermission
 from app.schemas.user import (
     UserCreate, UserUpdate, UserResponse, UserListResponse,
     UserRoleResponse, UserActivateRequest, UserRoleUpdate,
@@ -60,6 +62,111 @@ def list_roles(db: Session = Depends(get_tenant_db)):
     """
     roles = db.query(UserRole).order_by(UserRole.role_name).all()
     return roles
+
+
+# -----------------------------------------------------------------------------
+# Permissions (Vyapar-style matrix)
+# -----------------------------------------------------------------------------
+
+
+try:
+    from app.permission_config import HQ_ONLY_PERMISSIONS
+except ImportError:
+    HQ_ONLY_PERMISSIONS = frozenset()
+
+
+@router.get("/permissions/hq-only")
+def list_hq_only_permissions():
+    """Return permission names that are restricted to HQ branch only."""
+    return {"permissions": list(HQ_ONLY_PERMISSIONS)}
+
+
+@router.get("/permissions")
+def list_permissions(db: Session = Depends(get_tenant_db)):
+    """
+    List all permissions grouped by module for the permission matrix UI.
+    Returns: [{ module, permissions: [{ id, name, action, description }] }]
+    """
+    perms = db.query(Permission).order_by(Permission.module, Permission.action).all()
+    by_module: dict = {}
+    for p in perms:
+        if p.module not in by_module:
+            by_module[p.module] = []
+        by_module[p.module].append({
+            "id": str(p.id),
+            "name": p.name,
+            "action": p.action,
+            "description": p.description or "",
+        })
+    return [{"module": m, "permissions": arr} for m, arr in sorted(by_module.items())]
+
+
+@router.get("/users/roles/{role_id}/permissions")
+def get_role_permissions(role_id: UUID, db: Session = Depends(get_tenant_db)):
+    """Get permission names granted to a role (global, branch_id=null)."""
+    role = db.query(UserRole).filter(UserRole.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    rps = (
+        db.query(Permission.name)
+        .join(RolePermission, RolePermission.permission_id == Permission.id)
+        .filter(RolePermission.role_id == role_id, RolePermission.branch_id.is_(None))
+        .all()
+    )
+    return {"permissions": [r[0] for r in rps]}
+
+
+class RolePermissionsUpdate(BaseModel):
+    permissions: List[str]  # list of permission names e.g. ["sales.view", "sales.create"]
+
+
+@router.put("/users/roles/{role_id}/permissions")
+def update_role_permissions(
+    role_id: UUID,
+    payload: RolePermissionsUpdate,
+    db: Session = Depends(get_tenant_db),
+):
+    """Replace role's permissions with the given list. branch_id=null (global)."""
+    role = db.query(UserRole).filter(UserRole.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    # Delete existing global permissions for this role
+    db.query(RolePermission).filter(
+        RolePermission.role_id == role_id,
+        RolePermission.branch_id.is_(None),
+    ).delete()
+    # Resolve permission names to IDs and insert
+    for name in payload.permissions:
+        perm = db.query(Permission).filter(Permission.name == name).first()
+        if perm:
+            rp = RolePermission(role_id=role_id, permission_id=perm.id, branch_id=None)
+            db.add(rp)
+    db.commit()
+    return {"success": True, "permissions": payload.permissions}
+
+
+class RoleUpdate(BaseModel):
+    role_name: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.patch("/users/roles/{role_id}")
+def update_role(
+    role_id: UUID,
+    payload: RoleUpdate,
+    db: Session = Depends(get_tenant_db),
+):
+    """Update role name and description."""
+    role = db.query(UserRole).filter(UserRole.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if payload.role_name is not None:
+        role.role_name = payload.role_name.strip()
+    if payload.description is not None:
+        role.description = payload.description
+    db.commit()
+    db.refresh(role)
+    return {"id": str(role.id), "role_name": role.role_name, "description": role.description or ""}
 
 
 @router.get("/users", response_model=UserListResponse)
