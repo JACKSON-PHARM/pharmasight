@@ -26,6 +26,7 @@ from app.schemas.stock_take import (
     SessionJoinRequest, SessionJoinResponse
 )
 from app.services.inventory_service import InventoryService
+from app.services.snapshot_service import SnapshotService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1753,6 +1754,7 @@ def complete_branch_stock_take(
                         notes='Stock take count adjustment'
                     )
                     db.add(ledger_entry)
+                    SnapshotService.upsert_inventory_balance(db, branch.company_id, branch_id, count.item_id, variance)
                     items_updated += 1
             except Exception as e:
                 logger.error(f"Error updating inventory for item {count.item_id}: {str(e)}")
@@ -1767,6 +1769,7 @@ def complete_branch_stock_take(
                     continue
                 unit_cost = CanonicalPricingService.get_best_available_cost(db, item_id, branch_id, branch.company_id)
                 total_cost = abs(Decimal(str(current_stock))) * unit_cost
+                qty_delta = -Decimal(str(current_stock))
                 ledger_entry = InventoryLedger(
                     company_id=branch.company_id,
                     branch_id=branch_id,
@@ -1774,13 +1777,14 @@ def complete_branch_stock_take(
                     transaction_type='ADJUSTMENT',
                     reference_type='STOCK_TAKE',
                     reference_id=session.id,
-                    quantity_delta=-Decimal(str(current_stock)),
+                    quantity_delta=qty_delta,
                     unit_cost=unit_cost,
                     total_cost=total_cost,
                     created_by=completing_user_id,
                     notes='Stock take: uncounted item zeroed out'
                 )
                 db.add(ledger_entry)
+                SnapshotService.upsert_inventory_balance(db, branch.company_id, branch_id, item_id, qty_delta)
                 items_zeroed += 1
             except Exception as e:
                 logger.error(f"Error zeroing item {item_id}: {str(e)}")

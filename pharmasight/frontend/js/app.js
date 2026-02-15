@@ -1034,6 +1034,24 @@ window.subNavItems = {
 let isNavigating = false;
 let navigationDebounceTimer = null;
 
+// Track last mousedown position to distinguish real clicks from drag-to-select (which can accidentally trigger nav)
+let lastNavMouseDown = null;
+const NAV_DRAG_THRESHOLD_PX = 5;
+
+/**
+ * Returns true if this event should be treated as a real click (not a drag or text selection).
+ * Call from nav click handlers to avoid navigating when user was selecting text or dragged.
+ */
+function isRealClick(e) {
+    const sel = window.getSelection ? window.getSelection().toString() : '';
+    if (sel && sel.trim().length > 0) return false;
+    if (lastNavMouseDown == null) return true;
+    const dx = e.clientX - lastNavMouseDown.x;
+    const dy = e.clientY - lastNavMouseDown.y;
+    if (Math.abs(dx) > NAV_DRAG_THRESHOLD_PX || Math.abs(dy) > NAV_DRAG_THRESHOLD_PX) return false;
+    return true;
+}
+
 // Navigation functions (global scope for accessibility)
 function showMainNav() {
     if (isNavigating) return; // Prevent multiple rapid calls
@@ -1096,6 +1114,8 @@ function showSubNav(pageKey, title) {
         if (!subItem) return;
         
         e.preventDefault();
+        // Don't navigate when user was selecting text or dragged (e.g. from search box)
+        if (!isRealClick(e)) return;
         
         // Debounce rapid clicks
         if (navigationDebounceTimer) {
@@ -1183,6 +1203,11 @@ function initializeNavigation() {
         return;
     }
     
+    // Track mousedown position so we can ignore drag-to-select that ends on a nav item
+    document.addEventListener('mousedown', (e) => {
+        lastNavMouseDown = { x: e.clientX, y: e.clientY };
+    }, { passive: true });
+    
     // Sidebar collapse/expand toggle
     if (sidebarToggle) {
         sidebarToggle.addEventListener('click', (e) => {
@@ -1229,6 +1254,8 @@ function initializeNavigation() {
             
             e.preventDefault();
             e.stopPropagation();
+            // Don't navigate when user was selecting text or dragged (e.g. from search box)
+            if (!isRealClick(e)) return;
             
             // Debounce rapid clicks
             if (navigationDebounceTimer) {

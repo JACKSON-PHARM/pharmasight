@@ -17,6 +17,7 @@ from app.models import (
     Item, ItemPricing, InventoryLedger,
     Supplier, Company, Branch
 )
+from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
@@ -1202,12 +1203,14 @@ class ExcelImportService:
         # IMPORTANT: quantity_delta MUST NOT be zero (database constraint)
         if quantity == 0:
             return
-        
+
         unit_cost = (unit_cost_per_base if unit_cost_per_base is not None else Decimal('0'))
         if existing:
+            old_qty = existing.quantity_delta
             existing.quantity_delta = quantity
             existing.unit_cost = unit_cost
             existing.total_cost = quantity * unit_cost
+            SnapshotService.upsert_inventory_balance_delta(db, company_id, branch_id, item_id, old_qty, quantity)
         else:
             ledger_entry = InventoryLedger(
                 company_id=company_id,
@@ -1221,6 +1224,8 @@ class ExcelImportService:
                 created_by=user_id
             )
             db.add(ledger_entry)
+            db.flush()
+            SnapshotService.upsert_inventory_balance(db, company_id, branch_id, item_id, quantity)
     
     @staticmethod
     def _process_batch_bulk(
@@ -1520,11 +1525,16 @@ class ExcelImportService:
         if opening_balances:
             try:
                 db.bulk_insert_mappings(InventoryLedger, opening_balances)
+                db.flush()
+                for ob in opening_balances:
+                    SnapshotService.upsert_inventory_balance(
+                        db, ob['company_id'], ob['branch_id'], ob['item_id'], ob['quantity_delta']
+                    )
                 result['opening_balances_created'] = len(opening_balances)
                 logger.info(f"Bulk inserted {len(opening_balances)} opening balances")
             except Exception as e:
                 logger.warning(f"Some opening balances failed bulk insert: {e}")
-        
+
         return result
     
     @staticmethod

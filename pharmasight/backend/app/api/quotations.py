@@ -29,6 +29,7 @@ from app.services.document_service import DocumentService
 from app.services.document_items_helper import deduplicate_quotation_items
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
+from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
@@ -507,7 +508,11 @@ def convert_quotation_to_invoice(
     for entry in ledger_entries:
         entry.reference_id = db_invoice.id
         db.add(entry)
-    
+
+    db.flush()
+    for entry in ledger_entries:
+        SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+
     # Update quotation status
     quotation.status = "converted"
     quotation.converted_to_invoice_id = db_invoice.id

@@ -177,6 +177,9 @@ const API = {
             if (context) params.context = context;
             return api.get(`${CONFIG.API_ENDPOINTS.items}/search`, params, requestOptions);
         },
+        stockBatch: (itemIds, branchId, companyId, requestOptions = {}) => {
+            return api.post(`${CONFIG.API_ENDPOINTS.items}/stock-batch`, { item_ids: itemIds, branch_id: branchId, company_id: companyId }, requestOptions);
+        },
         list: (companyId, options = {}) => {
             const params = new URLSearchParams();
             if (options.limit) params.append('limit', options.limit);

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime, timezone
 from app.dependencies import get_tenant_db
 from app.models import (
     GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
@@ -21,9 +21,54 @@ from app.schemas.purchase import (
 )
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
+from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
+
+
+def _require_batch_and_expiry_for_track_expiry_item(
+    item_name: str,
+    batches: Optional[List],
+    *,
+    from_dict: bool = False,
+) -> None:
+    """
+    If item has track_expiry, batches must be present, non-empty, and each batch
+    must have batch_number and expiry_date. Raises HTTPException 400 otherwise.
+    from_dict: if True, each batch is a dict with keys batch_number, expiry_date.
+    """
+    if not batches or len(batches) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Item '{item_name}' has Track Expiry enabled. You must use 'Manage Batches' and enter "
+                "at least one batch with Batch Number and Expiry Date before saving."
+            ),
+        )
+    for i, batch in enumerate(batches):
+        if from_dict:
+            batch_num = batch.get("batch_number") if isinstance(batch.get("batch_number"), str) else None
+            expiry = batch.get("expiry_date")
+        else:
+            batch_num = getattr(batch, "batch_number", None)
+            expiry = getattr(batch, "expiry_date", None)
+        if not (batch_num and str(batch_num).strip()):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Item '{item_name}' has Track Expiry enabled. Batch number is required for every batch "
+                    "(use Manage Batches and fill Batch Number)."
+                ),
+            )
+        if not expiry:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Item '{item_name}' has Track Expiry enabled. Expiry date is required for every batch "
+                    "(use Manage Batches and fill Expiry Date)."
+                ),
+            )
 
 
 @router.post("/grn", response_model=GRNResponse, status_code=status.HTTP_201_CREATED)
@@ -177,7 +222,18 @@ def create_grn(grn: GRNCreate, db: Session = Depends(get_tenant_db)):
     for entry in ledger_entries:
         entry.reference_id = db_grn.id
         db.add(entry)
-    
+
+    db.flush()
+
+    # Update snapshots in same transaction
+    for entry in ledger_entries:
+        SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+        SnapshotService.upsert_purchase_snapshot(
+            db, entry.company_id, entry.branch_id, entry.item_id,
+            entry.unit_cost, getattr(entry, "created_at", None) or datetime.now(timezone.utc),
+            db_grn.supplier_id
+        )
+
     db.commit()
     db.refresh(db_grn)
     return db_grn
@@ -225,6 +281,14 @@ def create_supplier_invoice(invoice: SupplierInvoiceCreate, db: Session = Depend
         multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
+        
+        # Enforce batch + expiry for items with Track Expiry enabled
+        if getattr(item, "track_expiry", False):
+            _require_batch_and_expiry_for_track_expiry_item(
+                item.name or str(item_data.item_id),
+                item_data.batches,
+                from_dict=False,
+            )
         
         # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%)
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
@@ -463,6 +527,14 @@ def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCre
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
         
+        # Enforce batch + expiry for items with Track Expiry enabled
+        if getattr(item, "track_expiry", False):
+            _require_batch_and_expiry_for_track_expiry_item(
+                item.name or str(item_data.item_id),
+                item_data.batches,
+                from_dict=False,
+            )
+        
         # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%)
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
@@ -607,10 +679,69 @@ def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db
                 detail=f"Unit '{invoice_item.unit_name}' not found for item {item.name}. Cannot batch."
             )
         
+        # Enforce batch + expiry for items with Track Expiry enabled (before batching)
+        if getattr(item, "track_expiry", False):
+            if not (invoice_item.batch_data and str(invoice_item.batch_data).strip()):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Item '{item.name}' has Track Expiry enabled. Use 'Manage Batches' and enter "
+                        "at least one batch with Batch Number and Expiry Date before batching."
+                    ),
+                )
+            try:
+                batches_validate = json.loads(invoice_item.batch_data)
+            except json.JSONDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Item '{item.name}' has invalid batch data. Use 'Manage Batches' and enter "
+                        "Batch Number and Expiry Date for each batch."
+                    ),
+                )
+            if not batches_validate:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Item '{item.name}' has Track Expiry enabled. Use 'Manage Batches' and enter "
+                        "at least one batch with Batch Number and Expiry Date before batching."
+                    ),
+                )
+            _require_batch_and_expiry_for_track_expiry_item(
+                item.name or str(invoice_item.item_id),
+                batches_validate,
+                from_dict=True,
+            )
+        
         # Parse batch data from JSON
         if invoice_item.batch_data:
             try:
                 batches = json.loads(invoice_item.batch_data)
+                # Empty batch list = no distribution; add full quantity as single entry so stock is still added
+                if not batches:
+                    quantity_base = InventoryService.convert_to_base_units(
+                        db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
+                    )
+                    unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
+                    ledger_entry = InventoryLedger(
+                        company_id=invoice.company_id,
+                        branch_id=invoice.branch_id,
+                        item_id=invoice_item.item_id,
+                        batch_number=None,
+                        expiry_date=None,
+                        transaction_type="PURCHASE",
+                        reference_type="purchase_invoice",
+                        quantity_delta=quantity_base,
+                        unit_cost=unit_cost_base,
+                        total_cost=unit_cost_base * quantity_base,
+                        batch_cost=unit_cost_base,
+                        remaining_quantity=quantity_base,
+                        is_batch_tracked=False,
+                        reference_id=invoice.id,
+                        created_by=invoice.created_by
+                    )
+                    ledger_entries.append(ledger_entry)
+                    continue
                 # Validate batch quantities sum to item quantity
                 total_batch_quantity = sum(batch.get("quantity", 0) for batch in batches)
                 if abs(total_batch_quantity - float(invoice_item.quantity)) > 0.01:
@@ -621,7 +752,6 @@ def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db
                 
                 # Create ledger entries for each batch
                 for batch_idx, batch in enumerate(batches):
-                    from datetime import datetime
                     expiry_date = None
                     if batch.get("expiry_date"):
                         expiry_date = datetime.fromisoformat(batch["expiry_date"]).date()
@@ -702,10 +832,21 @@ def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db
     # Add all ledger entries
     for entry in ledger_entries:
         db.add(entry)
-    
+
+    db.flush()
+
+    # Update snapshots in same transaction
+    for entry in ledger_entries:
+        SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+    for inv_item in invoice.items:
+        SnapshotService.upsert_purchase_snapshot(
+            db, invoice.company_id, invoice.branch_id, inv_item.item_id,
+            inv_item.unit_cost_exclusive, invoice.created_at, invoice.supplier_id
+        )
+
     # Update invoice status to BATCHED
     invoice.status = "BATCHED"
-    
+
     db.commit()
     db.refresh(invoice)
     

@@ -27,6 +27,7 @@ from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short
+from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
@@ -761,6 +762,10 @@ def batch_sales_invoice(
 
         for entry in ledger_entries:
             db.add(entry)
+
+        db.flush()
+        for entry in ledger_entries:
+            SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
 
         db.commit()
     except HTTPException:

@@ -1174,7 +1174,6 @@ async function renderCreateSupplierInvoicePage() {
     const supplierName = invoiceData ? invoiceData.supplier_name : '';
     const supplierInvoiceNumber = invoiceData ? invoiceData.reference : '';
     const reference = invoiceData ? invoiceData.reference : '';
-    const vatRate = invoiceData ? parseFloat(invoiceData.vat_rate) : 16.00;
     
     page.innerHTML = `
         <div class="card" id="supplierInvoiceDocumentCard" style="transform-origin: top left; transition: transform 0.2s;">
@@ -1275,12 +1274,10 @@ async function renderCreateSupplierInvoicePage() {
                                            value="${reference || ''}"
                                            placeholder="Optional reference or comments">
                                 </div>
-                                <div class="form-group">
-                                    <label class="form-label">VAT Rate (%)</label>
-                                    <input type="number" class="form-input" name="vat_rate" 
-                                           value="${vatRate}" step="0.01" min="0" max="100">
-                                </div>
                             </div>
+                            <p style="font-size: 0.75rem; color: var(--text-secondary); margin: 0.25rem 0 0 0;">
+                                VAT is per item (from item master). Total VAT is the sum of each line&apos;s VAT.
+                            </p>
                         </div>
                     </div>
                     
@@ -1597,7 +1594,15 @@ async function searchSuppliersInline(event, searchInputId = 'supplierSearch', hi
 // Render supplier search results
 function renderSupplierSearchResults(suppliers, dropdown, searchInputId = 'supplierSearch', hiddenInputId = 'supplierId', dropdownId = 'supplierSearchDropdown') {
     if (suppliers.length === 0) {
-        dropdown.innerHTML = '<div style="padding: 1rem; text-align: center; color: var(--text-secondary);">No suppliers found</div>';
+        dropdown.innerHTML = `
+            <div style="padding: 1rem; text-align: center; color: var(--text-secondary);">
+                <p style="margin: 0 0 0.5rem 0;">No suppliers found</p>
+                <a href="#" onclick="event.preventDefault(); closeSupplierDropdown('${dropdownId}'); showCreateSupplierModal(); return false;" 
+                   style="color: var(--primary-color); font-weight: 600; text-decoration: none;">
+                    <i class="fas fa-plus"></i> Create New Supplier
+                </a>
+            </div>
+        `;
         dropdown.style.display = 'block';
         return;
     }
@@ -1616,6 +1621,12 @@ function renderSupplierSearchResults(suppliers, dropdown, searchInputId = 'suppl
     }).join('');
     
     dropdown.style.display = 'block';
+}
+
+// Close supplier dropdown (used when opening Create Supplier modal from "no results")
+function closeSupplierDropdown(dropdownId) {
+    const dropdown = document.getElementById(dropdownId);
+    if (dropdown) dropdown.style.display = 'none';
 }
 
 // Select supplier from search (works with both order and invoice forms)
@@ -1772,15 +1783,16 @@ async function savePurchaseDocument(event, documentType) {
                 reference: formData.get('reference') || null,  // Additional reference/comments
                 invoice_date: formData.get('document_date') || new Date().toISOString().split('T')[0],
                 linked_grn_id: formData.get('linked_grn_id') || null,
-                vat_rate: parseFloat(formData.get('vat_rate')) || 16.00,
+                vat_rate: 0,  // Display only; total VAT = sum of line VATs (item-based)
                 created_by: currentUserId,
                 items: items.map(item => {
+                    // VAT is item-based (from item master). Total VAT = sum of line VATs.
                     const itemData = {
                         item_id: item.item_id,
                         unit_name: item.unit_name,
                         quantity: item.quantity,
                         unit_cost_exclusive: item.unit_price, // Supplier invoice uses exclusive cost
-                        vat_rate: item.tax_percent || 16.00
+                        vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
                     };
                     
                     // Include batch distribution if available
@@ -1889,6 +1901,10 @@ async function savePurchaseDocument(event, documentType) {
 
 // View document
 async function viewPurchaseDocument(docId, docType) {
+    if (docType === 'invoice') {
+        await viewSupplierInvoice(docId);
+        return;
+    }
     if (docType !== 'order') {
         showToast('Viewing this document type is not yet implemented', 'info');
         return;
@@ -2511,14 +2527,14 @@ async function autoSaveInvoice() {
             reference: formData.get('reference') || null,
             invoice_date: formData.get('document_date') || new Date().toISOString().split('T')[0],
             linked_grn_id: formData.get('linked_grn_id') || null,
-            vat_rate: parseFloat(formData.get('vat_rate')) || 16.00,
+            vat_rate: 0,  // Display only; total VAT = sum of line VATs (item-based)
             items: items.map(item => {
                 const itemData = {
                     item_id: item.item_id,
                     unit_name: item.unit_name,
                     quantity: item.quantity,
                     unit_cost_exclusive: item.unit_price,
-                    vat_rate: item.tax_percent || 16.00
+                    vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
                 };
                 
                 if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
@@ -2606,9 +2622,15 @@ async function createSupplier(event) {
         const supplier = await API.suppliers.create(supplierData);
         showToast('Supplier created successfully!', 'success');
         
-        // Update supplier search input if on create page
+        // Update supplier search input (order form or invoice form, whichever is visible)
         const supplierSearch = document.getElementById('supplierSearch');
         const supplierIdInput = document.getElementById('supplierId');
+        const supplierSearchInvoice = document.getElementById('supplierSearchInvoice');
+        const supplierIdInvoice = document.getElementById('supplierIdInvoice');
+        if (supplierSearchInvoice && supplierIdInvoice) {
+            supplierSearchInvoice.value = supplier.name;
+            supplierIdInvoice.value = supplier.id;
+        }
         if (supplierSearch && supplierIdInput) {
             supplierSearch.value = supplier.name;
             supplierIdInput.value = supplier.id;
@@ -2643,6 +2665,15 @@ async function batchSupplierInvoice(invoiceId) {
         showToast('Invoice batched successfully! Stock has been added to inventory.', 'success');
         // Reload invoices list
         await fetchAndRenderSupplierInvoicesData();
+        // If user was on the edit/view page for this invoice, re-render so Batch button disappears
+        if (typeof currentDocument !== 'undefined' && currentDocument && currentDocument.invoiceId === invoiceId) {
+            currentDocument.status = result?.status || 'BATCHED';
+            const updated = await API.purchases.getInvoice(invoiceId);
+            if (updated) {
+                currentDocument.invoiceData = updated;
+                await renderCreateSupplierInvoicePage();
+            }
+        }
     } catch (error) {
         console.error('Error batching invoice:', error);
         showToast(error.message || 'Error batching invoice', 'error');

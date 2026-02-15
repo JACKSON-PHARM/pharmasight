@@ -5,17 +5,19 @@ All item endpoints use get_tenant_db: session is the logged-in context (tenant D
 X-Tenant-Subdomain is set, else default DB). Same company/DB as rest of app.
 """
 import logging
+import time
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 from app.dependencies import get_tenant_db
 from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
-    InventoryLedger, SupplierInvoice, SupplierInvoiceItem, Supplier,
+    InventoryLedger, InventoryBalance, ItemBranchPurchaseSnapshot,
+    SupplierInvoice, SupplierInvoiceItem, Supplier,
     PurchaseOrder, PurchaseOrderItem, Branch,
     UserRole, UserBranchRole
 )
@@ -33,7 +35,9 @@ from app.services.items_service import create_item as svc_create_item, Duplicate
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.inventory_service import InventoryService, _unit_for_display
 from app.services.excel_import_service import ExcelImportService
+from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -169,6 +173,50 @@ def create_item(item: ItemCreate, db: Session = Depends(get_tenant_db)):
     return db_item
 
 
+class StockBatchRequest(BaseModel):
+    """Request body for stock-batch endpoint."""
+    item_ids: List[UUID] = Field(..., min_length=1, max_length=500, description="Item IDs to fetch stock for")
+    branch_id: UUID = Field(..., description="Branch ID for stock context")
+    company_id: UUID = Field(..., description="Company ID")
+
+
+@router.post("/stock-batch")
+def stock_batch(
+    body: StockBatchRequest,
+    db: Session = Depends(get_tenant_db)
+):
+    """
+    Batch fetch stock for multiple items. Uses inventory_balances (snapshot) for fast lookup.
+    Returns stocks[item_id] = {current_stock, stock_display} for each item.
+    """
+    if not body.item_ids:
+        return {"stocks": {}}
+    # Fetch stock from inventory_balances (snapshot)
+    stock_rows = (
+        db.query(InventoryBalance.item_id, InventoryBalance.current_stock)
+        .filter(
+            InventoryBalance.item_id.in_(body.item_ids),
+            InventoryBalance.company_id == body.company_id,
+            InventoryBalance.branch_id == body.branch_id
+        )
+        .all()
+    )
+    stock_map = {row.item_id: int(float(row.current_stock) or 0) for row in stock_rows}
+    # Fetch items for stock_display (3-tier unit formatting)
+    items_full = db.query(Item).filter(
+        Item.id.in_(body.item_ids),
+        Item.company_id == body.company_id
+    ).all()
+    items_map = {item.id: item for item in items_full}
+    result = {}
+    for iid in body.item_ids:
+        qty = float(stock_map.get(iid, 0) or 0)
+        item_obj = items_map.get(iid)
+        stock_display = InventoryService.format_quantity_display(qty, item_obj) if item_obj else str(int(qty))
+        result[str(iid)] = {"current_stock": int(qty), "stock_display": stock_display}
+    return {"stocks": result}
+
+
 @router.get("/search")
 def search_items(
     q: str = Query(..., min_length=2, description="Search query"),
@@ -186,6 +234,7 @@ def search_items(
     Returns: id, name, base_unit, prices, sku, stock, VAT info. Ordered by
     best match then in-stock first when branch_id given.
     """
+    t_start = time.perf_counter()
     search_term_lower = q.lower()
     search_term_pattern = f"%{search_term_lower}%"
     search_term_start = f"{search_term_lower}%"
@@ -232,29 +281,27 @@ def search_items(
         relevance_score.desc(),
         func.lower(Item.name).asc()
     ).limit(limit).all()
-    
+    t_base_search = time.perf_counter()
+    logger.info(f"[search] base_query: {(t_base_search - t_start) * 1000:.2f} ms (q={q}, results={len(items) if items else 0})")
+
     if not items:
         return []
     
     item_ids = [item.id for item in items]
     
-    # Get stock for the limited items only (batch query - much faster)
+    # Get stock from inventory_balances (snapshot - fast O(1) per item)
     stock_map = {}
     if branch_id:
         stock_data = (
-            db.query(
-                InventoryLedger.item_id,
-                func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label('total_stock')
-            )
+            db.query(InventoryBalance.item_id, InventoryBalance.current_stock)
             .filter(
-                InventoryLedger.item_id.in_(item_ids),
-                InventoryLedger.company_id == company_id,
-                InventoryLedger.branch_id == branch_id
+                InventoryBalance.item_id.in_(item_ids),
+                InventoryBalance.company_id == company_id,
+                InventoryBalance.branch_id == branch_id
             )
-            .group_by(InventoryLedger.item_id)
             .all()
         )
-        stock_map = {row.item_id: int(row.total_stock) if row.total_stock else 0 for row in stock_data}
+        stock_map = {row.item_id: int(float(row.current_stock) or 0) for row in stock_data}
         # Order: in-stock first, then best match (relevance), then name
         items = sorted(
             items,
@@ -264,7 +311,9 @@ def search_items(
                 (r.name or "").lower(),
             ),
         )
-    
+    t_stock = time.perf_counter()
+    logger.info(f"[search] stock_resolution: {(t_stock - t_base_search) * 1000:.2f} ms")
+
     # OPTIMIZED: Only fetch purchase/order info if pricing is requested
     purchase_price_map = {}
     last_supplier_map = {}
@@ -273,155 +322,131 @@ def search_items(
     last_supply_date_map = {}
     last_unit_cost_ledger_map = {}
     
+    t_pricing_start = time.perf_counter()
+    last_purchases = []  # For purchase_order context when branch_id set
     if include_pricing:
-        # Get last purchase info - OPTIMIZED: Use window function for reliable results
-        from sqlalchemy import desc
-        from sqlalchemy.sql import func as sql_func
-        last_purchase_filters = [
-            SupplierInvoiceItem.item_id.in_(item_ids),
-            SupplierInvoice.company_id == company_id
-        ]
         if branch_id:
-            last_purchase_filters.append(SupplierInvoice.branch_id == branch_id)
-        last_purchase_subq = (
-            db.query(
-                SupplierInvoiceItem.item_id,
-                SupplierInvoiceItem.unit_cost_exclusive,
-                SupplierInvoice.supplier_id,
-                SupplierInvoice.created_at.label('last_purchase_date'),
-                sql_func.row_number().over(
-                    partition_by=SupplierInvoiceItem.item_id,
-                    order_by=desc(SupplierInvoice.created_at)
-                ).label('rn')
-            )
-            .join(SupplierInvoice, SupplierInvoiceItem.purchase_invoice_id == SupplierInvoice.id)
-            .filter(*last_purchase_filters)
-            .subquery()
-        )
-        last_purchases = (
-            db.query(
-                last_purchase_subq.c.item_id,
-                last_purchase_subq.c.unit_cost_exclusive,
-                last_purchase_subq.c.supplier_id,
-                last_purchase_subq.c.last_purchase_date
-            )
-            .filter(last_purchase_subq.c.rn == 1)
-            .all()
-        )
-        
-        purchase_price_map = {
-            row.item_id: float(row.unit_cost_exclusive) if row.unit_cost_exclusive else 0.0 
-            for row in last_purchases
-        }
-        
-        # Get supplier names in batch (from purchase history)
-        supplier_ids = {row.supplier_id for row in last_purchases if row.supplier_id}
-        if supplier_ids:
-            suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()}
-            last_supplier_map = {row.item_id: suppliers.get(row.supplier_id, '') for row in last_purchases if row.supplier_id}
-        # Fallback: default_supplier_id when no purchase history
-        ids_without_supplier = [i for i in item_ids if i not in last_supplier_map]
-        if ids_without_supplier and include_pricing:
-            default_rows = db.query(Item.id, Item.default_supplier_id).filter(
-                Item.id.in_(ids_without_supplier),
-                Item.default_supplier_id.isnot(None)
-            ).all()
-            if default_rows:
-                default_supplier_ids = {r.default_supplier_id for r in default_rows if r.default_supplier_id}
-                default_suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(default_supplier_ids)).all()} if default_supplier_ids else {}
-                for r in default_rows:
-                    if r.default_supplier_id:
-                        last_supplier_map[r.id] = default_suppliers.get(r.default_supplier_id, '')
-        
-        # Get last order dates - OPTIMIZED: Use window function
-        last_order_subq = (
-            db.query(
-                PurchaseOrderItem.item_id,
-                PurchaseOrder.order_date.label('last_order_date'),
-                sql_func.row_number().over(
-                    partition_by=PurchaseOrderItem.item_id,
-                    order_by=desc(PurchaseOrder.order_date)
-                ).label('rn')
-            )
-            .join(PurchaseOrder, PurchaseOrderItem.purchase_order_id == PurchaseOrder.id)
-            .filter(
-                PurchaseOrderItem.item_id.in_(item_ids),
-                PurchaseOrder.company_id == company_id
-            )
-            .subquery()
-        )
-        last_orders = (
-            db.query(
-                last_order_subq.c.item_id,
-                last_order_subq.c.last_order_date
-            )
-            .filter(last_order_subq.c.rn == 1)
-            .all()
-        )
-        
-        last_order_date_map = {
-            row.item_id: row.last_order_date.isoformat() if row.last_order_date else None 
-            for row in last_orders
-        }
-        
-        # For Purchase Order context, get additional fields from inventory_ledger
-        last_supply_date_map = {}
-        last_unit_cost_ledger_map = {}
-        if context == 'purchase_order' and branch_id:
-            # Get last supply date and unit cost from inventory_ledger (PURCHASE transactions)
-            last_supply_subq = (
+            # Get last purchase info from item_branch_purchase_snapshot (precomputed, fast)
+            last_purchases = (
                 db.query(
-                    InventoryLedger.item_id,
-                    InventoryLedger.created_at.label('last_supply_date'),
-                    InventoryLedger.unit_cost,
-                    sql_func.row_number().over(
-                        partition_by=InventoryLedger.item_id,
-                        order_by=desc(InventoryLedger.created_at)
-                    ).label('rn')
+                    ItemBranchPurchaseSnapshot.item_id,
+                    ItemBranchPurchaseSnapshot.last_purchase_price,
+                    ItemBranchPurchaseSnapshot.last_supplier_id,
+                    ItemBranchPurchaseSnapshot.last_purchase_date
                 )
                 .filter(
-                    InventoryLedger.item_id.in_(item_ids),
-                    InventoryLedger.company_id == company_id,
-                    InventoryLedger.branch_id == branch_id,
-                    InventoryLedger.transaction_type == "PURCHASE",
-                    InventoryLedger.quantity_delta > 0
+                    ItemBranchPurchaseSnapshot.item_id.in_(item_ids),
+                    ItemBranchPurchaseSnapshot.company_id == company_id,
+                    ItemBranchPurchaseSnapshot.branch_id == branch_id
+                )
+                .all()
+            )
+            purchase_price_map = {
+                row.item_id: float(row.last_purchase_price) if row.last_purchase_price else 0.0
+                for row in last_purchases
+            }
+            t_after_purchase = time.perf_counter()
+            logger.info(f"[search] pricing_last_purchase: {(t_after_purchase - t_pricing_start) * 1000:.2f} ms")
+
+            # Get supplier names in batch (from snapshot)
+            supplier_ids = {row.last_supplier_id for row in last_purchases if row.last_supplier_id}
+            if supplier_ids:
+                suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()}
+                last_supplier_map = {row.item_id: suppliers.get(row.last_supplier_id, '') for row in last_purchases if row.last_supplier_id}
+            # Fallback: default_supplier_id when no purchase history
+            ids_without_supplier = [i for i in item_ids if i not in last_supplier_map]
+            if ids_without_supplier:
+                default_rows = db.query(Item.id, Item.default_supplier_id).filter(
+                    Item.id.in_(ids_without_supplier),
+                    Item.default_supplier_id.isnot(None)
+                ).all()
+                if default_rows:
+                    default_supplier_ids = {r.default_supplier_id for r in default_rows if r.default_supplier_id}
+                    default_suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(default_supplier_ids)).all()} if default_supplier_ids else {}
+                    for r in default_rows:
+                        if r.default_supplier_id:
+                            last_supplier_map[r.id] = default_suppliers.get(r.default_supplier_id, '')
+            t_after_supplier = time.perf_counter()
+            logger.info(f"[search] supplier_lookup: {(t_after_supplier - t_after_purchase) * 1000:.2f} ms")
+
+        # Get last order dates - ONLY when purchase_order context (slow query; skip for sales/purchase inline search)
+        if context == 'purchase_order':
+            from sqlalchemy.sql import func as sql_func
+            last_order_subq = (
+                db.query(
+                    PurchaseOrderItem.item_id,
+                    PurchaseOrder.order_date.label('last_order_date'),
+                    sql_func.row_number().over(
+                        partition_by=PurchaseOrderItem.item_id,
+                        order_by=desc(PurchaseOrder.order_date)
+                    ).label('rn')
+                )
+                .join(PurchaseOrder, PurchaseOrderItem.purchase_order_id == PurchaseOrder.id)
+                .filter(
+                    PurchaseOrderItem.item_id.in_(item_ids),
+                    PurchaseOrder.company_id == company_id
                 )
                 .subquery()
             )
-            last_supplies = (
+            last_orders = (
                 db.query(
-                    last_supply_subq.c.item_id,
-                    last_supply_subq.c.last_supply_date,
-                    last_supply_subq.c.unit_cost
+                    last_order_subq.c.item_id,
+                    last_order_subq.c.last_order_date
                 )
-                .filter(last_supply_subq.c.rn == 1)
+                .filter(last_order_subq.c.rn == 1)
                 .all()
             )
-            
-            last_supply_date_map = {
-                row.item_id: row.last_supply_date.isoformat() if row.last_supply_date else None
-                for row in last_supplies
+            last_order_date_map = {
+                row.item_id: row.last_order_date.isoformat() if row.last_order_date else None
+                for row in last_orders
             }
-            last_unit_cost_ledger_map = {
-                row.item_id: float(row.unit_cost) if row.unit_cost else 0.0
-                for row in last_supplies
-            }
+        
+        # For Purchase Order context, get additional fields from item_branch_purchase_snapshot
+        last_supply_date_map = {}
+        last_unit_cost_ledger_map = {}
+        if context == 'purchase_order' and branch_id:
+            # Use same snapshot as purchase_price - last_purchase_date = last supply, last_purchase_price = unit cost
+            for row in last_purchases:
+                last_supply_date_map[row.item_id] = row.last_purchase_date.isoformat() if row.last_purchase_date else None
+                last_unit_cost_ledger_map[row.item_id] = float(row.last_purchase_price) if row.last_purchase_price else 0.0
         
         # sale_price: no longer from items table; use 0.0 if no external config (pricing from ledger only)
         for item in items:
             sale_price_map[item.id] = 0.0
-    
-    # Best available cost: batch when branch_id set (avoids N+1); else 0
+    t_after_pricing = time.perf_counter()
+    logger.info(f"[search] pricing_resolution_total: {(t_after_pricing - t_pricing_start) * 1000:.2f} ms (include_pricing={include_pricing})")
+
+    # Best available cost: use snapshot first (fast), fallback to ledger only for items without snapshot
     cost_from_ledger_map = {}
     if branch_id:
-        cost_from_ledger_map = CanonicalPricingService.get_best_available_cost_batch(db, item_ids, branch_id, company_id)
-    
+        snapshot_costs = (
+            db.query(ItemBranchPurchaseSnapshot.item_id, ItemBranchPurchaseSnapshot.last_purchase_price)
+            .filter(
+                ItemBranchPurchaseSnapshot.item_id.in_(item_ids),
+                ItemBranchPurchaseSnapshot.company_id == company_id,
+                ItemBranchPurchaseSnapshot.branch_id == branch_id,
+                ItemBranchPurchaseSnapshot.last_purchase_price.isnot(None)
+            )
+            .all()
+        )
+        cost_from_ledger_map = {row.item_id: float(row.last_purchase_price) for row in snapshot_costs}
+        missing_cost_ids = [iid for iid in item_ids if iid not in cost_from_ledger_map]
+        if missing_cost_ids:
+            fallback = CanonicalPricingService.get_best_available_cost_batch(db, missing_cost_ids, branch_id, company_id)
+            for iid, cost in fallback.items():
+                cost_from_ledger_map[iid] = float(cost)
+        for iid in item_ids:
+            if iid not in cost_from_ledger_map:
+                cost_from_ledger_map[iid] = 0.0
+
     # Get full item objects for stock_display calculation (only when branch_id provided)
     items_full_map = {}
     if branch_id:
         items_full = db.query(Item).filter(Item.id.in_(item_ids)).all()
         items_full_map = {item.id: item for item in items_full}
-    
+    t_after_cost_and_items = time.perf_counter()
+    logger.info(f"[search] cost_batch_and_items_full: {(t_after_cost_and_items - t_after_pricing) * 1000:.2f} ms")
+
     result = []
     for item in items:
         price_from_ledger = float(cost_from_ledger_map.get(item.id, 0)) if branch_id else 0.0
@@ -429,9 +454,12 @@ def search_items(
         last_unit_cost_val = last_unit_cost_ledger_map.get(item.id, purchase_price_map.get(item.id, price_from_ledger)) if context == 'purchase_order' else None
         
         # Calculate stock_display using 3-tier units when branch_id is provided
+        # OPTIMIZED: Use format_quantity_display with already-fetched stock_map and items_full_map
+        # instead of get_stock_display per item (avoids N+1: 2 queries per result)
         stock_display = None
         if branch_id and item.id in items_full_map:
-            stock_display = InventoryService.get_stock_display(db, item.id, branch_id)
+            stock_qty = float(stock_map.get(item.id, 0) or 0)
+            stock_display = InventoryService.format_quantity_display(stock_qty, items_full_map[item.id])
         
         item_data = {
             "id": str(item.id),
@@ -454,9 +482,19 @@ def search_items(
         if context == 'purchase_order':
             item_data["last_supply_date"] = last_supply_date_map.get(item.id, None)
             item_data["last_unit_cost"] = last_unit_cost_val if last_unit_cost_val is not None else purchase_price_val
-        
+
         result.append(item_data)
-    
+
+    t_after_result_loop = time.perf_counter()
+    logger.info(f"[search] result_assembly_and_stock_display: {(t_after_result_loop - t_after_cost_and_items) * 1000:.2f} ms (items={len(result)})")
+
+    t_total = time.perf_counter() - t_start
+    logger.info(
+        f"[search] TOTAL: {t_total * 1000:.2f} ms | breakdown: base={((t_base_search - t_start) * 1000):.0f}ms, "
+        f"stock={((t_stock - t_base_search) * 1000):.0f}ms, pricing={((t_after_pricing - t_pricing_start) * 1000):.0f}ms, "
+        f"cost+items={((t_after_cost_and_items - t_after_pricing) * 1000):.0f}ms, result_loop={((t_after_result_loop - t_after_cost_and_items) * 1000):.0f}ms"
+    )
+
     return result
 
 
@@ -977,6 +1015,8 @@ def adjust_stock(
         notes=body.notes.strip() if body.notes and body.notes.strip() else None,
     )
     db.add(ledger_entry)
+    db.flush()
+    SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, quantity_delta)
     db.commit()
 
     new_stock = InventoryService.get_current_stock(db, item_id, body.branch_id)

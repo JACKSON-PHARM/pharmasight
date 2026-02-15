@@ -690,7 +690,8 @@
         
         try {
             const cache = (typeof window !== 'undefined' && window.searchCache) ? window.searchCache : null;
-            const includePricing = true;
+            // Only fetch full pricing (last_supplier, last_order_date) for purchase_order context; sales/purchase inline search uses fast path
+            const includePricing = (this.context === 'purchase_order');
             
             if (cache) {
                 const cached = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 50);
@@ -1621,31 +1622,41 @@
     };
     
     /**
-     * Refresh stock display for all items (called after batching invoice)
+     * Refresh stock display for all items (called after batching invoice).
+     * Uses stock-batch endpoint for a single request instead of N search calls.
      */
     TransactionItemsTable.prototype.refreshStockForAllItems = async function() {
         const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
-        if (!api || !api.items || !api.items.search) return;
+        if (!api || !api.items || !api.items.stockBatch) return;
         const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
         if (!config || !config.COMPANY_ID || !config.BRANCH_ID) return;
-        
-        // Refresh stock for each item that has an item_id
+
+        const itemIds = [];
+        const rowByItemId = {};
         for (let i = 0; i < this.items.length; i++) {
             const item = this.items[i];
             if (item && item.item_id) {
-                try {
-                    // Search for the item to get updated stock_display
-                    const results = await api.items.search(item.item_name || '', config.COMPANY_ID, 1, config.BRANCH_ID, false);
-                    const updated = results.find(r => r.id === item.item_id);
-                    if (updated && updated.stock_display) {
-                        item.stock_display = updated.stock_display;
-                        item.available_stock = updated.current_stock;
-                        this.updateRowDisplay(i);
-                    }
-                } catch (err) {
-                    console.warn('TransactionItemsTable: could not refresh stock for item', item.item_id, err);
+                const id = typeof item.item_id === 'string' ? item.item_id : String(item.item_id);
+                itemIds.push(id);
+                rowByItemId[id] = i;
+            }
+        }
+        if (itemIds.length === 0) return;
+
+        try {
+            const res = await api.items.stockBatch(itemIds, config.BRANCH_ID, config.COMPANY_ID);
+            const stocks = res && res.stocks ? res.stocks : {};
+            for (const [id, data] of Object.entries(stocks)) {
+                const rowIndex = rowByItemId[id];
+                if (rowIndex !== undefined && data && (data.stock_display != null || data.current_stock != null)) {
+                    const it = this.items[rowIndex];
+                    if (data.stock_display != null) it.stock_display = data.stock_display;
+                    if (data.current_stock != null) it.available_stock = data.current_stock;
+                    this.updateRowDisplay(rowIndex);
                 }
             }
+        } catch (err) {
+            console.warn('TransactionItemsTable: could not refresh stock batch', err);
         }
     };
     
