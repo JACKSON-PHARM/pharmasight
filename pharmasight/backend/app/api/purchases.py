@@ -21,6 +21,7 @@ from app.schemas.purchase import (
 )
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
+from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
 
@@ -225,9 +226,10 @@ def create_supplier_invoice(invoice: SupplierInvoiceCreate, db: Session = Depend
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
         
-        # Calculate line totals (VAT)
+        # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%)
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
-        line_vat = line_total_exclusive * item_data.vat_rate / Decimal("100")
+        vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
+        line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
         line_total_inclusive = line_total_exclusive + line_vat
         
         # Store batch data as JSON for later batching
@@ -247,7 +249,7 @@ def create_supplier_invoice(invoice: SupplierInvoiceCreate, db: Session = Depend
             unit_name=item_data.unit_name,
             quantity=item_data.quantity,
             unit_cost_exclusive=item_data.unit_cost_exclusive,
-            vat_rate=item_data.vat_rate,
+            vat_rate=vat_rate_pct,
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
             line_total_inclusive=line_total_inclusive,
@@ -461,9 +463,10 @@ def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCre
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
         
-        # Calculate line totals (VAT)
+        # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%)
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
-        line_vat = line_total_exclusive * item_data.vat_rate / Decimal("100")
+        vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
+        line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
         line_total_inclusive = line_total_exclusive + line_vat
         
         # Store batch data as JSON for later batching
@@ -483,7 +486,7 @@ def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCre
             unit_name=item_data.unit_name,
             quantity=item_data.quantity,
             unit_cost_exclusive=item_data.unit_cost_exclusive,
-            vat_rate=item_data.vat_rate,
+            vat_rate=vat_rate_pct,
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
             line_total_inclusive=line_total_inclusive,

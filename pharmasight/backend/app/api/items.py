@@ -33,6 +33,7 @@ from app.services.items_service import create_item as svc_create_item, Duplicate
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.inventory_service import InventoryService, _unit_for_display
 from app.services.excel_import_service import ExcelImportService
+from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -442,7 +443,7 @@ def search_items(
             "is_active": getattr(item, 'is_active', True),
             "current_stock": stock_map.get(item.id, 0) if branch_id else None,
             "stock_display": stock_display,  # 3-tier formatted stock display
-            "vat_rate": float(item.vat_rate) if item.vat_rate else 0.0,
+            "vat_rate": vat_rate_to_percent(item.vat_rate),
             "vat_category": getattr(item, 'vat_category', None) or "ZERO_RATED",
             "purchase_price": purchase_price_val,
             "sale_price": sale_price_map.get(item.id, 0.0) if include_pricing else 0.0,
@@ -474,7 +475,7 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "category": item.category,
         "base_unit": _unit_for_display(item.base_unit, "piece"),
         "vat_category": getattr(item, "vat_category", None) or "ZERO_RATED",
-        "vat_rate": float(item.vat_rate) if item.vat_rate is not None else 0.0,
+        "vat_rate": vat_rate_to_percent(item.vat_rate),
         "is_active": item.is_active,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
@@ -823,7 +824,7 @@ def get_items_overview(
             'base_unit': item.base_unit,
             'default_cost': default_cost_val,
             'vat_category': getattr(item, 'vat_category', None) or 'ZERO_RATED',
-            'vat_rate': float(item.vat_rate) if item.vat_rate else 0.0,
+            'vat_rate': vat_rate_to_percent(item.vat_rate),
             'is_active': item.is_active,
             'created_at': item.created_at,
             'updated_at': item.updated_at,

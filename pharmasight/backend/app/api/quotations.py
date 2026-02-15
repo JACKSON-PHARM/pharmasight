@@ -29,6 +29,7 @@ from app.services.document_service import DocumentService
 from app.services.document_items_helper import deduplicate_quotation_items
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
+from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
 
@@ -64,8 +65,8 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
                 detail=f"Item {item_data.item_id} not found"
             )
         
-        # Get VAT rate from item (0 is valid for zero-rated; only use default when None)
-        vat_rate = Decimal(str(item.vat_rate)) if item.vat_rate is not None else Decimal("16.00")
+        # Get VAT rate from item (Kenya: percentage; normalize if stored as 0.16)
+        vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate))) if item.vat_rate is not None else Decimal("16.00")
         
         # Calculate line totals
         quantity = Decimal(str(item_data.quantity))
@@ -255,8 +256,8 @@ def update_quotation(quotation_id: UUID, quotation: QuotationUpdate, db: Session
                     detail=f"Item {item_data.item_id} not found"
                 )
             
-            # 0 is valid for zero-rated; only use default when None
-            vat_rate = Decimal(str(item.vat_rate)) if item.vat_rate is not None else Decimal("16.00")
+            # VAT from item (normalize decimal 0.16 -> 16%)
+            vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate))) if item.vat_rate is not None else Decimal("16.00")
             quantity = Decimal(str(item_data.quantity))
             unit_price = Decimal(str(item_data.unit_price_exclusive or 0))
             

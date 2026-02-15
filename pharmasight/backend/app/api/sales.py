@@ -27,6 +27,7 @@ from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short
+from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
 
@@ -94,8 +95,8 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
         
-        # Copy VAT classification from item (Kenya Pharmacy Context)
-        item_vat_rate = Decimal(str(item.vat_rate or 0))
+        # Copy VAT classification from item (Kenya: percentage e.g. 16; normalize if stored as 0.16)
+        item_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
         
         # Check availability (but don't allocate yet - that happens on batch)
         is_available, available, required = InventoryService.check_stock_availability(
@@ -335,7 +336,7 @@ def add_sales_invoice_item(
     if not item:
         raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
 
-    item_vat_rate = Decimal(str(item.vat_rate or 0))
+    item_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
     is_available, available, required = InventoryService.check_stock_availability(
         db, item_data.item_id, invoice.branch_id,
         float(item_data.quantity), item_data.unit_name
@@ -680,7 +681,7 @@ def batch_sales_invoice(
             line.unit_price_exclusive = payload.unit_price_exclusive or Decimal("0")
             line.discount_percent = payload.discount_percent or Decimal("0")
             line.discount_amount = payload.discount_amount or Decimal("0")
-            line_vat_rate = Decimal(str(item.vat_rate or 0))
+            line_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
             line.line_total_exclusive = (
                 line.unit_price_exclusive * line.quantity
                 - (line.unit_price_exclusive * line.quantity * line.discount_percent / Decimal("100"))

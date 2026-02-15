@@ -17,6 +17,7 @@ from app.models import (
     Item, ItemPricing, InventoryLedger,
     Supplier, Company, Branch
 )
+from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,8 @@ def _vat_from_row(row: Dict) -> Dict:
         vat_rate = Decimal('16.00')
     elif vat_category == 'ZERO_RATED':
         vat_rate = Decimal('0.00')
+    # Store as percentage in DB (0.16 -> 16) for Kenyan system
+    vat_rate = Decimal(str(vat_rate_to_percent(float(vat_rate))))
     return {'vat_rate': vat_rate, 'vat_category': vat_category}
 
 
@@ -536,6 +539,8 @@ class ExcelImportService:
             vat_rate = Decimal('16.00')
         elif vat_category == 'ZERO_RATED':
             vat_rate = Decimal('0.00')
+        # Store as percentage in DB (0.16 -> 16) for Kenyan system
+        vat_rate = Decimal(str(vat_rate_to_percent(float(vat_rate))))
 
         # Apply updates (master data only; prices/cost come from inventory_ledger)
         item.description = _safe_strip(description)
@@ -1051,6 +1056,8 @@ class ExcelImportService:
             vat_rate = Decimal('16.00')
         elif vat_category == 'ZERO_RATED':
             vat_rate = Decimal('0.00')
+        # Store as percentage in DB (0.16 -> 16) for Kenyan system
+        vat_rate = Decimal(str(vat_rate_to_percent(float(vat_rate))))
         
         # Base = wholesale (reference unit). Prices/cost come from inventory_ledger only.
         base_unit = wholesale_unit
@@ -1099,7 +1106,8 @@ class ExcelImportService:
         
         vat_rate_raw = _normalize_column_name(row, ['VAT_Rate', 'VAT Rate', 'Tax Rate'])
         if vat_rate_raw:
-            item.vat_rate = ExcelImportService._parse_decimal(vat_rate_raw)
+            parsed = ExcelImportService._parse_decimal(vat_rate_raw)
+            item.vat_rate = Decimal(str(vat_rate_to_percent(float(parsed))))
     
     @staticmethod
     def _process_item_pricing(
@@ -1346,7 +1354,8 @@ class ExcelImportService:
                         safe['vat_category'] = vat_cat
                     vat_rate_raw = _normalize_column_name(row, ['VAT_Rate', 'VAT Rate', 'vat_rate', 'Tax Rate'])
                     if vat_rate_raw:
-                        safe['vat_rate'] = ExcelImportService._parse_decimal(vat_rate_raw)
+                        parsed = ExcelImportService._parse_decimal(vat_rate_raw)
+                        safe['vat_rate'] = Decimal(str(vat_rate_to_percent(float(parsed))))
                     track_expiry_raw = _normalize_column_name(row, ['Track_Expiry', 'Track Expiry', 'track_expiry'])
                     if track_expiry_raw is not None:
                         safe['track_expiry'] = _parse_bool_from_row(row, ['Track_Expiry', 'Track Expiry', 'track_expiry'], False)

@@ -117,6 +117,27 @@
     };
     
     /**
+     * Normalize VAT rate to percentage (Kenya: DB/Excel may store 0.16; we use 16 for 16%).
+     * Returns percentage for display and calculation: 0.16 -> 16, 16 -> 16, 0 -> 0.
+     */
+    TransactionItemsTable.prototype.vatRateToPercent = function(value) {
+        if (value == null || value === '' || isNaN(parseFloat(value))) return 0;
+        const v = parseFloat(value);
+        if (v === 0) return 0;
+        if (v > 0 && v <= 1) return v * 100;
+        return v;
+    };
+
+    /**
+     * Round to 2 decimal places for money/amounts (avoids 49.99994 display).
+     * Returns number for calculations; use .toFixed(2) for display strings.
+     */
+    TransactionItemsTable.prototype.roundMoney = function(value) {
+        if (value == null || value === '' || isNaN(parseFloat(value))) return 0;
+        return Math.round(parseFloat(value) * 100) / 100;
+    };
+
+    /**
      * Create empty item row
      */
     TransactionItemsTable.prototype.createEmptyItem = function() {
@@ -153,7 +174,7 @@
                 purchase_price: item.purchase_price || 0, // Cost per base (wholesale) unit
                 unit_cost_used: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null, // Cost per sale unit when from API (reload)
                 discount_percent: item.discount_percent || 0,
-                tax_percent: item.tax_percent || 0,
+                tax_percent: this.vatRateToPercent(item.tax_percent ?? item.vat_rate ?? 0),
                 total: item.total || 0,
                 available_stock: typeof item.available_stock === 'number' ? item.available_stock : null,
                 is_empty: false
@@ -264,7 +285,7 @@
                     <td style="padding: 0.25rem;">
                         <div style="display: flex; flex-direction: column; gap: 0.15rem;">
                             <input type="number" 
-                                   class="form-input qty-input" 
+                                   class="form-input input-direct qty-input" 
                                    value="${item.quantity || 1}" 
                                    step="0.01" 
                                    min="0.01"
@@ -311,8 +332,8 @@
                     </td>
                     <td style="padding: 0.25rem;">
                         <input type="number" 
-                               class="form-input price-input" 
-                               value="${item.unit_price || 0}" 
+                               class="form-input input-direct price-input" 
+                               value="${this.roundMoney(item.unit_price).toFixed(2)}" 
                                step="0.01" 
                                min="0"
                                style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
@@ -323,7 +344,7 @@
                     ${(this.mode === 'sale' || this.mode === 'quotation') ? `
                     <td style="padding: 0.25rem; text-align: right;">
                         <input type="number" 
-                               class="form-input margin-input" 
+                               class="form-input input-direct margin-input" 
                                value="${(this.calculateMargin(item) || 0).toFixed(1)}" 
                                step="0.1" 
                                data-row="${index}"
@@ -334,8 +355,8 @@
                     ` : ''}
                     <td style="padding: 0.25rem;">
                         <input type="number" 
-                               class="form-input discount-input" 
-                               value="${item.discount_percent || 0}" 
+                               class="form-input input-direct discount-input" 
+                               value="${this.roundMoney(item.discount_percent)}" 
                                step="0.01" 
                                min="0"
                                max="100"
@@ -358,8 +379,8 @@
                         <span class="item-nett" data-row="${index}">${formatCurrency(this.calculateNett(item))}</span>
                     </td>
                     <td style="padding: 0.25rem; text-align: right; font-weight: 600;">
-                        <input type="number" class="form-input total-input" data-row="${index}" data-field="total"
-                               value="${Number(item.total) || 0}"
+                        <input type="number" class="form-input input-direct total-input" data-row="${index}" data-field="total"
+                               value="${this.roundMoney(item.total).toFixed(2)}"
                                step="0.01" min="0"
                                style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 600;"
                                ${!this.canEdit ? 'readonly' : ''}
@@ -545,6 +566,14 @@
                 }, 300);
             }
         });
+        
+        // Prevent mouse wheel from changing price/total/margin/discount (direct type-in only)
+        tbody.addEventListener('wheel', (e) => {
+            if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || e.target.classList.contains('total-input') ||
+                e.target.classList.contains('margin-input') || e.target.classList.contains('discount-input')) {
+                e.preventDefault();
+            }
+        }, { passive: false });
         
         // Remove item button
         tbody.addEventListener('click', (e) => {
@@ -803,7 +832,7 @@
                 const purchasePrice = suggestion.purchase_price || 0;
                 const stock = typeof suggestion.current_stock === 'number' ? suggestion.current_stock : (suggestion.stock || 0);
                 const stockDisplayStr = suggestion.stock_display || null; // 3-tier formatted stock display
-                const vatRate = typeof suggestion.vat_rate === 'number' ? suggestion.vat_rate : (suggestion.vatRate || 0);
+                const vatRate = this.vatRateToPercent(suggestion.vat_rate ?? suggestion.vatRate ?? 0);
                 const vatCode = suggestion.vat_category || suggestion.vat_code || '';
                 const lastSupplier = suggestion.last_supplier || '';
                 const baseUnit = suggestion.base_unit || '';
@@ -1044,7 +1073,7 @@
             purchase_price: parseFloat(suggestionEl.dataset.purchasePrice) || 0, // Store cost for margin
             quantity: this.items[rowIndex].quantity || 1,
             discount_percent: 0,
-            tax_percent: suggestionEl.dataset.vatRate ? parseFloat(suggestionEl.dataset.vatRate) || 0 : 0,
+            tax_percent: this.vatRateToPercent(suggestionEl.dataset.vatRate),
             available_stock: typeof suggestionEl.dataset.stock !== 'undefined'
                 ? parseFloat(suggestionEl.dataset.stock)
                 : null,
@@ -1146,7 +1175,7 @@
         const factor = qty * (1 - discountPct) * (1 + taxPct);
         if (factor <= 0) return;
         const unitPrice = newTotal / factor;
-        item.unit_price = Math.round(unitPrice * 10000) / 10000;
+        item.unit_price = this.roundMoney(unitPrice);
         this.recalculateRow(rowIndex);
         this.updateRowDisplay(rowIndex);
         this.updateMarginDisplay(rowIndex);
@@ -1186,6 +1215,9 @@
         } else {
             this.items[rowIndex][field] = numValue;
         }
+        if (field === 'unit_price') {
+            this.items[rowIndex][field] = this.roundMoney(this.items[rowIndex][field]);
+        }
         this.recalculateRow(rowIndex);
         this.updateRowDisplay(rowIndex);
         this.updateMarginDisplay(rowIndex); // Update margin when price changes
@@ -1210,18 +1242,17 @@
     };
     
     /**
-     * Recalculate row total
+     * Recalculate row total (round to 2 decimals so no 49.99994 display)
      */
     TransactionItemsTable.prototype.recalculateRow = function(rowIndex) {
         const item = this.items[rowIndex];
         if (!item) return;
-        
+        const round = (n) => Math.round(parseFloat(n) * 100) / 100;
         const subtotal = (item.quantity || 0) * (item.unit_price || 0);
-        const discount = subtotal * ((item.discount_percent || 0) / 100);
-        const afterDiscount = subtotal - discount;
-        const tax = afterDiscount * ((item.tax_percent || 0) / 100);
-        item.total = afterDiscount + tax;
-        // Store nett and vat separately for display
+        const discount = round(subtotal * ((item.discount_percent || 0) / 100));
+        const afterDiscount = round(subtotal - discount);
+        const tax = round(afterDiscount * ((item.tax_percent || 0) / 100));
+        item.total = round(afterDiscount + tax);
         item.nett = afterDiscount;
         item.vat_amount = tax;
     };
@@ -1289,17 +1320,17 @@
             nettEl.textContent = this.getFormatCurrency()(this.calculateNett(item));
         }
         
-        // Update Price/unit input so it stays in sync when total or unit changes
+        // Update Price/unit input so it stays in sync when total or unit changes (2 decimals)
         const priceEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .price-input`);
         if (priceEl) {
             const v = item.unit_price;
-            priceEl.value = (v != null && v !== '' && !isNaN(Number(v))) ? Number(v) : 0;
+            priceEl.value = (v != null && v !== '' && !isNaN(Number(v))) ? this.roundMoney(v).toFixed(2) : '0.00';
         }
         
-        // Update Total display (editable input)
+        // Update Total display (editable input) — always 2 decimals so user sees 50.00 not 49.99994
         const totalEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .total-input`);
         if (totalEl) {
-            totalEl.value = Number(item.total) || 0;
+            totalEl.value = this.roundMoney(item.total).toFixed(2);
         }
         
         // Update margin display in real-time (for sales and quotation)

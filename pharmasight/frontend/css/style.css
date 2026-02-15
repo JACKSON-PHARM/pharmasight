@@ -782,6 +782,17 @@ tbody tr:hover {
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
+/* Transaction price/total inputs: direct type-in only, no spinner arrows or scroll */
+.input-direct {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+.input-direct::-webkit-outer-spin-button,
+.input-direct::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
 .form-textarea {
     resize: vertical;
     min-height: 100px;
