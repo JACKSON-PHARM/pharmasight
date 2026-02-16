@@ -1527,12 +1527,7 @@ async function searchSuppliersInline(event, searchInputId = 'supplierSearch', hi
     const cacheKey = `${CONFIG.COMPANY_ID}:${query.toLowerCase()}`;
     const cached = supplierSearchCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
-        // Determine which form we're in based on dropdown ID
-        const isInvoiceForm = dropdownId.includes('Invoice');
-        const finalSearchId = isInvoiceForm ? 'supplierSearchInvoice' : 'supplierSearch';
-        const finalHiddenId = isInvoiceForm ? 'supplierIdInvoice' : 'supplierId';
-        const finalDropdownId = isInvoiceForm ? 'supplierSearchDropdownInvoice' : 'supplierSearchDropdown';
-        renderSupplierSearchResults(cached.data, dropdown, finalSearchId, finalHiddenId, finalDropdownId);
+        renderSupplierSearchResults(cached.data, dropdown, searchInputId, hiddenInputId, dropdownId);
         return;
     }
     
@@ -1573,13 +1568,7 @@ async function searchSuppliersInline(event, searchInputId = 'supplierSearch', hi
                 supplierSearchCache.delete(oldestKey);
             }
             
-            // Determine which form we're in based on dropdown ID
-            const isInvoiceForm = dropdownId.includes('Invoice');
-            const finalSearchId = isInvoiceForm ? 'supplierSearchInvoice' : 'supplierSearch';
-            const finalHiddenId = isInvoiceForm ? 'supplierIdInvoice' : 'supplierId';
-            const finalDropdownId = isInvoiceForm ? 'supplierSearchDropdownInvoice' : 'supplierSearchDropdown';
-            
-            renderSupplierSearchResults(suppliers, dropdown, finalSearchId, finalHiddenId, finalDropdownId);
+            renderSupplierSearchResults(suppliers, dropdown, searchInputId, hiddenInputId, dropdownId);
         } catch (error) {
             if (error.name === 'AbortError') {
                 return; // Request was aborted, ignore
@@ -1666,6 +1655,15 @@ function handleSupplierSearchBlur(event) {
         const dropdown = document.getElementById(dropdownId);
         if (dropdown) dropdown.style.display = 'none';
     }, 200);
+}
+
+// Create PO from Order Book modal: re-show supplier results on focus when user has typed 2+ chars
+function handlePOFromBookSupplierFocus(event) {
+    if (event.target.id !== 'poFromBookSupplierSearch') return;
+    const q = (event.target.value || '').trim();
+    if (q.length >= 2 && typeof searchSuppliersInline === 'function') {
+        searchSuppliersInline(event, 'poFromBookSupplierSearch', 'poFromBookSupplierId', 'poFromBookSupplierDropdown');
+    }
 }
 
 // Removed old table rendering functions - now handled by TransactionItemsTable component
@@ -2757,6 +2755,7 @@ if (typeof window !== 'undefined') {
     window.searchSuppliersInline = searchSuppliersInline;
     window.handleSupplierSearchFocus = handleSupplierSearchFocus;
     window.handleSupplierSearchBlur = handleSupplierSearchBlur;
+    window.handlePOFromBookSupplierFocus = handlePOFromBookSupplierFocus;
     window.selectSupplier = selectSupplier;
     window.renderCreatePurchaseOrderPage = renderCreatePurchaseOrderPage;
     window.initializeTransactionItemsTable = initializeTransactionItemsTable;
@@ -3351,9 +3350,18 @@ async function createPurchaseOrderFromSelected() {
             <div class="modal-body">
                 <div style="margin-bottom: 1rem;">
                     <label>Supplier *</label>
-                    <select id="poSupplierSelect" class="form-input" required>
-                        <option value="">Select Supplier</option>
-                    </select>
+                    <div style="position: relative;">
+                        <input type="text" class="form-input" id="poFromBookSupplierSearch" 
+                               placeholder="Type at least 2 characters to search suppliers..."
+                               autocomplete="off" required
+                               onkeyup="searchSuppliersInline(event, 'poFromBookSupplierSearch', 'poFromBookSupplierId', 'poFromBookSupplierDropdown')"
+                               onfocus="handlePOFromBookSupplierFocus(event)"
+                               onblur="setTimeout(function(){ var d=document.getElementById('poFromBookSupplierDropdown'); if(d) d.style.display='none'; }, 200)">
+                        <input type="hidden" id="poFromBookSupplierId">
+                        <div id="poFromBookSupplierDropdown" 
+                             style="position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--border-color); border-radius: 0.25rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 10000; max-height: 280px; overflow-y: auto; display: none; margin-top: 0.25rem;">
+                        </div>
+                    </div>
                 </div>
                 <div style="margin-bottom: 1rem;">
                     <label>Order Date *</label>
@@ -3377,23 +3385,6 @@ async function createPurchaseOrderFromSelected() {
         </div>
     `;
     document.body.appendChild(modal);
-    
-    // Load suppliers
-    try {
-        const suppliersList = await API.suppliers.list(CONFIG.COMPANY_ID);
-        const select = document.getElementById('poSupplierSelect');
-        suppliersList.forEach(supplier => {
-            const option = document.createElement('option');
-            option.value = supplier.id;
-            option.textContent = supplier.name;
-            if (suppliers.length === 1 && supplier.id === suppliers[0]) {
-                option.selected = true;
-            }
-            select.appendChild(option);
-        });
-    } catch (error) {
-        console.error('Error loading suppliers:', error);
-    }
 }
 
 let confirmCreatePOFromBookInProgress = false;
@@ -3404,7 +3395,7 @@ async function confirmCreatePOFromBook() {
     }
     const submitBtn = document.getElementById('poFromBookSubmitBtn');
     const cancelBtn = document.getElementById('poFromBookCancelBtn');
-    const supplierId = document.getElementById('poSupplierSelect')?.value;
+    const supplierId = document.getElementById('poFromBookSupplierId')?.value;
     const orderDate = document.getElementById('poOrderDate')?.value;
     const reference = document.getElementById('poReference')?.value || '';
     const notes = document.getElementById('poNotes')?.value || '';
