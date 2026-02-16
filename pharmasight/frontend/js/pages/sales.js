@@ -3014,6 +3014,28 @@ async function addQuotationItemsToOrderBook() {
     }
 }
 
+// Add item to order book from transaction table (new sale/quotation form, before batching)
+async function addItemToOrderBookFromTransaction(itemId, itemName, unitName) {
+    try {
+        if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID || !CONFIG.USER_ID) {
+            showToast('Configuration error: Missing company, branch, or user ID', 'error');
+            return;
+        }
+        const entryData = {
+            item_id: itemId,
+            quantity_needed: 1,
+            unit_name: unitName || 'unit',
+            reason: 'MANUAL_ADD',
+            notes: 'Added from sales/quotation page'
+        };
+        await API.orderBook.create(entryData, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, CONFIG.USER_ID);
+        showToast(`${itemName || 'Item'} added to order book`, 'success');
+    } catch (error) {
+        console.error('Error adding item to order book:', error);
+        showToast(`Error: ${error.message || 'Failed to add to order book'}`, 'error');
+    }
+}
+
 // Add item to order book from sales invoice
 async function addItemToOrderBookFromSale(itemId, itemName, unitName, invoiceId) {
     try {
@@ -3068,6 +3090,7 @@ if (typeof window !== 'undefined') {
     window.clearSalesDateFilter = clearSalesDateFilter;
     window.filterSalesInvoices = filterSalesInvoices;
     window.viewSalesInvoice = viewSalesInvoice;
+    window.addItemToOrderBookFromTransaction = addItemToOrderBookFromTransaction;
     window.addItemToOrderBookFromSale = addItemToOrderBookFromSale;
     window.addQuotationItemsToOrderBook = addQuotationItemsToOrderBook;
     window.fetchAndRenderSalesInvoicesData = fetchAndRenderSalesInvoicesData;

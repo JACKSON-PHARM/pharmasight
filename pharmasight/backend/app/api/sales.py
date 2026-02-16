@@ -1,6 +1,7 @@
 """
 Sales API routes (KRA Compliant)
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -766,6 +767,10 @@ def batch_sales_invoice(
         db.flush()
         for entry in ledger_entries:
             SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+        for inv_item in invoice.items:
+            SnapshotService.upsert_search_snapshot_last_sale(
+                db, invoice.company_id, invoice.branch_id, inv_item.item_id, invoice.invoice_date
+            )
 
         db.commit()
     except HTTPException:
@@ -789,10 +794,9 @@ def batch_sales_invoice(
             user_id=batched_by
         )
         if order_book_entries:
-            import logging
             logging.getLogger(__name__).info("Auto-added %s items to order book from invoice %s", len(order_book_entries), invoice_id)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).warning("Order book auto-add failed for invoice %s: %s", invoice_id, e)
 
     return invoice
 

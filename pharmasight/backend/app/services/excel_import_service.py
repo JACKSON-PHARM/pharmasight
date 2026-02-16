@@ -1211,6 +1211,7 @@ class ExcelImportService:
             existing.unit_cost = unit_cost
             existing.total_cost = quantity * unit_cost
             SnapshotService.upsert_inventory_balance_delta(db, company_id, branch_id, item_id, old_qty, quantity)
+            SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
         else:
             ledger_entry = InventoryLedger(
                 company_id=company_id,
@@ -1226,6 +1227,7 @@ class ExcelImportService:
             db.add(ledger_entry)
             db.flush()
             SnapshotService.upsert_inventory_balance(db, company_id, branch_id, item_id, quantity)
+            SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
     
     @staticmethod
     def _process_batch_bulk(
@@ -1529,6 +1531,10 @@ class ExcelImportService:
                 for ob in opening_balances:
                     SnapshotService.upsert_inventory_balance(
                         db, ob['company_id'], ob['branch_id'], ob['item_id'], ob['quantity_delta']
+                    )
+                    SnapshotService.upsert_purchase_snapshot(
+                        db, ob['company_id'], ob['branch_id'], ob['item_id'],
+                        ob.get('unit_cost'), ob.get('created_at'), None
                     )
                 result['opening_balances_created'] = len(opening_balances)
                 logger.info(f"Bulk inserted {len(opening_balances)} opening balances")

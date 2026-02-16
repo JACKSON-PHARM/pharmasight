@@ -990,7 +990,13 @@ def create_purchase_order(order: PurchaseOrderCreate, db: Session = Depends(get_
     for item in order_items:
         item.purchase_order_id = db_order.id
         db.add(item)
-    
+
+    db.flush()
+    for item in order_items:
+        SnapshotService.upsert_search_snapshot_last_order(
+            db, order.company_id, order.branch_id, item.item_id, db_order.order_date
+        )
+
     db.commit()
     db.refresh(db_order)
     

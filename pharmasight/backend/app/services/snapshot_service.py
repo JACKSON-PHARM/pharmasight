@@ -78,3 +78,90 @@ class SnapshotService:
                 "supplier_id": supplier_str,
             },
         )
+
+    @staticmethod
+    def upsert_search_snapshot_last_order(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID,
+        item_id: UUID,
+        order_date,
+    ) -> None:
+        """Update last_order_date in item_branch_search_snapshot. Call when PO created."""
+        db.execute(
+            text("""
+                INSERT INTO item_branch_search_snapshot (company_id, branch_id, item_id, last_order_date, updated_at)
+                VALUES (:company_id, :branch_id, :item_id, :order_date, NOW())
+                ON CONFLICT (item_id, branch_id) DO UPDATE SET
+                    last_order_date = CASE
+                        WHEN item_branch_search_snapshot.last_order_date IS NULL OR (EXCLUDED.last_order_date IS NOT NULL AND EXCLUDED.last_order_date >= item_branch_search_snapshot.last_order_date)
+                        THEN EXCLUDED.last_order_date
+                        ELSE item_branch_search_snapshot.last_order_date
+                    END,
+                    updated_at = NOW()
+            """),
+            {
+                "company_id": str(company_id),
+                "branch_id": str(branch_id),
+                "item_id": str(item_id),
+                "order_date": order_date,
+            },
+        )
+
+    @staticmethod
+    def upsert_search_snapshot_last_sale(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID,
+        item_id: UUID,
+        sale_date,
+    ) -> None:
+        """Update last_sale_date in item_branch_search_snapshot. Call when sales invoice batched."""
+        db.execute(
+            text("""
+                INSERT INTO item_branch_search_snapshot (company_id, branch_id, item_id, last_sale_date, updated_at)
+                VALUES (:company_id, :branch_id, :item_id, :sale_date, NOW())
+                ON CONFLICT (item_id, branch_id) DO UPDATE SET
+                    last_sale_date = CASE
+                        WHEN item_branch_search_snapshot.last_sale_date IS NULL OR (EXCLUDED.last_sale_date IS NOT NULL AND EXCLUDED.last_sale_date >= item_branch_search_snapshot.last_sale_date)
+                        THEN EXCLUDED.last_sale_date
+                        ELSE item_branch_search_snapshot.last_sale_date
+                    END,
+                    updated_at = NOW()
+            """),
+            {
+                "company_id": str(company_id),
+                "branch_id": str(branch_id),
+                "item_id": str(item_id),
+                "sale_date": sale_date,
+            },
+        )
+
+    @staticmethod
+    def upsert_search_snapshot_last_order_book(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID,
+        item_id: UUID,
+        created_at,
+    ) -> None:
+        """Update last_order_book_date in item_branch_search_snapshot. Call when order book entry added."""
+        db.execute(
+            text("""
+                INSERT INTO item_branch_search_snapshot (company_id, branch_id, item_id, last_order_book_date, updated_at)
+                VALUES (:company_id, :branch_id, :item_id, :created_at, NOW())
+                ON CONFLICT (item_id, branch_id) DO UPDATE SET
+                    last_order_book_date = CASE
+                        WHEN item_branch_search_snapshot.last_order_book_date IS NULL OR (EXCLUDED.last_order_book_date IS NOT NULL AND EXCLUDED.last_order_book_date >= item_branch_search_snapshot.last_order_book_date)
+                        THEN EXCLUDED.last_order_book_date
+                        ELSE item_branch_search_snapshot.last_order_book_date
+                    END,
+                    updated_at = NOW()
+            """),
+            {
+                "company_id": str(company_id),
+                "branch_id": str(branch_id),
+                "item_id": str(item_id),
+                "created_at": created_at,
+            },
+        )

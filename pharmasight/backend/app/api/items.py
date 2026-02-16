@@ -16,7 +16,7 @@ from app.dependencies import get_tenant_db
 from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
-    InventoryLedger, InventoryBalance, ItemBranchPurchaseSnapshot,
+    InventoryLedger, InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot,
     SupplierInvoice, SupplierInvoiceItem, Supplier,
     PurchaseOrder, PurchaseOrderItem, Branch,
     UserRole, UserBranchRole
@@ -369,36 +369,20 @@ def search_items(
             t_after_supplier = time.perf_counter()
             logger.info(f"[search] supplier_lookup: {(t_after_supplier - t_after_purchase) * 1000:.2f} ms")
 
-        # Get last order dates - ONLY when purchase_order context (slow query; skip for sales/purchase inline search)
-        if context == 'purchase_order':
-            from sqlalchemy.sql import func as sql_func
-            last_order_subq = (
-                db.query(
-                    PurchaseOrderItem.item_id,
-                    PurchaseOrder.order_date.label('last_order_date'),
-                    sql_func.row_number().over(
-                        partition_by=PurchaseOrderItem.item_id,
-                        order_by=desc(PurchaseOrder.order_date)
-                    ).label('rn')
-                )
-                .join(PurchaseOrder, PurchaseOrderItem.purchase_order_id == PurchaseOrder.id)
+        # Get last order dates from item_branch_search_snapshot (fast; available for all contexts when branch_id set)
+        if branch_id:
+            last_order_rows = (
+                db.query(ItemBranchSearchSnapshot.item_id, ItemBranchSearchSnapshot.last_order_date)
                 .filter(
-                    PurchaseOrderItem.item_id.in_(item_ids),
-                    PurchaseOrder.company_id == company_id
+                    ItemBranchSearchSnapshot.item_id.in_(item_ids),
+                    ItemBranchSearchSnapshot.company_id == company_id,
+                    ItemBranchSearchSnapshot.branch_id == branch_id
                 )
-                .subquery()
-            )
-            last_orders = (
-                db.query(
-                    last_order_subq.c.item_id,
-                    last_order_subq.c.last_order_date
-                )
-                .filter(last_order_subq.c.rn == 1)
                 .all()
             )
             last_order_date_map = {
                 row.item_id: row.last_order_date.isoformat() if row.last_order_date else None
-                for row in last_orders
+                for row in last_order_rows
             }
         
         # For Purchase Order context, get additional fields from item_branch_purchase_snapshot

@@ -8,7 +8,7 @@ from .company import Company, Branch
 from .user import User, UserRole, UserBranchRole
 from .item import Item, ItemPricing, CompanyPricingDefault
 from .inventory import InventoryLedger
-from .snapshot import InventoryBalance, ItemBranchPurchaseSnapshot
+from .snapshot import InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot
 from .supplier import Supplier
 from .purchase import GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem, PurchaseOrder, PurchaseOrderItem
 # Backward compatibility aliases
@@ -34,6 +34,7 @@ __all__ = [
     "InventoryLedger",
     "InventoryBalance",
     "ItemBranchPurchaseSnapshot",
+    "ItemBranchSearchSnapshot",
     "Supplier",
     "GRN",
     "GRNItem",

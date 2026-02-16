@@ -690,8 +690,8 @@
         
         try {
             const cache = (typeof window !== 'undefined' && window.searchCache) ? window.searchCache : null;
-            // Only fetch full pricing (last_supplier, last_order_date) for purchase_order context; sales/purchase inline search uses fast path
-            const includePricing = (this.context === 'purchase_order');
+            // Always include pricing (last_supplier, last_order_date) - snapshot tables make it fast regardless of role
+            const includePricing = true;
             
             if (cache) {
                 const cached = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 50);
@@ -1481,6 +1481,12 @@
                 <i class="fas fa-external-link-alt" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
                 <span>View full item details</span>
             </div>
+            ${(this.mode === 'sale' || this.mode === 'quotation') ? `
+            <div class="suggestion-item selected-item-action" data-action="add-to-order-book" data-row="${rowIndex}" data-item-id="${item.item_id}" data-item-name="${escapeHtml(item.item_name || '')}" data-unit-name="${escapeHtml(item.unit_name || '')}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center;" onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='white'">
+                <i class="fas fa-clipboard-list" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
+                <span>Add to Order Book</span>
+            </div>
+            ` : ''}
         `;
         
         this.activeSelectedItemRow = rowIndex;
@@ -1542,6 +1548,13 @@
                         window.loadPage('items');
                     } else {
                         window.location.hash = '#items?item_id=' + encodeURIComponent(itemId);
+                    }
+                } else if (action === 'add-to-order-book' && el.dataset.itemId) {
+                    const itemId = el.dataset.itemId;
+                    const itemName = el.dataset.itemName || '';
+                    const unitName = el.dataset.unitName || 'unit';
+                    if (typeof window.addItemToOrderBookFromTransaction === 'function') {
+                        window.addItemToOrderBookFromTransaction(itemId, itemName, unitName);
                     }
                 }
             });

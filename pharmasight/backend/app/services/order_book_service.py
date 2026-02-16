@@ -14,6 +14,7 @@ from app.models import (
     SalesInvoiceItem, SalesInvoice
 )
 from app.services.inventory_service import InventoryService
+from app.services.snapshot_service import SnapshotService
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +82,8 @@ class OrderBookService:
         pack_size = item.pack_size or 1
         if pack_size < 1:
             pack_size = 1
-        
-        # Check if stock < pack_size (less than one full supplier pack)
-        if current_stock_retail_units >= pack_size:
-            logger.debug(
-                f"Item {item.name} ({item_id}) stock ({current_stock_retail_units}) >= pack_size ({pack_size}) - skipping order book"
-            )
-            return None
-        
-        # Calculate monthly sales (last 30 days) in retail/base units
+
+        # Calculate monthly sales (last 30 days) in retail/base units - needed for both rules
         thirty_days_ago = datetime.utcnow() - timedelta(days=30)
         monthly_sales_items = (
             db.query(SalesInvoiceItem.quantity, SalesInvoiceItem.unit_name)
@@ -125,10 +119,31 @@ class OrderBookService:
                 monthly_sales_retail_units += Decimal(str(sale_item.quantity))
         
         monthly_sales_float = float(monthly_sales_retail_units)
-        
-        # Calculate quantity needed in retail units: enough to bring stock to at least pack_size
-        quantity_needed_retail_units = max(pack_size - current_stock_retail_units, 0)
-        
+
+        # Rule 1: stock < pack_size (below one wholesale unit)
+        # Rule 2: stock < monthly_sales/2 when monthly_sales > 0 (accumulated sales over month)
+        # Rule 3: stock fell to zero after sale - add even without monthly sales data
+        below_one_wholesale = current_stock_retail_units < pack_size
+        below_half_monthly = monthly_sales_float > 0 and current_stock_retail_units < (monthly_sales_float / 2)
+        stock_fell_to_zero = current_stock_retail_units <= 0
+        if not below_one_wholesale and not below_half_monthly and not stock_fell_to_zero:
+            logger.debug(
+                f"Item {item.name} ({item_id}) stock ({current_stock_retail_units}) does not meet thresholds "
+                f"(pack_size={pack_size}, monthly_sales/2={monthly_sales_float/2 if monthly_sales_float > 0 else 0}) - skipping order book"
+            )
+            return None
+
+        # Calculate quantity needed in retail units
+        if stock_fell_to_zero and monthly_sales_float <= 0:
+            # Rule 3: Stock fell to zero, no monthly sales data - order at least 1 pack
+            quantity_needed_retail_units = pack_size
+        elif below_one_wholesale:
+            # Rule 1: Bring stock up to at least pack_size
+            quantity_needed_retail_units = max(pack_size - current_stock_retail_units, 0)
+        else:
+            # Rule 2: Triggered by below_half_monthly - order enough to reach half of monthly sales
+            quantity_needed_retail_units = max((monthly_sales_float / 2) - current_stock_retail_units, 0)
+
         # Cap at monthly sales (if we have sales data)
         if monthly_sales_float > 0:
             quantity_needed_retail_units = min(quantity_needed_retail_units, monthly_sales_float)
@@ -223,6 +238,10 @@ class OrderBookService:
                 created_by=user_id
             )
             db.add(order_book_entry)
+            db.flush()
+            SnapshotService.upsert_search_snapshot_last_order_book(
+                db, company_id, branch_id, item_id, order_book_entry.created_at or datetime.utcnow()
+            )
             db.commit()
             db.refresh(order_book_entry)
             

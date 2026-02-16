@@ -1,6 +1,7 @@
 """
 Order Book API routes
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func, and_, or_
@@ -13,7 +14,7 @@ from app.models import (
     DailyOrderBook, OrderBookHistory,
     Item, Supplier, PurchaseOrder, PurchaseOrderItem,
     SupplierInvoice, SupplierInvoiceItem,
-    InventoryLedger, Branch, User
+    InventoryLedger, InventoryBalance, Branch, User
 )
 from app.schemas.order_book import (
     OrderBookEntryCreate, OrderBookEntryResponse, OrderBookEntryUpdate,
@@ -21,6 +22,7 @@ from app.schemas.order_book import (
     AutoGenerateRequest, OrderBookHistoryResponse
 )
 from app.services.document_service import DocumentService
+from app.services.snapshot_service import SnapshotService
 
 router = APIRouter()
 
@@ -48,57 +50,77 @@ def list_order_book_entries(
         # Default to PENDING entries
         query = query.filter(DailyOrderBook.status == "PENDING")
     
-    entries = query.order_by(
-        DailyOrderBook.priority.desc(),
-        DailyOrderBook.created_at.desc()
-    ).all()
-    
-    # Enhance with item details and current stock
-    result = []
-    for entry in entries:
-        entry_dict = {
-            "id": entry.id,
-            "company_id": entry.company_id,
-            "branch_id": entry.branch_id,
-            "item_id": entry.item_id,
-            "supplier_id": entry.supplier_id,
-            "quantity_needed": entry.quantity_needed,
-            "unit_name": entry.unit_name,
-            "reason": entry.reason,
-            "source_reference_type": entry.source_reference_type,
-            "source_reference_id": entry.source_reference_id,
-            "notes": entry.notes,
-            "priority": entry.priority,
-            "status": entry.status,
-            "purchase_order_id": entry.purchase_order_id,
-            "created_by": entry.created_by,
-            "created_at": entry.created_at,
-            "updated_at": entry.updated_at,
-            "item_name": None,
-            "item_sku": None,
-            "supplier_name": None,
-            "current_stock": None
-        }
-        
-        # Get item details
-        if entry.item:
-            entry_dict["item_name"] = entry.item.name
-            entry_dict["item_sku"] = entry.item.sku
-        
-        # Get supplier details
-        if entry.supplier:
-            entry_dict["supplier_name"] = entry.supplier.name
-        
-        # Get current stock
+    entries = (
+        query.options(
+            selectinload(DailyOrderBook.item),
+            selectinload(DailyOrderBook.supplier)
+        )
+        .order_by(
+            DailyOrderBook.priority.desc(),
+            DailyOrderBook.created_at.desc()
+        )
+        .all()
+    )
+
+    # Batch fetch current stock from inventory_balances (fast snapshot)
+    item_ids = [e.item_id for e in entries]
+    stock_map = {}
+    if item_ids:
+        try:
+            balances = (
+                db.query(InventoryBalance.item_id, InventoryBalance.current_stock)
+                .filter(
+                    InventoryBalance.item_id.in_(item_ids),
+                    InventoryBalance.company_id == company_id,
+                    InventoryBalance.branch_id == branch_id
+                )
+                .all()
+            )
+            stock_map = {row.item_id: int(row.current_stock or 0) for row in balances}
+        except Exception:
+            stock_map = {}
+
+    # Fallback: use ledger if inventory_balances not available
+    def _get_stock(item_id):
+        if item_id in stock_map:
+            return stock_map[item_id]
         stock_query = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
-            InventoryLedger.item_id == entry.item_id,
+            InventoryLedger.item_id == item_id,
             InventoryLedger.branch_id == branch_id
         )
-        current_stock = stock_query.scalar() or 0
-        entry_dict["current_stock"] = int(current_stock)
-        
-        result.append(OrderBookEntryResponse(**entry_dict))
-    
+        val = stock_query.scalar()
+        return int(val or 0)
+
+    result = []
+    for entry in entries:
+        try:
+            entry_dict = {
+                "id": entry.id,
+                "company_id": entry.company_id,
+                "branch_id": entry.branch_id,
+                "item_id": entry.item_id,
+                "supplier_id": entry.supplier_id,
+                "quantity_needed": entry.quantity_needed,
+                "unit_name": entry.unit_name or "unit",
+                "reason": entry.reason or "MANUAL_ADD",
+                "source_reference_type": entry.source_reference_type,
+                "source_reference_id": entry.source_reference_id,
+                "notes": entry.notes,
+                "priority": entry.priority if entry.priority is not None else 5,
+                "status": entry.status or "PENDING",
+                "purchase_order_id": entry.purchase_order_id,
+                "created_by": entry.created_by,
+                "created_at": entry.created_at,
+                "updated_at": entry.updated_at,
+                "item_name": entry.item.name if entry.item else "Unknown",
+                "item_sku": entry.item.sku if entry.item else None,
+                "supplier_name": entry.supplier.name if entry.supplier else None,
+                "current_stock": _get_stock(entry.item_id)
+            }
+            result.append(OrderBookEntryResponse(**entry_dict))
+        except Exception as e:
+            logging.getLogger(__name__).warning("Skipping order book entry %s due to error: %s", entry.id, e)
+            continue
     return result
 
 
@@ -203,6 +225,10 @@ def create_order_book_entry(
             created_by=created_by
         )
         db.add(db_entry)
+        db.flush()
+        SnapshotService.upsert_search_snapshot_last_order_book(
+            db, company_id, branch_id, entry.item_id, db_entry.created_at or datetime.utcnow()
+        )
         db.commit()
         db.refresh(db_entry)
         
@@ -589,6 +615,12 @@ def create_purchase_order_from_book(
     for item in order_items:
         item.purchase_order_id = purchase_order.id
         db.add(item)
+
+    db.flush()
+    for item in order_items:
+        SnapshotService.upsert_search_snapshot_last_order(
+            db, company_id, branch_id, item.item_id, order_date
+        )
     
     # Update order book entries
     for entry in entries:
