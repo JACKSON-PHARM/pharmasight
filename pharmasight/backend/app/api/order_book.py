@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from app.dependencies import get_tenant_db
 from app.models import (
     DailyOrderBook, OrderBookHistory,
@@ -20,11 +20,12 @@ from app.models import (
 )
 from app.schemas.order_book import (
     OrderBookEntryCreate, OrderBookEntryResponse, OrderBookEntryUpdate,
-    OrderBookBulkCreate, CreatePurchaseOrderFromBook,
+    OrderBookBulkCreate, OrderBookBulkCreateResponse, CreatePurchaseOrderFromBook,
     AutoGenerateRequest, OrderBookHistoryResponse
 )
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
+from app.services.order_book_service import OrderBookService
 
 router = APIRouter()
 
@@ -35,11 +36,13 @@ def _serialize_order_book_entry(entry, _get_stock):
         return d.isoformat() if d and hasattr(d, "isoformat") else str(d) if d else None
     def _uuid(u):
         return str(u) if u else None
+    entry_date = getattr(entry, "entry_date", None)
     return {
         "id": _uuid(entry.id),
         "company_id": _uuid(entry.company_id),
         "branch_id": _uuid(entry.branch_id),
         "item_id": _uuid(entry.item_id),
+        "entry_date": _dt(entry_date) if entry_date else None,
         "supplier_id": _uuid(entry.supplier_id),
         "quantity_needed": float(entry.quantity_needed) if entry.quantity_needed is not None else 1,
         "unit_name": entry.unit_name or "unit",
@@ -66,13 +69,14 @@ def list_order_book_entries(
     branch_id: UUID = Query(..., description="Branch ID"),
     company_id: UUID = Query(..., description="Company ID"),
     status_filter: Optional[str] = Query(None, description="Filter by status: PENDING, ORDERED, CANCELLED"),
-    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for created_at filter"),
-    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for created_at filter"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for entry_date filter"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for entry_date filter"),
     include_ordered: Optional[bool] = Query(False, description="If true, include ORDERED entries (for showing converted)"),
+    supplier_id: Optional[UUID] = Query(None, description="Filter by supplier: show only items from this supplier"),
     db: Session = Depends(get_tenant_db)
 ):
     """
-    List order book entries for a branch, optionally filtered by date.
+    List order book entries for a branch, optionally filtered by date and supplier.
     Returns JSON array with item details and current stock levels.
     """
     try:
@@ -80,6 +84,8 @@ def list_order_book_entries(
             DailyOrderBook.branch_id == branch_id,
             DailyOrderBook.company_id == company_id
         )
+        if supplier_id is not None:
+            query = query.filter(DailyOrderBook.supplier_id == supplier_id)
         if status_filter:
             query = query.filter(DailyOrderBook.status == status_filter)
         elif include_ordered:
@@ -87,16 +93,23 @@ def list_order_book_entries(
         else:
             query = query.filter(DailyOrderBook.status == "PENDING")
 
+        # Filter by entry_date when present (date-unique order book); fallback to created_at for pre-migration data
         if date_from:
             try:
                 start = date.fromisoformat(date_from.strip())
-                query = query.filter(func.date(DailyOrderBook.created_at) >= start)
+                if hasattr(DailyOrderBook, "entry_date"):
+                    query = query.filter(DailyOrderBook.entry_date >= start)
+                else:
+                    query = query.filter(func.date(DailyOrderBook.created_at) >= start)
             except (ValueError, TypeError):
                 pass
         if date_to:
             try:
                 end = date.fromisoformat(date_to.strip())
-                query = query.filter(func.date(DailyOrderBook.created_at) <= end)
+                if hasattr(DailyOrderBook, "entry_date"):
+                    query = query.filter(DailyOrderBook.entry_date <= end)
+                else:
+                    query = query.filter(func.date(DailyOrderBook.created_at) <= end)
             except (ValueError, TypeError):
                 pass
 
@@ -178,12 +191,20 @@ def create_order_book_entry(
         if not supplier:
             raise HTTPException(status_code=404, detail=f"Supplier {entry.supplier_id} not found")
     
-    # Item can only be in the order book once; if already PENDING or ORDERED, tell the user
-    existing_entry = db.query(DailyOrderBook).filter(
+    # Entry date: request or today (items unique per branch, item, entry_date)
+    entry_date_val = getattr(entry, "entry_date", None) or date.today()
+    if hasattr(entry_date_val, "date") and callable(getattr(entry_date_val, "date", None)):
+        entry_date_val = entry_date_val.date()
+
+    # Item can only be in the order book once per date; if already PENDING or ORDERED for this date, tell the user
+    existing_filter = [
         DailyOrderBook.branch_id == branch_id,
         DailyOrderBook.item_id == entry.item_id,
         DailyOrderBook.status.in_(["PENDING", "ORDERED"])
-    ).first()
+    ]
+    if hasattr(DailyOrderBook, "entry_date"):
+        existing_filter.append(DailyOrderBook.entry_date == entry_date_val)
+    existing_entry = db.query(DailyOrderBook).filter(*existing_filter).first()
 
     if existing_entry:
         if existing_entry.status == "ORDERED":
@@ -193,72 +214,86 @@ def create_order_book_entry(
             )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This item is already in the order book."
+            detail="This item is already in the order book for this date."
         )
-    else:
-        # Create new entry
-        # For manual entries, use MANUAL_ADD reason and clear source_reference fields
-        reason = entry.reason or "MANUAL_ADD"
-        db_entry = DailyOrderBook(
-            company_id=company_id,
-            branch_id=branch_id,
-            item_id=entry.item_id,
-            supplier_id=entry.supplier_id,
-            quantity_needed=entry.quantity_needed,
-            unit_name=entry.unit_name,
-            reason=reason,
-            source_reference_type=None,  # Not used - simplified to just reason + created_by
-            source_reference_id=None,  # Not used
-            notes=entry.notes,
-            priority=entry.priority,
-            status="PENDING",
-            created_by=created_by
-        )
-        db.add(db_entry)
+    # Resolve supplier when not provided: lowest unit cost (per wholesale) or item default from import
+    resolved_supplier_id = entry.supplier_id
+    if not resolved_supplier_id:
+        resolved_supplier_id = OrderBookService.get_supplier_lowest_unit_cost(db, entry.item_id, company_id)
+    # Default to wholesale unit (last unit costs are in wholesale)
+    unit_name_val = (entry.unit_name or "").strip() or (item.wholesale_unit or item.base_unit or "unit").strip() or "unit"
+
+    # Create new entry (catch race condition: duplicate insert from another request)
+    reason = entry.reason or "MANUAL_ADD"
+    create_kw = dict(
+        company_id=company_id,
+        branch_id=branch_id,
+        item_id=entry.item_id,
+        supplier_id=resolved_supplier_id,
+        quantity_needed=entry.quantity_needed,
+        unit_name=unit_name_val,
+        reason=reason,
+        source_reference_type=None,
+        source_reference_id=None,
+        notes=entry.notes,
+        priority=entry.priority,
+        status="PENDING",
+        created_by=created_by
+    )
+    if hasattr(DailyOrderBook, "entry_date"):
+        create_kw["entry_date"] = entry_date_val
+    db_entry = DailyOrderBook(**create_kw)
+    db.add(db_entry)
+    try:
         db.flush()
         SnapshotService.upsert_search_snapshot_last_order_book(
             db, company_id, branch_id, entry.item_id, db_entry.created_at or datetime.utcnow()
         )
         db.commit()
         db.refresh(db_entry)
-        
-        # Enhance response
-        entry_dict = {
-            "id": db_entry.id,
-            "company_id": db_entry.company_id,
-            "branch_id": db_entry.branch_id,
-            "item_id": db_entry.item_id,
-            "supplier_id": db_entry.supplier_id,
-            "quantity_needed": db_entry.quantity_needed,
-            "unit_name": db_entry.unit_name,
-            "reason": db_entry.reason,
-            "source_reference_type": db_entry.source_reference_type,
-            "source_reference_id": db_entry.source_reference_id,
-            "notes": db_entry.notes,
-            "priority": db_entry.priority,
-            "status": db_entry.status,
-            "purchase_order_id": db_entry.purchase_order_id,
-            "created_by": db_entry.created_by,
-            "created_at": db_entry.created_at,
-            "updated_at": db_entry.updated_at,
-            "item_name": item.name,
-            "item_sku": item.sku,
-            "supplier_name": db_entry.supplier.name if db_entry.supplier else None,
-            "current_stock": None
-        }
-        
-        # Get current stock
-        stock_query = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
-            InventoryLedger.item_id == entry.item_id,
-            InventoryLedger.branch_id == branch_id
+    except IntegrityError as e:
+        db.rollback()
+        logging.getLogger(__name__).warning("Order book duplicate on create (race or constraint): %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This item is already in the order book."
         )
-        current_stock = stock_query.scalar() or 0
-        entry_dict["current_stock"] = int(current_stock)
-        
-        return OrderBookEntryResponse(**entry_dict)
+
+    # Enhance response
+    entry_dict = {
+        "id": db_entry.id,
+        "company_id": db_entry.company_id,
+        "branch_id": db_entry.branch_id,
+        "item_id": db_entry.item_id,
+        "supplier_id": db_entry.supplier_id,
+        "entry_date": getattr(db_entry, "entry_date", None),
+        "quantity_needed": db_entry.quantity_needed,
+        "unit_name": db_entry.unit_name,
+        "reason": db_entry.reason,
+        "source_reference_type": db_entry.source_reference_type,
+        "source_reference_id": db_entry.source_reference_id,
+        "notes": db_entry.notes,
+        "priority": db_entry.priority,
+        "status": db_entry.status,
+        "purchase_order_id": db_entry.purchase_order_id,
+        "created_by": db_entry.created_by,
+        "created_at": db_entry.created_at,
+        "updated_at": db_entry.updated_at,
+        "item_name": item.name,
+        "item_sku": item.sku,
+        "supplier_name": db_entry.supplier.name if db_entry.supplier else None,
+        "current_stock": None
+    }
+    stock_query = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
+        InventoryLedger.item_id == entry.item_id,
+        InventoryLedger.branch_id == branch_id
+    )
+    current_stock = stock_query.scalar() or 0
+    entry_dict["current_stock"] = int(current_stock)
+    return OrderBookEntryResponse(**entry_dict)
 
 
-@router.post("/bulk", response_model=List[OrderBookEntryResponse], status_code=status.HTTP_201_CREATED)
+@router.post("/bulk", response_model=OrderBookBulkCreateResponse, status_code=status.HTTP_201_CREATED)
 def bulk_create_order_book_entries(
     bulk_data: OrderBookBulkCreate,
     company_id: UUID = Query(..., description="Company ID"),
@@ -267,50 +302,74 @@ def bulk_create_order_book_entries(
     db: Session = Depends(get_tenant_db)
 ):
     """
-    Bulk create order book entries from selected items
-    
-    Used when user selects multiple items to add to order book.
+    Bulk create order book entries from selected items.
+    Items already in the order book (PENDING or ORDERED) for the given date are skipped and returned.
     """
     created_entries = []
-    
+    skipped_item_ids: List[UUID] = []
+    skipped_item_names: List[str] = []
+
+    entry_date_val = getattr(bulk_data, "entry_date", None) or date.today()
+    if hasattr(entry_date_val, "date") and callable(getattr(entry_date_val, "date", None)):
+        entry_date_val = entry_date_val.date()
+
     for item_id in bulk_data.item_ids:
-        # Get item
         item = db.query(Item).filter(Item.id == item_id).first()
         if not item:
-            continue  # Skip if item not found
-        
-        # Check if entry already exists (PENDING or ORDERED - do not add again)
-        existing = db.query(DailyOrderBook).filter(
+            continue
+
+        existing_filter = [
             DailyOrderBook.branch_id == branch_id,
             DailyOrderBook.item_id == item_id,
             DailyOrderBook.status.in_(["PENDING", "ORDERED"])
-        ).first()
+        ]
+        if hasattr(DailyOrderBook, "entry_date"):
+            existing_filter.append(DailyOrderBook.entry_date == entry_date_val)
+        existing = db.query(DailyOrderBook).filter(*existing_filter).first()
 
         if existing:
-            continue  # Skip if already in order book or already ordered
-        
-        # Create entry
-        entry = DailyOrderBook(
+            skipped_item_ids.append(item_id)
+            skipped_item_names.append(item.name or str(item_id))
+            continue
+
+        # Resolve supplier per item when not provided: lowest unit cost or item default
+        resolved_supplier_id = bulk_data.supplier_id
+        if not resolved_supplier_id:
+            resolved_supplier_id = OrderBookService.get_supplier_lowest_unit_cost(db, item_id, company_id)
+        # Default to wholesale unit (last unit costs are in wholesale)
+        unit_name_val = (item.wholesale_unit or item.base_unit or "unit").strip() or "unit"
+
+        create_kw = dict(
             company_id=company_id,
             branch_id=branch_id,
             item_id=item_id,
-            supplier_id=bulk_data.supplier_id,
-            quantity_needed=Decimal("1"),  # Default to 1, user can update
-            unit_name=item.base_unit,
+            supplier_id=resolved_supplier_id,
+            quantity_needed=Decimal("1"),
+            unit_name=unit_name_val,
             reason=bulk_data.reason or "MANUAL_ADD",
-            source_reference_type=None,  # Not used - simplified to just reason + created_by
-            source_reference_id=None,  # Not used
+            source_reference_type=None,
+            source_reference_id=None,
             notes=bulk_data.notes,
             priority=5,
             status="PENDING",
             created_by=created_by
         )
+        if hasattr(DailyOrderBook, "entry_date"):
+            create_kw["entry_date"] = entry_date_val
+        entry = DailyOrderBook(**create_kw)
         db.add(entry)
         created_entries.append(entry)
-    
-    db.commit()
-    
-    # Enhance and return
+
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        logging.getLogger(__name__).warning("Order book bulk duplicate (race): %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="One or more items are already in the order book. Please refresh and try again."
+        )
+
     result = []
     for entry in created_entries:
         db.refresh(entry)
@@ -319,6 +378,7 @@ def bulk_create_order_book_entries(
             "company_id": entry.company_id,
             "branch_id": entry.branch_id,
             "item_id": entry.item_id,
+            "entry_date": getattr(entry, "entry_date", None),
             "supplier_id": entry.supplier_id,
             "quantity_needed": entry.quantity_needed,
             "unit_name": entry.unit_name,
@@ -337,18 +397,19 @@ def bulk_create_order_book_entries(
             "supplier_name": entry.supplier.name if entry.supplier else None,
             "current_stock": None
         }
-        
-        # Get current stock
         stock_query = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
             InventoryLedger.item_id == entry.item_id,
             InventoryLedger.branch_id == branch_id
         )
         current_stock = stock_query.scalar() or 0
         entry_dict["current_stock"] = int(current_stock)
-        
         result.append(OrderBookEntryResponse(**entry_dict))
-    
-    return result
+
+    return OrderBookBulkCreateResponse(
+        entries=result,
+        skipped_item_ids=skipped_item_ids,
+        skipped_item_names=skipped_item_names
+    )
 
 
 @router.put("/{entry_id}", response_model=OrderBookEntryResponse)
@@ -604,6 +665,7 @@ def create_purchase_order_from_book(
                 entry.status = "ORDERED"
                 entry.purchase_order_id = purchase_order.id
                 entry.updated_at = datetime.utcnow()
+                # Keep entry in daily_order_book so it shows as "Converted" in the UI
                 history_entry = OrderBookHistory(
                     company_id=entry.company_id,
                     branch_id=entry.branch_id,
@@ -623,7 +685,7 @@ def create_purchase_order_from_book(
                     updated_at=datetime.utcnow()
                 )
                 db.add(history_entry)
-                db.delete(entry)
+                # Do not delete: entry stays in order book labeled as converted (ORDERED)
 
             db.commit()
             db.refresh(purchase_order)

@@ -3001,15 +3001,26 @@ async function addQuotationItemsToOrderBook() {
             return;
         }
         const itemIds = validItems.map(i => i.item_id);
-        await API.orderBook.bulkCreate(
+        const response = await API.orderBook.bulkCreate(
             { item_ids: itemIds, reason: 'MANUAL_QUOTATION', notes: 'Added from quotation' },
             CONFIG.COMPANY_ID,
             CONFIG.BRANCH_ID,
             CONFIG.USER_ID
         );
-        showToast(`${validItems.length} item(s) added to order book`, 'success');
+        const added = (response && response.entries) ? response.entries.length : itemIds.length;
+        const skipped = (response && response.skipped_item_names) ? response.skipped_item_names : [];
+        if (skipped.length > 0) {
+            const names = skipped.slice(0, 3).join(', ') + (skipped.length > 3 ? ` and ${skipped.length - 3} more` : '');
+            showToast(`${added} item(s) added. Already in order book: ${names}`, 'info');
+        } else {
+            showToast(`${added} item(s) added to order book`, 'success');
+        }
     } catch (error) {
         console.error('Error adding quotation items to order book:', error);
+        if (error.status === 409) {
+            showToast(error.message || 'One or more items are already in the order book.', 'info');
+            return;
+        }
         showToast(`Error: ${error.message || 'Failed to add to order book'}`, 'error');
     }
 }
@@ -3032,11 +3043,12 @@ async function addItemToOrderBookFromTransaction(itemId, itemName, unitName) {
         showToast(`${itemName || 'Item'} added to order book`, 'success');
     } catch (error) {
         console.error('Error adding item to order book:', error);
+        const msg = (error.data && error.data.detail) ? (Array.isArray(error.data.detail) ? error.data.detail[0] : error.data.detail) : error.message;
         if (error.status === 409) {
-            showToast(error.message || "This item is already in today's order book.", 'info');
+            showToast(msg || "This item is already in the order book.", 'info');
             return;
         }
-        showToast(`Error: ${error.message || 'Failed to add to order book'}`, 'error');
+        showToast(`Error: ${msg || 'Failed to add to order book'}`, 'error');
     }
 }
 
@@ -3077,11 +3089,12 @@ async function addItemToOrderBookFromSale(itemId, itemName, unitName, invoiceId)
         showToast(`${itemName} added to order book`, 'success');
     } catch (error) {
         console.error('Error adding item to order book:', error);
+        const msg = (error.data && error.data.detail) ? (Array.isArray(error.data.detail) ? error.data.detail[0] : error.data.detail) : error.message;
         if (error.status === 409) {
-            showToast(error.message || "This item is already in today's order book.", 'info');
+            showToast(msg || "This item is already in the order book.", 'info');
             return;
         }
-        showToast(`Error: ${error.message || 'Failed to add to order book'}`, 'error');
+        showToast(`Error: ${msg || 'Failed to add to order book'}`, 'error');
     }
 }
 

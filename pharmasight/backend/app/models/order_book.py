@@ -1,7 +1,7 @@
 """
 Daily Order Book models
 """
-from sqlalchemy import Column, String, Numeric, Text, Integer, ForeignKey
+from sqlalchemy import Column, String, Numeric, Text, Integer, ForeignKey, Date
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -16,6 +16,7 @@ class DailyOrderBook(Base):
     
     Tracks items that need to be reordered at branch level.
     Can be auto-generated from stock thresholds or manually added.
+    Items are unique per (branch, item, entry_date).
     """
     __tablename__ = "daily_order_book"
 
@@ -23,6 +24,7 @@ class DailyOrderBook(Base):
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
     item_id = Column(UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
+    entry_date = Column(Date, nullable=False, server_default=func.current_date())  # Unique per (branch, item, entry_date)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True)
     quantity_needed = Column(Numeric(20, 4), nullable=False)  # In base units
     unit_name = Column(String(50), nullable=False)

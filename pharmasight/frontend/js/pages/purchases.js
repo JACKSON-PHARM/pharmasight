@@ -3016,24 +3016,37 @@ function editSupplier(supplierId) {
 let orderBookEntries = [];
 let selectedOrderBookEntries = new Set();
 let orderBookDateFilter = 'today'; // today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year
+let orderBookSupplierFilter = null; // UUID or null = all suppliers
 
 // Render Order Book Page (Page-Shell-First Pattern)
 async function renderOrderBookPage() {
     console.log('renderOrderBookPage() called');
     const page = document.getElementById('purchases');
     if (!page) return;
-    
-    // Render shell first
-    renderOrderBookShell();
-    
+
+    let suppliers = [];
+    try {
+        if (window.API && window.API.suppliers && window.API.suppliers.list)
+            suppliers = await window.API.suppliers.list(window.CONFIG ? window.CONFIG.COMPANY_ID : null);
+    } catch (e) {
+        console.warn('Could not load suppliers for order book filter:', e);
+    }
+
+    // Render shell first (with supplier dropdown)
+    renderOrderBookShell(suppliers);
+
     // Then fetch and render data
     await fetchAndRenderOrderBookData();
 }
 
-function renderOrderBookShell() {
+function renderOrderBookShell(suppliers = []) {
     const page = document.getElementById('purchases');
     if (!page) return;
-    
+
+    const supplierOptions = (suppliers || []).map(s => 
+        `<option value="${s.id}" ${orderBookSupplierFilter === s.id ? 'selected' : ''}>${escapeHtml(s.name || s.supplier_name || s.id)}</option>`
+    ).join('');
+
     page.innerHTML = `
         <div class="card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
@@ -3062,6 +3075,11 @@ function renderOrderBookShell() {
                         <option value="last_month" ${orderBookDateFilter === 'last_month' ? 'selected' : ''}>Last Month</option>
                         <option value="this_year" ${orderBookDateFilter === 'this_year' ? 'selected' : ''}>This Year</option>
                         <option value="last_year" ${orderBookDateFilter === 'last_year' ? 'selected' : ''}>Last Year</option>
+                    </select>
+                    <label style="font-weight: 500; margin-left: 0.5rem; margin-right: 0.25rem;">Supplier:</label>
+                    <select id="orderBookSupplierFilter" class="form-input" style="width: 200px;" onchange="if(window.applyOrderBookSupplierFilter) window.applyOrderBookSupplierFilter(this.value)">
+                        <option value="">All suppliers</option>
+                        ${supplierOptions}
                     </select>
                     <input type="text" 
                            class="form-input" 
@@ -3169,6 +3187,11 @@ async function applyOrderBookDateFilter(value) {
     await fetchAndRenderOrderBookData();
 }
 
+async function applyOrderBookSupplierFilter(value) {
+    orderBookSupplierFilter = (value && value.trim()) ? value.trim() : null;
+    await fetchAndRenderOrderBookData();
+}
+
 async function fetchAndRenderOrderBookData() {
     try {
         if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
@@ -3179,11 +3202,9 @@ async function fetchAndRenderOrderBookData() {
             return;
         }
         const { dateFrom, dateTo } = getOrderBookDateRange(orderBookDateFilter);
-        const entries = await API.orderBook.list(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, null, {
-            dateFrom,
-            dateTo,
-            includeOrdered: true
-        });
+        const listOptions = { dateFrom, dateTo, includeOrdered: true };
+        if (orderBookSupplierFilter) listOptions.supplierId = orderBookSupplierFilter;
+        const entries = await API.orderBook.list(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, null, listOptions);
         orderBookEntries = entries;
         renderOrderBookTable();
     } catch (error) {
@@ -3545,6 +3566,7 @@ if (typeof window !== 'undefined') {
     window.renderOrderBookPage = renderOrderBookPage;
     window.fetchAndRenderOrderBookData = fetchAndRenderOrderBookData;
     window.applyOrderBookDateFilter = applyOrderBookDateFilter;
+    window.applyOrderBookSupplierFilter = applyOrderBookSupplierFilter;
     window.getOrderBookDateRange = getOrderBookDateRange;
     window.toggleOrderBookEntrySelection = toggleOrderBookEntrySelection;
     window.selectAllOrderBookEntries = selectAllOrderBookEntries;

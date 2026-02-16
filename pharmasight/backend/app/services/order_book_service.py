@@ -2,10 +2,11 @@
 Order Book Service - Automatic order book management
 """
 import logging
+import math
 from typing import Optional, List
 from uuid import UUID
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 
@@ -15,6 +16,7 @@ from app.models import (
 )
 from app.services.inventory_service import InventoryService
 from app.services.snapshot_service import SnapshotService
+from app.services.item_units_helper import get_unit_multiplier_from_item
 
 logger = logging.getLogger(__name__)
 
@@ -171,24 +173,26 @@ class OrderBookService:
         if packs_needed <= 0:
             logger.debug(f"Item {item.name} ({item_id}) packs_needed is 0 - skipping order book")
             return None
-        
-        # Convert back to retail units for quantity_needed (for display/calculation)
-        quantity_needed_retail_units = packs_needed * pack_size
-        
-        # Use supplier unit name for the order
-        supplier_unit_name = item.supplier_unit or item.base_unit or 'pack'
-        
-        # Get preferred supplier (from item's last purchase or default)
-        supplier_id = OrderBookService._get_preferred_supplier(db, item_id, company_id)
-        
-        # Check if entry already exists (PENDING or ORDERED - do not add if already ordered)
-        existing_entry = db.query(DailyOrderBook).filter(
-            and_(
-                DailyOrderBook.branch_id == branch_id,
-                DailyOrderBook.item_id == item_id,
-                DailyOrderBook.status.in_(["PENDING", "ORDERED"])
-            )
-        ).first()
+
+        # Order in wholesale units by default (last unit costs are per wholesale); 1 wholesale = pack_size retail
+        quantity_needed_wholesale = max(1, math.ceil(float(quantity_needed_retail_units) / pack_size))
+        wholesale_unit_name = (item.wholesale_unit or item.base_unit or "unit").strip() or "unit"
+
+        # Supplier with lowest unit cost (per wholesale), or item default from import
+        supplier_id = OrderBookService.get_supplier_lowest_unit_cost(db, item_id, company_id)
+
+        # Entry date: today (items unique per branch, item, entry_date)
+        entry_date_today = datetime.utcnow().date()
+
+        # Check if entry already exists for this date (PENDING or ORDERED)
+        existing_filter = [
+            DailyOrderBook.branch_id == branch_id,
+            DailyOrderBook.item_id == item_id,
+            DailyOrderBook.status.in_(["PENDING", "ORDERED"])
+        ]
+        if hasattr(DailyOrderBook, "entry_date"):
+            existing_filter.append(DailyOrderBook.entry_date == entry_date_today)
+        existing_entry = db.query(DailyOrderBook).filter(and_(*existing_filter)).first()
 
         if existing_entry and existing_entry.status == "ORDERED":
             logger.debug(
@@ -200,49 +204,52 @@ class OrderBookService:
         reason = "AUTO_SALE" if is_auto else "MANUAL_ADD"
 
         if existing_entry:
-            # Update existing entry (increase quantity if needed)
-            # Convert existing quantity to supplier units for comparison
-            existing_quantity_supplier_units = float(existing_entry.quantity_needed) / pack_size
-            existing_packs = int(existing_quantity_supplier_units) + (1 if existing_quantity_supplier_units % 1 > 0 else 0)
-            
-            # Take the maximum of existing and new quantity (in supplier units)
-            max_packs = max(existing_packs, packs_needed)
-            quantity_needed_retail_units = max_packs * pack_size
-            
-            existing_entry.quantity_needed = Decimal(str(quantity_needed_retail_units))
-            existing_entry.unit_name = supplier_unit_name
+            # Update existing entry (increase quantity if needed); normalize to wholesale
+            existing_qty_wholesale = float(existing_entry.quantity_needed)
+            try:
+                mult = get_unit_multiplier_from_item(item, (existing_entry.unit_name or "").strip() or "unit")
+                if mult and float(mult) > 0:
+                    # quantity in existing unit -> retail = qty * mult; wholesale = retail / pack_size
+                    existing_qty_wholesale = existing_qty_wholesale * float(mult) / pack_size
+            except (ValueError, TypeError, ZeroDivisionError):
+                pass
+            max_wholesale = max(int(existing_qty_wholesale) + (1 if existing_qty_wholesale % 1 else 0), quantity_needed_wholesale)
+
+            existing_entry.quantity_needed = Decimal(str(max_wholesale))
+            existing_entry.unit_name = wholesale_unit_name
             existing_entry.reason = reason
-            # Remove source_reference fields - not needed
             existing_entry.source_reference_type = None
             existing_entry.source_reference_id = None
             if supplier_id:
                 existing_entry.supplier_id = supplier_id
             existing_entry.updated_at = datetime.utcnow()
-            
+
             db.commit()
             db.refresh(existing_entry)
             logger.info(
                 f"✅ Updated order book entry for {item.name} ({item_id}): "
-                f"{max_packs} {supplier_unit_name} ({quantity_needed_retail_units} {item.retail_unit or 'units'}) "
-                f"(stock: {current_stock_retail_units} {item.retail_unit or 'units'}, pack_size: {pack_size})"
+                f"{max_wholesale} {wholesale_unit_name} (stock: {current_stock_retail_units})"
             )
             return existing_entry
         else:
-            # Create new entry
-            order_book_entry = DailyOrderBook(
+            # Create new entry in wholesale units (date-unique: one per branch, item, entry_date)
+            create_kw = dict(
                 company_id=company_id,
                 branch_id=branch_id,
                 item_id=item_id,
                 supplier_id=supplier_id,
-                quantity_needed=Decimal(str(quantity_needed_retail_units)),
-                unit_name=supplier_unit_name,
+                quantity_needed=Decimal(str(quantity_needed_wholesale)),
+                unit_name=wholesale_unit_name,
                 reason=reason,
-                source_reference_type=None,  # Not used anymore
-                source_reference_id=None,  # Not used anymore
-                priority=7 if is_auto else 5,  # Higher priority for auto-generated
+                source_reference_type=None,
+                source_reference_id=None,
+                priority=7 if is_auto else 5,
                 status="PENDING",
                 created_by=user_id
             )
+            if hasattr(DailyOrderBook, "entry_date"):
+                create_kw["entry_date"] = entry_date_today
+            order_book_entry = DailyOrderBook(**create_kw)
             db.add(order_book_entry)
             db.flush()
             SnapshotService.upsert_search_snapshot_last_order_book(
@@ -250,11 +257,10 @@ class OrderBookService:
             )
             db.commit()
             db.refresh(order_book_entry)
-            
+
             logger.info(
                 f"✅ Added to order book: {item.name} ({item_id}) - "
-                f"{packs_needed} {supplier_unit_name} ({quantity_needed_retail_units} {item.retail_unit or 'units'}) "
-                f"(stock: {current_stock_retail_units} {item.retail_unit or 'units'}, pack_size: {pack_size}, monthly_sales: {monthly_sales_float} {item.retail_unit or 'units'})"
+                f"{quantity_needed_wholesale} {wholesale_unit_name} (stock: {current_stock_retail_units})"
             )
             return order_book_entry
     
@@ -264,15 +270,34 @@ class OrderBookService:
         item_id: UUID,
         company_id: UUID
     ) -> Optional[UUID]:
+        """Alias for backward compatibility; use _get_supplier_lowest_unit_cost."""
+        return OrderBookService.get_supplier_lowest_unit_cost(db, item_id, company_id)
+
+    @staticmethod
+    def get_supplier_lowest_unit_cost(
+        db: Session,
+        item_id: UUID,
+        company_id: UUID
+    ) -> Optional[UUID]:
         """
-        Get preferred supplier for an item.
-        Returns supplier from most recent purchase, or None.
+        Get the supplier with the lowest unit cost for this item (cost per wholesale unit).
+        Uses latest invoice line per supplier, normalizes to cost per wholesale for comparison.
+        Falls back to item.default_supplier_id (e.g. from Excel import) if no invoice history.
         """
         from app.models.purchase import SupplierInvoice, SupplierInvoiceItem
-        
-        # Get supplier from most recent purchase invoice
-        last_purchase = (
-            db.query(SupplierInvoice.supplier_id)
+
+        item = db.query(Item).filter(Item.id == item_id).first()
+        if not item:
+            return None
+
+        # All invoice lines for this item from batched invoices (one row per line)
+        rows = (
+            db.query(
+                SupplierInvoice.supplier_id,
+                SupplierInvoiceItem.unit_cost_exclusive,
+                SupplierInvoiceItem.unit_name,
+                SupplierInvoice.invoice_date,
+            )
             .join(SupplierInvoiceItem, SupplierInvoiceItem.purchase_invoice_id == SupplierInvoice.id)
             .filter(
                 and_(
@@ -281,14 +306,39 @@ class OrderBookService:
                     SupplierInvoice.status == "BATCHED"
                 )
             )
-            .order_by(SupplierInvoice.created_at.desc())
-            .first()
+            .order_by(SupplierInvoice.invoice_date.desc())
+            .all()
         )
-        
-        if last_purchase:
-            return last_purchase[0]
-        
-        return None
+
+        # Per supplier, keep only the most recent line (first after desc order)
+        by_supplier = {}
+        for r in rows:
+            if r.supplier_id not in by_supplier:
+                by_supplier[r.supplier_id] = (r.unit_cost_exclusive, r.unit_name)
+
+        if not by_supplier:
+            return getattr(item, "default_supplier_id", None)
+
+        pack_size = max(1, int(item.pack_size or 1))
+        best_supplier_id = None
+        best_cost_per_wholesale = None
+
+        for sup_id, (unit_cost, unit_name) in by_supplier.items():
+            try:
+                mult = get_unit_multiplier_from_item(item, unit_name or "")
+                if mult is None or float(mult) <= 0:
+                    continue
+                # cost per base (retail) = unit_cost / mult; 1 wholesale = pack_size retail
+                cost_per_wholesale = float(unit_cost) / float(mult) * pack_size
+            except (ValueError, TypeError, ZeroDivisionError):
+                continue
+            if best_cost_per_wholesale is None or cost_per_wholesale < best_cost_per_wholesale:
+                best_cost_per_wholesale = cost_per_wholesale
+                best_supplier_id = sup_id
+
+        if best_supplier_id is not None:
+            return best_supplier_id
+        return getattr(item, "default_supplier_id", None)
     
     @staticmethod
     def process_sale_for_order_book(

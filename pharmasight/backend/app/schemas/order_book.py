@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from uuid import UUID
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, date
 
 
 class OrderBookEntryBase(BaseModel):
@@ -23,7 +23,7 @@ class OrderBookEntryBase(BaseModel):
 
 class OrderBookEntryCreate(OrderBookEntryBase):
     """Schema for creating a new order book entry"""
-    pass
+    entry_date: Optional[date] = Field(None, description="Date for this entry (default: today); items unique per date")
 
 
 class OrderBookEntryResponse(OrderBookEntryBase):
@@ -31,6 +31,7 @@ class OrderBookEntryResponse(OrderBookEntryBase):
     id: UUID
     company_id: UUID
     branch_id: UUID
+    entry_date: Optional[date] = None
     status: str
     purchase_order_id: Optional[UUID] = None
     created_by: UUID
@@ -58,9 +59,17 @@ class OrderBookEntryUpdate(BaseModel):
 class OrderBookBulkCreate(BaseModel):
     """Schema for bulk creating order book entries from selected items"""
     item_ids: list[UUID] = Field(..., min_items=1)
+    entry_date: Optional[date] = None  # Default: today; items unique per (branch, item, entry_date)
     supplier_id: Optional[UUID] = None
     reason: str = Field(default="MANUAL_ADD", description="Reason for bulk addition")
     notes: Optional[str] = None
+
+
+class OrderBookBulkCreateResponse(BaseModel):
+    """Response for bulk create: created entries and items skipped (already in order book)."""
+    entries: list[OrderBookEntryResponse] = Field(default_factory=list)
+    skipped_item_ids: list[UUID] = Field(default_factory=list, description="Item IDs already in order book")
+    skipped_item_names: list[str] = Field(default_factory=list, description="Item names for display when skipped")
 
 
 class CreatePurchaseOrderFromBook(BaseModel):
