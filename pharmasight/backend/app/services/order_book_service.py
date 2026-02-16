@@ -181,18 +181,24 @@ class OrderBookService:
         # Get preferred supplier (from item's last purchase or default)
         supplier_id = OrderBookService._get_preferred_supplier(db, item_id, company_id)
         
-        # Check if entry already exists
+        # Check if entry already exists (PENDING or ORDERED - do not add if already ordered)
         existing_entry = db.query(DailyOrderBook).filter(
             and_(
                 DailyOrderBook.branch_id == branch_id,
                 DailyOrderBook.item_id == item_id,
-                DailyOrderBook.status == "PENDING"
+                DailyOrderBook.status.in_(["PENDING", "ORDERED"])
             )
         ).first()
-        
+
+        if existing_entry and existing_entry.status == "ORDERED":
+            logger.debug(
+                f"Item {item.name} ({item_id}) already has an ORDERED entry in the order book - skipping"
+            )
+            return None
+
         # Determine reason based on is_auto flag
         reason = "AUTO_SALE" if is_auto else "MANUAL_ADD"
-        
+
         if existing_entry:
             # Update existing entry (increase quantity if needed)
             # Convert existing quantity to supplier units for comparison

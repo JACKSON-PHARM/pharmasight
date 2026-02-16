@@ -11,6 +11,7 @@ from app.dependencies import get_tenant_db
 from app.models import (
     GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
     PurchaseOrder, PurchaseOrderItem,
+    DailyOrderBook,
     InventoryLedger, Item, Supplier, Branch, User
 )
 from app.services.item_units_helper import get_unit_multiplier_from_item
@@ -996,6 +997,24 @@ def create_purchase_order(order: PurchaseOrderCreate, db: Session = Depends(get_
         SnapshotService.upsert_search_snapshot_last_order(
             db, order.company_id, order.branch_id, item.item_id, db_order.order_date
         )
+
+    # Add each PO line to the order book as ORDERED so auto-ordering and manual add skip them
+    for item in order_items:
+        ob_entry = DailyOrderBook(
+            company_id=order.company_id,
+            branch_id=order.branch_id,
+            item_id=item.item_id,
+            supplier_id=db_order.supplier_id,
+            quantity_needed=item.quantity,
+            unit_name=item.unit_name,
+            reason="DIRECT_PO",
+            source_reference_type="purchase_order",
+            source_reference_id=db_order.id,
+            status="ORDERED",
+            purchase_order_id=db_order.id,
+            created_by=order.created_by,
+        )
+        db.add(ob_entry)
 
     db.commit()
     db.refresh(db_order)

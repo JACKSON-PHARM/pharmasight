@@ -3016,6 +3016,7 @@ function editSupplier(supplierId) {
 
 let orderBookEntries = [];
 let selectedOrderBookEntries = new Set();
+let orderBookDateFilter = 'today'; // today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year
 
 // Render Order Book Page (Page-Shell-First Pattern)
 async function renderOrderBookPage() {
@@ -3051,7 +3052,18 @@ function renderOrderBookShell() {
             </div>
             
             <div class="card-body" style="padding: 1.5rem;">
-                <div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                <div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                    <label style="font-weight: 500; margin-right: 0.25rem;">Date:</label>
+                    <select id="orderBookDateFilter" class="form-input" style="width: 160px;" onchange="if(window.applyOrderBookDateFilter) window.applyOrderBookDateFilter(this.value)">
+                        <option value="today" ${orderBookDateFilter === 'today' ? 'selected' : ''}>Today</option>
+                        <option value="yesterday" ${orderBookDateFilter === 'yesterday' ? 'selected' : ''}>Yesterday</option>
+                        <option value="this_week" ${orderBookDateFilter === 'this_week' ? 'selected' : ''}>This Week</option>
+                        <option value="last_week" ${orderBookDateFilter === 'last_week' ? 'selected' : ''}>Last Week</option>
+                        <option value="this_month" ${orderBookDateFilter === 'this_month' ? 'selected' : ''}>This Month</option>
+                        <option value="last_month" ${orderBookDateFilter === 'last_month' ? 'selected' : ''}>Last Month</option>
+                        <option value="this_year" ${orderBookDateFilter === 'this_year' ? 'selected' : ''}>This Year</option>
+                        <option value="last_year" ${orderBookDateFilter === 'last_year' ? 'selected' : ''}>Last Year</option>
+                    </select>
                     <input type="text" 
                            class="form-input" 
                            id="orderBookSearchInput" 
@@ -3099,6 +3111,65 @@ function renderOrderBookShell() {
     `;
 }
 
+function getOrderBookDateRange(filter) {
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+    let dateFrom, dateTo;
+    switch (filter) {
+        case 'today':
+            dateFrom = dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            break;
+        case 'yesterday':
+            const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+            dateFrom = dateTo = yesterday.toISOString().split('T')[0];
+            break;
+        case 'this_week': {
+            const day = now.getDay();
+            const mon = new Date(now); mon.setDate(d - (day === 0 ? 6 : day - 1));
+            dateFrom = mon.toISOString().split('T')[0];
+            dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            break;
+        }
+        case 'last_week': {
+            const day = now.getDay();
+            const lastMon = new Date(now); lastMon.setDate(d - (day === 0 ? 6 : day - 1) - 7);
+            dateFrom = lastMon.toISOString().split('T')[0];
+            const lastSun = new Date(lastMon); lastSun.setDate(lastSun.getDate() + 6);
+            dateTo = lastSun.toISOString().split('T')[0];
+            break;
+        }
+        case 'this_month':
+            dateFrom = [y, String(m + 1).padStart(2, '0'), '01'].join('-');
+            dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            break;
+        case 'last_month': {
+            const lastM = m === 0 ? 11 : m - 1;
+            const lastY = m === 0 ? y - 1 : y;
+            dateFrom = [lastY, String(lastM + 1).padStart(2, '0'), '01'].join('-');
+            const lastDay = new Date(lastY, lastM + 1, 0).getDate();
+            dateTo = [lastY, String(lastM + 1).padStart(2, '0'), String(lastDay).padStart(2, '0')].join('-');
+            break;
+        }
+        case 'this_year':
+            dateFrom = [y, '01', '01'].join('-');
+            dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            break;
+        case 'last_year':
+            dateFrom = [y - 1, '01', '01'].join('-');
+            dateTo = [y - 1, '12', '31'].join('-');
+            break;
+        default:
+            const t = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            dateFrom = dateTo = t;
+    }
+    return { dateFrom, dateTo };
+}
+
+async function applyOrderBookDateFilter(value) {
+    orderBookDateFilter = value || 'today';
+    await fetchAndRenderOrderBookData();
+}
+
 async function fetchAndRenderOrderBookData() {
     try {
         if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
@@ -3108,8 +3179,12 @@ async function fetchAndRenderOrderBookData() {
             }
             return;
         }
-        
-        const entries = await API.orderBook.list(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, 'PENDING');
+        const { dateFrom, dateTo } = getOrderBookDateRange(orderBookDateFilter);
+        const entries = await API.orderBook.list(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, null, {
+            dateFrom,
+            dateTo,
+            includeOrdered: true
+        });
         orderBookEntries = entries;
         renderOrderBookTable();
     } catch (error) {
@@ -3138,13 +3213,16 @@ function renderOrderBookTable() {
         return;
     }
     
-    tbody.innerHTML = orderBookEntries.map(entry => `
-        <tr data-entry-id="${entry.id}">
+    tbody.innerHTML = orderBookEntries.map(entry => {
+        const isConverted = entry.status === 'ORDERED' || entry.purchase_order_id;
+        const rowClass = isConverted ? 'order-book-row-converted' : '';
+        const rowStyle = isConverted ? 'background: #e8f5e9; border-left: 4px solid var(--success-color, #28a745);' : '';
+        return `
+        <tr class="${rowClass}" data-entry-id="${entry.id}" data-status="${entry.status || 'PENDING'}" style="${rowStyle}">
             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                <input type="checkbox" 
-                       class="order-book-checkbox" 
-                       data-entry-id="${entry.id}"
-                       onchange="if(window.toggleOrderBookEntrySelection) window.toggleOrderBookEntrySelection('${entry.id}', this.checked)">
+                ${isConverted
+                    ? '<span class="badge badge-success" title="Converted to Purchase Order"><i class="fas fa-check-circle"></i> Converted</span>'
+                    : `<input type="checkbox" class="order-book-checkbox" data-entry-id="${entry.id}" onchange="if(window.toggleOrderBookEntrySelection) window.toggleOrderBookEntrySelection('${entry.id}', this.checked)">`}
             </td>
             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                 <strong>${escapeHtml(entry.item_name || 'Unknown')}</strong>
@@ -3175,15 +3253,14 @@ function renderOrderBookTable() {
                 </span>
             </td>
             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: center;">
-                <button class="btn btn-outline btn-sm" onclick="if(window.editOrderBookEntry) window.editOrderBookEntry('${entry.id}')" title="Edit">
-                    <i class="fas fa-edit"></i>
-                </button>
-                <button class="btn btn-outline btn-sm" onclick="if(window.deleteOrderBookEntry) window.deleteOrderBookEntry('${entry.id}')" title="Delete">
-                    <i class="fas fa-trash"></i>
-                </button>
+                ${isConverted
+                    ? '—'
+                    : `<button class="btn btn-outline btn-sm" onclick="if(window.editOrderBookEntry) window.editOrderBookEntry('${entry.id}')" title="Edit quantity"><i class="fas fa-edit"></i></button>
+                       <button class="btn btn-outline btn-sm" onclick="if(window.deleteOrderBookEntry) window.deleteOrderBookEntry('${entry.id}')" title="Delete"><i class="fas fa-trash"></i></button>`}
             </td>
         </tr>
-    `).join('');
+    `;
+    }).join('');
     
     updateCreatePOButtonState();
 }
@@ -3199,9 +3276,12 @@ function toggleOrderBookEntrySelection(entryId, checked) {
 
 function selectAllOrderBookEntries() {
     orderBookEntries.forEach(entry => {
-        selectedOrderBookEntries.add(entry.id);
-        const checkbox = document.querySelector(`.order-book-checkbox[data-entry-id="${entry.id}"]`);
-        if (checkbox) checkbox.checked = true;
+        const isConverted = entry.status === 'ORDERED' || entry.purchase_order_id;
+        if (!isConverted) {
+            selectedOrderBookEntries.add(entry.id);
+            const checkbox = document.querySelector(`.order-book-checkbox[data-entry-id="${entry.id}"]`);
+            if (checkbox) checkbox.checked = true;
+        }
     });
     updateCreatePOButtonState();
 }
@@ -3251,24 +3331,22 @@ async function createPurchaseOrderFromSelected() {
         showToast('Please select at least one entry', 'warning');
         return;
     }
-    
-    // Get suppliers for selected entries
-    const selectedEntries = orderBookEntries.filter(e => selectedOrderBookEntries.has(e.id));
-    const suppliers = [...new Set(selectedEntries.map(e => e.supplier_id).filter(Boolean))];
-    
-    if (suppliers.length > 1) {
-        showToast('All selected entries must have the same supplier', 'warning');
+    const selectedEntries = orderBookEntries.filter(e => selectedOrderBookEntries.has(e.id) && e.status !== 'ORDERED' && !e.purchase_order_id);
+    if (selectedEntries.length === 0) {
+        showToast('No pending entries selected', 'warning');
         return;
     }
-    
-    // Show modal to select supplier and enter details
+    const suppliers = [...new Set(selectedEntries.map(e => e.supplier_id).filter(Boolean))];
+    // Show modal to select supplier and enter details (user can pick any supplier)
     const modal = document.createElement('div');
+    modal.id = 'createPOFromBookModal';
     modal.className = 'modal';
+    modal.style.cssText = 'position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 9999;';
     modal.innerHTML = `
-        <div class="modal-content" style="max-width: 500px;">
-            <div class="modal-header">
-                <h3>Create Purchase Order from Order Book</h3>
-                <button class="modal-close" onclick="this.closest('.modal').remove()">&times;</button>
+        <div class="modal-content" style="max-width: 500px; background: white; border-radius: 0.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.2);">
+            <div class="modal-header" style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0;">Create Purchase Order from Order Book</h3>
+                <button class="modal-close" onclick="document.getElementById('createPOFromBookModal')?.remove()" style="background: none; border: none; font-size: 1.5rem; cursor: pointer;">&times;</button>
             </div>
             <div class="modal-body">
                 <div style="margin-bottom: 1rem;">
@@ -3290,8 +3368,10 @@ async function createPurchaseOrderFromSelected() {
                     <textarea id="poNotes" class="form-input" rows="3" placeholder="Optional notes"></textarea>
                 </div>
                 <div style="margin-top: 1.5rem; display: flex; gap: 0.5rem; justify-content: flex-end;">
-                    <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Cancel</button>
-                    <button class="btn btn-primary" onclick="if(window.confirmCreatePOFromBook) window.confirmCreatePOFromBook()">Create Purchase Order</button>
+                    <button type="button" class="btn btn-secondary" id="poFromBookCancelBtn" onclick="document.getElementById('createPOFromBookModal')?.remove()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="poFromBookSubmitBtn" onclick="if(window.confirmCreatePOFromBook) window.confirmCreatePOFromBook()">
+                        <i class="fas fa-shopping-cart"></i> Create Purchase Order
+                    </button>
                 </div>
             </div>
         </div>
@@ -3316,23 +3396,36 @@ async function createPurchaseOrderFromSelected() {
     }
 }
 
+let confirmCreatePOFromBookInProgress = false;
+
 async function confirmCreatePOFromBook() {
+    if (confirmCreatePOFromBookInProgress) {
+        return;
+    }
+    const submitBtn = document.getElementById('poFromBookSubmitBtn');
+    const cancelBtn = document.getElementById('poFromBookCancelBtn');
+    const supplierId = document.getElementById('poSupplierSelect')?.value;
+    const orderDate = document.getElementById('poOrderDate')?.value;
+    const reference = document.getElementById('poReference')?.value || '';
+    const notes = document.getElementById('poNotes')?.value || '';
+
+    if (!supplierId || !orderDate) {
+        showToast('Please fill in all required fields', 'warning');
+        return;
+    }
+    if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID || !CONFIG.USER_ID) {
+        showToast('Configuration error: Missing company, branch, or user ID', 'error');
+        return;
+    }
+
+    confirmCreatePOFromBookInProgress = true;
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
+    }
+    if (cancelBtn) cancelBtn.disabled = true;
+
     try {
-        const supplierId = document.getElementById('poSupplierSelect').value;
-        const orderDate = document.getElementById('poOrderDate').value;
-        const reference = document.getElementById('poReference').value;
-        const notes = document.getElementById('poNotes').value;
-        
-        if (!supplierId || !orderDate) {
-            showToast('Please fill in all required fields', 'warning');
-            return;
-        }
-        
-        if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID || !CONFIG.USER_ID) {
-            showToast('Configuration error: Missing company, branch, or user ID', 'error');
-            return;
-        }
-        
         const entryIds = Array.from(selectedOrderBookEntries);
         const result = await API.orderBook.createPurchaseOrder(
             { entry_ids: entryIds, supplier_id: supplierId, order_date: orderDate, reference, notes },
@@ -3340,30 +3433,95 @@ async function confirmCreatePOFromBook() {
             CONFIG.BRANCH_ID,
             CONFIG.USER_ID
         );
-        
-        // Close modal
-        document.querySelector('.modal').remove();
-        
-        showToast(`Purchase Order ${result.order_number} created successfully!`, 'success');
-        
-        // Clear selection and refresh
+
+        const orderNumber = result && result.order_number ? result.order_number : 'PO';
+        const poId = result && result.purchase_order_id ? result.purchase_order_id : null;
+
+        const modalEl = document.getElementById('createPOFromBookModal');
+        if (modalEl) modalEl.remove();
+
+        showToast(`Purchase order ${orderNumber} created successfully. Opening for editing.`, 'success');
+
         selectedOrderBookEntries.clear();
-        await fetchAndRenderOrderBookData();
-        
-        // Navigate to purchase orders page
-        await loadPurchaseSubPage('orders');
+        confirmCreatePOFromBookInProgress = false;
+
+        try {
+            await fetchAndRenderOrderBookData();
+        } catch (_) { /* non-blocking */ }
+
+        if (poId) {
+            currentPurchaseSubPage = 'create';
+            try {
+                await editPurchaseDocument(poId, 'order');
+            } catch (e) {
+                console.warn('Could not open PO editor:', e);
+                showToast('Purchase order created. Open it from the Purchase Orders list.', 'info');
+            }
+            updatePurchaseSubNavActiveState();
+        }
     } catch (error) {
         console.error('Error creating purchase order:', error);
-        showToast(`Error: ${error.message}`, 'error');
+        showToast(error.message || 'Failed to create purchase order', 'error');
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<i class="fas fa-shopping-cart"></i> Create Purchase Order';
+        }
+        if (cancelBtn) cancelBtn.disabled = false;
+    } finally {
+        confirmCreatePOFromBookInProgress = false;
     }
 }
 
 async function editOrderBookEntry(entryId) {
     const entry = orderBookEntries.find(e => e.id === entryId);
     if (!entry) return;
-    
-    // TODO: Implement edit modal
-    showToast('Edit functionality coming soon', 'info');
+    if (entry.status === 'ORDERED' || entry.purchase_order_id) {
+        showToast('Cannot edit: this entry has already been converted to a purchase order.', 'info');
+        return;
+    }
+    const currentQty = parseFloat(entry.quantity_needed) || 1;
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'orderBookEditModal';
+    modal.style.cssText = 'position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 9999;';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 400px; background: white; border-radius: 0.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.2);">
+            <div class="modal-header">
+                <h3>Edit quantity</h3>
+                <button class="modal-close" onclick="document.getElementById('orderBookEditModal').remove()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 0.75rem; color: var(--text-secondary);">${escapeHtml(entry.item_name || 'Item')}</p>
+                <div class="form-group">
+                    <label class="form-label">Qty needed *</label>
+                    <input type="number" id="orderBookEditQty" class="form-input" min="0.0001" step="any" value="${currentQty}" required>
+                </div>
+                <div style="margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: flex-end;">
+                    <button type="button" class="btn btn-secondary" onclick="document.getElementById('orderBookEditModal').remove()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="orderBookEditSaveBtn">Save</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    document.getElementById('orderBookEditQty').focus();
+    document.getElementById('orderBookEditSaveBtn').onclick = async () => {
+        const input = document.getElementById('orderBookEditQty');
+        const newQty = parseFloat(input.value);
+        if (isNaN(newQty) || newQty <= 0) {
+            showToast('Please enter a valid quantity greater than 0', 'warning');
+            return;
+        }
+        try {
+            await API.orderBook.update(entryId, { quantity_needed: newQty });
+            modal.remove();
+            showToast('Quantity updated', 'success');
+            await fetchAndRenderOrderBookData();
+        } catch (err) {
+            console.error('Error updating order book entry:', err);
+            showToast(err.message || 'Failed to update quantity', 'error');
+        }
+    };
 }
 
 async function deleteOrderBookEntry(entryId) {
@@ -3395,6 +3553,8 @@ function filterOrderBookEntries() {
 if (typeof window !== 'undefined') {
     window.renderOrderBookPage = renderOrderBookPage;
     window.fetchAndRenderOrderBookData = fetchAndRenderOrderBookData;
+    window.applyOrderBookDateFilter = applyOrderBookDateFilter;
+    window.getOrderBookDateRange = getOrderBookDateRange;
     window.toggleOrderBookEntrySelection = toggleOrderBookEntrySelection;
     window.selectAllOrderBookEntries = selectAllOrderBookEntries;
     window.deselectAllOrderBookEntries = deselectAllOrderBookEntries;

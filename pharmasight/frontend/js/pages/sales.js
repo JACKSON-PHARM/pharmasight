@@ -3032,6 +3032,10 @@ async function addItemToOrderBookFromTransaction(itemId, itemName, unitName) {
         showToast(`${itemName || 'Item'} added to order book`, 'success');
     } catch (error) {
         console.error('Error adding item to order book:', error);
+        if (error.status === 409) {
+            showToast(error.message || "This item is already in today's order book.", 'info');
+            return;
+        }
         showToast(`Error: ${error.message || 'Failed to add to order book'}`, 'error');
     }
 }
@@ -3073,6 +3077,10 @@ async function addItemToOrderBookFromSale(itemId, itemName, unitName, invoiceId)
         showToast(`${itemName} added to order book`, 'success');
     } catch (error) {
         console.error('Error adding item to order book:', error);
+        if (error.status === 409) {
+            showToast(error.message || "This item is already in today's order book.", 'info');
+            return;
+        }
         showToast(`Error: ${error.message || 'Failed to add to order book'}`, 'error');
     }
 }

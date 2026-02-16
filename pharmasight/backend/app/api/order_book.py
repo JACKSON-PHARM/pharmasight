@@ -3,8 +3,10 @@ Order Book API routes
 """
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func, and_, or_
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
@@ -27,103 +29,132 @@ from app.services.snapshot_service import SnapshotService
 router = APIRouter()
 
 
-@router.get("/", response_model=List[OrderBookEntryResponse])
+def _serialize_order_book_entry(entry, _get_stock):
+    """Build a JSON-serializable dict for one order book entry."""
+    def _dt(d):
+        return d.isoformat() if d and hasattr(d, "isoformat") else str(d) if d else None
+    def _uuid(u):
+        return str(u) if u else None
+    return {
+        "id": _uuid(entry.id),
+        "company_id": _uuid(entry.company_id),
+        "branch_id": _uuid(entry.branch_id),
+        "item_id": _uuid(entry.item_id),
+        "supplier_id": _uuid(entry.supplier_id),
+        "quantity_needed": float(entry.quantity_needed) if entry.quantity_needed is not None else 1,
+        "unit_name": entry.unit_name or "unit",
+        "reason": entry.reason or "MANUAL_ADD",
+        "source_reference_type": entry.source_reference_type,
+        "source_reference_id": _uuid(entry.source_reference_id),
+        "notes": entry.notes,
+        "priority": int(entry.priority) if entry.priority is not None else 5,
+        "status": entry.status or "PENDING",
+        "purchase_order_id": _uuid(entry.purchase_order_id),
+        "created_by": _uuid(entry.created_by),
+        "created_at": _dt(entry.created_at),
+        "updated_at": _dt(entry.updated_at),
+        "item_name": entry.item.name if entry.item else "Unknown",
+        "item_sku": entry.item.sku if entry.item else None,
+        "supplier_name": entry.supplier.name if entry.supplier else None,
+        "current_stock": _get_stock(entry.item_id),
+    }
+
+
+@router.get("")
+@router.get("/")
 def list_order_book_entries(
     branch_id: UUID = Query(..., description="Branch ID"),
     company_id: UUID = Query(..., description="Company ID"),
     status_filter: Optional[str] = Query(None, description="Filter by status: PENDING, ORDERED, CANCELLED"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for created_at filter"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for created_at filter"),
+    include_ordered: Optional[bool] = Query(False, description="If true, include ORDERED entries (for showing converted)"),
     db: Session = Depends(get_tenant_db)
 ):
     """
-    List all order book entries for a branch
-    
-    Returns entries with item details and current stock levels.
+    List order book entries for a branch, optionally filtered by date.
+    Returns JSON array with item details and current stock levels.
     """
-    query = db.query(DailyOrderBook).filter(
-        DailyOrderBook.branch_id == branch_id,
-        DailyOrderBook.company_id == company_id
-    )
-    
-    if status_filter:
-        query = query.filter(DailyOrderBook.status == status_filter)
-    else:
-        # Default to PENDING entries
-        query = query.filter(DailyOrderBook.status == "PENDING")
-    
-    entries = (
-        query.options(
-            selectinload(DailyOrderBook.item),
-            selectinload(DailyOrderBook.supplier)
+    try:
+        query = db.query(DailyOrderBook).filter(
+            DailyOrderBook.branch_id == branch_id,
+            DailyOrderBook.company_id == company_id
         )
-        .order_by(
-            DailyOrderBook.priority.desc(),
-            DailyOrderBook.created_at.desc()
-        )
-        .all()
-    )
+        if status_filter:
+            query = query.filter(DailyOrderBook.status == status_filter)
+        elif include_ordered:
+            query = query.filter(DailyOrderBook.status.in_(["PENDING", "ORDERED"]))
+        else:
+            query = query.filter(DailyOrderBook.status == "PENDING")
 
-    # Batch fetch current stock from inventory_balances (fast snapshot)
-    item_ids = [e.item_id for e in entries]
-    stock_map = {}
-    if item_ids:
-        try:
-            balances = (
-                db.query(InventoryBalance.item_id, InventoryBalance.current_stock)
-                .filter(
-                    InventoryBalance.item_id.in_(item_ids),
-                    InventoryBalance.company_id == company_id,
-                    InventoryBalance.branch_id == branch_id
-                )
-                .all()
+        if date_from:
+            try:
+                start = date.fromisoformat(date_from.strip())
+                query = query.filter(func.date(DailyOrderBook.created_at) >= start)
+            except (ValueError, TypeError):
+                pass
+        if date_to:
+            try:
+                end = date.fromisoformat(date_to.strip())
+                query = query.filter(func.date(DailyOrderBook.created_at) <= end)
+            except (ValueError, TypeError):
+                pass
+
+        entries = (
+            query.options(
+                selectinload(DailyOrderBook.item),
+                selectinload(DailyOrderBook.supplier)
             )
-            stock_map = {row.item_id: int(row.current_stock or 0) for row in balances}
-        except Exception:
-            stock_map = {}
-
-    # Fallback: use ledger if inventory_balances not available
-    def _get_stock(item_id):
-        if item_id in stock_map:
-            return stock_map[item_id]
-        stock_query = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
-            InventoryLedger.item_id == item_id,
-            InventoryLedger.branch_id == branch_id
+            .order_by(
+                DailyOrderBook.priority.desc(),
+                DailyOrderBook.created_at.desc()
+            )
+            .all()
         )
-        val = stock_query.scalar()
-        return int(val or 0)
 
-    result = []
-    for entry in entries:
-        try:
-            entry_dict = {
-                "id": entry.id,
-                "company_id": entry.company_id,
-                "branch_id": entry.branch_id,
-                "item_id": entry.item_id,
-                "supplier_id": entry.supplier_id,
-                "quantity_needed": entry.quantity_needed,
-                "unit_name": entry.unit_name or "unit",
-                "reason": entry.reason or "MANUAL_ADD",
-                "source_reference_type": entry.source_reference_type,
-                "source_reference_id": entry.source_reference_id,
-                "notes": entry.notes,
-                "priority": entry.priority if entry.priority is not None else 5,
-                "status": entry.status or "PENDING",
-                "purchase_order_id": entry.purchase_order_id,
-                "created_by": entry.created_by,
-                "created_at": entry.created_at,
-                "updated_at": entry.updated_at,
-                "item_name": entry.item.name if entry.item else "Unknown",
-                "item_sku": entry.item.sku if entry.item else None,
-                "supplier_name": entry.supplier.name if entry.supplier else None,
-                "current_stock": _get_stock(entry.item_id)
-            }
-            result.append(OrderBookEntryResponse(**entry_dict))
-        except Exception as e:
-            logging.getLogger(__name__).warning("Skipping order book entry %s due to error: %s", entry.id, e)
-            continue
-    return result
+        item_ids = [e.item_id for e in entries]
+        stock_map = {}
+        if item_ids:
+            try:
+                balances = (
+                    db.query(InventoryBalance.item_id, InventoryBalance.current_stock)
+                    .filter(
+                        InventoryBalance.item_id.in_(item_ids),
+                        InventoryBalance.company_id == company_id,
+                        InventoryBalance.branch_id == branch_id
+                    )
+                    .all()
+                )
+                stock_map = {row.item_id: int(row.current_stock or 0) for row in balances}
+            except Exception:
+                stock_map = {}
+
+        def _get_stock(item_id):
+            if item_id in stock_map:
+                return stock_map[item_id]
+            val = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
+                InventoryLedger.item_id == item_id,
+                InventoryLedger.branch_id == branch_id
+            ).scalar()
+            return int(val or 0)
+
+        result = []
+        for entry in entries:
+            try:
+                result.append(_serialize_order_book_entry(entry, _get_stock))
+            except Exception as e:
+                logging.getLogger(__name__).warning("Skipping order book entry %s: %s", entry.id, e)
+        return JSONResponse(content=result, media_type="application/json")
+    except Exception as e:
+        logging.getLogger(__name__).exception("Order book list failed")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Failed to load order book", "error": str(e)},
+            media_type="application/json",
+        )
 
 
+@router.post("", response_model=OrderBookEntryResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=OrderBookEntryResponse, status_code=status.HTTP_201_CREATED)
 def create_order_book_entry(
     entry: OrderBookEntryCreate,
@@ -133,9 +164,8 @@ def create_order_book_entry(
     db: Session = Depends(get_tenant_db)
 ):
     """
-    Create a new order book entry
-    
-    If a PENDING entry already exists for this item, it will be updated instead.
+    Create a new order book entry.
+    Returns 409 if the item is already in today's order book.
     """
     # Check if item exists
     item = db.query(Item).filter(Item.id == entry.item_id).first()
@@ -148,63 +178,23 @@ def create_order_book_entry(
         if not supplier:
             raise HTTPException(status_code=404, detail=f"Supplier {entry.supplier_id} not found")
     
-    # Check if PENDING entry already exists for this item
+    # Item can only be in the order book once; if already PENDING or ORDERED, tell the user
     existing_entry = db.query(DailyOrderBook).filter(
         DailyOrderBook.branch_id == branch_id,
         DailyOrderBook.item_id == entry.item_id,
-        DailyOrderBook.status == "PENDING"
+        DailyOrderBook.status.in_(["PENDING", "ORDERED"])
     ).first()
-    
+
     if existing_entry:
-        # Update existing entry
-        existing_entry.quantity_needed = entry.quantity_needed
-        existing_entry.unit_name = entry.unit_name
-        existing_entry.reason = entry.reason or "MANUAL_ADD"  # Default to MANUAL_ADD for manual entries
-        existing_entry.source_reference_type = None  # Not used - simplified to just reason + created_by
-        existing_entry.source_reference_id = None  # Not used
-        existing_entry.notes = entry.notes
-        existing_entry.priority = entry.priority
-        if entry.supplier_id:
-            existing_entry.supplier_id = entry.supplier_id
-        existing_entry.updated_at = datetime.utcnow()
-        
-        db.commit()
-        db.refresh(existing_entry)
-        
-        # Enhance response
-        entry_dict = {
-            "id": existing_entry.id,
-            "company_id": existing_entry.company_id,
-            "branch_id": existing_entry.branch_id,
-            "item_id": existing_entry.item_id,
-            "supplier_id": existing_entry.supplier_id,
-            "quantity_needed": existing_entry.quantity_needed,
-            "unit_name": existing_entry.unit_name,
-            "reason": existing_entry.reason,
-            "source_reference_type": existing_entry.source_reference_type,
-            "source_reference_id": existing_entry.source_reference_id,
-            "notes": existing_entry.notes,
-            "priority": existing_entry.priority,
-            "status": existing_entry.status,
-            "purchase_order_id": existing_entry.purchase_order_id,
-            "created_by": existing_entry.created_by,
-            "created_at": existing_entry.created_at,
-            "updated_at": existing_entry.updated_at,
-            "item_name": item.name,
-            "item_sku": item.sku,
-            "supplier_name": existing_entry.supplier.name if existing_entry.supplier else None,
-            "current_stock": None
-        }
-        
-        # Get current stock
-        stock_query = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
-            InventoryLedger.item_id == entry.item_id,
-            InventoryLedger.branch_id == branch_id
+        if existing_entry.status == "ORDERED":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This item is already on a purchase order (ordered). Check the order book."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This item is already in the order book."
         )
-        current_stock = stock_query.scalar() or 0
-        entry_dict["current_stock"] = int(current_stock)
-        
-        return OrderBookEntryResponse(**entry_dict)
     else:
         # Create new entry
         # For manual entries, use MANUAL_ADD reason and clear source_reference fields
@@ -289,15 +279,15 @@ def bulk_create_order_book_entries(
         if not item:
             continue  # Skip if item not found
         
-        # Check if entry already exists
+        # Check if entry already exists (PENDING or ORDERED - do not add again)
         existing = db.query(DailyOrderBook).filter(
             DailyOrderBook.branch_id == branch_id,
             DailyOrderBook.item_id == item_id,
-            DailyOrderBook.status == "PENDING"
+            DailyOrderBook.status.in_(["PENDING", "ORDERED"])
         ).first()
-        
+
         if existing:
-            continue  # Skip if already exists
+            continue  # Skip if already in order book or already ordered
         
         # Create entry
         entry = DailyOrderBook(
@@ -547,117 +537,111 @@ def create_purchase_order_from_book(
     if not supplier:
         raise HTTPException(status_code=404, detail=f"Supplier {supplier_id} not found")
     
-    # Generate purchase order number
-    order_number = DocumentService.get_purchase_order_number(
-        db, company_id, branch_id
-    )
-    
-    # Parse order date
+    # Parse order date once
     order_date = datetime.fromisoformat(request.order_date.replace('Z', '+00:00')).date() if isinstance(request.order_date, str) else request.order_date
-    
-    # Calculate total
-    total_amount = Decimal("0")
-    order_items = []
-    
-    for entry in entries:
-        # Get item to find purchase unit and price
-        item = db.query(Item).filter(Item.id == entry.item_id).first()
-        if not item:
-            continue
-        
-        # Get base unit multiplier (assume 1 for base unit)
-        # In real scenario, you'd get the purchase unit from item units
-        # For now, use base unit
-        quantity = entry.quantity_needed
-        unit_name = entry.unit_name
-        
-        # Get last purchase price or use 0
-        last_price = Decimal("0")
-        last_purchase = db.query(SupplierInvoiceItem).join(SupplierInvoice).filter(
-            SupplierInvoiceItem.item_id == entry.item_id,
-            SupplierInvoice.branch_id == branch_id
-        ).order_by(SupplierInvoice.invoice_date.desc()).first()
-        
-        if last_purchase:
-            last_price = last_purchase.unit_cost_exclusive
-        
-        unit_price = last_price
-        total_price = quantity * unit_price
-        total_amount += total_price
-        
-        order_item = PurchaseOrderItem(
-            purchase_order_id=None,  # Will be set after PO creation
-            item_id=entry.item_id,
-            unit_name=unit_name,
-            quantity=quantity,
-            unit_price=unit_price,
-            total_price=total_price
-        )
-        order_items.append(order_item)
-    
-    # Create purchase order
-    purchase_order = PurchaseOrder(
-        company_id=company_id,
-        branch_id=branch_id,
-        supplier_id=supplier_id,
-        order_number=order_number,
-        order_date=order_date,
-        reference=request.reference,
-        notes=request.notes,
-        total_amount=total_amount,
-        status="PENDING",
-        created_by=created_by
-    )
-    db.add(purchase_order)
-    db.flush()
-    
-    # Link items
-    for item in order_items:
-        item.purchase_order_id = purchase_order.id
-        db.add(item)
 
-    db.flush()
-    for item in order_items:
-        SnapshotService.upsert_search_snapshot_last_order(
-            db, company_id, branch_id, item.item_id, order_date
-        )
-    
-    # Update order book entries
-    for entry in entries:
-        entry.status = "ORDERED"
-        entry.purchase_order_id = purchase_order.id
-        entry.updated_at = datetime.utcnow()
-        
-        # Move to history
-        history_entry = OrderBookHistory(
-            company_id=entry.company_id,
-            branch_id=entry.branch_id,
-            item_id=entry.item_id,
-            supplier_id=entry.supplier_id,
-            quantity_needed=entry.quantity_needed,
-            unit_name=entry.unit_name,
-            reason=entry.reason,
-            source_reference_type=entry.source_reference_type,
-            source_reference_id=entry.source_reference_id,
-            notes=entry.notes,
-            priority=entry.priority,
-            status="ORDERED",
-            purchase_order_id=purchase_order.id,
-            created_by=entry.created_by,
-            created_at=entry.created_at,
-            updated_at=datetime.utcnow()
-        )
-        db.add(history_entry)
-        db.delete(entry)
-    
-    db.commit()
-    db.refresh(purchase_order)
-    
-    return {
-        "purchase_order_id": str(purchase_order.id),
-        "order_number": purchase_order.order_number,
-        "entries_processed": len(entries)
-    }
+    for attempt in range(2):
+        try:
+            order_number = DocumentService.get_purchase_order_number(
+                db, company_id, branch_id
+            )
+
+            total_amount = Decimal("0")
+            order_items = []
+
+            for entry in entries:
+                item = db.query(Item).filter(Item.id == entry.item_id).first()
+                if not item:
+                    continue
+                quantity = entry.quantity_needed
+                unit_name = entry.unit_name
+                last_price = Decimal("0")
+                last_purchase = db.query(SupplierInvoiceItem).join(SupplierInvoice).filter(
+                    SupplierInvoiceItem.item_id == entry.item_id,
+                    SupplierInvoice.branch_id == branch_id
+                ).order_by(SupplierInvoice.invoice_date.desc()).first()
+                if last_purchase:
+                    last_price = last_purchase.unit_cost_exclusive
+                unit_price = last_price
+                total_price = quantity * unit_price
+                total_amount += total_price
+                order_item = PurchaseOrderItem(
+                    purchase_order_id=None,
+                    item_id=entry.item_id,
+                    unit_name=unit_name,
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    total_price=total_price
+                )
+                order_items.append(order_item)
+
+            purchase_order = PurchaseOrder(
+                company_id=company_id,
+                branch_id=branch_id,
+                supplier_id=supplier_id,
+                order_number=order_number,
+                order_date=order_date,
+                reference=request.reference,
+                notes=request.notes,
+                total_amount=total_amount,
+                status="PENDING",
+                created_by=created_by
+            )
+            db.add(purchase_order)
+            db.flush()
+
+            for item in order_items:
+                item.purchase_order_id = purchase_order.id
+                db.add(item)
+
+            db.flush()
+            for item in order_items:
+                SnapshotService.upsert_search_snapshot_last_order(
+                    db, company_id, branch_id, item.item_id, order_date
+                )
+
+            for entry in entries:
+                entry.status = "ORDERED"
+                entry.purchase_order_id = purchase_order.id
+                entry.updated_at = datetime.utcnow()
+                history_entry = OrderBookHistory(
+                    company_id=entry.company_id,
+                    branch_id=entry.branch_id,
+                    item_id=entry.item_id,
+                    supplier_id=entry.supplier_id,
+                    quantity_needed=entry.quantity_needed,
+                    unit_name=entry.unit_name,
+                    reason=entry.reason,
+                    source_reference_type=entry.source_reference_type,
+                    source_reference_id=entry.source_reference_id,
+                    notes=entry.notes,
+                    priority=entry.priority,
+                    status="ORDERED",
+                    purchase_order_id=purchase_order.id,
+                    created_by=entry.created_by,
+                    created_at=entry.created_at,
+                    updated_at=datetime.utcnow()
+                )
+                db.add(history_entry)
+                db.delete(entry)
+
+            db.commit()
+            db.refresh(purchase_order)
+
+            return {
+                "purchase_order_id": str(purchase_order.id),
+                "order_number": purchase_order.order_number,
+                "entries_processed": len(entries)
+            }
+        except IntegrityError as e:
+            db.rollback()
+            if attempt == 0:
+                logging.getLogger(__name__).warning("Duplicate order number on create from order book, retrying: %s", e)
+                continue
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A purchase order was already created (possible duplicate click). Check Purchase Orders list."
+            ) from e
 
 
 @router.get("/history", response_model=List[OrderBookHistoryResponse])

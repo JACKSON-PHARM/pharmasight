@@ -528,10 +528,13 @@ const API = {
     
     // Order Book
     orderBook: {
-        // List entries
-        list: (branchId, companyId, statusFilter = null) => {
+        // List entries (optional: statusFilter, dateFrom, dateTo, includeOrdered)
+        list: (branchId, companyId, statusFilter = null, options = {}) => {
             const params = { branch_id: branchId, company_id: companyId };
             if (statusFilter) params.status_filter = statusFilter;
+            if (options.dateFrom) params.date_from = options.dateFrom;
+            if (options.dateTo) params.date_to = options.dateTo;
+            if (options.includeOrdered === true) params.include_ordered = 'true';
             return api.get('/api/order-book', params);
         },
         
