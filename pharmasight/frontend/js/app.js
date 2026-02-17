@@ -680,6 +680,33 @@ async function startAppFlow() {
         updateUserUI(user);
         CONFIG.USER_ID = user.id;
         saveConfig();
+
+        // Ensure tenant context is set even for recovery/password-reset sessions.
+        // Recovery links don't contain tenant info; we can discover tenant by email via backend.
+        try {
+            let sub = null;
+            try { sub = sessionStorage.getItem('pharmasight_tenant_subdomain'); } catch (_) {}
+            if (!sub) {
+                try { sub = localStorage.getItem('pharmasight_tenant_subdomain'); } catch (_) {}
+            }
+            if (!sub && user && user.email) {
+                const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null) ? CONFIG.API_BASE_URL : '';
+                const resp = await fetch(`${base}/api/auth/username-login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: user.email, password: 'bootstrap' })
+                });
+                if (resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    if (data && data.tenant_subdomain) {
+                        try { sessionStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain); } catch (_) {}
+                        try { localStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain); } catch (_) {}
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[APP FLOW] Tenant discovery skipped:', e);
+        }
         
         // Check URL parameters first to determine flow type
         const hash = window.location.hash || '';

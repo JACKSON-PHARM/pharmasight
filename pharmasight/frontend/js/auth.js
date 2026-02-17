@@ -133,14 +133,19 @@ async function signOut() {
  */
 async function checkSetupStatus(userId) {
     try {
+        if (!API || !API.invite || typeof API.invite.getSetupStatus !== 'function') {
+            // If API wiring is missing, do not force setup redirect.
+            return { needs_setup: false, company_exists: true };
+        }
         const response = await API.invite.getSetupStatus(userId);
         return response;
     } catch (error) {
         console.error('Error checking setup status:', error);
-        // Default to needing setup if check fails
+        // If check fails (network/tenant context not ready), DO NOT force setup.
+        // Setup wizard is only for truly uninitialized tenant DBs.
         return {
-            needs_setup: true,
-            company_exists: false
+            needs_setup: false,
+            company_exists: true
         };
     }
 }
