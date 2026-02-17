@@ -1,7 +1,7 @@
 """
 Tenant Management API - Admin endpoints for managing clients
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
@@ -250,8 +250,21 @@ def delete_tenant(tenant_id: UUID, db: Session = Depends(get_master_db)):
 # TENANT INVITES
 # =====================================================
 
+def _get_public_base_url(request: Request) -> str:
+    """Base URL for invite/setup links. Uses APP_PUBLIC_URL; if that is localhost, infer from request (for Render etc.)."""
+    base = (settings.APP_PUBLIC_URL or "").strip().rstrip("/")
+    if not base or "localhost" in base or "127.0.0.1" in base:
+        # Infer from request so links work on Render even when APP_PUBLIC_URL is not set
+        scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        if host:
+            return f"{scheme}://{host.split(',')[0].strip()}"
+    return base
+
+
 @router.post("/tenants/{tenant_id}/invites", response_model=TenantInviteResponse, status_code=status.HTTP_201_CREATED)
 def create_invite(
+    request: Request,
     tenant_id: UUID,
     invite_data: TenantInviteCreate,
     db: Session = Depends(get_master_db)
@@ -308,8 +321,9 @@ def create_invite(
     db.commit()
     db.refresh(invite)
     
-    # Build setup URL from APP_PUBLIC_URL so email and UI use the same link (works on Render)
-    setup_url = f"{settings.APP_PUBLIC_URL.rstrip('/')}/setup?token={invite.token}"
+    # Build setup URL so email and UI use a reachable link (APP_PUBLIC_URL or inferred from request on Render)
+    base_url = _get_public_base_url(request)
+    setup_url = f"{base_url.rstrip('/')}/setup?token={invite.token}"
     
     # Return response with username and setup_url (frontend uses this for copy link / display)
     invite_response = TenantInviteResponse.model_validate(invite)

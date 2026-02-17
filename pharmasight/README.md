@@ -74,11 +74,12 @@ Use the `render.yaml` in this directory (or connect the `pharmasight` folder to 
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| **APP_PUBLIC_URL** | Yes | Your app’s public URL (e.g. `https://pharmasight-backend.onrender.com`). Invite emails and setup links use this so users can open the link and complete setup. |
-| **ADMIN_PASSWORD** | Yes | Password for admin panel. Log in with username **admin** and this password to access tenant management. |
-| DATABASE_URL, SUPABASE_*, SMTP_* | As needed | Same as local development. |
+| **ADMIN_PASSWORD** | Yes | Password for admin panel. Log in with username **admin** and this password. |
+| **APP_PUBLIC_URL** | No* | Your app URL (e.g. `https://pharmasight.onrender.com`). If unset, invite links are built from the request (so they work on Render without setting this). |
+| **SMTP_HOST**, **SMTP_USER**, **SMTP_PASSWORD** | To send emails | Required for “Send invite email”. Without these, the invite link is still created and shown in the UI so you can copy and share it; email just won’t be sent. |
+| DATABASE_URL, SUPABASE_* | As needed | Same as local development. |
 
-Without **APP_PUBLIC_URL**, invite links in emails would point to `localhost` and won’t work for users. Without **ADMIN_PASSWORD**, admin panel login will not succeed.
+\* Set **APP_PUBLIC_URL** if you use a custom domain or a different URL than the request host.
 
 ## 📊 Key Features
 

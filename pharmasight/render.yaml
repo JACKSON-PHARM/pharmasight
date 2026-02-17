@@ -1,8 +1,9 @@
 # PharmaSight on Render
 # Set these in Render Dashboard → Service → Environment:
-#   APP_PUBLIC_URL = https://YOUR-SERVICE-NAME.onrender.com  (your app URL; invite emails and setup links use this)
-#   ADMIN_PASSWORD = your-secure-admin-password  (login with username "admin" and this password for tenant management)
-#   DATABASE_URL, SUPABASE_*, SMTP_* etc. as needed
+#   ADMIN_PASSWORD = your-secure-admin-password  (login with username "admin")
+#   DATABASE_URL, SUPABASE_* = as in local dev
+#   APP_PUBLIC_URL = optional; if unset, invite links use your Render URL automatically
+#   To send invite emails, set: SMTP_HOST, SMTP_USER, SMTP_PASSWORD (and optionally SMTP_PORT=587, EMAIL_FROM)
 services:
   - type: web
     name: pharmasight-backend
@@ -24,6 +25,12 @@ services:
       - key: APP_PUBLIC_URL
         sync: false
       - key: ADMIN_PASSWORD
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
         sync: false
     healthCheckPath: /health
 
