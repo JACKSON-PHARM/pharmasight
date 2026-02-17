@@ -2,6 +2,8 @@
 
 // Cached expiring list for CSV export (set when modal opens)
 let cachedExpiringList = [];
+// Cached order book pending list for quick preview
+let cachedOrderBookPendingToday = [];
 
 /** Branch for stock/counts: session branch (same as header), then CONFIG, then localStorage. */
 function getBranchIdForStock() {
@@ -52,6 +54,8 @@ async function loadDashboard() {
     }
     document.getElementById('todaySales').textContent = formatCurrency(0);
     document.getElementById('expiringItems').textContent = '0';
+    const ob = document.getElementById('orderBookPendingToday');
+    if (ob) ob.textContent = '0';
 
     try {
         // Items in database (all company items, with or without stock)
@@ -117,6 +121,22 @@ async function loadDashboard() {
                 if (totalStockValueEl) totalStockValueEl.textContent = '—';
             }
         }
+
+        // Order book pending today (count + cache preview list)
+        if (branchId && API.orderBook && typeof API.orderBook.getTodaySummary === 'function') {
+            try {
+                const summary = await API.orderBook.getTodaySummary(branchId, CONFIG.COMPANY_ID, 50);
+                const pendingCount = summary && summary.pending_count != null ? summary.pending_count : 0;
+                const el = document.getElementById('orderBookPendingToday');
+                if (el) el.textContent = pendingCount;
+                cachedOrderBookPendingToday = (summary && summary.entries) ? summary.entries : [];
+            } catch (err) {
+                console.warn('Order book today summary failed:', err);
+                const el = document.getElementById('orderBookPendingToday');
+                if (el) el.textContent = '0';
+                cachedOrderBookPendingToday = [];
+            }
+        }
     } catch (error) {
         console.error('Error loading dashboard:', error);
         // Only surface toast when user is already on dashboard (avoid noise during navigation)
@@ -124,6 +144,84 @@ async function loadDashboard() {
         if (active === 'dashboard' && typeof showToast === 'function') {
             showToast('Error loading dashboard data', 'error');
         }
+    }
+}
+
+async function showOrderBookPendingTodayModal() {
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
+        if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
+        return;
+    }
+    if (!API.orderBook || typeof API.orderBook.getTodaySummary !== 'function') {
+        if (typeof showToast === 'function') showToast('Order book summary not available.', 'warning');
+        return;
+    }
+
+    const content = '<div class="spinner" style="margin: 2rem auto;"></div><p style="text-align: center;">Loading order book...</p>';
+    const footer = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
+    if (typeof showModal === 'function') showModal('Order Book Pending (Today)', content, footer, 'modal-large');
+
+    try {
+        const summary = await API.orderBook.getTodaySummary(branchId, CONFIG.COMPANY_ID, 200);
+        const list = (summary && summary.entries) ? summary.entries : [];
+        cachedOrderBookPendingToday = list;
+
+        if (!list || list.length === 0) {
+            const emptyContent = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No pending order book items for today.</p>';
+            const emptyFooter = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
+            if (typeof showModal === 'function') showModal('Order Book Pending (Today)', emptyContent, emptyFooter, 'modal-large');
+            return;
+        }
+
+        const rows = list.map(function (r) {
+            const name = (typeof escapeHtml === 'function' ? escapeHtml(r.item_name || '') : (r.item_name || '')).replace(/"/g, '&quot;');
+            const sku = (typeof escapeHtml === 'function' ? escapeHtml(r.item_sku || '') : (r.item_sku || '')).replace(/"/g, '&quot;');
+            const supplier = (typeof escapeHtml === 'function' ? escapeHtml(r.supplier_name || '') : (r.supplier_name || '')).replace(/"/g, '&quot;');
+            const qty = (typeof formatNumber === 'function' ? formatNumber(r.quantity_needed) : (r.quantity_needed != null ? r.quantity_needed : 0));
+            const unit = (typeof escapeHtml === 'function' ? escapeHtml(r.unit_name || '') : (r.unit_name || '')).replace(/"/g, '&quot;');
+            return '<tr><td>' + name + '</td><td><code>' + (sku || '—') + '</code></td><td>' + (supplier || '—') + '</td><td style="text-align: right;">' + qty + ' ' + (unit || '') + '</td></tr>';
+        }).join('');
+
+        const tableContent = `
+            <div style="max-height: 60vh; overflow-y: auto; margin-bottom: 1rem;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead style="position: sticky; top: 0; background: white;">
+                        <tr>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">SKU</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Supplier</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: right;">Qty Needed</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <p style="color: var(--text-secondary); font-size: 0.875rem;">${list.length} pending item(s) shown (today)</p>
+        `;
+
+        const modalFooter = `
+            <button class="btn btn-primary" onclick="if(window.openOrderBookFromDashboard) window.openOrderBookFromDashboard()">
+                <i class="fas fa-clipboard-list"></i> Open Order Book
+            </button>
+            <button class="btn btn-outline" onclick="closeModal()">Close</button>
+        `;
+        if (typeof showModal === 'function') showModal('Order Book Pending (Today)', tableContent, modalFooter, 'modal-large');
+    } catch (err) {
+        console.error('Failed to load order book today summary:', err);
+        const errContent = '<p style="padding: 2rem; text-align: center; color: var(--danger-color);">Failed to load order book. ' + (err.message || '') + '</p>';
+        const errFooter = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
+        if (typeof showModal === 'function') showModal('Order Book Pending (Today)', errContent, errFooter, 'modal-large');
+    }
+}
+
+function openOrderBookFromDashboard() {
+    if (typeof closeModal === 'function') closeModal();
+    if (typeof window.loadPage === 'function') window.loadPage('purchases');
+    if (typeof window.loadPurchaseSubPage === 'function') {
+        setTimeout(function () {
+            window.loadPurchaseSubPage('order-book');
+        }, 200);
     }
 }
 
@@ -224,6 +322,8 @@ function exportExpiringToCsv() {
 
 // Export
 window.loadDashboard = loadDashboard;
+window.showOrderBookPendingTodayModal = showOrderBookPendingTodayModal;
+window.openOrderBookFromDashboard = openOrderBookFromDashboard;
 window.showExpiringSoonModal = showExpiringSoonModal;
 window.exportExpiringToCsv = exportExpiringToCsv;
 

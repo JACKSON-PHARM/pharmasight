@@ -167,6 +167,65 @@ def list_order_book_entries(
         )
 
 
+@router.get("/today-summary", response_model=dict)
+def get_order_book_today_summary(
+    branch_id: UUID = Query(..., description="Branch ID"),
+    company_id: UUID = Query(..., description="Company ID"),
+    limit: int = Query(10, ge=0, le=200, description="Max entries to include (0 = none)"),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Lightweight dashboard endpoint: number of PENDING order book entries for *today*,
+    plus an optional small list of entries for quick preview.
+    """
+    today = date.today()
+
+    q = db.query(DailyOrderBook).filter(
+        DailyOrderBook.branch_id == branch_id,
+        DailyOrderBook.company_id == company_id,
+        DailyOrderBook.status == "PENDING",
+    )
+    if hasattr(DailyOrderBook, "entry_date"):
+        q = q.filter(DailyOrderBook.entry_date == today)
+    else:
+        q = q.filter(func.date(DailyOrderBook.created_at) == today)
+
+    pending_count = q.count()
+
+    entries_out = []
+    if limit and limit > 0 and pending_count > 0:
+        rows = (
+            q.options(
+                selectinload(DailyOrderBook.item),
+                selectinload(DailyOrderBook.supplier),
+            )
+            .order_by(DailyOrderBook.priority.desc(), DailyOrderBook.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        for e in rows:
+            entries_out.append(
+                {
+                    "id": str(e.id),
+                    "item_id": str(e.item_id),
+                    "item_name": e.item.name if e.item else None,
+                    "item_sku": e.item.sku if e.item else None,
+                    "quantity_needed": float(e.quantity_needed) if e.quantity_needed is not None else 1,
+                    "unit_name": e.unit_name or "unit",
+                    "supplier_id": str(e.supplier_id) if e.supplier_id else None,
+                    "supplier_name": e.supplier.name if e.supplier else None,
+                    "priority": int(e.priority) if e.priority is not None else 5,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+            )
+
+    return {
+        "date": today.isoformat(),
+        "pending_count": int(pending_count),
+        "entries": entries_out,
+    }
+
+
 @router.post("", response_model=OrderBookEntryResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=OrderBookEntryResponse, status_code=status.HTTP_201_CREATED)
 def create_order_book_entry(

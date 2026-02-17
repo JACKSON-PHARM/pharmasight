@@ -577,6 +577,12 @@ const API = {
             });
             return api.post(`/api/order-book/create-purchase-order?${queryParams}`, data);
         },
+
+        // Dashboard: pending order book count for today (optional: include preview entries via limit)
+        getTodaySummary: (branchId, companyId, limit = 10) => {
+            const params = { branch_id: branchId, company_id: companyId, limit };
+            return api.get('/api/order-book/today-summary', params);
+        },
         
         // Get history
         getHistory: (branchId, companyId, limit = 100) => {
