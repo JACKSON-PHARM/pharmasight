@@ -45,6 +45,18 @@ async function loadDashboard() {
 
     // Use session branch (same as header) so dashboard matches branch context
     const branchId = getBranchIdForStock();
+    
+    // Check permissions and hide/show cards accordingly
+    if (typeof window.Permissions !== 'undefined' && window.Permissions.canViewDashboardCard) {
+        const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'expiringItems', 'orderBookPendingToday'];
+        for (const cardId of cardIds) {
+            const card = document.getElementById(cardId)?.closest('.stat-card');
+            if (card) {
+                const canView = await window.Permissions.canViewDashboardCard(cardId, branchId);
+                card.style.display = canView ? '' : 'none';
+            }
+        }
+    }
 
     // Placeholders first
     document.getElementById('totalItems').textContent = '0';
@@ -82,10 +94,22 @@ async function loadDashboard() {
             }
         }
 
-        // Today's sales for the logged-in user (per-user)
+        // Today's sales - check permissions to determine if user sees own sales or all sales
         if (branchId && API.sales && typeof API.sales.getTodaySummary === 'function') {
             try {
-                const userId = CONFIG.USER_ID || null;
+                let userId = null;
+                // Check if user can view all sales or only their own
+                if (typeof window.Permissions !== 'undefined' && window.Permissions.getSalesViewPermissions) {
+                    const salesPerms = await window.Permissions.getSalesViewPermissions(branchId);
+                    // If user can only view own sales, filter by user_id
+                    if (!salesPerms.canViewAll && salesPerms.canViewOwn) {
+                        userId = CONFIG.USER_ID || null;
+                    }
+                    // If user can't view any sales, don't show the card (already hidden above)
+                } else {
+                    // Fallback: show own sales only
+                    userId = CONFIG.USER_ID || null;
+                }
                 const summary = await API.sales.getTodaySummary(branchId, userId);
                 const total = parseFloat(summary.total_inclusive || summary.total_exclusive || 0);
                 document.getElementById('todaySales').textContent = formatCurrency(total);
