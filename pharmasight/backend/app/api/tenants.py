@@ -1,7 +1,7 @@
 """
 Tenant Management API - Admin endpoints for managing clients
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
@@ -265,6 +265,7 @@ def _get_public_base_url(request: Request) -> str:
 @router.post("/tenants/{tenant_id}/invites", response_model=TenantInviteResponse, status_code=status.HTTP_201_CREATED)
 def create_invite(
     request: Request,
+    background_tasks: BackgroundTasks,
     tenant_id: UUID,
     invite_data: TenantInviteCreate,
     db: Session = Depends(get_master_db)
@@ -325,20 +326,22 @@ def create_invite(
     base_url = _get_public_base_url(request)
     setup_url = f"{base_url.rstrip('/')}/setup?token={invite.token}"
     
-    # Return response with username and setup_url (frontend uses this for copy link / display)
+    # Return response immediately; send email in background to avoid timeout on Render (cold start / slow SMTP)
     invite_response = TenantInviteResponse.model_validate(invite)
     invite_response.username = generated_username
     invite_response.email_sent = False
     invite_response.setup_url = setup_url
-    
+
     if invite_data.send_email:
-        invite_response.email_sent = EmailService.send_tenant_invite(
+        background_tasks.add_task(
+            EmailService.send_tenant_invite,
             to_email=tenant.admin_email,
             tenant_name=tenant.name,
             setup_url=setup_url,
             username=generated_username,
         )
-    
+        # We don't wait for the result; UI shows "share the link below" and email is sent shortly after.
+
     return invite_response
 
 

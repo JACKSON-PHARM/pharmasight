@@ -78,7 +78,7 @@ class APIClient {
             if (error.name === 'AbortError') {
                 // If we created the controller (no external signal), treat as timeout
                 if (!options.signal) {
-                    throw new Error(`Request timed out after ${timeoutMs/1000} seconds. Is the backend server running on ${this.baseURL}?`);
+                    throw new Error(`Request timed out after ${timeoutMs/1000} seconds. The server may be starting (e.g. on Render). Try again in a moment.`);
                 }
                 throw error;
             }
@@ -604,7 +604,7 @@ const API = {
             initializeStatus: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/initialize-status`),
             initialize: (tenantId, data) => api.post(`/api/admin/tenants/${tenantId}/initialize`, data),
             invites: {
-                create: (tenantId, data) => api.post(`/api/admin/tenants/${tenantId}/invites`, { expires_in_days: 7, send_email: true, ...data }),
+                create: (tenantId, data) => api.post(`/api/admin/tenants/${tenantId}/invites`, { expires_in_days: 7, send_email: true, ...data }, { timeout: 120000 }),
                 list: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/invites`),
             },
             subscription: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/subscription`),
