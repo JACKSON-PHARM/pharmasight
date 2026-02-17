@@ -286,6 +286,48 @@ def get_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
     )
 
 
+@router.get("/users/{user_id}/permissions")
+def get_user_permissions(
+    user_id: UUID,
+    branch_id: Optional[UUID] = Query(None, description="Branch ID to check permissions for"),
+    db: Session = Depends(get_tenant_db)
+):
+    """
+    Get all permissions for a user, combining role permissions.
+    Returns permissions from all roles the user has at the specified branch (or all branches if branch_id is None).
+    """
+    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get user's branch-role assignments
+    ubr_query = db.query(UserBranchRole).join(UserRole).filter(UserBranchRole.user_id == user_id)
+    if branch_id:
+        ubr_query = ubr_query.filter(UserBranchRole.branch_id == branch_id)
+    
+    user_branch_roles = ubr_query.all()
+    
+    if not user_branch_roles:
+        return {"permissions": []}
+    
+    # Collect all permission names from user's roles
+    permission_names = set()
+    for ubr in user_branch_roles:
+        # Get permissions for this role (global or branch-specific)
+        rps = db.query(Permission.name).join(
+            RolePermission, RolePermission.permission_id == Permission.id
+        ).filter(
+            RolePermission.role_id == ubr.role_id,
+            or_(
+                RolePermission.branch_id.is_(None),  # Global permissions
+                RolePermission.branch_id == ubr.branch_id  # Branch-specific permissions
+            )
+        ).all()
+        permission_names.update(r[0] for r in rps)
+    
+    return {"permissions": sorted(list(permission_names))}
+
+
 @router.post("/users", response_model=InvitationResponse, status_code=status.HTTP_201_CREATED)
 def create_user(user_data: UserCreate, db: Session = Depends(get_tenant_db)):
     """

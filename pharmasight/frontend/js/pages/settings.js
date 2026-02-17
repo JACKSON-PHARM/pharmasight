@@ -1322,8 +1322,21 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
     }
     
     let user = null;
+    let userPermissions = [];
+    let permissionsByModule = [];
     try {
         user = await API.users.get(userId);
+        // Get user's current permissions
+        const branchId = user.branch_roles && user.branch_roles.length > 0 ? user.branch_roles[0].branch_id : null;
+        if (API && API.users && API.users.getUserPermissions) {
+            const permResult = await API.users.getUserPermissions(userId, branchId);
+            userPermissions = new Set(permResult.permissions || []);
+        }
+        // Get all available permissions grouped by module
+        if (API && API.permissions && API.permissions.list) {
+            const permList = await API.permissions.list();
+            permissionsByModule = Array.isArray(permList) ? permList : [];
+        }
     } catch (error) {
         console.error('Error loading user:', error);
         showToast('Error loading user details', 'error');
@@ -1332,6 +1345,45 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
         await renderUsersPage();
         return;
     }
+    
+    // Build permissions display
+    const permissionsHtml = permissionsByModule.length > 0 ? `
+        <div style="margin-top: 2rem; padding-top: 2rem; border-top: 2px solid var(--border-color);">
+            <h4 style="margin-bottom: 1rem;">
+                <i class="fas fa-key"></i> User Permissions
+            </h4>
+            <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
+                Permissions are inherited from the user's roles. To change permissions, edit the role or assign a different role.
+            </p>
+            <div style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1rem; background: var(--bg-secondary);">
+                ${permissionsByModule.map(mod => {
+                    const modulePerms = mod.permissions.filter(p => userPermissions.has(p.name));
+                    if (modulePerms.length === 0) return '';
+                    return `
+                        <div style="margin-bottom: 1rem;">
+                            <strong style="color: var(--primary-color); display: block; margin-bottom: 0.5rem;">
+                                ${escapeHtml(mod.module)}
+                            </strong>
+                            <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                                ${modulePerms.map(p => `
+                                    <span class="badge badge-success" style="font-size: 0.75rem;" title="${escapeHtml(p.description || '')}">
+                                        ${escapeHtml(p.action)}
+                                    </span>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                }).filter(h => h).join('')}
+                ${userPermissions.size === 0 ? '<p style="color: var(--text-secondary); font-style: italic;">No permissions assigned. User needs a role with permissions.</p>' : ''}
+            </div>
+            <div style="margin-top: 1rem; padding: 1rem; background: var(--info-bg, #e3f2fd); border-radius: 0.5rem; border-left: 4px solid var(--info-color, #2196f3);">
+                <p style="margin: 0; font-size: 0.875rem; color: var(--info-color, #1976d2);">
+                    <i class="fas fa-info-circle"></i> 
+                    <strong>Tip:</strong> To modify permissions, go to "Manage Roles" and edit the role assigned to this user.
+                </p>
+            </div>
+        </div>
+    ` : '';
     
     page.innerHTML = `
         <div class="card">
@@ -1363,7 +1415,7 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
                     </div>
                     <div class="form-group">
                         <label class="form-label">Role *</label>
-                        <select class="form-input" name="role_name" required>
+                        <select class="form-input" name="role_name" required id="userRoleSelect" onchange="updateUserPermissionsDisplay('${user.id}')">
                             <option value="">Select a role</option>
                             ${roles.map(role => {
                                 const isSelected = user.branch_roles && user.branch_roles.some(ubr => ubr.role_name === role.role_name);
@@ -1373,7 +1425,7 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
                     </div>
                     <div class="form-group">
                         <label class="form-label">Branch (Optional)</label>
-                        <select class="form-input" name="branch_id">
+                        <select class="form-input" name="branch_id" id="userBranchSelect" onchange="updateUserPermissionsDisplay('${user.id}')">
                             <option value="">None (assign later)</option>
                             ${branches.map(branch => {
                                 const isSelected = user.branch_roles && user.branch_roles.some(ubr => ubr.branch_id === branch.id);
@@ -1387,6 +1439,7 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
                             <span>Active</span>
                         </label>
                     </div>
+                    ${permissionsHtml}
                     <div style="margin-top: 2rem; display: flex; gap: 1rem;">
                         <button type="submit" class="btn btn-primary" disabled>
                             <i class="fas fa-save"></i> Update User
@@ -1402,6 +1455,59 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
     
     // Initialize validation
     setTimeout(() => updateFormValidation('editUserForm'), 100);
+}
+
+// Update permissions display when role or branch changes
+async function updateUserPermissionsDisplay(userId) {
+    const roleSelect = document.getElementById('userRoleSelect');
+    const branchSelect = document.getElementById('userBranchSelect');
+    if (!roleSelect || !branchSelect) return;
+    
+    const branchId = branchSelect.value || null;
+    try {
+        if (API && API.users && API.users.getUserPermissions) {
+            const permResult = await API.users.getUserPermissions(userId, branchId);
+            const userPermissions = new Set(permResult.permissions || []);
+            
+            // Update permissions display
+            const permDisplay = document.querySelector('[style*="User Permissions"]')?.parentElement;
+            if (permDisplay && API && API.permissions && API.permissions.list) {
+                const permList = await API.permissions.list();
+                const permissionsByModule = Array.isArray(permList) ? permList : [];
+                
+                const permissionsHtml = `
+                    <div style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1rem; background: var(--bg-secondary);">
+                        ${permissionsByModule.map(mod => {
+                            const modulePerms = mod.permissions.filter(p => userPermissions.has(p.name));
+                            if (modulePerms.length === 0) return '';
+                            return `
+                                <div style="margin-bottom: 1rem;">
+                                    <strong style="color: var(--primary-color); display: block; margin-bottom: 0.5rem;">
+                                        ${escapeHtml(mod.module)}
+                                    </strong>
+                                    <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                                        ${modulePerms.map(p => `
+                                            <span class="badge badge-success" style="font-size: 0.75rem;" title="${escapeHtml(p.description || '')}">
+                                                ${escapeHtml(p.action)}
+                                            </span>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            `;
+                        }).filter(h => h).join('')}
+                        ${userPermissions.size === 0 ? '<p style="color: var(--text-secondary); font-style: italic;">No permissions assigned. User needs a role with permissions.</p>' : ''}
+                    </div>
+                `;
+                
+                const existingDisplay = permDisplay.querySelector('[style*="max-height: 400px"]');
+                if (existingDisplay) {
+                    existingDisplay.outerHTML = permissionsHtml;
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error updating permissions display:', error);
+    }
 }
 
 // Inline form handlers

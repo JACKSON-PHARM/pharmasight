@@ -410,6 +410,10 @@ const API = {
         updateRole: (roleId, data) => api.patch(`/api/users/roles/${roleId}`, data),
         getRolePermissions: (roleId) => api.get(`/api/users/roles/${roleId}/permissions`),
         updateRolePermissions: (roleId, permissions) => api.put(`/api/users/roles/${roleId}/permissions`, { permissions }),
+        getUserPermissions: (userId, branchId = null) => {
+            const params = branchId ? { branch_id: branchId } : {};
+            return api.get(`/api/users/${userId}/permissions`, params);
+        },
     },
     // Permissions (Vyapar-style matrix)
     permissions: {
