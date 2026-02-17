@@ -9,6 +9,9 @@ from uuid import UUID
 from datetime import datetime, timedelta
 import secrets
 import string
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.database_master import get_master_db
 from app.dependencies import tenant_db_session
@@ -329,18 +332,48 @@ def create_invite(
     # Return response immediately; send email in background to avoid timeout on Render (cold start / slow SMTP)
     invite_response = TenantInviteResponse.model_validate(invite)
     invite_response.username = generated_username
-    invite_response.email_sent = False
     invite_response.setup_url = setup_url
 
     if invite_data.send_email:
-        background_tasks.add_task(
-            EmailService.send_tenant_invite,
-            to_email=tenant.admin_email,
-            tenant_name=tenant.name,
-            setup_url=setup_url,
-            username=generated_username,
-        )
-        # We don't wait for the result; UI shows "share the link below" and email is sent shortly after.
+        # Check SMTP config before adding background task
+        smtp_configured = EmailService.is_configured()
+        invite_response.email_sent = smtp_configured  # True if SMTP is configured (email will be sent in background)
+        
+        if not smtp_configured:
+            missing = []
+            if not settings.SMTP_HOST:
+                missing.append("SMTP_HOST")
+            if not settings.SMTP_USER:
+                missing.append("SMTP_USER")
+            if not settings.SMTP_PASSWORD:
+                missing.append("SMTP_PASSWORD")
+            logger.warning(
+                f"SMTP not configured (missing: {', '.join(missing)}). "
+                f"Invite created for {tenant.admin_email} but email will not be sent. "
+                f"Share the link manually: {setup_url}"
+            )
+        else:
+            # Wrapper to log background task execution
+            def send_email_with_logging():
+                try:
+                    logger.info(f"Background task: Sending invite email to {tenant.admin_email} for tenant {tenant.name}")
+                    result = EmailService.send_tenant_invite(
+                        to_email=tenant.admin_email,
+                        tenant_name=tenant.name,
+                        setup_url=setup_url,
+                        username=generated_username,
+                    )
+                    if result:
+                        logger.info(f"Background task: Successfully sent invite email to {tenant.admin_email}")
+                    else:
+                        logger.warning(f"Background task: Failed to send invite email to {tenant.admin_email} (check SMTP config and Render logs)")
+                except Exception as e:
+                    logger.exception(f"Background task: Exception sending invite email to {tenant.admin_email}: {e}")
+            
+            background_tasks.add_task(send_email_with_logging)
+            logger.info(f"Invite created for {tenant.admin_email}. Email sending queued in background task (SMTP configured).")
+    else:
+        invite_response.email_sent = False
 
     return invite_response
 
@@ -353,6 +386,33 @@ def list_invites(tenant_id: UUID, db: Session = Depends(get_master_db)):
     ).order_by(TenantInvite.created_at.desc()).all()
     
     return [TenantInviteResponse.model_validate(inv) for inv in invites]
+
+
+@router.get("/smtp-status")
+def get_smtp_status():
+    """Check SMTP configuration status (for admin debugging)"""
+    is_configured = EmailService.is_configured()
+    status_info = {
+        "smtp_configured": is_configured,
+        "smtp_host_set": bool(settings.SMTP_HOST),
+        "smtp_user_set": bool(settings.SMTP_USER),
+        "smtp_password_set": bool(settings.SMTP_PASSWORD),
+        "smtp_port": settings.SMTP_PORT,
+        "email_from": settings.EMAIL_FROM,
+    }
+    if not is_configured:
+        missing = []
+        if not settings.SMTP_HOST:
+            missing.append("SMTP_HOST")
+        if not settings.SMTP_USER:
+            missing.append("SMTP_USER")
+        if not settings.SMTP_PASSWORD:
+            missing.append("SMTP_PASSWORD")
+        status_info["missing_variables"] = missing
+        status_info["message"] = f"SMTP not configured. Missing: {', '.join(missing)}"
+    else:
+        status_info["message"] = "SMTP is configured (emails will be sent in background tasks)"
+    return status_info
 
 
 # =====================================================

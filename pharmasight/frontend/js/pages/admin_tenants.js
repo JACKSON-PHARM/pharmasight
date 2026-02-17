@@ -431,9 +431,9 @@ async function createInvite(tenantId) {
             const emailSent = response.email_sent === true;
             
             if (emailSent && window.showNotification) {
-                window.showNotification(`Invite sent to ${tenant?.admin_email || 'their email'}`, 'success');
+                window.showNotification(`Invite created. Email queued for ${tenant?.admin_email || 'their email'} (check Render logs for delivery status).`, 'success');
             } else if (!emailSent && window.showNotification) {
-                window.showNotification('Invite created. Email could not be sent — share the link below.', 'warning');
+                window.showNotification('Invite created. Email not sent — SMTP not configured. Check Render environment variables (SMTP_HOST, SMTP_USER, SMTP_PASSWORD).', 'warning');
             }
             
             showInviteModal({
@@ -473,8 +473,8 @@ function showInviteModal(opts) {
     modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 10000;';
 
     const statusMsg = emailSent
-        ? `The invite has been sent to <strong>${escapeHtml(adminEmail)}</strong>. They can join from the link in their email.`
-        : 'Email could not be sent. Share the link below with the client so they can complete setup.';
+        ? `The invite email has been queued for <strong>${escapeHtml(adminEmail)}</strong>. If SMTP is configured, they will receive it shortly. Check Render logs for delivery status.`
+        : 'Email could not be sent because SMTP is not configured. Share the link below with the client so they can complete setup. To enable email, set SMTP_HOST, SMTP_USER, and SMTP_PASSWORD in Render environment variables.';
 
     modal.innerHTML = `
         <div class="modal-content" style="background: white; padding: 30px; border-radius: 8px; max-width: 600px; width: 90%;">
