@@ -134,9 +134,17 @@ if _UPLOADS_DIR.is_dir():
     app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
     app.mount("/js", StaticFiles(directory=str(_FRONTEND_DIR / "js")), name="js")
     _index_path = _FRONTEND_DIR / "index.html"
+    _admin_path = _FRONTEND_DIR / "admin.html"
 
     @app.get("/")
     async def root():
+        return FileResponse(_index_path, media_type="text/html")
+
+    @app.get("/admin.html")
+    async def admin_page():
+        """Serve the real admin panel page so admin login redirect lands here (not the SPA index)."""
+        if _admin_path.is_file():
+            return FileResponse(_admin_path, media_type="text/html")
         return FileResponse(_index_path, media_type="text/html")
 
     @app.get("/{full_path:path}")
