@@ -4,6 +4,9 @@ const CONFIG = {
     API_BASE_URL: (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
         ? ''
         : 'http://localhost:8000',
+    // Public URL of the frontend (used for Supabase email redirects).
+    // Defaults to current origin; can be overridden via localStorage key `pharmasight_app_public_url`.
+    APP_PUBLIC_URL: (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '',
     // Supabase Configuration
     // Get these from: https://supabase.com/dashboard/project/kwvkkbofubsjiwqlqakt/settings/api
     SUPABASE_URL: 'https://kwvkkbofubsjiwqlqakt.supabase.co',  // Your Project URL
@@ -75,6 +78,17 @@ function loadConfig() {
         const supabase = JSON.parse(supabaseConfig);
         if (supabase.SUPABASE_URL) CONFIG.SUPABASE_URL = supabase.SUPABASE_URL;
         if (supabase.SUPABASE_ANON_KEY) CONFIG.SUPABASE_ANON_KEY = supabase.SUPABASE_ANON_KEY;
+    }
+
+    // Optional: override public app URL for email redirects (useful when testing locally but sending production links)
+    try {
+        const pub = localStorage.getItem('pharmasight_app_public_url');
+        if (pub && typeof pub === 'string' && pub.trim()) {
+            CONFIG.APP_PUBLIC_URL = pub.trim().replace(/\/+$/, '');
+        }
+    } catch (_) {}
+    if (!CONFIG.APP_PUBLIC_URL && typeof window !== 'undefined' && window.location && window.location.origin) {
+        CONFIG.APP_PUBLIC_URL = window.location.origin;
     }
 }
 

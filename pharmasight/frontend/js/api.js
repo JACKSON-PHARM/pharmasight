@@ -38,7 +38,12 @@ class APIClient {
         // Tenant context (database-per-tenant): send X-Tenant-Subdomain for app APIs when set.
         // Skip for /api/admin/* (master-only). No header → legacy DB.
         try {
-            var sub = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain');
+            // Prefer per-tab tenant (sessionStorage) to avoid cross-tab collisions; fall back to localStorage.
+            var sub = null;
+            try {
+                if (typeof sessionStorage !== 'undefined') sub = sessionStorage.getItem('pharmasight_tenant_subdomain');
+            } catch (_) {}
+            if (!sub && typeof localStorage !== 'undefined') sub = localStorage.getItem('pharmasight_tenant_subdomain');
             if (sub && endpoint.indexOf('/api/admin/') !== 0) {
                 config.headers['X-Tenant-Subdomain'] = sub;
             }

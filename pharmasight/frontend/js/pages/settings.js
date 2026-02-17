@@ -1745,8 +1745,9 @@ async function sendInvitationEmail(userId, email) {
         
         // Send invitation email via Supabase Auth password reset
         // This works for both first-time setup and password reset
+        const publicUrl = (typeof CONFIG !== 'undefined' && CONFIG.APP_PUBLIC_URL) ? CONFIG.APP_PUBLIC_URL : window.location.origin;
         const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
-            redirectTo: `${window.location.origin}/invite`
+            redirectTo: `${publicUrl}/invite`
         });
         
         if (error) {

@@ -110,7 +110,7 @@ function renderEmailRequestForm(page) {
                 
                 // Send reset email
                 const { error } = await supabase.auth.resetPasswordForEmail(email, {
-                    redirectTo: window.location.origin
+                    redirectTo: (typeof CONFIG !== 'undefined' && CONFIG.APP_PUBLIC_URL) ? CONFIG.APP_PUBLIC_URL : window.location.origin
                 });
                 
                 if (error) throw error;

@@ -9,8 +9,11 @@ async function loadLogin() {
         // Set tenant context from URL so username-login uses the correct tenant DB (e.g. after invite: ?tenant=pharmasight-meds-ltd)
         const params = new URLSearchParams(window.location.search || '');
         const tenantFromUrl = params.get('tenant') || params.get('subdomain');
-        if (tenantFromUrl && typeof localStorage !== 'undefined') {
-            localStorage.setItem('pharmasight_tenant_subdomain', tenantFromUrl);
+        if (tenantFromUrl) {
+            // Per-tab tenant context first (prevents collisions across tabs).
+            try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', tenantFromUrl); } catch (_) {}
+            // Also persist last-used tenant for convenience across reloads.
+            try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', tenantFromUrl); } catch (_) {}
         }
         if (sessionStorage.getItem('tenant_invite_setup_done') === '1') {
             sessionStorage.removeItem('tenant_invite_setup_done');
@@ -276,13 +279,62 @@ async function loadLogin() {
                         const blockedUntil = window.LoginSecurity.getBlockedUntil(username);
                         const timeRemaining = window.LoginSecurity.formatTimeUntilUnblock(blockedUntil);
                         
-                        const errorMsg = timeRemaining 
+                        const errorMsg = timeRemaining
                             ? `Account locked due to too many failed attempts. Try again in ${timeRemaining}.`
-                            : 'Account locked due to too many failed attempts. Please contact an administrator.';
+                            : 'Account locked due to too many failed attempts.';
                         
                         if (errorDiv) {
-                            errorDiv.textContent = errorMsg;
+                            // Offer a self-service unlock option (password reset email) instead of just waiting.
+                            errorDiv.innerHTML = `
+                                <div style="text-align:center;">
+                                    <div style="margin-bottom:0.5rem;">${String(errorMsg).replace(/</g, '&lt;')}</div>
+                                    <button type="button" class="btn btn-secondary" id="unlockAccountBtn" style="width:100%;">
+                                        <i class="fas fa-envelope"></i> Send unlock link
+                                    </button>
+                                    <div style="margin-top:0.5rem; font-size:0.85rem; color: var(--text-secondary);">
+                                        You can reset your password, or go back and continue using your old password.
+                                    </div>
+                                </div>
+                            `;
                             errorDiv.style.display = 'block';
+                            const btn = document.getElementById('unlockAccountBtn');
+                            if (btn) {
+                                btn.onclick = async () => {
+                                    btn.disabled = true;
+                                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+                                    try {
+                                        await sendUnlockLinkForUsername(username);
+                                        // Unblock locally so user can try again immediately if they remember the password.
+                                        try { window.LoginSecurity.unblockUser(username); } catch (_) {}
+                                        if (errorDiv) {
+                                            errorDiv.innerHTML = `
+                                                <div style="text-align:center;">
+                                                    <div style="margin-bottom:0.5rem; color: var(--success-color);">
+                                                        Unlock link sent. Check your email.
+                                                    </div>
+                                                    <div style="font-size:0.85rem; color: var(--text-secondary);">
+                                                        You can reset your password using the email link, or return and sign in with your current password.
+                                                    </div>
+                                                </div>
+                                            `;
+                                            errorDiv.style.display = 'block';
+                                        }
+                                    } catch (err) {
+                                        const msg = (err && err.message) ? err.message : 'Failed to send unlock link';
+                                        if (errorDiv) {
+                                            errorDiv.textContent = msg;
+                                            errorDiv.style.display = 'block';
+                                        } else if (typeof showToast === 'function') {
+                                            showToast(msg, 'error');
+                                        }
+                                    } finally {
+                                        if (btn) {
+                                            btn.disabled = false;
+                                            btn.innerHTML = '<i class="fas fa-envelope"></i> Send unlock link';
+                                        }
+                                    }
+                                };
+                            }
                         } else {
                             showToast(errorMsg, 'error');
                         }
@@ -339,9 +391,10 @@ async function loadLogin() {
                 // Regular user authentication: Lookup email from username (must send tenant context so backend uses tenant DB)
                 let userEmail = null;
                 try {
+                    // IMPORTANT: Do NOT send tenant header during login.
+                    // The backend can discover the correct tenant for this username and return tenant_subdomain.
+                    // This avoids "wrong tenant" collisions across tabs/devices.
                     const headers = { 'Content-Type': 'application/json' };
-                    const tenantSubdomain = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain');
-                    if (tenantSubdomain) headers['X-Tenant-Subdomain'] = tenantSubdomain;
                     const usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
                         method: 'POST',
                         headers,
@@ -352,8 +405,9 @@ async function loadLogin() {
                         const userData = await usernameResponse.json();
                         userEmail = userData.email;
                         // Persist tenant so app knows where this user belongs (all API calls use this tenant DB)
-                        if (userData.tenant_subdomain && typeof localStorage !== 'undefined') {
-                            localStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain);
+                        if (userData.tenant_subdomain) {
+                            try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
+                            try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
                         }
                         // Store username for UI display (status bar / sidebar show username instead of email)
                         if (typeof localStorage !== 'undefined' && (userData.username || username)) {
@@ -384,7 +438,9 @@ async function loadLogin() {
                             }
                             return;
                         }
-                        throw new Error(typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'User not found');
+                        if (!userEmail) {
+                            throw new Error(typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'User not found');
+                        }
                     }
                 } catch (error) {
                     // Record failed attempt
@@ -549,6 +605,54 @@ async function loadLogin() {
             }
         };
     }
+}
+
+/**
+ * Self-service unlock: send Supabase password reset email for a username.
+ * Backend discovers tenant for the username and returns the correct email.
+ */
+async function sendUnlockLinkForUsername(username) {
+    const normalized = (username || '').trim();
+    if (!normalized) {
+        throw new Error('Enter your username or email first.');
+    }
+    if (!CONFIG || !CONFIG.API_BASE_URL) {
+        throw new Error('Configuration error: API base URL not set.');
+    }
+
+    // Step 1: Resolve email + tenant context from backend (do not send tenant header)
+    const res = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Password is required by schema, but not used for lookup.
+        body: JSON.stringify({ username: normalized, password: 'unlock' })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const msg = typeof data.detail === 'string'
+            ? data.detail
+            : (data.detail && data.detail.message) || 'User not found';
+        throw new Error(msg);
+    }
+
+    const email = data.email;
+    if (!email) throw new Error('Could not resolve your email for password reset.');
+
+    // Persist tenant so subsequent app API calls use the correct DB for this user
+    if (data.tenant_subdomain) {
+        try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain); } catch (_) {}
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain); } catch (_) {}
+    }
+
+    // Step 2: Send Supabase reset email (works as "unlock" link)
+    const supabase = window.initSupabaseClient ? window.initSupabaseClient() : null;
+    if (!supabase) throw new Error('Supabase client not available');
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: (typeof CONFIG !== 'undefined' && CONFIG.APP_PUBLIC_URL) ? CONFIG.APP_PUBLIC_URL : window.location.origin
+    });
+    if (error) throw error;
+    return true;
 }
 
 // Export for app.js
