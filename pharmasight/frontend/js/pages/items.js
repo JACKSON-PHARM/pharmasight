@@ -540,41 +540,6 @@ function showAddItemModal() {
                 </div>
             </div>
 
-            <!-- Item Nature & Type Section -->
-            <div class="form-section">
-                <div class="form-section-title">
-                    <i class="fas fa-tag"></i> Item Classification
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Item Nature *</label>
-                        <div style="display: flex; gap: 2rem; margin-top: 0.5rem;">
-                            <label class="checkbox-item">
-                                <input type="radio" name="item_nature" value="physical" checked>
-                                <span>Physical Item</span>
-                            </label>
-                            <label class="checkbox-item">
-                                <input type="radio" name="item_nature" value="service">
-                                <span>Service Item</span>
-                            </label>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Type *</label>
-                        <div style="display: flex; gap: 2rem; margin-top: 0.5rem;">
-                            <label class="checkbox-item">
-                                <input type="radio" name="item_type" value="branded">
-                                <span>Branded</span>
-                            </label>
-                            <label class="checkbox-item">
-                                <input type="radio" name="item_type" value="generic" checked>
-                                <span>Generic</span>
-                            </label>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
             <!-- 3-Tier Unit System -->
             <div class="form-section">
                 <div class="form-section-title">
@@ -606,91 +571,17 @@ function showAddItemModal() {
                     </div>
                     <div class="form-group">
                         <label class="form-label">Wholesale per supplier</label>
-                        <input type="number" class="form-input" name="wholesale_units_per_supplier" min="1" step="1" value="1" placeholder="e.g. 10">
-                        <small style="color: var(--text-secondary); font-size: 0.85rem;">1 supplier = N wholesale (whole numbers only, e.g. 10 boxes per carton)</small>
+                        <input type="number" class="form-input" name="wholesale_units_per_supplier" min="0.0001" step="0.01" value="1" placeholder="e.g. 10">
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">1 supplier = N wholesale (e.g. 10 boxes per carton)</small>
                     </div>
                     <div class="form-group" style="display: flex; align-items: flex-end; padding-bottom: 0.5rem;">
                         <label class="checkbox-item">
                             <input type="checkbox" name="can_break_bulk" id="can_break_bulk" checked>
                             <span>Can break bulk (sell individual units)</span>
                         </label>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Item Specifications Section -->
-            <div class="form-section">
-                <div class="form-section-title">
-                    <i class="fas fa-flask"></i> Specifications
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Ingredients/Composition</label>
-                    <textarea class="form-textarea" name="ingredients" rows="2" placeholder="Enter active ingredients and composition"></textarea>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Strength</label>
-                        <input type="text" class="form-input" name="strength" placeholder="Enter strength">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Base Unit (= wholesale unit)</label>
-                        <select class="form-select" name="base_unit">
-                            <option value="tablet">Tablet</option>
-                            <option value="capsule">Capsule</option>
-                            <option value="ml">ML (Milliliter)</option>
-                            <option value="gram">Gram</option>
-                            <option value="piece">Piece</option>
-                            <option value="bottle">Bottle</option>
-                            <option value="tube">Tube</option>
-                            <option value="sachet">Sachet</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Standard Pack</label>
-                        <input type="text" class="form-input" name="std_pack" placeholder="Standard packaging unit">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Main Formulation</label>
-                        <select class="form-select" name="formulation">
-                            <option value="">Select Formulation</option>
-                            <option value="tablet">Tablet</option>
-                            <option value="capsule">Capsule</option>
-                            <option value="syrup">Syrup</option>
-                            <option value="injection">Injection</option>
-                            <option value="cream">Cream</option>
-                            <option value="ointment">Ointment</option>
-                            <option value="drops">Drops</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Weight (Kgs)</label>
-                        <input type="number" class="form-input" name="weight" step="0.001" min="0" placeholder="0.000">
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Manufacturer</label>
-                        <input type="text" class="form-input" name="manufacturer" placeholder="Manufacturer name">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Production Class</label>
-                        <select class="form-select" name="production_class">
-                            <option value="normal" selected>Normal</option>
-                            <option value="controlled">Controlled</option>
-                            <option value="scheduled">Scheduled</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Registration Number</label>
-                        <input type="text" class="form-input" name="registration_no" placeholder="PPB Registration No">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Class Code</label>
-                        <input type="text" class="form-input" name="class_code" placeholder="Product class code">
+                        <small id="addBreakBulkHint" style="display:block; color: var(--text-secondary); font-size: 0.8rem; margin-left: 1.5rem;">
+                            Requires pack size &gt; 1.
+                        </small>
                     </div>
                 </div>
             </div>
@@ -725,76 +616,24 @@ function showAddItemModal() {
                     </div>
                 </div>
             </div>
-
-            <!-- Regulatory Information Section -->
+            
+            <!-- Tracking & handling -->
             <div class="form-section">
                 <div class="form-section-title">
-                    <i class="fas fa-certificate"></i> Regulatory Information
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Authorized Marketer</label>
-                    <input type="text" class="form-input" name="authorized_marketer" placeholder="Enter authorized marketer/distributor name">
-                    <small style="color: var(--text-secondary); font-size: 0.85rem;">Name of authorized marketer or distributor for this item</small>
-                </div>
-            </div>
-
-            <!-- Unit Conversions (Breaking Bulk) Section -->
-            <div class="form-section">
-                <div class="form-section-title">
-                    <i class="fas fa-cubes"></i> Unit Conversions (Breaking Bulk)
-                </div>
-                <div id="unitsContainer">
-                    <div class="form-row" id="unitRow0">
-                        <div class="form-group">
-                            <label class="form-label">Unit Name</label>
-                            <input type="text" class="form-input" name="unit_name_0" placeholder="Enter unit name" value="tablet">
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">Multiplier to Base</label>
-                            <input type="number" class="form-input" name="multiplier_0" placeholder="Enter multiplier" step="0.01" min="0.01" value="1">
-                        </div>
-                        <div class="form-group" style="display: flex; align-items: flex-end;">
-                            <label class="checkbox-item">
-                                <input type="checkbox" name="is_default_0" checked>
-                                <span>Default</span>
-                            </label>
-                        </div>
-                    </div>
-                </div>
-                <button type="button" class="btn btn-outline" onclick="addUnitRow()">
-                    <i class="fas fa-plus"></i> Add Unit Conversion
-                </button>
-            </div>
-
-            <!-- Item Attributes Section -->
-            <div class="form-section">
-                <div class="form-section-title">
-                    <i class="fas fa-check-square"></i> Item Attributes
+                    <i class="fas fa-clipboard-check"></i> Tracking &amp; handling
                 </div>
                 <div class="checkbox-group">
                     <label class="checkbox-item">
-                        <input type="checkbox" name="has_refill" value="1">
-                        <span>Has Refill</span>
+                        <input type="checkbox" name="track_expiry" checked>
+                        <span>Track expiry dates</span>
                     </label>
                     <label class="checkbox-item">
-                        <input type="checkbox" name="not_for_sale" value="1">
-                        <span>Not For Sale</span>
+                        <input type="checkbox" name="is_controlled">
+                        <span>Controlled item</span>
                     </label>
                     <label class="checkbox-item">
-                        <input type="checkbox" name="high_value" value="1">
-                        <span>High Value</span>
-                    </label>
-                    <label class="checkbox-item">
-                        <input type="checkbox" name="fast_moving" value="1">
-                        <span>Fast Moving</span>
-                    </label>
-                    <label class="checkbox-item">
-                        <input type="checkbox" name="controlled" value="1">
-                        <span>Controlled Substance</span>
-                    </label>
-                    <label class="checkbox-item">
-                        <input type="checkbox" name="track_expiry" value="1" checked>
-                        <span>Track Expiry Dates</span>
+                        <input type="checkbox" name="is_cold_chain">
+                        <span>Cold chain (requires refrigeration)</span>
                     </label>
                 </div>
             </div>
@@ -809,7 +648,6 @@ function showAddItemModal() {
     `;
     
     showModal('New Inventory Item', content, footer);
-    unitRowCount = 1; // Reset counter
     
     // Auto-update VAT rate when VAT category changes
     setTimeout(() => {
@@ -820,37 +658,28 @@ function showAddItemModal() {
                 vatRate.value = e.target.value === 'STANDARD_RATED' ? '16.00' : '0.00';
             });
         }
+
+        // Keep break-bulk consistent with pack size (>1 required)
+        const packEl = document.querySelector('#itemForm input[name="pack_size"]');
+        const breakEl = document.querySelector('#itemForm input[name="can_break_bulk"]');
+        const hintEl = document.getElementById('addBreakBulkHint');
+        const syncBreakBulk = () => {
+            const pack = Math.max(1, parseInt(packEl && packEl.value ? packEl.value : '1', 10) || 1);
+            if (!breakEl) return;
+            if (pack < 2) {
+                breakEl.checked = false;
+                breakEl.disabled = true;
+                if (hintEl) hintEl.textContent = 'Disabled because pack size is 1 (nothing to break).';
+            } else {
+                breakEl.disabled = false;
+                if (hintEl) hintEl.textContent = 'Requires pack size > 1.';
+            }
+        };
+        if (packEl && breakEl) {
+            packEl.addEventListener('input', syncBreakBulk);
+            syncBreakBulk();
+        }
     }, 100);
-}
-
-let unitRowCount = 1;
-
-function addUnitRow() {
-    const container = document.getElementById('unitsContainer');
-    const row = document.createElement('div');
-    row.className = 'form-row';
-    row.id = `unitRow${unitRowCount}`;
-    row.innerHTML = `
-        <div class="form-group">
-            <input type="text" class="form-input" name="unit_name_${unitRowCount}" placeholder="Enter unit name">
-        </div>
-        <div class="form-group">
-            <input type="number" class="form-input" name="multiplier_${unitRowCount}" placeholder="Multiplier" step="0.01" min="0.01">
-        </div>
-        <div class="form-group">
-            <input type="checkbox" name="is_default_${unitRowCount}"> Default
-            <button type="button" class="btn btn-danger" onclick="removeUnitRow(${unitRowCount})">
-                <i class="fas fa-trash"></i>
-            </button>
-        </div>
-    `;
-    container.appendChild(row);
-    unitRowCount++;
-}
-
-function removeUnitRow(index) {
-    const row = document.getElementById(`unitRow${index}`);
-    if (row) row.remove();
 }
 
 async function saveItem(event) {
@@ -878,45 +707,21 @@ async function saveItem(event) {
         category: formData.get('category') || null,
         product_category: formData.get('product_category') || null,
         pricing_tier: formData.get('pricing_tier') || null,
-        base_unit: formData.get('base_unit') || formData.get('wholesale_unit') || 'piece',
         supplier_unit: formData.get('supplier_unit') || 'packet',
         wholesale_unit: formData.get('wholesale_unit') || 'packet',
         retail_unit: formData.get('retail_unit') || 'tablet',
         pack_size: packSize,
-        wholesale_units_per_supplier: Math.max(1, parseInt(formData.get('wholesale_units_per_supplier'), 10) || 1),
-        can_break_bulk: canBreakBulk,
         vat_category: formData.get('vat_category') || 'ZERO_RATED',
-        vat_category: formData.get('vat_category') || 'ZERO_RATED',
+        wholesale_units_per_supplier: Math.max(0.0001, parseFloat(formData.get('wholesale_units_per_supplier')) || 1),
+        can_break_bulk: packSize >= 2 ? canBreakBulk : false,
         vat_rate: parseFloat(formData.get('vat_rate') || 0),
-        units: []
+        track_expiry: formData.has('track_expiry'),
+        is_controlled: formData.has('is_controlled'),
+        is_cold_chain: formData.has('is_cold_chain')
     };
 
     if (itemData.vat_category === 'STANDARD_RATED') itemData.vat_rate = 16;
     else if (itemData.vat_category === 'ZERO_RATED') itemData.vat_rate = 0;
-
-    // Optional unit rows (breaking bulk); when empty, backend derives from 3-tier
-    let index = 0;
-    while (formData.get(`unit_name_${index}`)) {
-        const unitName = formData.get(`unit_name_${index}`);
-        const multiplier = parseFloat(formData.get(`multiplier_${index}`));
-        const isDefault = formData.get(`is_default_${index}`) === 'on';
-        if (unitName && multiplier) {
-            itemData.units.push({
-                unit_name: unitName,
-                multiplier_to_base: multiplier,
-                is_default: isDefault
-            });
-        }
-        index++;
-    }
-    const hasBaseUnit = itemData.units.some(u => u.unit_name === itemData.base_unit);
-    if (itemData.units.length && !hasBaseUnit) {
-        itemData.units.push({
-            unit_name: itemData.base_unit,
-            multiplier_to_base: 1.0,
-            is_default: true
-        });
-    }
     
     try {
         const createdItem = await API.items.create(itemData);
@@ -1728,7 +1533,7 @@ async function editItem(itemId) {
                 <div class="alert alert-warning" style="margin-bottom: 1rem;">
                     <i class="fas fa-lock"></i>
                     <strong>Locked Fields:</strong> This item has inventory transactions. 
-                    Base unit and unit conversions cannot be modified to maintain data integrity.
+                    Unit setup (wholesale/retail/supplier conversions) cannot be modified to maintain data integrity.
                 </div>
             ` : ''}
             
@@ -1832,8 +1637,8 @@ async function editItem(itemId) {
                     <input 
                         type="text" 
                         class="form-input" 
-                        ${isLocked ? '' : 'name="base_unit"'}
-                        id="edit_base_unit"
+                        ${isLocked ? '' : 'name="wholesale_unit"'}
+                        id="edit_wholesale_unit"
                         list="editUnitOptions"
                         value="${escapeHtml((item.wholesale_unit || item.base_unit || 'piece').trim())}"
                         placeholder="e.g. packet, vial, bottle"
@@ -1841,7 +1646,7 @@ async function editItem(itemId) {
                         ${isLocked ? '' : 'required'}
                         ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                     >
-                    ${isLocked ? '<input type="hidden" name="base_unit" value="' + escapeHtml(item.wholesale_unit || item.base_unit || 'piece') + '">' : ''}
+                    ${isLocked ? '<input type="hidden" name="wholesale_unit" value="' + escapeHtml(item.wholesale_unit || item.base_unit || 'piece') + '">' : ''}
                 </div>
 
                 <!-- 2) Conversion to retail -->
@@ -1901,8 +1706,8 @@ async function editItem(itemId) {
                                 value="${escapeHtml((item.supplier_unit || 'carton').trim())}"
                                 placeholder="e.g. carton, box, crate"
                                 autocomplete="off"
-                                style="min-width: 120px;"
-                                ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                                style="min-width: 120px; ${isLocked ? 'background-color: #f5f5f5; cursor: not-allowed;' : ''}"
+                                ${isLocked ? 'readonly' : ''}
                             >
                             <span>=</span>
                         </div>
@@ -1911,16 +1716,16 @@ async function editItem(itemId) {
                                 type="number" 
                                 class="form-input" 
                                 name="wholesale_units_per_supplier" 
-                                min="1" 
-                                step="1"
-                                value="${Math.max(1, parseInt(item.wholesale_units_per_supplier, 10) || 1)}"
+                                min="0.0001" 
+                                step="0.01"
+                                value="${Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)}"
                                 placeholder="e.g. 12"
                                 ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                             >
                         </div>
                         <span id="editSupplierWholesaleLabel">${escapeHtml(item.wholesale_unit || item.base_unit || 'piece')}</span>
                     </div>
-                    ${isLocked ? '<input type="hidden" name="supplier_unit" value="' + escapeHtml(item.supplier_unit || 'carton') + '"><input type="hidden" name="wholesale_units_per_supplier" value="' + (Math.max(1, parseInt(item.wholesale_units_per_supplier, 10) || 1)) + '">' : ''}
+                    ${isLocked ? '<input type="hidden" name="supplier_unit" value="' + escapeHtml(item.supplier_unit || 'carton') + '"><input type="hidden" name="wholesale_units_per_supplier" value="' + (Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)) + '">' : ''}
                 </div>
 
                 <!-- Break bulk & Track expiry -->
@@ -1931,7 +1736,7 @@ async function editItem(itemId) {
                             <input type="checkbox" name="can_break_bulk" ${item.can_break_bulk ? 'checked' : ''} ${isLocked ? 'disabled' : ''}>
                             <span>Can break bulk</span>
                         </label>
-                        <small style="display: block; color: var(--text-secondary); font-size: 0.8rem; margin-left: 1.5rem;">Allow selling individual retail units (e.g. tablets). Requires pack size &gt; 1.</small>
+                        <small id="editBreakBulkHint" style="display: block; color: var(--text-secondary); font-size: 0.8rem; margin-left: 1.5rem;">Requires pack size &gt; 1.</small>
                         <label class="checkbox-item" style="margin-top: 0.75rem;">
                             <input type="checkbox" name="track_expiry" ${item.track_expiry ? 'checked' : ''}>
                             <span>Track expiry dates</span>
@@ -2052,42 +1857,70 @@ async function editItem(itemId) {
             sel.addEventListener('change', function() {
                 updateUnitCostDisplay(this, section);
             });
+
+            // Keep cost display in sync when conversions/unit names change
+            const packEl = document.querySelector('#editItemForm input[name="pack_size"]');
+            const wupsEl = document.querySelector('#editItemForm input[name="wholesale_units_per_supplier"]');
+            const wholesaleEl = document.getElementById('edit_wholesale_unit');
+            const retailEl = document.querySelector('#editItemForm input[name="retail_unit"]');
+            const supplierEl = document.querySelector('#editItemForm input[name="supplier_unit"]');
+
+            function syncCostDatasetsAndRefresh() {
+                if (packEl) section.dataset.packSize = String(Math.max(1, parseInt(packEl.value || '1', 10) || 1));
+                if (wupsEl) section.dataset.wups = String(Math.max(0.0001, parseFloat(wupsEl.value || '1') || 1));
+                if (wholesaleEl) section.dataset.wholesaleUnit = (wholesaleEl.value || '').trim() || 'piece';
+                if (retailEl) section.dataset.retailUnit = (retailEl.value || '').trim() || 'piece';
+                if (supplierEl) section.dataset.supplierUnit = (supplierEl.value || '').trim() || 'piece';
+                updateUnitCostDisplay(sel, section);
+            }
+
+            [packEl, wupsEl, wholesaleEl, retailEl, supplierEl].forEach(function(el) {
+                if (!el) return;
+                el.addEventListener('input', syncCostDatasetsAndRefresh);
+                el.addEventListener('change', syncCostDatasetsAndRefresh);
+            });
         }
     }, 0);
 
     // Sync wholesale unit label in "Conversion to retail" and "Conversion to supplier" when base unit (input) changes
     setTimeout(() => {
-        const baseUnitInput = document.getElementById('edit_base_unit');
+        const wholesaleUnitInput = document.getElementById('edit_wholesale_unit');
         const retailLabel = document.getElementById('editRetailWholesaleLabel');
         const supplierLabel = document.getElementById('editSupplierWholesaleLabel');
-        if (baseUnitInput && retailLabel && supplierLabel) {
-            function syncWholesaleLabel() {
-                const name = (baseUnitInput.value && baseUnitInput.value.trim()) ? baseUnitInput.value.trim() : 'piece';
-                retailLabel.textContent = name;
-                supplierLabel.textContent = name;
+        const packEl = document.querySelector('#editItemForm input[name="pack_size"]');
+        const breakEl = document.querySelector('#editItemForm input[name="can_break_bulk"]');
+        const hintEl = document.getElementById('editBreakBulkHint');
+
+        function syncWholesaleLabel() {
+            const name = (wholesaleUnitInput && wholesaleUnitInput.value && wholesaleUnitInput.value.trim()) ? wholesaleUnitInput.value.trim() : 'piece';
+            if (retailLabel) retailLabel.textContent = name;
+            if (supplierLabel) supplierLabel.textContent = name;
+        }
+
+        function syncBreakBulk() {
+            if (!packEl || !breakEl) return;
+            const pack = Math.max(1, parseInt(packEl.value || '1', 10) || 1);
+            if (pack < 2) {
+                breakEl.checked = false;
+                breakEl.disabled = true;
+                if (hintEl) hintEl.textContent = 'Disabled because pack size is 1 (nothing to break).';
+            } else {
+                breakEl.disabled = false;
+                if (hintEl) hintEl.textContent = 'Requires pack size > 1.';
             }
-            baseUnitInput.addEventListener('input', syncWholesaleLabel);
-            baseUnitInput.addEventListener('change', syncWholesaleLabel);
+        }
+
+        if (wholesaleUnitInput && retailLabel && supplierLabel) {
+            wholesaleUnitInput.addEventListener('input', syncWholesaleLabel);
+            wholesaleUnitInput.addEventListener('change', syncWholesaleLabel);
             syncWholesaleLabel();
         }
+        if (packEl && breakEl && !isLocked) {
+            packEl.addEventListener('input', syncBreakBulk);
+            packEl.addEventListener('change', syncBreakBulk);
+            syncBreakBulk();
+        }
     }, 0);
-
-    // Legacy: Add event listeners to existing unit name inputs for dynamic label updates (only if rows exist)
-    setTimeout(() => {
-        const allNameInputs = document.querySelectorAll('.unit-name-input');
-        allNameInputs.forEach(input => {
-            if (!input.hasAttribute('data-listener-added')) {
-                input.setAttribute('data-listener-added', 'true');
-                input.addEventListener('input', function() {
-                    const row = this.closest('.unit-edit-row');
-                    const nameDisplay = row?.querySelector('.unit-name-display');
-                    if (nameDisplay) {
-                        nameDisplay.textContent = this.value || this.getAttribute('value') || 'UNIT';
-                    }
-                });
-            }
-        });
-    }, 100);
 }
 
 /**
@@ -2158,19 +1991,26 @@ async function updateItem(event, itemId) {
         vat_rate: parseFloat(formData.get('vat_rate')) || 0,
         vat_category: formData.get('vat_category') || null,
         is_active: formData.has('is_active'),
-        track_expiry: formData.has('track_expiry')
+        track_expiry: formData.has('track_expiry'),
+        is_controlled: formData.has('is_controlled'),
+        is_cold_chain: formData.has('is_cold_chain')
     };
+
+    // Normalize VAT based on category (current app uses 0% or 16%)
+    if (updateData.vat_category === 'STANDARD_RATED') updateData.vat_rate = 16;
+    else if (updateData.vat_category === 'ZERO_RATED') updateData.vat_rate = 0;
 
     // 3-tier unit fields (only if item doesn't have transactions)
     if (!hasTransactions) {
-        const baseUnit = formData.get('base_unit') || formData.get('wholesale_unit') || 'piece';
-        updateData.base_unit = baseUnit;
-        updateData.wholesale_unit = baseUnit;
+        const wholesaleUnit = (formData.get('wholesale_unit') || '').toString().trim() || 'piece';
+        // Keep base_unit aligned with wholesale_unit for legacy compatibility
+        updateData.wholesale_unit = wholesaleUnit;
+        updateData.base_unit = wholesaleUnit;
         updateData.retail_unit = formData.get('retail_unit') || 'tablet';
         updateData.supplier_unit = formData.get('supplier_unit') || 'carton';
         updateData.pack_size = Math.max(1, parseInt(formData.get('pack_size'), 10) || 1);
-        updateData.wholesale_units_per_supplier = Math.max(1, parseInt(formData.get('wholesale_units_per_supplier'), 10) || 1);
-        updateData.can_break_bulk = formData.has('can_break_bulk');
+        updateData.wholesale_units_per_supplier = Math.max(0.0001, parseFloat(formData.get('wholesale_units_per_supplier')) || 1);
+        updateData.can_break_bulk = updateData.pack_size >= 2 ? formData.has('can_break_bulk') : false;
     }
     
     // SKU is never included (immutable)
@@ -2225,118 +2065,34 @@ async function viewItemUnits(itemId) {
         showToast('Item not found', 'error');
         return;
     }
-    
-    const unitsList = (item.units || []).map(u => 
-        `<li>${u.unit_name}: ${u.multiplier_to_base} ${item.base_unit}${u.is_default ? ' (Default)' : ''}</li>`
-    ).join('');
-    
+
+    const wholesale = (item.wholesale_unit || item.base_unit || 'piece').toString().trim() || 'piece';
+    const retail = (item.retail_unit || '').toString().trim();
+    const supplier = (item.supplier_unit || '').toString().trim();
+    const pack = Math.max(1, parseInt(item.pack_size, 10) || 1);
+    const wups = Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1);
+
+    const lines = [];
+    lines.push(`<li><strong>Wholesale (base):</strong> ${escapeHtml(wholesale)}</li>`);
+    if (retail) {
+        lines.push(`<li><strong>Retail:</strong> ${escapeHtml(retail)} (1 ${escapeHtml(wholesale)} = ${pack} ${escapeHtml(retail)})</li>`);
+    }
+    if (supplier) {
+        lines.push(`<li><strong>Supplier:</strong> ${escapeHtml(supplier)} (1 ${escapeHtml(supplier)} = ${wups} ${escapeHtml(wholesale)})</li>`);
+    }
+    lines.push(`<li><strong>Can break bulk:</strong> ${item.can_break_bulk ? 'Yes' : 'No'}</li>`);
+
     const content = `
         <div>
-            <h4>${item.name}</h4>
-            <p><strong>Base Unit:</strong> ${item.base_unit}</p>
-            <h5>Unit Conversions:</h5>
-            <ul>${unitsList}</ul>
+            <h4 style="margin-bottom: 0.5rem;">${escapeHtml(item.name || '')}</h4>
+            <p style="color: var(--text-secondary); margin-top: 0; margin-bottom: 0.75rem;">
+                Unit setup is defined by the 3-tier system (items table columns). There are no custom unit conversions.
+            </p>
+            <ul style="margin: 0; padding-left: 1.25rem;">${lines.join('')}</ul>
         </div>
     `;
-    
-    showModal('Item Units', content, '<button class="btn btn-secondary" onclick="closeModal()">Close</button>');
-}
 
-// Add unit row function for edit modal
-function addEditUnitRow(itemId, baseUnit) {
-    const container = document.getElementById('unitsEditContainer');
-    if (!container) return;
-    
-    // Check if container has the "no units" message
-    const noUnitsMsg = container.querySelector('p');
-    if (noUnitsMsg) {
-        container.innerHTML = '';
-    }
-    
-    const newRow = document.createElement('div');
-    newRow.className = 'unit-edit-row';
-    newRow.setAttribute('data-unit-id', '');
-    newRow.style.cssText = 'display: flex; gap: 0.5rem; align-items: center; padding: 0.75rem; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.25rem; margin-bottom: 0.5rem;';
-    
-    newRow.innerHTML = `
-        <div style="flex: 1;">
-            <label class="form-label" style="font-size: 0.875rem; margin-bottom: 0.25rem;">Unit Name</label>
-            <input 
-                type="text" 
-                class="form-input unit-name-input" 
-                placeholder="e.g., TAB, CARTON"
-                data-unit-id=""
-            >
-        </div>
-        <div style="flex: 1;">
-            <label class="form-label unit-conversion-label" style="font-size: 0.875rem; margin-bottom: 0.25rem;">
-                1 <span class="unit-name-display">NEW_UNIT</span> = ? ${escapeHtml(baseUnit)}
-            </label>
-            <input 
-                type="number" 
-                class="form-input unit-multiplier-input" 
-                value="1" 
-                step="0.01" 
-                min="0.01"
-                placeholder="Enter rate"
-                data-unit-id=""
-                data-is-larger="true"
-            >
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 0.25rem; align-items: center; min-width: 120px;">
-            <label class="checkbox-item" style="margin: 0;">
-                <input 
-                    type="checkbox" 
-                    class="unit-default-checkbox" 
-                    data-unit-id=""
-                >
-                <span style="font-size: 0.875rem;">Default</span>
-            </label>
-            <button 
-                type="button" 
-                class="btn btn-outline btn-sm remove-unit-btn" 
-                style="padding: 0.25rem 0.5rem; font-size: 0.75rem;"
-                data-unit-id=""
-                onclick="removeEditUnitRow(this)"
-            >
-                <i class="fas fa-trash"></i> Remove
-            </button>
-        </div>
-        <input type="hidden" class="unit-id-input" value="">
-    `;
-    
-    container.appendChild(newRow);
-    
-    // Update unit name display when user types
-    const nameInput = newRow.querySelector('.unit-name-input');
-    const nameDisplay = newRow.querySelector('.unit-name-display');
-    const baseUnitText = baseUnit;
-    
-    if (nameInput && nameDisplay) {
-        nameInput.addEventListener('input', function() {
-            const unitName = this.value || 'NEW_UNIT';
-            nameDisplay.textContent = unitName;
-        });
-    }
-}
-
-// Remove unit row function for edit modal
-function removeEditUnitRow(button) {
-    const row = button.closest('.unit-edit-row');
-    if (row) {
-        row.remove();
-        
-        // If no units left, show message
-        const container = document.getElementById('unitsEditContainer');
-        if (container && container.querySelectorAll('.unit-edit-row').length === 0) {
-            const baseUnit = document.querySelector('select[name="base_unit"]')?.value || 'base unit';
-            container.innerHTML = `
-                <p style="color: var(--text-secondary); padding: 0.75rem; background: var(--bg-color); border-radius: 0.25rem; text-align: center;">
-                    No secondary units. Item uses base unit (${escapeHtml(baseUnit)}) only.
-                </p>
-            `;
-        }
-    }
+    showModal('Unit setup', content, '<button class="btn btn-secondary" onclick="closeModal()">Close</button>');
 }
 
 /**
@@ -2429,8 +2185,6 @@ window.showImportExcelModal = showImportExcelModal;
 window.downloadItemTemplate = downloadItemTemplate;
 window.handleFileSelect = handleFileSelect;
 window.importExcelFile = importExcelFile;
-window.addUnitRow = addUnitRow;
-window.removeUnitRow = removeUnitRow;
 window.saveItem = saveItem;
 window.editItem = editItem;
 window.updateItem = updateItem;
@@ -2439,7 +2193,4 @@ window.viewItemUnits = viewItemUnits;
 window.filterItems = filterItems;
 window.loadAllItems = loadAllItems;
 window.clearItemsView = clearItemsView;
-// Export unit editing functions (for edit modal)
-window.addEditUnitRow = addEditUnitRow;
-window.removeEditUnitRow = removeEditUnitRow;
 
