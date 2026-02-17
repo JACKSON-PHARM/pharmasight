@@ -847,6 +847,12 @@ def get_items_overview(
             cost_from_ledger = float(CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, item.company_id))
         default_cost_val = float(cost_from_ledger) if cost_from_ledger is not None else 0.0
         
+        # Calculate stock_display using 3-tier units when branch_id is provided
+        stock_qty = stock_data.get(item.id, 0.0)
+        stock_display_val = None
+        if branch_id and stock_qty is not None:
+            stock_display_val = InventoryService.format_quantity_display(float(stock_qty), item)
+        
         item_dict = {
             'id': item.id,
             'company_id': item.company_id,
@@ -872,7 +878,8 @@ def get_items_overview(
             'track_expiry': getattr(item, 'track_expiry', False),
             'is_controlled': getattr(item, 'is_controlled', False),
             'is_cold_chain': getattr(item, 'is_cold_chain', False),
-            'current_stock': stock_data.get(item.id, 0.0),
+            'current_stock': stock_qty,
+            'stock_display': stock_display_val,  # 3-tier formatted stock display (e.g. "1 packet + 8 pieces")
             'last_supplier': last_supplier_map.get(item.id),
             'last_unit_cost': last_cost_map.get(item.id),
             'has_transactions': item.id in items_with_transactions,
