@@ -65,7 +65,10 @@ def run_tenant_migrations():
         if out["applied"]:
             logger.info("Startup migrations applied on tenant DBs: %s", out["applied"])
         if out["errors"]:
-            logger.warning("Startup migration errors on tenant DBs: %s", out["errors"])
+            logger.warning(
+                "Startup migration errors on tenant DBs: %s (To skip a deleted tenant, run: python scripts/mark_tenant_cancelled.py <tenant_id_or_name>)",
+                out["errors"],
+            )
     except Exception as e:
         logger.exception("Startup migrations failed: %s", e)
 

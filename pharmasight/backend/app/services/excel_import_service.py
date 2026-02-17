@@ -48,6 +48,8 @@ SYSTEM_TO_CANONICAL_HEADER: Dict[str, str] = {
     'vat_category': 'VAT_Category',
     'vat_rate': 'VAT_Rate',
     'base_unit': 'Base_Unit',
+    'product_category': 'Product_Category',
+    'pricing_tier': 'Pricing_Tier',
     'secondary_unit': 'Secondary_Unit',
     'conversion_rate': 'Conversion_Rate',
     'wholesale_units_per_supplier': 'Wholesale_Units_per_Supplier',
@@ -81,6 +83,8 @@ EXPECTED_EXCEL_FIELDS: List[Dict] = [
     {'id': 'supplier', 'label': 'Supplier', 'required': False},
     {'id': 'vat_category', 'label': 'VAT Category', 'required': False},
     {'id': 'vat_rate', 'label': 'VAT Rate', 'required': False},
+    {'id': 'product_category', 'label': 'Product Category (Pharmaceutical, Cosmetics, Equipment, Service)', 'required': False},
+    {'id': 'pricing_tier', 'label': 'Pricing Tier (Chronic medication, Standard, Beauty/Cosmetics, etc.)', 'required': False},
 ]
 
 
@@ -255,6 +259,33 @@ def _default_cost_per_base_from_row(row: Dict) -> Decimal:
     wups = _parse_wholesale_units_per_supplier_from_row(row)
     purchase_per_supplier = ExcelImportService._parse_decimal(purchase_raw)
     return _cost_per_supplier_to_cost_per_base(purchase_per_supplier, wups)
+
+
+def _normalize_product_category_from_row(row: Dict) -> Optional[str]:
+    """Extract product_category from row; return only if valid (PHARMACEUTICAL, COSMETICS, EQUIPMENT, SERVICE)."""
+    from app.models.item import PRODUCT_CATEGORIES
+    raw = _safe_strip(_normalize_column_name(row, ['Product_Category', 'Product Category', 'product_category']) or '')
+    if not raw:
+        return None
+    val = raw.upper().replace(' ', '_').replace('-', '_')
+    if val in PRODUCT_CATEGORIES:
+        return val
+    # Allow common synonyms
+    if val in ('COSMETIC', 'BEAUTY'):
+        return 'COSMETICS'
+    return None
+
+
+def _normalize_pricing_tier_from_row(row: Dict) -> Optional[str]:
+    """Extract pricing_tier from row; return only if valid tier name."""
+    from app.models.item import PRICING_TIERS
+    raw = _safe_strip(_normalize_column_name(row, ['Pricing_Tier', 'Pricing Tier', 'pricing_tier']) or '')
+    if not raw:
+        return None
+    val = raw.upper().replace(' ', '_').replace('-', '_')
+    if val in PRICING_TIERS:
+        return val
+    return None
 
 
 def convert_quantity_supplier_to_wholesale(
@@ -1568,6 +1599,8 @@ class ExcelImportService:
             'is_controlled': _parse_bool_from_row(row, ['Is_Controlled', 'Is Controlled', 'is_controlled'], False),
             'is_cold_chain': _parse_bool_from_row(row, ['Is_Cold_Chain', 'Is Cold Chain', 'is_cold_chain'], False),
             'default_cost_per_base': _default_cost_per_base_from_row(row),
+            'product_category': _normalize_product_category_from_row(row),
+            'pricing_tier': _normalize_pricing_tier_from_row(row),
         }
     
     @staticmethod

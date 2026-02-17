@@ -46,6 +46,8 @@ class ItemBase(BaseModel):
     sku: Optional[str] = Field(None, description="Item code (SKU)")
     barcode: Optional[str] = None
     category: Optional[str] = None
+    product_category: Optional[str] = Field(None, description="PHARMACEUTICAL | COSMETICS | EQUIPMENT | SERVICE")
+    pricing_tier: Optional[str] = Field(None, description="Margin tier: CHRONIC_MEDICATION, STANDARD, BEAUTY_COSMETICS, etc.")
     base_unit: Optional[str] = Field(None, description="Legacy: base unit = wholesale_unit")
     # 3-tier units
     supplier_unit: str = Field(default="packet", description="Supplier unit name")
@@ -88,6 +90,8 @@ class ItemUpdate(BaseModel):
     sku: Optional[str] = None
     barcode: Optional[str] = None
     category: Optional[str] = None
+    product_category: Optional[str] = None
+    pricing_tier: Optional[str] = None
     base_unit: Optional[str] = None
     vat_rate: Optional[float] = Field(None, ge=0, le=100)
     vat_category: Optional[str] = None

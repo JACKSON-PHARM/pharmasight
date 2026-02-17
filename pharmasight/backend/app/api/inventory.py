@@ -259,26 +259,22 @@ def get_total_stock_value(branch_id: UUID, db: Session = Depends(get_tenant_db))
     from app.services.canonical_pricing import CanonicalPricingService
 
     company_item_ids = db.query(Item.id).filter(Item.company_id == branch.company_id)
-    item_ids = [r[0] for r in company_item_ids.all()]
-    if not item_ids:
-        return {"total_value": 0, "currency": "KES"}
 
-    # 1) Current stock per item: SUM(quantity_delta)
+    # 1) Current stock per item: SUM(quantity_delta) — use subquery to avoid 10k+ bind params
     stock_aggregates = (
         db.query(
             InventoryLedger.item_id,
             func.sum(InventoryLedger.quantity_delta).label("stock"),
         )
         .filter(
-            InventoryLedger.item_id.in_(item_ids),
+            InventoryLedger.item_id.in_(company_item_ids),
             InventoryLedger.branch_id == branch_id,
         )
         .group_by(InventoryLedger.item_id)
         .all()
     )
     stock_map = {row.item_id: float(row.stock or 0) for row in stock_aggregates}
-
-    items_with_stock = [iid for iid in item_ids if stock_map.get(iid, 0) > 0]
+    items_with_stock = [iid for iid, qty in stock_map.items() if qty > 0]
     if not items_with_stock:
         return {"total_value": 0, "currency": "KES"}
 
@@ -334,17 +330,16 @@ def get_all_stock_overview(branch_id: UUID, db: Session = Depends(get_tenant_db)
     if not items:
         return []
     
-    item_ids = [item.id for item in items]
-    
-    # Aggregate stock for all items in ONE query
+    # Use subquery so we don't pass 10k+ item_ids as bind params
     from sqlalchemy import func
     from app.models import InventoryLedger
-    
+    company_item_ids = db.query(Item.id).filter(Item.company_id == branch.company_id)
+
     stock_aggregates = db.query(
         InventoryLedger.item_id,
         func.sum(InventoryLedger.quantity_delta).label('total_stock')
     ).filter(
-        InventoryLedger.item_id.in_(item_ids),
+        InventoryLedger.item_id.in_(company_item_ids),
         InventoryLedger.branch_id == branch_id
     ).group_by(InventoryLedger.item_id).all()
     

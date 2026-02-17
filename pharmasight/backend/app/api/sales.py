@@ -13,10 +13,11 @@ from fastapi import Query
 from app.dependencies import get_tenant_db
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
-    Item, InvoicePayment
+    Item, InvoicePayment, UserBranchRole, UserRole
 )
 from app.models.company import Company, Branch
 from app.models.user import User
+from app.models.permission import Permission, RolePermission
 from app.schemas.sale import (
     SalesInvoiceCreate, SalesInvoiceResponse,
     SalesInvoiceItemCreate, SalesInvoiceUpdate,
@@ -27,11 +28,36 @@ from app.services.inventory_service import InventoryService
 from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
 from app.services.order_book_service import OrderBookService
-from app.services.item_units_helper import get_unit_display_short
+from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
 from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
+
+
+def _user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID) -> bool:
+    """True if user has permission sales.sell_below_min_margin for this branch (via their role)."""
+    perm = db.query(Permission).filter(Permission.name == "sales.sell_below_min_margin").first()
+    if not perm:
+        return False
+    ubr = (
+        db.query(UserBranchRole)
+        .join(UserRole, UserBranchRole.role_id == UserRole.id)
+        .filter(UserBranchRole.user_id == user_id, UserBranchRole.branch_id == branch_id)
+        .first()
+    )
+    if not ubr:
+        return False
+    rp = (
+        db.query(RolePermission)
+        .filter(
+            RolePermission.role_id == ubr.role_id,
+            RolePermission.permission_id == perm.id,
+            RolePermission.branch_id.is_(None),
+        )
+        .first()
+    )
+    return rp is not None
 
 
 @router.post("/invoice", response_model=SalesInvoiceResponse, status_code=status.HTTP_201_CREATED)
@@ -144,12 +170,25 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
                     detail=f"Price not available for {item.name}"
                 )
         else:
-            # Get cost for margin calculation
+            # Get cost for margin calculation and min-margin check
             cost_info = PricingService.get_item_cost(
                 db, item_data.item_id, invoice.branch_id
             )
             if cost_info:
                 unit_cost_used = cost_info
+            # Enforce minimum margin unless user has sell_below_min_margin permission
+            if unit_cost_used and float(unit_cost_used) > 0:
+                mult = get_unit_multiplier_from_item(item, item_data.unit_name)
+                if mult is not None and mult > 0:
+                    cost_per_sale_unit = unit_cost_used * mult
+                    if cost_per_sale_unit > 0:
+                        margin_percent = (Decimal(str(unit_price)) - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
+                        min_margin = PricingService.get_min_margin_percent(db, item_data.item_id, invoice.company_id)
+                        if margin_percent < min_margin and not _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Price for {item.name} is below minimum allowed margin ({float(min_margin):.1f}%). Contact admin for permission to sell below margin."
+                            )
         
         # Calculate line totals
         line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
@@ -372,6 +411,19 @@ def add_sales_invoice_item(
         cost_info = PricingService.get_item_cost(db, item_data.item_id, invoice.branch_id)
         if cost_info:
             unit_cost_used = cost_info
+        # Enforce minimum margin unless user has sell_below_min_margin
+        if unit_cost_used and float(unit_cost_used) > 0:
+            mult = get_unit_multiplier_from_item(item, item_data.unit_name)
+            if mult is not None and mult > 0:
+                cost_per_sale_unit = unit_cost_used * mult
+                if cost_per_sale_unit > 0:
+                    margin_percent = (Decimal(str(unit_price)) - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
+                    min_margin = PricingService.get_min_margin_percent(db, item_data.item_id, invoice.company_id)
+                    if margin_percent < min_margin and not _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Price for {item.name} is below minimum allowed margin ({float(min_margin):.1f}%). Contact admin for permission to sell below margin."
+                        )
 
     line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
     discount_amount = item_data.discount_amount or (line_total_exclusive * item_data.discount_percent / Decimal("100"))
@@ -683,6 +735,22 @@ def batch_sales_invoice(
             line.unit_price_exclusive = payload.unit_price_exclusive or Decimal("0")
             line.discount_percent = payload.discount_percent or Decimal("0")
             line.discount_amount = payload.discount_amount or Decimal("0")
+            # Enforce minimum margin when updating price (use batched_by for permission)
+            unit_price_val = line.unit_price_exclusive or Decimal("0")
+            if unit_price_val > 0:
+                cost_info = PricingService.get_item_cost(db, line.item_id, invoice.branch_id)
+                if cost_info and float(cost_info) > 0:
+                    mult = get_unit_multiplier_from_item(item, line.unit_name)
+                    if mult is not None and mult > 0:
+                        cost_per_sale_unit = cost_info * mult
+                        if cost_per_sale_unit > 0:
+                            margin_percent = (unit_price_val - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
+                            min_margin = PricingService.get_min_margin_percent(db, line.item_id, invoice.company_id)
+                            if margin_percent < min_margin and not _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id):
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=f"Price for {item.name} is below minimum allowed margin ({float(min_margin):.1f}%). Contact admin for permission to sell below margin."
+                                )
             line_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
             line.line_total_exclusive = (
                 line.unit_price_exclusive * line.quantity

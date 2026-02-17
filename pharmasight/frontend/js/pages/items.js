@@ -5,6 +5,16 @@ let filteredItemsList = [];
 let itemsSearchTimeout = null;
 let isSearching = false;
 
+/** Common unit names for suggestions; users can type any custom unit. Used in item settings (wholesale, retail, supplier). */
+const COMMON_UNIT_OPTIONS = [
+    'tablet', 'tablets', 'capsule', 'capsules', 'sachet', 'sachets', 'piece', 'pieces',
+    'vial', 'vials', 'ampule', 'ampules', 'ampoule', 'ampoules', 'bottle', 'bottles',
+    'pair', 'pairs', 'ml', 'milliliter', 'millilitre', 'litre', 'liter', 'gram', 'grams', 'kg',
+    'box', 'boxes', 'packet', 'packets', 'pack', 'packs', 'strip', 'strips', 'blister',
+    'carton', 'cartons', 'crate', 'crates', 'tube', 'tubes', 'jar', 'jars', 'can', 'cans',
+    'tub', 'tubs', 'syringe', 'syringes', 'dropper', 'droppers', 'pot', 'pots', 'scoop', 'scoops', 'unit', 'units'
+];
+
 /** Branch for stock/last supplier: session branch (same as header), then CONFIG, then localStorage. */
 function getBranchIdForStock() {
     const branch = typeof BranchContext !== 'undefined' && BranchContext.getBranch ? BranchContext.getBranch() : null;
@@ -492,6 +502,44 @@ function showAddItemModal() {
                 </div>
             </div>
 
+            <!-- Product category & pricing tier (margin system) -->
+            <div class="form-section">
+                <div class="form-section-title">
+                    <i class="fas fa-percent"></i> Pricing margin
+                </div>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                    Category and tier control the <strong>default selling margin</strong>. Price is calculated from last cost + margin. If not set, Standard (30%) is used.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Product category</label>
+                        <select class="form-select" name="product_category" id="add_product_category">
+                            <option value="">— Use default (Standard 30%)</option>
+                            <option value="PHARMACEUTICAL">Pharmaceutical</option>
+                            <option value="COSMETICS">Cosmetics / Beauty</option>
+                            <option value="EQUIPMENT">Equipment</option>
+                            <option value="SERVICE">Service</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Pricing tier (margin)</label>
+                        <select class="form-select" name="pricing_tier" id="add_pricing_tier">
+                            <option value="">— From category above</option>
+                            <option value="CHRONIC_MEDICATION">Chronic medication (15%)</option>
+                            <option value="STANDARD">Standard (30%)</option>
+                            <option value="BEAUTY_COSMETICS">Beauty / Cosmetics (50–100%)</option>
+                            <option value="NUTRITION_SUPPLEMENTS">Nutrition / Supplements (40–80%)</option>
+                            <option value="INJECTABLES">Injectables (30–60%)</option>
+                            <option value="COLD_CHAIN">Cold chain (30–50%)</option>
+                            <option value="SPECIAL_PAIN">Special pain (40–70%)</option>
+                            <option value="EQUIPMENT">Equipment (35%)</option>
+                            <option value="SERVICE">Service (50%)</option>
+                        </select>
+                        <small style="color: var(--text-secondary); font-size: 0.85rem;">Override category default margin if needed</small>
+                    </div>
+                </div>
+            </div>
+
             <!-- Item Nature & Type Section -->
             <div class="form-section">
                 <div class="form-section-title">
@@ -533,40 +581,21 @@ function showAddItemModal() {
                     <i class="fas fa-layer-group"></i> 3-Tier Unit System
                 </div>
                 <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-                    Supplier buys in <strong>packets</strong> → Pharmacy buys in <strong>packets</strong> → Customer buys in <strong>tablets</strong>. Stock displayed as &quot;5 packets + 25 tablets&quot;.
+                    Supplier buys in <strong>packets</strong> → Pharmacy buys in <strong>packets</strong> → Customer buys in <strong>tablets</strong>. Type or choose any unit (e.g. vial, ampule, bottle, pair).
                 </p>
+                <datalist id="addItemUnitOptions">${COMMON_UNIT_OPTIONS.map(u => '<option value="' + escapeHtml(u) + '">').join('')}</datalist>
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">Supplier Unit (what you buy) *</label>
-                        <select class="form-select" name="supplier_unit" required>
-                            <option value="packet" selected>Packet</option>
-                            <option value="box">Box</option>
-                            <option value="bottle">Bottle</option>
-                            <option value="tube">Tube</option>
-                            <option value="piece">Piece</option>
-                            <option value="carton">Carton</option>
-                        </select>
+                        <input type="text" class="form-input" name="supplier_unit" list="addItemUnitOptions" value="packet" placeholder="e.g. carton, box" autocomplete="off" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Wholesale Unit (what pharmacies buy) *</label>
-                        <select class="form-select" name="wholesale_unit" required>
-                            <option value="packet" selected>Packet</option>
-                            <option value="box">Box</option>
-                            <option value="bottle">Bottle</option>
-                            <option value="piece">Piece</option>
-                            <option value="carton">Carton</option>
-                        </select>
+                        <input type="text" class="form-input" name="wholesale_unit" list="addItemUnitOptions" value="packet" placeholder="e.g. packet, vial" autocomplete="off" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Retail Unit (what customers buy) *</label>
-                        <select class="form-select" name="retail_unit" required>
-                            <option value="tablet" selected>Tablet</option>
-                            <option value="capsule">Capsule</option>
-                            <option value="ml">ML</option>
-                            <option value="gram">Gram</option>
-                            <option value="piece">Piece</option>
-                            <option value="sachet">Sachet</option>
-                        </select>
+                        <input type="text" class="form-input" name="retail_unit" list="addItemUnitOptions" value="tablet" placeholder="e.g. tablet, vial, ampule" autocomplete="off" required>
                     </div>
                 </div>
                 <div class="form-row">
@@ -847,6 +876,8 @@ async function saveItem(event) {
         sku: formData.get('sku') || null,
         barcode: formData.get('barcode') || null,
         category: formData.get('category') || null,
+        product_category: formData.get('product_category') || null,
+        pricing_tier: formData.get('pricing_tier') || null,
         base_unit: formData.get('base_unit') || formData.get('wholesale_unit') || 'piece',
         supplier_unit: formData.get('supplier_unit') || 'packet',
         wholesale_unit: formData.get('wholesale_unit') || 'packet',
@@ -1744,6 +1775,43 @@ async function editItem(itemId) {
                 </div>
             </div>
 
+            <!-- Pricing margin (category & tier) -->
+            <div class="form-section">
+                <div class="form-section-title">
+                    <i class="fas fa-percent"></i> Pricing margin
+                </div>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                    Category and tier control the default selling margin (price = last cost + margin). If not set, Standard (30%) is used.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Product category</label>
+                        <select class="form-select" name="product_category">
+                            <option value="">— Use default (Standard 30%)</option>
+                            <option value="PHARMACEUTICAL" ${(item.product_category || '') === 'PHARMACEUTICAL' ? 'selected' : ''}>Pharmaceutical</option>
+                            <option value="COSMETICS" ${(item.product_category || '') === 'COSMETICS' ? 'selected' : ''}>Cosmetics / Beauty</option>
+                            <option value="EQUIPMENT" ${(item.product_category || '') === 'EQUIPMENT' ? 'selected' : ''}>Equipment</option>
+                            <option value="SERVICE" ${(item.product_category || '') === 'SERVICE' ? 'selected' : ''}>Service</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Pricing tier (margin)</label>
+                        <select class="form-select" name="pricing_tier">
+                            <option value="">— From category above</option>
+                            <option value="CHRONIC_MEDICATION" ${(item.pricing_tier || '') === 'CHRONIC_MEDICATION' ? 'selected' : ''}>Chronic medication (15%)</option>
+                            <option value="STANDARD" ${(item.pricing_tier || '') === 'STANDARD' ? 'selected' : ''}>Standard (30%)</option>
+                            <option value="BEAUTY_COSMETICS" ${(item.pricing_tier || '') === 'BEAUTY_COSMETICS' ? 'selected' : ''}>Beauty / Cosmetics (50–100%)</option>
+                            <option value="NUTRITION_SUPPLEMENTS" ${(item.pricing_tier || '') === 'NUTRITION_SUPPLEMENTS' ? 'selected' : ''}>Nutrition / Supplements (40–80%)</option>
+                            <option value="INJECTABLES" ${(item.pricing_tier || '') === 'INJECTABLES' ? 'selected' : ''}>Injectables (30–60%)</option>
+                            <option value="COLD_CHAIN" ${(item.pricing_tier || '') === 'COLD_CHAIN' ? 'selected' : ''}>Cold chain (30–50%)</option>
+                            <option value="SPECIAL_PAIN" ${(item.pricing_tier || '') === 'SPECIAL_PAIN' ? 'selected' : ''}>Special pain (40–70%)</option>
+                            <option value="EQUIPMENT" ${(item.pricing_tier || '') === 'EQUIPMENT' ? 'selected' : ''}>Equipment (35%)</option>
+                            <option value="SERVICE" ${(item.pricing_tier || '') === 'SERVICE' ? 'selected' : ''}>Service (50%)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
             <!-- 3-Tier Unit System (clear wholesale / retail / supplier) -->
             <div class="form-section">
                 <div class="form-section-title">
@@ -1751,36 +1819,28 @@ async function editItem(itemId) {
                     ${isLocked ? '<i class="fas fa-lock" style="color: #dc3545; margin-left: 0.5rem;" title="Locked after first transaction"></i>' : ''}
                 </div>
                 <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-                    Define how units relate: <strong>wholesale</strong> is the base (stock and prices are per wholesale unit). Then set conversion to <strong>retail</strong> and to <strong>supplier</strong>.
+                    Define how units relate: <strong>wholesale</strong> is the base (stock and prices are per wholesale unit). Then set conversion to <strong>retail</strong> and to <strong>supplier</strong>. Choose a suggestion or type any unit name (e.g. vials, ampules, bottle, pairs).
                 </p>
+                <datalist id="editUnitOptions">${COMMON_UNIT_OPTIONS.map(u => '<option value="' + escapeHtml(u) + '">').join('')}</datalist>
 
                 <!-- 1) Wholesale unit (base) -->
                 <div class="form-group" style="padding: 0.75rem; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.25rem; margin-bottom: 1rem;">
                     <label class="form-label" style="margin-bottom: 0.25rem;">
                         <i class="fas fa-cube"></i> Wholesale unit (base)
                     </label>
-                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">One unit of this is the base. Stock and prices are per wholesale unit (e.g. 1 pack).</p>
-                    <select 
-                        class="form-select" 
-                        name="base_unit" 
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">One unit of this is the base. Stock and prices are per wholesale unit (e.g. 1 pack). Type or choose from list.</p>
+                    <input 
+                        type="text" 
+                        class="form-input" 
+                        ${isLocked ? '' : 'name="base_unit"'}
                         id="edit_base_unit"
-                        required
-                        ${isLocked ? 'disabled style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                        list="editUnitOptions"
+                        value="${escapeHtml((item.wholesale_unit || item.base_unit || 'piece').trim())}"
+                        placeholder="e.g. packet, vial, bottle"
+                        autocomplete="off"
+                        ${isLocked ? '' : 'required'}
+                        ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                     >
-                        <option value="piece" ${(item.wholesale_unit || item.base_unit || 'piece') === 'piece' ? 'selected' : ''}>Piece</option>
-                        <option value="packet" ${(item.wholesale_unit || item.base_unit) === 'packet' ? 'selected' : ''}>Packet</option>
-                        <option value="box" ${(item.wholesale_unit || item.base_unit) === 'box' ? 'selected' : ''}>Box</option>
-                        <option value="bottle" ${(item.wholesale_unit || item.base_unit) === 'bottle' ? 'selected' : ''}>Bottle</option>
-                        <option value="strip" ${(item.wholesale_unit || item.base_unit) === 'strip' ? 'selected' : ''}>Strip</option>
-                        <option value="carton" ${(item.wholesale_unit || item.base_unit) === 'carton' ? 'selected' : ''}>Carton</option>
-                        <option value="tube" ${(item.wholesale_unit || item.base_unit) === 'tube' ? 'selected' : ''}>Tube</option>
-                        <option value="vial" ${(item.wholesale_unit || item.base_unit) === 'vial' ? 'selected' : ''}>Vial</option>
-                        <option value="sachet" ${(item.wholesale_unit || item.base_unit) === 'sachet' ? 'selected' : ''}>Sachet</option>
-                        <option value="tablet" ${(item.wholesale_unit || item.base_unit) === 'tablet' ? 'selected' : ''}>Tablet</option>
-                        <option value="capsule" ${(item.wholesale_unit || item.base_unit) === 'capsule' ? 'selected' : ''}>Capsule</option>
-                        <option value="ml" ${(item.wholesale_unit || item.base_unit) === 'ml' ? 'selected' : ''}>ML (Milliliter)</option>
-                        <option value="gram" ${(item.wholesale_unit || item.base_unit) === 'gram' ? 'selected' : ''}>Gram</option>
-                    </select>
                     ${isLocked ? '<input type="hidden" name="base_unit" value="' + escapeHtml(item.wholesale_unit || item.base_unit || 'piece') + '">' : ''}
                 </div>
 
@@ -1789,7 +1849,7 @@ async function editItem(itemId) {
                     <label class="form-label" style="margin-bottom: 0.25rem;">
                         <i class="fas fa-shopping-cart"></i> Conversion to retail
                     </label>
-                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">1 wholesale unit = how many retail units (e.g. 100 tablets per pack).</p>
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">1 wholesale unit = how many retail units (e.g. 100 tablets per pack). Type or choose (e.g. tablet, vial, ampule, bottle, pair).</p>
                     <div class="form-row" style="align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
                         <div style="display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;">
                             <span>1</span>
@@ -1808,19 +1868,17 @@ async function editItem(itemId) {
                                 ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                             >
                         </div>
-                        <div class="form-group" style="margin-bottom: 0; flex: 0 0 140px;">
-                            <select 
-                                class="form-select" 
-                                name="retail_unit" 
-                                ${isLocked ? 'disabled style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                        <div class="form-group" style="margin-bottom: 0; flex: 0 0 180px;">
+                            <input 
+                                type="text" 
+                                class="form-input" 
+                                ${isLocked ? '' : 'name="retail_unit"'}
+                                list="editUnitOptions"
+                                value="${escapeHtml((item.retail_unit || 'tablet').trim())}"
+                                placeholder="e.g. tablet, vial, ampule"
+                                autocomplete="off"
+                                ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                             >
-                                <option value="tablet" ${(item.retail_unit || 'tablet') === 'tablet' ? 'selected' : ''}>Tablet</option>
-                                <option value="capsule" ${(item.retail_unit || '') === 'capsule' ? 'selected' : ''}>Capsule</option>
-                                <option value="ml" ${(item.retail_unit || '') === 'ml' ? 'selected' : ''}>ML</option>
-                                <option value="gram" ${(item.retail_unit || '') === 'gram' ? 'selected' : ''}>Gram</option>
-                                <option value="piece" ${(item.retail_unit || '') === 'piece' ? 'selected' : ''}>Piece</option>
-                                <option value="sachet" ${(item.retail_unit || '') === 'sachet' ? 'selected' : ''}>Sachet</option>
-                            </select>
                         </div>
                     </div>
                     ${isLocked ? '<input type="hidden" name="pack_size" value="' + (Math.max(1, parseInt(item.pack_size, 10) || 1)) + '"><input type="hidden" name="retail_unit" value="' + escapeHtml(item.retail_unit || 'tablet') + '">' : ''}
@@ -1831,23 +1889,21 @@ async function editItem(itemId) {
                     <label class="form-label" style="margin-bottom: 0.25rem;">
                         <i class="fas fa-truck"></i> Conversion to supplier
                     </label>
-                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">1 supplier unit = how many wholesale units (e.g. 12 packs per carton).</p>
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin: 0 0 0.5rem 0;">1 supplier unit = how many wholesale units (e.g. 12 packs per carton). Type or choose (e.g. carton, box, crate).</p>
                     <div class="form-row" style="align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
                         <div style="display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;">
                             <span>1</span>
-                            <select 
-                                class="form-select" 
-                                name="supplier_unit" 
-                                style="min-width: 100px;"
-                                ${isLocked ? 'disabled style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                            <input 
+                                type="text" 
+                                class="form-input" 
+                                ${isLocked ? '' : 'name="supplier_unit"'}
+                                list="editUnitOptions"
+                                value="${escapeHtml((item.supplier_unit || 'carton').trim())}"
+                                placeholder="e.g. carton, box, crate"
+                                autocomplete="off"
+                                style="min-width: 120px;"
+                                ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                             >
-                                <option value="carton" ${(item.supplier_unit || 'carton') === 'carton' ? 'selected' : ''}>Carton</option>
-                                <option value="box" ${(item.supplier_unit || '') === 'box' ? 'selected' : ''}>Box</option>
-                                <option value="packet" ${(item.supplier_unit || '') === 'packet' ? 'selected' : ''}>Packet</option>
-                                <option value="bottle" ${(item.supplier_unit || '') === 'bottle' ? 'selected' : ''}>Bottle</option>
-                                <option value="piece" ${(item.supplier_unit || '') === 'piece' ? 'selected' : ''}>Piece</option>
-                                <option value="crate" ${(item.supplier_unit || '') === 'crate' ? 'selected' : ''}>Crate</option>
-                            </select>
                             <span>=</span>
                         </div>
                         <div class="form-group" style="margin-bottom: 0; flex: 0 0 100px;">
@@ -1999,18 +2055,19 @@ async function editItem(itemId) {
         }
     }, 0);
 
-    // Sync wholesale unit label in "Conversion to retail" and "Conversion to supplier" when base unit dropdown changes
+    // Sync wholesale unit label in "Conversion to retail" and "Conversion to supplier" when base unit (input) changes
     setTimeout(() => {
-        const baseUnitSelect = document.getElementById('edit_base_unit');
+        const baseUnitInput = document.getElementById('edit_base_unit');
         const retailLabel = document.getElementById('editRetailWholesaleLabel');
         const supplierLabel = document.getElementById('editSupplierWholesaleLabel');
-        if (baseUnitSelect && retailLabel && supplierLabel) {
+        if (baseUnitInput && retailLabel && supplierLabel) {
             function syncWholesaleLabel() {
-                const name = baseUnitSelect.options[baseUnitSelect.selectedIndex]?.text || baseUnitSelect.value || 'piece';
+                const name = (baseUnitInput.value && baseUnitInput.value.trim()) ? baseUnitInput.value.trim() : 'piece';
                 retailLabel.textContent = name;
                 supplierLabel.textContent = name;
             }
-            baseUnitSelect.addEventListener('change', syncWholesaleLabel);
+            baseUnitInput.addEventListener('input', syncWholesaleLabel);
+            baseUnitInput.addEventListener('change', syncWholesaleLabel);
             syncWholesaleLabel();
         }
     }, 0);
@@ -2096,6 +2153,8 @@ async function updateItem(event, itemId) {
         description: formData.get('description') || null,
         barcode: formData.get('barcode') || null,
         category: formData.get('category') || null,
+        product_category: formData.get('product_category') || null,
+        pricing_tier: formData.get('pricing_tier') || null,
         vat_rate: parseFloat(formData.get('vat_rate')) || 0,
         vat_category: formData.get('vat_category') || null,
         is_active: formData.has('is_active'),

@@ -3,19 +3,39 @@ Pricing Service - Cost-based pricing with batch awareness
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from uuid import UUID
 from decimal import Decimal, ROUND_HALF_UP
 from app.models import (
-    Item, ItemPricing, CompanyPricingDefault,
+    Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier,
     InventoryLedger
 )
 from app.services.inventory_service import InventoryService
 from app.services.item_units_helper import get_unit_multiplier_from_item
 
 
+# Map product_category to default pricing_tier when item.pricing_tier is not set
+PRODUCT_CATEGORY_TO_TIER = {
+    "PHARMACEUTICAL": "STANDARD",
+    "COSMETICS": "BEAUTY_COSMETICS",
+    "EQUIPMENT": "EQUIPMENT",
+    "SERVICE": "SERVICE",
+}
+
+
 class PricingService:
-    """Service for calculating recommended selling prices"""
+    """Service for calculating recommended selling prices (cost + category-based margin)."""
+
+    @staticmethod
+    def _resolve_pricing_tier(item: Item) -> str:
+        """Resolve effective pricing tier: item.pricing_tier else from item.product_category else STANDARD."""
+        if item.pricing_tier and str(item.pricing_tier).strip():
+            return str(item.pricing_tier).strip().upper()
+        if item.product_category and str(item.product_category).strip():
+            return PRODUCT_CATEGORY_TO_TIER.get(
+                str(item.product_category).strip().upper(), "STANDARD"
+            )
+        return "STANDARD"
 
     @staticmethod
     def get_item_cost(
@@ -69,33 +89,111 @@ class PricingService:
         company_id: UUID
     ) -> Decimal:
         """
-        Get markup percentage for item
-        
-        Priority:
-        1. Item-specific markup
-        2. Company default markup
-        
-        Returns:
-            Decimal: Markup percentage (e.g., 30.00 for 30%)
+        Get markup (margin) percentage for item.
+        Priority: 1) Item-specific markup (item_pricing), 2) Company margin tier for item's pricing_tier, 3) Company default.
         """
-        # Check item-specific pricing
-        item_pricing = db.query(ItemPricing).filter(
-            ItemPricing.item_id == item_id
-        ).first()
-        
-        if item_pricing and item_pricing.markup_percent:
+        item = db.query(Item).filter(Item.id == item_id).first()
+        if not item:
+            return Decimal("30.00")
+
+        item_pricing = db.query(ItemPricing).filter(ItemPricing.item_id == item_id).first()
+        if item_pricing and item_pricing.markup_percent is not None:
             return Decimal(str(item_pricing.markup_percent))
-        
-        # Fallback to company default
+
+        tier = PricingService._resolve_pricing_tier(item)
+        margin_tier = (
+            db.query(CompanyMarginTier)
+            .filter(
+                CompanyMarginTier.company_id == company_id,
+                CompanyMarginTier.tier_name == tier,
+            )
+            .first()
+        )
+        if margin_tier:
+            return Decimal(str(margin_tier.default_margin_percent))
+
         company_defaults = db.query(CompanyPricingDefault).filter(
             CompanyPricingDefault.company_id == company_id
         ).first()
-        
         if company_defaults:
             return Decimal(str(company_defaults.default_markup_percent))
-        
-        # Ultimate fallback
         return Decimal("30.00")
+
+    @staticmethod
+    def get_min_margin_percent(
+        db: Session,
+        item_id: UUID,
+        company_id: UUID
+    ) -> Decimal:
+        """
+        Get minimum allowed margin percentage for item (admin-set floor; user cannot sell below unless allowed).
+        Priority: 1) Item-specific min (item_pricing), 2) Company margin tier for item's pricing_tier, 3) Company default.
+        """
+        item = db.query(Item).filter(Item.id == item_id).first()
+        if not item:
+            return Decimal("0")
+
+        item_pricing = db.query(ItemPricing).filter(ItemPricing.item_id == item_id).first()
+        if item_pricing and item_pricing.min_margin_percent is not None:
+            return Decimal(str(item_pricing.min_margin_percent))
+
+        tier = PricingService._resolve_pricing_tier(item)
+        margin_tier = (
+            db.query(CompanyMarginTier)
+            .filter(
+                CompanyMarginTier.company_id == company_id,
+                CompanyMarginTier.tier_name == tier,
+            )
+            .first()
+        )
+        if margin_tier:
+            return Decimal(str(margin_tier.min_margin_percent))
+
+        company_defaults = db.query(CompanyPricingDefault).filter(
+            CompanyPricingDefault.company_id == company_id
+        ).first()
+        if company_defaults and company_defaults.min_margin_percent is not None:
+            return Decimal(str(company_defaults.min_margin_percent))
+        return Decimal("0")
+
+    @staticmethod
+    def get_markup_percent_batch(
+        db: Session,
+        item_ids: List[UUID],
+        company_id: UUID
+    ) -> Dict[UUID, Decimal]:
+        """Batch resolve markup percent for many items (for search sale_price)."""
+        if not item_ids:
+            return {}
+        default_markup = Decimal("30.00")
+        company_defaults = db.query(CompanyPricingDefault).filter(
+            CompanyPricingDefault.company_id == company_id
+        ).first()
+        if company_defaults:
+            default_markup = Decimal(str(company_defaults.default_markup_percent))
+        tier_defaults = {
+            row.tier_name: Decimal(str(row.default_margin_percent))
+            for row in db.query(CompanyMarginTier).filter(
+                CompanyMarginTier.company_id == company_id
+            ).all()
+        }
+        items = db.query(Item).filter(Item.id.in_(item_ids)).all()
+        item_map = {i.id: i for i in items}
+        pricing_list = db.query(ItemPricing).filter(ItemPricing.item_id.in_(item_ids)).all()
+        pricing_map = {p.item_id: p for p in pricing_list}
+        result = {}
+        for iid in item_ids:
+            item = item_map.get(iid)
+            if not item:
+                result[iid] = default_markup
+                continue
+            ip = pricing_map.get(iid)
+            if ip and ip.markup_percent is not None:
+                result[iid] = Decimal(str(ip.markup_percent))
+                continue
+            tier = PricingService._resolve_pricing_tier(item)
+            result[iid] = tier_defaults.get(tier, default_markup)
+        return result
 
     @staticmethod
     def get_rounding_rule(

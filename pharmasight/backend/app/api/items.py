@@ -394,7 +394,7 @@ def search_items(
                 last_supply_date_map[row.item_id] = row.last_purchase_date.isoformat() if row.last_purchase_date else None
                 last_unit_cost_ledger_map[row.item_id] = float(row.last_purchase_price) if row.last_purchase_price else 0.0
         
-        # sale_price: no longer from items table; use 0.0 if no external config (pricing from ledger only)
+        # sale_price: computed later from cost + category margin (after cost_from_ledger_map is built)
         for item in items:
             sale_price_map[item.id] = 0.0
     t_after_pricing = time.perf_counter()
@@ -422,6 +422,14 @@ def search_items(
         for iid in item_ids:
             if iid not in cost_from_ledger_map:
                 cost_from_ledger_map[iid] = 0.0
+
+    # sale_price: from last unit cost + category-based margin (three-tier margin system)
+    if include_pricing and branch_id and item_ids:
+        markup_batch = PricingService.get_markup_percent_batch(db, item_ids, company_id)
+        for iid in item_ids:
+            cost = cost_from_ledger_map.get(iid, 0.0) or 0.0
+            margin = markup_batch.get(iid, Decimal("30"))
+            sale_price_map[iid] = round(float(Decimal(str(cost)) * (Decimal("1") + margin / Decimal("100"))), 4)
 
     # Get full item objects for stock_display calculation (only when branch_id provided)
     items_full_map = {}
@@ -495,6 +503,8 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "sku": item.sku,
         "barcode": item.barcode,
         "category": item.category,
+        "product_category": getattr(item, "product_category", None),
+        "pricing_tier": getattr(item, "pricing_tier", None),
         "base_unit": _unit_for_display(item.base_unit, "piece"),
         "vat_category": getattr(item, "vat_category", None) or "ZERO_RATED",
         "vat_rate": vat_rate_to_percent(item.vat_rate),
@@ -745,13 +755,15 @@ def get_items_overview(
         return []
     
     item_ids = [item.id for item in items]
+    # Subquery for "all company item ids" - avoids 10k+ bind params in stock/purchase queries
+    company_item_ids_subq = db.query(Item.id).filter(Item.company_id == company_id)
     
-    # Aggregate stock from inventory_ledger (single query)
+    # Aggregate stock from inventory_ledger (single query; use subquery, not IN(list))
     stock_query = db.query(
         InventoryLedger.item_id,
         func.sum(InventoryLedger.quantity_delta).label('total_stock')
     ).filter(
-        InventoryLedger.item_id.in_(item_ids),
+        InventoryLedger.item_id.in_(company_item_ids_subq),
         InventoryLedger.company_id == company_id
     )
     
@@ -768,7 +780,7 @@ def get_items_overview(
     # When branch_id is set: last supplier/cost for this branch only (branch-specific)
     from sqlalchemy import desc
     overview_purchase_filters = [
-        SupplierInvoiceItem.item_id.in_(item_ids),
+        SupplierInvoiceItem.item_id.in_(company_item_ids_subq),
         SupplierInvoice.company_id == company_id
     ]
     if branch_id:

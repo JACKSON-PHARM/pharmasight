@@ -9,6 +9,21 @@ from sqlalchemy.types import TIMESTAMP
 import uuid
 from app.database import Base
 
+# Product category: PHARMACEUTICAL, COSMETICS, EQUIPMENT, SERVICE
+# Pricing tier: CHRONIC_MEDICATION (15%), STANDARD (30%), BEAUTY_COSMETICS, etc.
+PRODUCT_CATEGORIES = ("PHARMACEUTICAL", "COSMETICS", "EQUIPMENT", "SERVICE")
+PRICING_TIERS = (
+    "CHRONIC_MEDICATION",
+    "STANDARD",
+    "BEAUTY_COSMETICS",
+    "NUTRITION_SUPPLEMENTS",
+    "INJECTABLES",
+    "COLD_CHAIN",
+    "SPECIAL_PAIN",
+    "EQUIPMENT",
+    "SERVICE",
+)
+
 
 class Item(Base):
     """Item (SKU) model"""
@@ -21,6 +36,8 @@ class Item(Base):
     sku = Column(String(100))  # Item code
     barcode = Column(String(100))
     category = Column(String(100))
+    product_category = Column(String(50), nullable=True)  # PHARMACEUTICAL | COSMETICS | EQUIPMENT | SERVICE
+    pricing_tier = Column(String(50), nullable=True)  # Drives default margin; if None, derived from product_category
     base_unit = Column(String(50), nullable=False)  # = wholesale_unit (reference unit; stock in base = wholesale qty)
     # VAT: vat_category + vat_rate only
     vat_category = Column(String(20), default="ZERO_RATED")  # ZERO_RATED | STANDARD_RATED
@@ -79,6 +96,19 @@ class CompanyPricingDefault(Base):
     default_markup_percent = Column(Numeric(10, 2), default=30.00)
     rounding_rule = Column(String(50), default="nearest_1")
     min_margin_percent = Column(Numeric(10, 2), default=0)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CompanyMarginTier(Base):
+    """Per-company default and minimum margin by pricing tier (three-tier margin system)."""
+    __tablename__ = "company_margin_tiers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    tier_name = Column(String(50), nullable=False)
+    default_margin_percent = Column(Numeric(10, 2), nullable=False)
+    min_margin_percent = Column(Numeric(10, 2), nullable=False, default=0)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
