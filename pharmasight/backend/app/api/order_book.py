@@ -577,19 +577,9 @@ def create_purchase_order_from_book(
     if not entries:
         raise HTTPException(status_code=400, detail="No valid entries found")
     
-    # Verify all entries have the same supplier (or use provided supplier)
+    # Use the supplier selected in the modal for the entire purchase order.
+    # Order book entries may have different or null supplier_id; the user's choice in the modal is the source of truth.
     supplier_id = request.supplier_id
-    for entry in entries:
-        if entry.supplier_id and entry.supplier_id != supplier_id:
-            # Use entry's supplier if no supplier provided
-            if not supplier_id:
-                supplier_id = entry.supplier_id
-            elif entry.supplier_id != supplier_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="All entries must have the same supplier, or provide a supplier_id"
-                )
-    
     if not supplier_id:
         raise HTTPException(status_code=400, detail="Supplier ID is required")
     
@@ -664,13 +654,14 @@ def create_purchase_order_from_book(
             for entry in entries:
                 entry.status = "ORDERED"
                 entry.purchase_order_id = purchase_order.id
+                entry.supplier_id = supplier_id  # record the supplier used for this PO
                 entry.updated_at = datetime.utcnow()
                 # Keep entry in daily_order_book so it shows as "Converted" in the UI
                 history_entry = OrderBookHistory(
                     company_id=entry.company_id,
                     branch_id=entry.branch_id,
                     item_id=entry.item_id,
-                    supplier_id=entry.supplier_id,
+                    supplier_id=supplier_id,
                     quantity_needed=entry.quantity_needed,
                     unit_name=entry.unit_name,
                     reason=entry.reason,
