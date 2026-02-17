@@ -68,6 +68,18 @@ pharmasight/
 4. Install dependencies: `pip install -r backend/requirements.txt`
 5. Run backend: `uvicorn app.main:app --reload`
 
+## Deploying on Render
+
+Use the `render.yaml` in this directory (or connect the `pharmasight` folder to Render). In **Render Dashboard → Service → Environment**, set:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| **APP_PUBLIC_URL** | Yes | Your app’s public URL (e.g. `https://pharmasight-backend.onrender.com`). Invite emails and setup links use this so users can open the link and complete setup. |
+| **ADMIN_PASSWORD** | Yes | Password for admin panel. Log in with username **admin** and this password to access tenant management. |
+| DATABASE_URL, SUPABASE_*, SMTP_* | As needed | Same as local development. |
+
+Without **APP_PUBLIC_URL**, invite links in emails would point to `localhost` and won’t work for users. Without **ADMIN_PASSWORD**, admin panel login will not succeed.
+
 ## 📊 Key Features
 
 - Multi-branch inventory management

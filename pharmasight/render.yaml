@@ -1,3 +1,8 @@
+# PharmaSight on Render
+# Set these in Render Dashboard → Service → Environment:
+#   APP_PUBLIC_URL = https://YOUR-SERVICE-NAME.onrender.com  (your app URL; invite emails and setup links use this)
+#   ADMIN_PASSWORD = your-secure-admin-password  (login with username "admin" and this password for tenant management)
+#   DATABASE_URL, SUPABASE_*, SMTP_* etc. as needed
 services:
   - type: web
     name: pharmasight-backend
@@ -16,5 +21,9 @@ services:
         generateValue: true
       - key: CORS_ORIGINS
         value: "*"
+      - key: APP_PUBLIC_URL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
     healthCheckPath: /health
 

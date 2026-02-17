@@ -177,7 +177,7 @@ function renderTenants() {
     if (tenants.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="text-center" style="padding: 40px 20px;">
+                <td colspan="7" class="text-center" style="padding: 40px 20px;">
                     <p style="font-size: 1.1rem; color: #666; margin-bottom: 8px;">No tenant projects exist.</p>
                     <p style="font-size: 0.9rem; color: #999;">Create your first tenant to get started.</p>
                 </td>
@@ -186,7 +186,10 @@ function renderTenants() {
         return;
     }
     
-    tbody.innerHTML = tenants.map(tenant => `
+    tbody.innerHTML = tenants.map(tenant => {
+        const isSuspended = (tenant.status || '').toLowerCase() === 'suspended' || (tenant.status || '').toLowerCase() === 'cancelled';
+        const accessDropdownId = `access-dropdown-${tenant.id}`;
+        return `
         <tr>
             <td>${escapeHtml(tenant.name)}</td>
             <td>
@@ -203,20 +206,33 @@ function renderTenants() {
                     ${tenant.status}
                 </span>
             </td>
+            <td>${formatTrialEnd(tenant)}</td>
             <td>${formatDate(tenant.created_at)}</td>
             <td>
-                <button class="btn btn-sm btn-primary" onclick="viewTenant('${tenant.id}')">
+                <button class="btn btn-sm btn-primary" onclick="viewTenant('${tenant.id}')" title="View / edit details, status & trial end date">
                     View
                 </button>
                 <button class="btn btn-sm btn-secondary" onclick="createInviteWithId('${tenant.id}')">
                     Invite
                 </button>
+                <div class="access-actions" style="display: inline-block; position: relative;">
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAccessDropdown('${tenant.id}')" title="Extend trial, pause or resume access">
+                        Access
+                    </button>
+                    <div id="${accessDropdownId}" class="access-dropdown" style="display: none;">
+                        <button type="button" onclick="extendTrialDays('${tenant.id}', 7); closeAccessDropdown('${tenant.id}')">Extend +7 days</button>
+                        <button type="button" onclick="extendTrialDays('${tenant.id}', 30); closeAccessDropdown('${tenant.id}')">Extend +30 days</button>
+                        ${!isSuspended ? `<button type="button" onclick="setTenantStatus('${tenant.id}', 'suspended'); closeAccessDropdown('${tenant.id}')">Pause access</button>` : ''}
+                        ${isSuspended ? `<button type="button" onclick="setTenantStatus('${tenant.id}', 'trial'); closeAccessDropdown('${tenant.id}')">Resume (trial)</button>` : ''}
+                    </div>
+                </div>
                 <button class="btn btn-sm btn-danger" onclick="deleteTenant('${tenant.id}')" title="Remove tenant from list">
                     Delete
                 </button>
             </td>
         </tr>
-    `).join('');
+    `;
+    }).join('');
 }
 
 function getStatusClass(status) {
@@ -234,6 +250,60 @@ function formatDate(dateString) {
     if (!dateString) return '-';
     const date = new Date(dateString);
     return date.toLocaleDateString();
+}
+
+function formatTrialEnd(tenant) {
+    if (!tenant.trial_ends_at) return '—';
+    const end = new Date(tenant.trial_ends_at);
+    const now = new Date();
+    const daysLeft = Math.ceil((end - now) / (1000 * 60 * 60 * 24));
+    const dateStr = end.toLocaleDateString();
+    if (tenant.status === 'trial' && daysLeft <= 0) return `<span title="${dateStr}">Expired</span>`;
+    if (tenant.status === 'trial' && daysLeft > 0) return `<span title="${dateStr}">${dateStr} <small>(${daysLeft}d)</small></span>`;
+    return dateStr;
+}
+
+function setTrialDays(days) {
+    const input = document.getElementById('tenant-trial-ends-at');
+    if (!input) return;
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    input.value = d.toISOString().slice(0, 10);
+}
+
+/** Extend or reduce trial by adding N days to current trial_ends_at (or from today if null/past). */
+async function extendTrialDays(tenantId, addDays) {
+    const tenant = tenants.find(t => t.id === tenantId);
+    if (!tenant) return;
+    let newEnd = new Date();
+    if (tenant.trial_ends_at) {
+        const end = new Date(tenant.trial_ends_at);
+        if (end > newEnd) newEnd = end;
+    }
+    newEnd.setDate(newEnd.getDate() + addDays);
+    const trial_ends_at = newEnd.toISOString().slice(0, 10) + 'T12:00:00.000Z';
+    try {
+        await window.API.admin.tenants.update(tenantId, { trial_ends_at });
+        showNotification(`Trial ${addDays >= 0 ? 'extended' : 'reduced'} by ${Math.abs(addDays)} days`, 'success');
+        await loadTenants();
+    } catch (e) {
+        showNotification('Failed to update trial: ' + (e.message || 'Unknown error'), 'error');
+    }
+}
+
+/** Set tenant status (e.g. suspended to pause, trial/active to resume). */
+async function setTenantStatus(tenantId, newStatus) {
+    const tenant = tenants.find(t => t.id === tenantId);
+    if (!tenant) return;
+    const labels = { suspended: 'Pause access', active: 'Resume (active)', trial: 'Resume (trial)' };
+    const action = labels[newStatus] || newStatus;
+    try {
+        await window.API.admin.tenants.update(tenantId, { status: newStatus });
+        showNotification(`Tenant ${action.toLowerCase()} updated`, 'success');
+        await loadTenants();
+    } catch (e) {
+        showNotification('Failed to update status: ' + (e.message || 'Unknown error'), 'error');
+    }
 }
 
 function updatePagination() {
@@ -356,8 +426,8 @@ async function createInvite(tenantId) {
         
         if (response && response.token) {
             const tenant = tenants.find(t => t.id === tenantId);
-            const baseUrl = window.location.origin;
-            const url = `${baseUrl}/setup?token=${response.token}`;
+            // Use server-provided URL (from APP_PUBLIC_URL) so link works when opened on Render; fallback to current origin
+            const url = (response.setup_url && response.setup_url.trim()) || `${window.location.origin}/setup?token=${response.token}`;
             const emailSent = response.email_sent === true;
             
             if (emailSent && window.showNotification) {
@@ -524,9 +594,26 @@ async function showTenantDetailModal(tenant) {
                         <label><strong>Phone Number:</strong></label>
                         <input type="tel" name="phone" value="${escapeHtml(tenant.phone || '')}" placeholder="+254..." style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
                     </div>
-                    <div>
-                        <strong>Status:</strong>
-                        <p><span class="badge badge-${getStatusClass(tenant.status)}">${tenant.status}</span></p>
+                    <div class="form-group">
+                        <label><strong>Status:</strong></label>
+                        <select name="status" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="trial" ${tenant.status === 'trial' ? 'selected' : ''}>Trial</option>
+                            <option value="active" ${tenant.status === 'active' ? 'selected' : ''}>Active</option>
+                            <option value="suspended" ${tenant.status === 'suspended' ? 'selected' : ''}>Suspended</option>
+                            <option value="past_due" ${tenant.status === 'past_due' ? 'selected' : ''}>Past due</option>
+                            <option value="cancelled" ${tenant.status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>Trial ends at:</strong></label>
+                        <input type="date" id="tenant-trial-ends-at" value="${tenant.trial_ends_at ? new Date(tenant.trial_ends_at).toISOString().slice(0, 10) : ''}" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <small style="color: #666;">Controls how many days the client can use the app on trial. Leave empty for no trial end.</small>
+                        <div style="margin-top: 6px;">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="window.setTrialDays(14)">+14 days</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="window.setTrialDays(30)">+30 days</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="window.setTrialDays(-7)">−7 days</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="window.setTrialDays(0)">Set to today</button>
+                        </div>
                     </div>
                     <div>
                         <strong>Created:</strong>
@@ -581,11 +668,15 @@ async function showTenantDetailModal(tenant) {
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const formData = new FormData(form);
+        const trialEndInput = modal.querySelector('#tenant-trial-ends-at');
+        const trialEndVal = trialEndInput && trialEndInput.value ? trialEndInput.value : null;
         const updateData = {
             name: formData.get('name'),
             admin_email: formData.get('admin_email'),
             admin_full_name: formData.get('admin_full_name') || null,
-            phone: formData.get('phone') || null
+            phone: formData.get('phone') || null,
+            status: formData.get('status') || undefined,
+            trial_ends_at: trialEndVal ? new Date(trialEndVal + 'T12:00:00Z').toISOString() : null
         };
         
         try {
@@ -634,8 +725,34 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function toggleAccessDropdown(tenantId) {
+    const id = `access-dropdown-${tenantId}`;
+    const el = document.getElementById(id);
+    if (!el) return;
+    const isOpen = el.style.display === 'block';
+    document.querySelectorAll('.access-dropdown').forEach(d => { d.style.display = 'none'; });
+    el.style.display = isOpen ? 'none' : 'block';
+}
+
+function closeAccessDropdown(tenantId) {
+    const el = document.getElementById(`access-dropdown-${tenantId}`);
+    if (el) el.style.display = 'none';
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.access-actions')) {
+        document.querySelectorAll('.access-dropdown').forEach(d => { d.style.display = 'none'; });
+    }
+});
+
 // Export for global access
 window.viewTenant = viewTenant;
 window.deleteTenant = deleteTenant;
 window.createInvite = createInvite;
 window.createInviteWithId = createInviteWithId;
+window.setTrialDays = setTrialDays;
+window.extendTrialDays = extendTrialDays;
+window.setTenantStatus = setTenantStatus;
+window.toggleAccessDropdown = toggleAccessDropdown;
+window.closeAccessDropdown = closeAccessDropdown;

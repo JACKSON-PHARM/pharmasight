@@ -130,6 +130,34 @@
             justify-content: flex-end;
             margin-top: 20px;
         }
+        .access-actions { position: relative; }
+        .access-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            margin-top: 2px;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 100;
+            min-width: 160px;
+            padding: 6px 0;
+        }
+        .access-dropdown button {
+            display: block;
+            width: 100%;
+            padding: 8px 14px;
+            border: none;
+            background: none;
+            text-align: left;
+            cursor: pointer;
+            font-size: 13px;
+            color: #333;
+        }
+        .access-dropdown button:hover {
+            background: #f0f0f0;
+        }
     </style>
 </head>
 <body>
@@ -166,13 +194,14 @@
                         <th>Subdomain</th>
                         <th>Admin Email</th>
                         <th>Status</th>
+                        <th>Trial ends</th>
                         <th>Created</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="tenants-table-body">
                     <tr>
-                        <td colspan="6" class="text-center">Loading...</td>
+                        <td colspan="7" class="text-center">Loading...</td>
                     </tr>
                 </tbody>
             </table>

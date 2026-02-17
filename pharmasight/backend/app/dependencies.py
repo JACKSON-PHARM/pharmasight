@@ -94,6 +94,11 @@ def get_tenant_from_header(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Tenant database not provisioned",
         )
+    if (tenant.status or "").lower() in ("suspended", "cancelled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account suspended. Please contact support.",
+        )
     return tenant
 
 

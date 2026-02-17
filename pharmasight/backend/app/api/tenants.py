@@ -308,13 +308,16 @@ def create_invite(
     db.commit()
     db.refresh(invite)
     
-    # Return response with username
+    # Build setup URL from APP_PUBLIC_URL so email and UI use the same link (works on Render)
+    setup_url = f"{settings.APP_PUBLIC_URL.rstrip('/')}/setup?token={invite.token}"
+    
+    # Return response with username and setup_url (frontend uses this for copy link / display)
     invite_response = TenantInviteResponse.model_validate(invite)
     invite_response.username = generated_username
     invite_response.email_sent = False
+    invite_response.setup_url = setup_url
     
     if invite_data.send_email:
-        setup_url = f"{settings.APP_PUBLIC_URL.rstrip('/')}/setup?token={invite.token}"
         invite_response.email_sent = EmailService.send_tenant_invite(
             to_email=tenant.admin_email,
             tenant_name=tenant.name,

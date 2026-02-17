@@ -325,11 +325,12 @@ async function loadLogin() {
                         }
                     } catch (adminError) {
                         console.log('Admin auth request failed:', adminError);
+                        const msg = 'Could not reach admin login. Check that the backend is running and, on Render, that ADMIN_PASSWORD is set.';
                         if (errorDiv) {
-                            errorDiv.textContent = 'Could not reach admin login. Check backend.';
+                            errorDiv.textContent = msg;
                             errorDiv.style.display = 'block';
                         } else {
-                            showToast('Could not reach admin login.', 'error');
+                            showToast(msg, 'error');
                         }
                         return;
                     }

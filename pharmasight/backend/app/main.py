@@ -43,6 +43,12 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/api/config")
+async def public_config():
+    """Public config for frontend (e.g. app URL for invite links). No secrets."""
+    return {"app_public_url": settings.APP_PUBLIC_URL.rstrip("/")}
+
+
 @app.on_event("startup")
 def run_tenant_migrations():
     """Apply missing migrations on default/master app DB and on all tenant DBs (locked architecture)."""

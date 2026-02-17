@@ -7,6 +7,7 @@ When no tenant header and user not in legacy DB, discovers which tenant the user
 belongs to so the app can route them to their tenant data.
 If the same username exists in more than one tenant, we require tenant context (link or picker).
 """
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,6 +21,21 @@ from app.models.tenant import Tenant
 from app.models.user import User
 
 router = APIRouter()
+
+
+def _trial_expired(tenant: Tenant) -> bool:
+    """True if tenant is on trial and trial_ends_at is in the past (UTC)."""
+    if tenant.status != "trial" or not tenant.trial_ends_at:
+        return False
+    end = tenant.trial_ends_at
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    return end < datetime.now(timezone.utc)
+
+
+def _tenant_access_blocked(tenant: Tenant) -> bool:
+    """True if tenant is suspended or cancelled (no access to app)."""
+    return (tenant.status or "").lower() in ("suspended", "cancelled")
 
 
 class UsernameLoginRequest(BaseModel):
@@ -62,7 +78,7 @@ def _find_user_in_all_tenants(
     """
     tenants = master_db.query(Tenant).filter(
         Tenant.database_url.isnot(None),
-        Tenant.status != "cancelled",
+        ~Tenant.status.in_(["cancelled", "suspended"]),
     ).all()
     found: List[Tuple[Tenant, User]] = []
     for tenant in tenants:
@@ -102,6 +118,16 @@ def username_login(
             pass  # fall through to 404 below
         elif len(found_list) == 1:
             tenant, user = found_list[0]
+            if _tenant_access_blocked(tenant):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account suspended. Please contact support.",
+                )
+            if _trial_expired(tenant):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Trial expired. Please contact support to upgrade.",
+                )
             return UsernameLoginResponse(
                 email=user.email,
                 user_id=str(user.id),
@@ -133,6 +159,16 @@ def username_login(
             detail="User not found"
         )
     else:
+        if tenant and _tenant_access_blocked(tenant):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account suspended. Please contact support.",
+            )
+        if tenant and _trial_expired(tenant):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Trial expired. Please contact support to upgrade.",
+            )
         return UsernameLoginResponse(
             email=user.email,
             user_id=str(user.id),

@@ -28,6 +28,7 @@ class TenantUpdate(BaseModel):
     phone: Optional[str] = Field(None, max_length=50)
     custom_domain: Optional[str] = None
     status: Optional[str] = None
+    trial_ends_at: Optional[datetime] = Field(None, description="When the trial period ends (UTC). Controls trial usage days.")
 
 
 class TenantProvisionRequest(BaseModel):
@@ -82,6 +83,7 @@ class TenantInviteResponse(BaseModel):
     used_at: Optional[datetime] = None
     created_at: datetime
     email_sent: Optional[bool] = None  # True if invite was emailed to admin_email
+    setup_url: Optional[str] = None  # Full URL for setup (uses APP_PUBLIC_URL so email and copy link match on Render)
     
     class Config:
         from_attributes = True
