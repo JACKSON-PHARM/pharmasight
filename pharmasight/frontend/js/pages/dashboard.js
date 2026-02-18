@@ -48,7 +48,7 @@ async function loadDashboard() {
     
     // Check permissions and hide/show cards accordingly
     if (typeof window.Permissions !== 'undefined' && window.Permissions.canViewDashboardCard) {
-        const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'expiringItems', 'orderBookPendingToday'];
+        const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
         for (const cardId of cardIds) {
             const card = document.getElementById(cardId)?.closest('.stat-card');
             if (card) {
@@ -65,6 +65,10 @@ async function loadDashboard() {
         document.getElementById('totalStockValue').textContent = '—';
     }
     document.getElementById('todaySales').textContent = formatCurrency(0);
+    const gpEl = document.getElementById('todayGrossProfit');
+    if (gpEl) gpEl.textContent = formatCurrency(0);
+    const gpMeta = document.getElementById('todayGrossProfitMeta');
+    if (gpMeta) gpMeta.textContent = 'Gross Profit (Today)';
     document.getElementById('expiringItems').textContent = '0';
     const ob = document.getElementById('orderBookPendingToday');
     if (ob) ob.textContent = '0';
@@ -115,6 +119,31 @@ async function loadDashboard() {
                 document.getElementById('todaySales').textContent = formatCurrency(total);
             } catch (err) {
                 console.warn('Today summary failed:', err);
+            }
+        }
+
+        // Today's gross profit (Sales exclusive - COGS), requires cost permissions.
+        if (branchId && API.sales && typeof API.sales.getGrossProfit === 'function') {
+            try {
+                // If the card is hidden by permissions, skip work.
+                const gpCard = document.getElementById('todayGrossProfit')?.closest('.stat-card');
+                if (gpCard && gpCard.style.display === 'none') {
+                    // noop
+                } else {
+                    const res = await API.sales.getGrossProfit(branchId, { preset: 'today' });
+                    const gp = parseFloat(res.gross_profit || 0);
+                    const margin = parseFloat(res.margin_percent || 0);
+                    const gpEl2 = document.getElementById('todayGrossProfit');
+                    if (gpEl2) gpEl2.textContent = formatCurrency(gp);
+                    const meta = document.getElementById('todayGrossProfitMeta');
+                    if (meta) meta.textContent = `Gross Profit (Today) • Margin ${margin.toFixed(1)}%`;
+                }
+            } catch (err) {
+                console.warn('Today gross profit failed:', err);
+                const gpEl2 = document.getElementById('todayGrossProfit');
+                if (gpEl2) gpEl2.textContent = formatCurrency(0);
+                const meta = document.getElementById('todayGrossProfitMeta');
+                if (meta) meta.textContent = 'Gross Profit (Today)';
             }
         }
 
@@ -344,10 +373,20 @@ function exportExpiringToCsv() {
     if (typeof showToast === 'function') showToast('CSV exported.', 'success');
 }
 
+function openFinancialReportsFromDashboard() {
+    // Navigate to financial reports (default: today)
+    if (typeof window.loadPage === 'function') {
+        window.loadPage('reports-financial');
+    } else {
+        window.location.hash = '#reports-financial';
+    }
+}
+
 // Export
 window.loadDashboard = loadDashboard;
 window.showOrderBookPendingTodayModal = showOrderBookPendingTodayModal;
 window.openOrderBookFromDashboard = openOrderBookFromDashboard;
 window.showExpiringSoonModal = showExpiringSoonModal;
 window.exportExpiringToCsv = exportExpiringToCsv;
+window.openFinancialReportsFromDashboard = openFinancialReportsFromDashboard;
 

@@ -9,6 +9,7 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date
+from datetime import timedelta
 from fastapi import Query
 from app.dependencies import get_tenant_db
 from app.models import (
@@ -33,6 +34,54 @@ from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
+
+
+def _resolve_date_range(
+    preset: Optional[str],
+    start_date: Optional[date],
+    end_date: Optional[date],
+) -> tuple[date, date]:
+    """Resolve a reporting date range (inclusive). Defaults to today."""
+    today = date.today()
+    p = (preset or "").strip().lower()
+
+    if p in ("", "custom"):
+        sd = start_date or today
+        ed = end_date or sd
+    elif p in ("today",):
+        sd = today
+        ed = today
+    elif p in ("this_week", "week", "current_week"):
+        # Monday..Sunday
+        sd = today - timedelta(days=today.weekday())
+        ed = sd + timedelta(days=6)
+    elif p in ("last_week", "previous_week"):
+        end_of_last_week = (today - timedelta(days=today.weekday() + 1))
+        sd = end_of_last_week - timedelta(days=6)
+        ed = end_of_last_week
+    elif p in ("this_month", "month", "current_month"):
+        sd = today.replace(day=1)
+        next_month = (sd.replace(day=28) + timedelta(days=4)).replace(day=1)
+        ed = next_month - timedelta(days=1)
+    elif p in ("last_month", "previous_month"):
+        first_this_month = today.replace(day=1)
+        last_of_last_month = first_this_month - timedelta(days=1)
+        sd = last_of_last_month.replace(day=1)
+        ed = last_of_last_month
+    elif p in ("this_year", "year", "current_year"):
+        sd = today.replace(month=1, day=1)
+        ed = today.replace(month=12, day=31)
+    elif p in ("last_year", "previous_year"):
+        sd = today.replace(year=today.year - 1, month=1, day=1)
+        ed = today.replace(year=today.year - 1, month=12, day=31)
+    else:
+        # Unknown preset: treat as custom
+        sd = start_date or today
+        ed = end_date or sd
+
+    if sd > ed:
+        sd, ed = ed, sd
+    return sd, ed
 
 
 def _user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID) -> bool:
@@ -540,6 +589,125 @@ def get_branch_today_summary(
         "total_inclusive": str(total_inclusive),
         "total_exclusive": str(total_exclusive),
     }
+
+
+@router.get("/branch/{branch_id}/gross-profit", response_model=dict)
+def get_branch_gross_profit(
+    branch_id: UUID,
+    preset: Optional[str] = Query(None, description="today | this_week | last_week | this_month | last_month | this_year | last_year"),
+    start_date: Optional[date] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
+    include_breakdown: bool = Query(False, description="If true, include per-day breakdown for the date range"),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Gross profit summary for a branch and date range.
+
+    Gross profit = Sales (exclusive) - COGS, where:
+    - Sales are summed from SalesInvoice.total_exclusive (status BATCHED/PAID)
+    - COGS are summed from InventoryLedger.total_cost for SALE transactions (reference_type=sales_invoice)
+    """
+    sd, ed = _resolve_date_range(preset, start_date, end_date)
+
+    sales_date_key = func.date(func.coalesce(SalesInvoice.batched_at, SalesInvoice.created_at))
+    base_sales = (
+        db.query(
+            func.coalesce(func.sum(SalesInvoice.total_exclusive), 0).label("sales_exclusive"),
+            func.count(SalesInvoice.id).label("invoice_count"),
+        )
+        .filter(
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.status.in_(["BATCHED", "PAID"]),
+            sales_date_key.between(sd, ed),
+        )
+        .first()
+    )
+    sales_exclusive = (base_sales.sales_exclusive if base_sales else Decimal("0")) or Decimal("0")
+    invoice_count = int(getattr(base_sales, "invoice_count", 0) or 0)
+
+    cogs_date_key = func.date(InventoryLedger.created_at)
+    base_cogs = (
+        db.query(func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"))
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.transaction_type == "SALE",
+            InventoryLedger.reference_type == "sales_invoice",
+            cogs_date_key.between(sd, ed),
+        )
+        .first()
+    )
+    cogs = (base_cogs.cogs if base_cogs else Decimal("0")) or Decimal("0")
+
+    gross_profit = sales_exclusive - cogs
+    margin_percent = (gross_profit / sales_exclusive * Decimal("100")) if sales_exclusive and sales_exclusive > 0 else Decimal("0")
+
+    out = {
+        "start_date": sd.isoformat(),
+        "end_date": ed.isoformat(),
+        "sales_exclusive": str(sales_exclusive),
+        "cogs": str(cogs),
+        "gross_profit": str(gross_profit),
+        "margin_percent": str(margin_percent),
+        "invoice_count": invoice_count,
+    }
+
+    if not include_breakdown:
+        return out
+
+    # Per-day breakdown
+    sales_rows = (
+        db.query(
+            sales_date_key.label("d"),
+            func.coalesce(func.sum(SalesInvoice.total_exclusive), 0).label("sales_exclusive"),
+        )
+        .filter(
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.status.in_(["BATCHED", "PAID"]),
+            sales_date_key.between(sd, ed),
+        )
+        .group_by(sales_date_key)
+        .order_by(sales_date_key.asc())
+        .all()
+    )
+    cogs_rows = (
+        db.query(
+            cogs_date_key.label("d"),
+            func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"),
+        )
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.transaction_type == "SALE",
+            InventoryLedger.reference_type == "sales_invoice",
+            cogs_date_key.between(sd, ed),
+        )
+        .group_by(cogs_date_key)
+        .order_by(cogs_date_key.asc())
+        .all()
+    )
+
+    sales_by_day = {r.d: (r.sales_exclusive or Decimal("0")) for r in (sales_rows or [])}
+    cogs_by_day = {r.d: (r.cogs or Decimal("0")) for r in (cogs_rows or [])}
+
+    breakdown = []
+    dcur = sd
+    while dcur <= ed:
+        s = sales_by_day.get(dcur, Decimal("0"))
+        c = cogs_by_day.get(dcur, Decimal("0"))
+        gp = s - c
+        mp = (gp / s * Decimal("100")) if s and s > 0 else Decimal("0")
+        breakdown.append(
+            {
+                "date": dcur.isoformat(),
+                "sales_exclusive": str(s),
+                "cogs": str(c),
+                "gross_profit": str(gp),
+                "margin_percent": str(mp),
+            }
+        )
+        dcur = dcur + timedelta(days=1)
+
+    out["breakdown"] = breakdown
+    return out
 
 
 @router.get("/branch/{branch_id}/invoices", response_model=List[SalesInvoiceResponse])

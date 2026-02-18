@@ -276,6 +276,8 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/invoices`),
         getTodaySummary: (branchId, userId) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/today-summary`, userId != null ? { user_id: userId } : {}),
+        getGrossProfit: (branchId, params = {}) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/gross-profit`, params),
         updateInvoice: (invoiceId, data) => 
             api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
         addInvoiceItem: (invoiceId, item) =>

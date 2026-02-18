@@ -204,6 +204,13 @@
                                 <p>Today's Sales</p>
                             </div>
                         </div>
+                        <div class="stat-card stat-card-clickable" id="todayGrossProfitCard" title="Click to open financial reports" style="cursor: pointer;" onclick="if(typeof window.openFinancialReportsFromDashboard==='function') window.openFinancialReportsFromDashboard()">
+                            <div class="stat-icon"><i class="fas fa-chart-pie"></i></div>
+                            <div class="stat-info">
+                                <h3 id="todayGrossProfit">0</h3>
+                                <p id="todayGrossProfitMeta">Gross Profit (Today)</p>
+                            </div>
+                        </div>
                         <div class="stat-card stat-card-clickable" id="expiringSoonCard" title="Click to view details" style="cursor: pointer;" onclick="if(typeof showExpiringSoonModal==='function')showExpiringSoonModal()">
                             <div class="stat-icon"><i class="fas fa-exclamation-triangle"></i></div>
                             <div class="stat-info">
@@ -351,6 +358,7 @@
     <script src="js/components/batch-distribution.js"></script>
     <script src="js/pages/purchases.js?v=18"></script>
     <script src="js/pages/inventory.js?v=9"></script>
+    <script src="js/pages/reports.js?v=1"></script>
     <script src="js/pages/settings.js?v=7"></script>
 </body>
 </html>

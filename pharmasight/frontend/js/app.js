@@ -1778,6 +1778,18 @@ async function loadPage(pageName) {
                 console.error('loadInventory function not found on window object');
             }
             break;
+        case 'reports':
+            console.log('Loading reports page, subPage:', subPage);
+            if (typeof window.loadReports === 'function') {
+                window.loadReports(subPage || null);
+            } else {
+                console.error('loadReports function not found on window object');
+                const page = document.getElementById('reports');
+                if (page) {
+                    page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Reports</h3><p>Reports module is not available. Please refresh the page.</p></div>';
+                }
+            }
+            break;
         case 'items':
             if (window.loadItems) {
                 window.loadItems();
