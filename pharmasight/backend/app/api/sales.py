@@ -224,7 +224,20 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
                 db, item_data.item_id, invoice.branch_id
             )
             if cost_info:
+                # CRITICAL: Ensure unit_cost_used is ALWAYS stored as cost per retail unit
+                # (codebase convention: base = retail, smallest unit)
+                # PricingService.get_item_cost() should return cost per retail, but if it returns
+                # cost per packet/wholesale (due to item.base_unit confusion), convert it.
+                retail_unit = (item.retail_unit or "").strip().lower()
+                wholesale_unit = (item.wholesale_unit or item.base_unit or "piece").strip().lower()
+                pack_size = max(1, int(item.pack_size or 1))
+                
                 unit_cost_used = cost_info
+                # Heuristic: If cost seems too high for retail unit (> 10 KES) and we have pack_size,
+                # it might be cost per packet - convert to cost per retail unit
+                if float(cost_info) > 10 and wholesale_unit != retail_unit and pack_size > 1:
+                    # Cost might be per packet/wholesale unit - convert to per retail unit
+                    unit_cost_used = cost_info / Decimal(str(pack_size))
             # Enforce minimum margin unless user has sell_below_min_margin permission
             if unit_cost_used and float(unit_cost_used) > 0:
                 mult = get_unit_multiplier_from_item(item, item_data.unit_name)
@@ -599,15 +612,66 @@ def _compute_cogs_from_invoice_lines(
     by_date: bool = False,
 ) -> tuple:
     """
-    Compute COGS from SalesInvoiceItem using correct unit conversion.
-    Cost = quantity_sold_in_base * cost_per_base.
-    This avoids ledger unit mismatch (e.g. counting cost of whole packets when selling tablets).
-
+    Compute COGS from SalesInvoiceItem with correct unit conversion.
+    
+    Strategy: Use the actual cost from InventoryLedger entries created during batching.
+    These entries have the correct unit conversion and FEFO cost allocation.
+    
+    However, if ledger entries are missing or incorrect, fall back to computing from
+    invoice items with proper unit conversion:
+    - quantity (sale unit) × multiplier → quantity in retail units
+    - unit_cost_used should be cost per retail unit
+    - COGS = quantity_retail × cost_per_retail
+    
     Returns (total_cogs, cogs_by_day_dict or None).
     """
     from sqlalchemy.orm import selectinload
 
     sales_date_key = func.date(func.coalesce(SalesInvoice.batched_at, SalesInvoice.created_at))
+    
+    # First, try to get COGS from ledger entries (most accurate - reflects actual FEFO allocation)
+    invoice_ids_subq = (
+        db.query(SalesInvoice.id)
+        .filter(
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.status.in_(["BATCHED", "PAID"]),
+            sales_date_key.between(sd, ed),
+        )
+    )
+    
+    if by_date:
+        ledger_cogs_rows = (
+            db.query(
+                func.date(InventoryLedger.created_at).label("d"),
+                func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"),
+            )
+            .filter(
+                InventoryLedger.branch_id == branch_id,
+                InventoryLedger.transaction_type == "SALE",
+                InventoryLedger.reference_type == "sales_invoice",
+                InventoryLedger.reference_id.in_(invoice_ids_subq),
+            )
+            .group_by(func.date(InventoryLedger.created_at))
+            .all()
+        )
+        ledger_cogs_by_day = {r.d: (r.cogs or Decimal("0")) for r in (ledger_cogs_rows or [])}
+        ledger_total = sum(ledger_cogs_by_day.values())
+    else:
+        ledger_result = (
+            db.query(func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"))
+            .filter(
+                InventoryLedger.branch_id == branch_id,
+                InventoryLedger.transaction_type == "SALE",
+                InventoryLedger.reference_type == "sales_invoice",
+                InventoryLedger.reference_id.in_(invoice_ids_subq),
+            )
+            .scalar()
+        )
+        ledger_total = Decimal(str(ledger_result)) if ledger_result else Decimal("0")
+        ledger_cogs_by_day = None
+    
+    # If ledger has data, use it (it's the single source of truth from batching)
+    # But also compute from invoice items as validation/fallback
     invoices = (
         db.query(SalesInvoice)
         .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
@@ -618,8 +682,8 @@ def _compute_cogs_from_invoice_lines(
         )
         .all()
     )
-    total_cogs = Decimal("0")
-    cogs_by_day = {} if by_date else None
+    invoice_cogs = Decimal("0")
+    invoice_cogs_by_day = {} if by_date else None
 
     for inv in invoices:
         inv_date = inv.batched_at or inv.created_at
@@ -632,7 +696,7 @@ def _compute_cogs_from_invoice_lines(
         else:
             from datetime import datetime as dt
             d = dt.fromisoformat(str(inv_date)[:10]).date() if inv_date else sd
-        inv_cogs = Decimal("0")
+        inv_line_cogs = Decimal("0")
         for line in inv.items or []:
             if not line.unit_cost_used or float(line.unit_cost_used) <= 0:
                 continue
@@ -641,17 +705,44 @@ def _compute_cogs_from_invoice_lines(
                 item = db.query(Item).filter(Item.id == line.item_id).first()
             if not item:
                 continue
-            mult = get_unit_multiplier_from_item(item, line.unit_name or "")
-            if mult is None or mult <= 0:
+            
+            # Get multiplier from sale unit to retail (codebase convention: base = retail)
+            mult_to_retail = get_unit_multiplier_from_item(item, line.unit_name or "")
+            if mult_to_retail is None or mult_to_retail <= 0:
                 continue
-            qty_base = Decimal(str(line.quantity)) * mult
-            line_cogs = qty_base * Decimal(str(line.unit_cost_used))
-            inv_cogs += line_cogs
-        total_cogs += inv_cogs
-        if by_date and inv_cogs > 0:
-            cogs_by_day[d] = cogs_by_day.get(d, Decimal("0")) + inv_cogs
-
-    return total_cogs, cogs_by_day
+            
+            # Convert sale quantity to retail units
+            qty_retail = Decimal(str(line.quantity)) * mult_to_retail
+            
+            # unit_cost_used should be cost per retail unit (codebase convention: base = retail)
+            # However, if it was stored as cost per packet/wholesale unit, we need to convert
+            cost_per_retail = Decimal(str(line.unit_cost_used))
+            sale_unit_lower = (line.unit_name or "").strip().lower()
+            retail_unit_lower = (item.retail_unit or "").strip().lower()
+            wholesale_unit_lower = (item.wholesale_unit or item.base_unit or "piece").strip().lower()
+            pack_size = max(1, int(item.pack_size or 1))
+            
+            # Detect if unit_cost_used might be in wrong unit:
+            # If selling in retail units and cost seems like cost per wholesale unit (packet), convert
+            if sale_unit_lower == retail_unit_lower:
+                # Check if cost seems too high for a retail unit (heuristic: > 10 KES)
+                # This suggests it might be cost per packet/wholesale unit
+                if cost_per_retail > Decimal("10") and wholesale_unit_lower != retail_unit_lower and pack_size > 1:
+                    # Likely stored as cost per packet - convert to cost per retail unit
+                    cost_per_retail = cost_per_retail / Decimal(str(pack_size))
+            
+            line_cogs = qty_retail * cost_per_retail
+            inv_line_cogs += line_cogs
+        
+        invoice_cogs += inv_line_cogs
+        if by_date and inv_line_cogs > 0:
+            invoice_cogs_by_day[d] = invoice_cogs_by_day.get(d, Decimal("0")) + inv_line_cogs
+    
+    # Prefer ledger COGS (actual FEFO allocation), but if missing/zero, use invoice-based calculation
+    if ledger_total > 0:
+        return ledger_total, ledger_cogs_by_day
+    else:
+        return invoice_cogs, invoice_cogs_by_day
 
 
 @router.get("/branch/{branch_id}/gross-profit", response_model=dict)
