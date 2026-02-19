@@ -591,6 +591,69 @@ def get_branch_today_summary(
     }
 
 
+def _compute_cogs_from_invoice_lines(
+    db: Session,
+    branch_id: UUID,
+    sd: date,
+    ed: date,
+    by_date: bool = False,
+) -> tuple:
+    """
+    Compute COGS from SalesInvoiceItem using correct unit conversion.
+    Cost = quantity_sold_in_base * cost_per_base.
+    This avoids ledger unit mismatch (e.g. counting cost of whole packets when selling tablets).
+
+    Returns (total_cogs, cogs_by_day_dict or None).
+    """
+    from sqlalchemy.orm import selectinload
+
+    sales_date_key = func.date(func.coalesce(SalesInvoice.batched_at, SalesInvoice.created_at))
+    invoices = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+        .filter(
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.status.in_(["BATCHED", "PAID"]),
+            sales_date_key.between(sd, ed),
+        )
+        .all()
+    )
+    total_cogs = Decimal("0")
+    cogs_by_day = {} if by_date else None
+
+    for inv in invoices:
+        inv_date = inv.batched_at or inv.created_at
+        if inv_date is None:
+            d = sd
+        elif hasattr(inv_date, "date") and callable(getattr(inv_date, "date")):
+            d = inv_date.date()
+        elif isinstance(inv_date, date):
+            d = inv_date
+        else:
+            from datetime import datetime as dt
+            d = dt.fromisoformat(str(inv_date)[:10]).date() if inv_date else sd
+        inv_cogs = Decimal("0")
+        for line in inv.items or []:
+            if not line.unit_cost_used or float(line.unit_cost_used) <= 0:
+                continue
+            item = line.item
+            if not item:
+                item = db.query(Item).filter(Item.id == line.item_id).first()
+            if not item:
+                continue
+            mult = get_unit_multiplier_from_item(item, line.unit_name or "")
+            if mult is None or mult <= 0:
+                continue
+            qty_base = Decimal(str(line.quantity)) * mult
+            line_cogs = qty_base * Decimal(str(line.unit_cost_used))
+            inv_cogs += line_cogs
+        total_cogs += inv_cogs
+        if by_date and inv_cogs > 0:
+            cogs_by_day[d] = cogs_by_day.get(d, Decimal("0")) + inv_cogs
+
+    return total_cogs, cogs_by_day
+
+
 @router.get("/branch/{branch_id}/gross-profit", response_model=dict)
 def get_branch_gross_profit(
     branch_id: UUID,
@@ -603,9 +666,10 @@ def get_branch_gross_profit(
     """
     Gross profit summary for a branch and date range.
 
-    Gross profit = Sales (exclusive) - COGS, where:
-    - Sales are summed from SalesInvoice.total_exclusive (status BATCHED/PAID)
-    - COGS are summed from InventoryLedger.total_cost for SALE transactions (reference_type=sales_invoice)
+    Gross profit = Sales (exclusive) - COGS.
+    COGS is computed from SalesInvoiceItem: quantity (in sale unit) × multiplier → base units,
+    then × unit_cost_used (cost per base). This ensures correct unit conversion (e.g. selling
+    tablets charges cost of tablets sold, not whole packets).
     """
     sd, ed = _resolve_date_range(preset, start_date, end_date)
 
@@ -625,18 +689,10 @@ def get_branch_gross_profit(
     sales_exclusive = (base_sales.sales_exclusive if base_sales else Decimal("0")) or Decimal("0")
     invoice_count = int(getattr(base_sales, "invoice_count", 0) or 0)
 
-    cogs_date_key = func.date(InventoryLedger.created_at)
-    base_cogs = (
-        db.query(func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"))
-        .filter(
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.transaction_type == "SALE",
-            InventoryLedger.reference_type == "sales_invoice",
-            cogs_date_key.between(sd, ed),
-        )
-        .first()
+    # COGS from invoice lines (correct unit conversion: cost of quantity SOLD)
+    cogs, cogs_by_day = _compute_cogs_from_invoice_lines(
+        db, branch_id, sd, ed, by_date=include_breakdown
     )
-    cogs = (base_cogs.cogs if base_cogs else Decimal("0")) or Decimal("0")
 
     gross_profit = sales_exclusive - cogs
     margin_percent = (gross_profit / sales_exclusive * Decimal("100")) if sales_exclusive and sales_exclusive > 0 else Decimal("0")
@@ -669,24 +725,8 @@ def get_branch_gross_profit(
         .order_by(sales_date_key.asc())
         .all()
     )
-    cogs_rows = (
-        db.query(
-            cogs_date_key.label("d"),
-            func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"),
-        )
-        .filter(
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.transaction_type == "SALE",
-            InventoryLedger.reference_type == "sales_invoice",
-            cogs_date_key.between(sd, ed),
-        )
-        .group_by(cogs_date_key)
-        .order_by(cogs_date_key.asc())
-        .all()
-    )
-
     sales_by_day = {r.d: (r.sales_exclusive or Decimal("0")) for r in (sales_rows or [])}
-    cogs_by_day = {r.d: (r.cogs or Decimal("0")) for r in (cogs_rows or [])}
+    cogs_by_day = cogs_by_day or {}
 
     breakdown = []
     dcur = sd
