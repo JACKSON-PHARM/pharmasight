@@ -107,53 +107,31 @@ function renderEmailRequestForm(page) {
                 submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
             }
             try {
-                // Prefer internal auth: same base URL as login (backend sends our reset email; no Supabase).
+                // Internal auth only: backend sends reset email via SMTP (no Supabase).
                 const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
                     ? CONFIG.API_BASE_URL
                     : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
-                let usedInternal = false;
-                try {
-                    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/request-reset`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email: email })
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (res.ok) {
-                        usedInternal = true;
-                        if (successDiv) {
-                            successDiv.innerHTML = `
-                                <i class="fas fa-check-circle"></i>
-                                <p>If an account exists with this email, you will receive a reset link.</p>
-                                <p style="font-size: 0.875rem; margin-top: 0.5rem;">Check your inbox and use the link to set a new password.</p>
-                            `;
-                            successDiv.style.display = 'block';
-                        }
-                        form.style.display = 'none';
-                        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = originalBtnText; }
-                        return;
-                    }
-                } catch (internalErr) {
-                    console.warn('[PASSWORD RESET] Internal request-reset failed, falling back to Supabase:', internalErr);
-                }
-                if (!usedInternal) {
-                    if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = originalBtnText; }
-                    const supabase = window.initSupabaseClient();
-                    if (!supabase) throw new Error('Cannot send reset link. Please try again or contact support.');
-                    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-                        redirectTo: (typeof CONFIG !== 'undefined' && CONFIG.APP_PUBLIC_URL) ? CONFIG.APP_PUBLIC_URL : window.location.origin
-                    });
-                    if (error) throw error;
+                const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/request-reset`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: email })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) {
                     if (successDiv) {
                         successDiv.innerHTML = `
                             <i class="fas fa-check-circle"></i>
-                            <p>If an account exists, a reset link has been sent to your email.</p>
-                            <p style="font-size: 0.875rem; margin-top: 0.5rem;">Check your inbox and click the link.</p>
+                            <p>If an account exists with this email, you will receive a reset link.</p>
+                            <p style="font-size: 0.875rem; margin-top: 0.5rem;">Check your inbox and use the link to set a new password.</p>
                         `;
                         successDiv.style.display = 'block';
                     }
                     form.style.display = 'none';
+                    if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = originalBtnText; }
+                    return;
                 }
+                const msg = (data.detail && typeof data.detail === 'string') ? data.detail : (data.detail && data.detail.message) || 'Failed to send reset email. Please try again.';
+                throw new Error(msg);
             } catch (error) {
                 console.error('Password reset error:', error);
                 if (errorDiv) {

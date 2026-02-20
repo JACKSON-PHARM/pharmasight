@@ -639,50 +639,29 @@ async function loadLogin() {
 }
 
 /**
- * Self-service unlock: send Supabase password reset email for a username.
- * Backend discovers tenant for the username and returns the correct email.
+ * Self-service unlock: send password reset email via internal auth (backend SMTP).
+ * Backend looks up user by username in all tenants and sends reset link.
  */
 async function sendUnlockLinkForUsername(username) {
     const normalized = (username || '').trim();
     if (!normalized) {
         throw new Error('Enter your username or email first.');
     }
-    if (!CONFIG || !CONFIG.API_BASE_URL) {
-        throw new Error('Configuration error: API base URL not set.');
-    }
-
-    // Step 1: Resolve email + tenant context from backend (do not send tenant header)
-    const res = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
+    const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
+        ? CONFIG.API_BASE_URL
+        : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/request-reset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Password is required by schema, but not used for lookup.
-        body: JSON.stringify({ username: normalized, password: 'unlock' })
+        body: JSON.stringify({ username: normalized })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
         const msg = typeof data.detail === 'string'
             ? data.detail
-            : (data.detail && data.detail.message) || 'User not found';
+            : (data.detail && data.detail.message) || 'Could not send reset link. Please try again.';
         throw new Error(msg);
     }
-
-    const email = data.email;
-    if (!email) throw new Error('Could not resolve your email for password reset.');
-
-    // Persist tenant so subsequent app API calls use the correct DB for this user
-    if (data.tenant_subdomain) {
-        try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain); } catch (_) {}
-        try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain); } catch (_) {}
-    }
-
-    // Step 2: Send Supabase reset email (works as "unlock" link)
-    const supabase = window.initSupabaseClient ? window.initSupabaseClient() : null;
-    if (!supabase) throw new Error('Supabase client not available');
-
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: (typeof CONFIG !== 'undefined' && CONFIG.APP_PUBLIC_URL) ? CONFIG.APP_PUBLIC_URL : window.location.origin
-    });
-    if (error) throw error;
     return true;
 }
 

@@ -1843,21 +1843,19 @@ async function sendInvitationEmail(userId, email) {
     button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
     
     try {
-        // Use shared Supabase client
-        const supabaseClient = window.initSupabaseClient ? window.initSupabaseClient() : null;
-        if (!supabaseClient) {
-            throw new Error('Supabase client not available. Please check configuration.');
-        }
-        
-        // Send invitation email via Supabase Auth password reset
-        // This works for both first-time setup and password reset
-        const publicUrl = (typeof CONFIG !== 'undefined' && CONFIG.APP_PUBLIC_URL) ? CONFIG.APP_PUBLIC_URL : window.location.origin;
-        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
-            redirectTo: `${publicUrl}/invite`
+        // Internal auth: send reset/set-password link via backend SMTP (no Supabase).
+        const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
+            ? CONFIG.API_BASE_URL
+            : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
+        const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/request-reset`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email })
         });
-        
-        if (error) {
-            throw error;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const msg = (data.detail && typeof data.detail === 'string') ? data.detail : (data.detail && data.detail.message) || 'Error sending invitation email';
+            throw new Error(msg);
         }
         
         // Mark as sent in state
