@@ -18,6 +18,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import SessionLocal
 from app.database_master import get_master_db
 from app.dependencies import get_tenant_db, get_tenant_from_header, tenant_db_session
 from app.models.tenant import Tenant
@@ -49,8 +50,14 @@ def _trial_expired(tenant: Tenant) -> bool:
     return end < datetime.now(timezone.utc)
 
 
-def _tenant_access_blocked(tenant: Tenant) -> bool:
-    """True if tenant is suspended or cancelled (no access to app)."""
+# When user is found only in default/legacy DB (no tenant DB), reset token uses this subdomain.
+LEGACY_TENANT_SUBDOMAIN = "__default__"
+
+
+def _tenant_access_blocked(tenant: Optional[Tenant]) -> bool:
+    """True if tenant is suspended or cancelled (no access to app). None = legacy DB, not blocked."""
+    if tenant is None:
+        return False
     return (tenant.status or "").lower() in ("suspended", "cancelled")
 
 
@@ -117,18 +124,28 @@ def _build_login_response(
     return out
 
 
+def _normalize_db_url(url: Optional[str]) -> str:
+    """Normalize DB URL for comparison (strip, lowercase)."""
+    if not url:
+        return ""
+    return (url.strip() or "").lower()
+
+
 def _find_user_in_all_tenants(
     master_db: Session, normalized_username: str, check_email: bool
-) -> List[Tuple[Tenant, User]]:
+) -> List[Tuple[Optional[Tenant], User]]:
     """
-    Find all tenants where this username exists.
-    Returns list of (tenant, user) so we can detect collisions (same username in 2+ tenants).
+    Find all tenants where this username/email exists.
+    Also searches the default/legacy DB (DATABASE_URL); if user found there, we pair them
+    with a tenant whose database_url matches the default, or the first tenant, so the reset link works.
+    Returns list of (tenant, user); tenant may be None for legacy-only (caller handles).
     """
+    default_url = _normalize_db_url(settings.database_connection_string)
     tenants = master_db.query(Tenant).filter(
         Tenant.database_url.isnot(None),
         ~Tenant.status.in_(["cancelled", "suspended"]),
     ).all()
-    found: List[Tuple[Tenant, User]] = []
+    found: List[Tuple[Optional[Tenant], User]] = []
     for tenant in tenants:
         try:
             with tenant_db_session(tenant) as db:
@@ -137,6 +154,26 @@ def _find_user_in_all_tenants(
                     found.append((tenant, user))
         except Exception:
             continue
+    if found:
+        return found
+    # Fallback: search default/legacy DB (where public.users often lives in single-DB setups)
+    try:
+        db = SessionLocal()
+        try:
+            user = _find_user_in_db(db, normalized_username, check_email)
+            if user:
+                tenant_for_reset = None
+                for t in tenants:
+                    if _normalize_db_url(t.database_url) == default_url:
+                        tenant_for_reset = t
+                        break
+                if not tenant_for_reset and tenants:
+                    tenant_for_reset = tenants[0]
+                found.append((tenant_for_reset, user))
+        finally:
+            db.close()
+    except Exception:
+        pass
     return found
 
 
@@ -303,12 +340,15 @@ def auth_request_reset(
     found_list = _find_user_in_all_tenants(master_db, email_or_username, check_email)
     if not found_list:
         logger.info("[request-reset] No user found for %s; not sending email (same response for security)", email_or_username[:3] + "***")
-        return {"message": "If an account exists, you will receive a reset link."}
+        print("[request-reset] No user found for this email; no email sent. (Use an email that exists in your tenant DB.)")
+        return {"message": "If an account exists, you will receive a reset link.", "email_sent": False}
     tenant, user = found_list[0]
     if _tenant_access_blocked(tenant):
-        return {"message": "If an account exists, you will receive a reset link."}
-    logger.info("[request-reset] User found, sending reset email to %s (tenant=%s)", user.email, tenant.subdomain)
-    reset_token = create_reset_token(str(user.id), tenant.subdomain)
+        return {"message": "If an account exists, you will receive a reset link.", "email_sent": False}
+    subdomain_for_token = tenant.subdomain if tenant else LEGACY_TENANT_SUBDOMAIN
+    logger.info("[request-reset] User found, sending reset email to %s (tenant=%s)", user.email, subdomain_for_token)
+    print(f"[request-reset] User found: {user.email}, tenant={subdomain_for_token}. Attempting to send reset email...")
+    reset_token = create_reset_token(str(user.id), subdomain_for_token)
     base = (settings.APP_PUBLIC_URL or "").rstrip("/")
     reset_url = f"{base}/#password-reset?token={reset_token}"
     sent = EmailService.send_password_reset(user.email, reset_url, settings.RESET_TOKEN_EXPIRE_MINUTES)
@@ -318,6 +358,9 @@ def auth_request_reset(
             "Check SMTP_HOST, SMTP_USER, SMTP_PASSWORD and server logs. To=%s",
             user.email,
         )
+        print("[request-reset] Email NOT sent (SMTP not configured or send failed). Check backend logs and .env SMTP_* vars.")
+    else:
+        print(f"[request-reset] Password reset email sent to {user.email}")
     return {"message": "If an account exists, you will receive a reset link.", "email_sent": sent}
 
 
@@ -337,16 +380,31 @@ def auth_reset_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset link")
     sub = payload.get(CLAIM_SUB)
     tenant_subdomain = payload.get(CLAIM_TENANT_SUBDOMAIN)
-    if not sub or not tenant_subdomain:
+    if not sub:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset token")
+    from uuid import UUID
+    user_id = UUID(sub)
+    if tenant_subdomain == LEGACY_TENANT_SUBDOMAIN:
+        # User lives in default/legacy DB (public.users)
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+            if not user:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            user.password_hash = hash_password(body.new_password)
+            user.password_updated_at = datetime.now(timezone.utc)
+            user.password_set = True
+            db.commit()
+        finally:
+            db.close()
+        return {"message": "Password reset. Sign in with your username and password."}
     tenant = master_db.query(Tenant).filter(Tenant.subdomain == tenant_subdomain).first()
     if not tenant or not tenant.database_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     if (tenant.status or "").lower() in ("suspended", "cancelled"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
-    from uuid import UUID
     with tenant_db_session(tenant) as db:
-        user = db.query(User).filter(User.id == UUID(sub), User.deleted_at.is_(None)).first()
+        user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         user.password_hash = hash_password(body.new_password)
