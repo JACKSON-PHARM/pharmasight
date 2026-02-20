@@ -374,10 +374,13 @@ def auth_request_reset(
             sent = EmailService.send_password_reset(to_email, reset_url, expire_minutes)
             if sent:
                 logger.info("[request-reset] Password reset email sent to %s", to_email)
+                print(f"  [request-reset] Email sent to {to_email}")
             else:
                 logger.warning("[request-reset] Password reset email failed for %s (check SMTP)", to_email)
+                print(f"  [request-reset] Email NOT sent to {to_email} (SMTP failed or not configured – check SMTP_* env and server logs)")
         except Exception as e:
             logger.exception("[request-reset] Background send failed for %s: %s", to_email, e)
+            print(f"  [request-reset] Email send ERROR for {to_email}: {e}")
 
     background_tasks.add_task(send_reset_email)
     return {"message": "If an account exists, you will receive a reset link.", "email_sent": True}

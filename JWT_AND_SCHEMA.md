@@ -51,12 +51,32 @@ All are **signed with `SECRET_KEY`** (from `.env` / Render), algorithm **HS256**
 
 So: **normal path is internal JWT only**. Supabase JWT is only a fallback if you still have old tokens and have set `SUPABASE_JWT_SECRET`.
 
-### 1.4 Flow summary
+### 1.4 There is no “JWT table” in the database
+
+JWTs are **stateless**: the backend creates a signed string at login and checks the signature on each request. **Nothing is stored in the DB for tokens.** Authentication data in the database is:
+
+- **`public.users`** – `id`, `email`, `username`, `password_hash`, `password_set`, `is_active`, etc. This is the only “auth” table; login checks `password_hash` here and then issues a JWT in memory.
+
+So you will not see a `jwt`, `tokens`, or `sessions` table. The schema you have (with `users`, `tenants`, `companies`, `branches`, …) is correct; auth flow uses `users` + stateless JWTs.
+
+### 1.5 Flow summary
 
 - **Login** → backend checks password against `users.password_hash` in DB → issues **access + refresh** (internal JWT).
 - **API calls** → frontend sends **access token** in `Authorization: Bearer ...` → backend validates with `SECRET_KEY`, resolves tenant, loads user from tenant DB.
 - **Refresh** → frontend sends **refresh token** to `POST /api/auth/refresh` → backend validates (internal), issues new access (and optionally refresh).
 - **Password reset** → backend creates one-time **reset** token, puts it in email link; user submits token + new password to `POST /api/auth/reset-password`; backend validates reset token and updates `users.password_hash` in the correct tenant DB.
+
+---
+
+### 1.6 Why “already at latest version” but no tables in Supabase?
+
+If the terminal says **Default DB: already at latest version** but you don’t see `companies`, `users`, `branches`, etc. in Supabase:
+
+1. **Check the target DB** – On startup the app prints `Target DB: <host> / <database>`. In Supabase Dashboard, open **Project Settings → Database** and confirm the **host** (and project) match. If your app uses a different project (e.g. another Supabase project or a local Postgres), the tables will be in that DB, not the one you’re looking at.
+2. **Check the schema** – All app and master tables are in the **`public`** schema. In Table Editor, switch to **public** (not `auth` or `storage`).
+3. **If `schema_migrations` has rows but tables are missing** – Then migrations were recorded against this DB but CREATE TABLE may have failed earlier (e.g. wrong DB). Run the one-off script once to re-apply:  
+   `python -m pharmasight.backend.scripts.run_migrations_on_shared_db`  
+   If it says “already up to date”, the DB it’s connected to already has all migrations; the Supabase project you’re viewing may still be a different database.
 
 ---
 

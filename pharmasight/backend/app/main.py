@@ -73,39 +73,68 @@ def log_smtp_and_migrations():
 
 @app.on_event("startup")
 def run_tenant_migrations():
-    """Apply missing migrations on default/master app DB and on all tenant DBs (locked architecture)."""
+    """Apply missing migrations on default/master app DB and on all tenant DBs. Runs every restart to reach latest version."""
     try:
         from app.services.migration_service import MigrationService, run_migrations_for_url
 
-        # 1) Run app migrations on the default/master app DB (same DB as tenant when Option A)
+        print("")
+        print("========================================")
+        print("  MIGRATIONS: Starting (run on every restart to latest version)")
+        print("========================================")
+
         default_url = settings.database_connection_string
         if not default_url:
+            print("  [Migrations] SKIP: DATABASE_URL not set. App tables will not exist.")
             logger.warning("DATABASE_URL not set; skipping startup migrations. App tables will not exist.")
         else:
+            # Show which DB we're targeting (verify this matches your Supabase project in the dashboard)
+            try:
+                from urllib.parse import urlparse
+                p = urlparse(default_url)
+                db_target = f"{p.hostname or '?'} / {(p.path or '/').strip('/') or 'postgres'}"
+            except Exception:
+                db_target = "(connection string set)"
+            print(f"  [Migrations] Target DB: {db_target}")
+            print("  [Migrations] Default/master DB...")
             try:
                 ran_default = run_migrations_for_url(default_url)
                 if ran_default:
+                    print(f"  [Migrations] Default DB: applied {len(ran_default)} migration(s) -> {', '.join(ran_default)}")
                     logger.info("Startup migrations applied on default/master DB: %s", ran_default)
                 else:
+                    print("  [Migrations] Default DB: already at latest version.")
+                    print("  [Migrations] (If you don't see app tables in Supabase, check you're in the project above: Dashboard -> Table Editor -> public schema)")
                     logger.info("Default/master DB already up to date (no new migrations applied).")
             except Exception as e:
+                print(f"  [Migrations] Default DB: FAILED - {e}")
                 logger.error(
                     "Startup migrations on default/master DB FAILED: %s. App tables (companies, users, branches, etc.) may be missing. Fix: ensure database/migrations is deployed and DB is reachable.",
                     e,
                     exc_info=True,
                 )
 
-        # 2) Run app migrations on each tenant DB (Supabase per tenant)
+        print("  [Migrations] Tenant DBs...")
         svc = MigrationService()
         out = svc.run_migrations_all_tenant_dbs()
         if out["applied"]:
+            for tid, versions in out["applied"].items():
+                print(f"  [Migrations] Tenant {tid}: applied {len(versions)} migration(s)")
             logger.info("Startup migrations applied on tenant DBs: %s", out["applied"])
+        else:
+            print("  [Migrations] No tenant DBs to migrate (or already up to date).")
         if out["errors"]:
+            for tid, err in out["errors"].items():
+                print(f"  [Migrations] Tenant {tid}: ERROR - {err}")
             logger.warning(
                 "Startup migration errors on tenant DBs: %s (To skip a deleted tenant, run: python scripts/mark_tenant_cancelled.py <tenant_id_or_name>)",
                 out["errors"],
             )
+
+        print("  MIGRATIONS: Complete.")
+        print("========================================")
+        print("")
     except Exception as e:
+        print(f"  [Migrations] FATAL: {e}")
         logger.exception("Startup migrations failed: %s", e)
 
 

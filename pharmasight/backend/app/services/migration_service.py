@@ -127,7 +127,7 @@ def run_migrations_for_url(database_url: str) -> List[str]:
     """
     Run all missing migrations on the given tenant DB URL.
     Ensures schema_migrations exists, optionally baselines existing DBs, then runs ordered files.
-    Returns list of versions applied this run.
+    Returns list of versions applied this run. Always brings DB to latest version.
     """
     applied_this_run: List[str] = []
     conn = psycopg2.connect(database_url)
@@ -141,6 +141,7 @@ def run_migrations_for_url(database_url: str) -> List[str]:
         applied = _get_applied_versions(conn)
         files = _discover_migration_files()
         if not files:
+            print("  [Migrations] WARNING: No migration files found. App tables may be missing.")
             logger.warning(
                 "No migration files found in %s. App tables (companies, users, branches, etc.) will not exist. Check that 'database/migrations' is present in the deployed app.",
                 _get_migrations_dir(),
@@ -148,6 +149,7 @@ def run_migrations_for_url(database_url: str) -> List[str]:
         for version, path in files:
             if version in applied:
                 continue
+            print(f"  [Migrations] Applying {version}...")
             sql = path.read_text(encoding="utf-8", errors="replace")
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             cur = conn.cursor()
@@ -164,6 +166,7 @@ def run_migrations_for_url(database_url: str) -> List[str]:
             cur.close()
             applied.add(version)
             applied_this_run.append(version)
+            print(f"  [Migrations]   -> {version} OK")
             logger.info("Applied migration %s on %s", version, database_url[:50])
 
     finally:
