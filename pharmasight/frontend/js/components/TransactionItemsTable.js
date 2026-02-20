@@ -1235,7 +1235,7 @@
         if (!item) return;
         
         const marginEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .margin-input`);
-        if (marginEl) {
+        if (marginEl && marginEl !== document.activeElement) {
             const margin = this.calculateMargin(item);
             marginEl.value = (margin !== null && !isNaN(margin)) ? margin.toFixed(1) : '';
             marginEl.style.color = margin >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)';
@@ -1321,16 +1321,17 @@
             nettEl.textContent = this.getFormatCurrency()(this.calculateNett(item));
         }
         
-        // Update Price/unit input so it stays in sync when total or unit changes (2 decimals)
+        // Update Price/unit input so it stays in sync when total or unit changes (2 decimals).
+        // Do NOT overwrite while the user is typing (input has focus) — prevents "800" resetting to "8".
         const priceEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .price-input`);
-        if (priceEl) {
+        if (priceEl && priceEl !== document.activeElement) {
             const v = item.unit_price;
             priceEl.value = (v != null && v !== '' && !isNaN(Number(v))) ? this.roundMoney(v).toFixed(2) : '0.00';
         }
         
-        // Update Total display (editable input) — always 2 decimals so user sees 50.00 not 49.99994
+        // Update Total display (editable input) — always 2 decimals. Skip if user is typing in it.
         const totalEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .total-input`);
-        if (totalEl) {
+        if (totalEl && totalEl !== document.activeElement) {
             totalEl.value = this.roundMoney(item.total).toFixed(2);
         }
         
