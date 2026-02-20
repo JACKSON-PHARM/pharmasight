@@ -224,20 +224,9 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
                 db, item_data.item_id, invoice.branch_id
             )
             if cost_info:
-                # CRITICAL: Ensure unit_cost_used is ALWAYS stored as cost per retail unit
-                # (codebase convention: base = retail, smallest unit)
-                # PricingService.get_item_cost() should return cost per retail, but if it returns
-                # cost per packet/wholesale (due to item.base_unit confusion), convert it.
-                retail_unit = (item.retail_unit or "").strip().lower()
-                wholesale_unit = (item.wholesale_unit or item.base_unit or "piece").strip().lower()
-                pack_size = max(1, int(item.pack_size or 1))
-                
+                # unit_cost_used is stored as cost per wholesale unit (packet) - DO NOT CONVERT
+                # This is the architecture: cost per wholesale unit remains as-is
                 unit_cost_used = cost_info
-                # Heuristic: If cost seems too high for retail unit (> 10 KES) and we have pack_size,
-                # it might be cost per packet - convert to cost per retail unit
-                if float(cost_info) > 10 and wholesale_unit != retail_unit and pack_size > 1:
-                    # Cost might be per packet/wholesale unit - convert to per retail unit
-                    unit_cost_used = cost_info / Decimal(str(pack_size))
             # Enforce minimum margin unless user has sell_below_min_margin permission
             if unit_cost_used and float(unit_cost_used) > 0:
                 mult = get_unit_multiplier_from_item(item, item_data.unit_name)
@@ -706,31 +695,25 @@ def _compute_cogs_from_invoice_lines(
             if not item:
                 continue
             
+            # ARCHITECTURE: unit_cost_used is ALWAYS stored as cost per wholesale unit (packet)
+            # We need to convert it to cost per retail unit (tablet) for COGS calculation
+            
             # Get multiplier from sale unit to retail (codebase convention: base = retail)
             mult_to_retail = get_unit_multiplier_from_item(item, line.unit_name or "")
             if mult_to_retail is None or mult_to_retail <= 0:
                 continue
             
             # Convert sale quantity to retail units
+            # Example: 10 tablets × 1 = 10 retail units, or 1 packet × 30 = 30 retail units
             qty_retail = Decimal(str(line.quantity)) * mult_to_retail
             
-            # unit_cost_used should be cost per retail unit (codebase convention: base = retail)
-            # However, if it was stored as cost per packet/wholesale unit, we need to convert
-            cost_per_retail = Decimal(str(line.unit_cost_used))
-            sale_unit_lower = (line.unit_name or "").strip().lower()
-            retail_unit_lower = (item.retail_unit or "").strip().lower()
-            wholesale_unit_lower = (item.wholesale_unit or item.base_unit or "piece").strip().lower()
+            # unit_cost_used is cost per wholesale unit (packet)
+            # Convert to cost per retail unit (tablet) by dividing by pack_size
             pack_size = max(1, int(item.pack_size or 1))
+            cost_per_wholesale = Decimal(str(line.unit_cost_used))
+            cost_per_retail = cost_per_wholesale / Decimal(str(pack_size))
             
-            # Detect if unit_cost_used might be in wrong unit:
-            # If selling in retail units and cost seems like cost per wholesale unit (packet), convert
-            if sale_unit_lower == retail_unit_lower:
-                # Check if cost seems too high for a retail unit (heuristic: > 10 KES)
-                # This suggests it might be cost per packet/wholesale unit
-                if cost_per_retail > Decimal("10") and wholesale_unit_lower != retail_unit_lower and pack_size > 1:
-                    # Likely stored as cost per packet - convert to cost per retail unit
-                    cost_per_retail = cost_per_retail / Decimal(str(pack_size))
-            
+            # COGS = quantity sold (in retail units) × cost per retail unit
             line_cogs = qty_retail * cost_per_retail
             inv_line_cogs += line_cogs
         
@@ -738,11 +721,10 @@ def _compute_cogs_from_invoice_lines(
         if by_date and inv_line_cogs > 0:
             invoice_cogs_by_day[d] = invoice_cogs_by_day.get(d, Decimal("0")) + inv_line_cogs
     
-    # Prefer ledger COGS (actual FEFO allocation), but if missing/zero, use invoice-based calculation
-    if ledger_total > 0:
-        return ledger_total, ledger_cogs_by_day
-    else:
-        return invoice_cogs, invoice_cogs_by_day
+    # Use invoice-item-based COGS as primary (single source of truth from sales_invoice_items table)
+    # This ensures correct unit conversion based on what was actually sold
+    # Ledger entries may have legacy unit conversion issues, so we compute from invoice items
+    return invoice_cogs, invoice_cogs_by_day
 
 
 @router.get("/branch/{branch_id}/gross-profit", response_model=dict)
