@@ -1,18 +1,20 @@
 """
 Internal authentication: password hashing (bcrypt) and JWT (access, refresh, reset).
 Dual-auth: internal JWT is primary; Supabase JWT can be accepted when configured.
+Uses bcrypt directly to avoid passlib/bcrypt 4.x compatibility issues.
 """
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 from uuid import UUID
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.config import settings
 
-# Bcrypt for password hashing (same as passlib[bcrypt] in requirements)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+# Bcrypt max password length (bytes)
+BCRYPT_MAX_PASSWORD_BYTES = 72
+DEFAULT_BCRYPT_ROUNDS = 12
 
 # JWT claim names
 CLAIM_SUB = "sub"
@@ -28,9 +30,16 @@ TYPE_RESET = "reset"
 ISSUER_INTERNAL = "pharmasight-internal"
 
 
+def _password_bytes(password: str, max_bytes: int = BCRYPT_MAX_PASSWORD_BYTES) -> bytes:
+    """Encode password to bytes and truncate to bcrypt limit (72 bytes) to avoid ValueError."""
+    raw = password.encode("utf-8")
+    return raw[:max_bytes] if len(raw) > max_bytes else raw
+
+
 def hash_password(password: str) -> str:
-    """Return bcrypt hash of password."""
-    return pwd_context.hash(password)
+    """Return bcrypt hash of password. Passwords longer than 72 bytes are truncated (bcrypt limit)."""
+    pw = _password_bytes(password)
+    return bcrypt.hashpw(pw, bcrypt.gensalt(rounds=DEFAULT_BCRYPT_ROUNDS)).decode("ascii")
 
 
 def verify_password(plain_password: str, password_hash: Optional[str]) -> bool:
@@ -38,7 +47,8 @@ def verify_password(plain_password: str, password_hash: Optional[str]) -> bool:
     if not password_hash:
         return False
     try:
-        return pwd_context.verify(plain_password, password_hash)
+        pw = _password_bytes(plain_password)
+        return bcrypt.checkpw(pw, password_hash.encode("ascii"))
     except Exception:
         return False
 
