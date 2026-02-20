@@ -100,6 +100,12 @@ function renderEmailRequestForm(page) {
                 successDiv.textContent = '';
             }
             
+            const submitBtn = form.querySelector('button[type="submit"]');
+            const originalBtnText = submitBtn ? submitBtn.innerHTML : '';
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+            }
             try {
                 // Prefer internal auth: same base URL as login (backend sends our reset email; no Supabase).
                 const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
@@ -124,12 +130,14 @@ function renderEmailRequestForm(page) {
                             successDiv.style.display = 'block';
                         }
                         form.style.display = 'none';
+                        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = originalBtnText; }
                         return;
                     }
                 } catch (internalErr) {
                     console.warn('[PASSWORD RESET] Internal request-reset failed, falling back to Supabase:', internalErr);
                 }
                 if (!usedInternal) {
+                    if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = originalBtnText; }
                     const supabase = window.initSupabaseClient();
                     if (!supabase) throw new Error('Cannot send reset link. Please try again or contact support.');
                     const { error } = await supabase.auth.resetPasswordForEmail(email, {
@@ -151,6 +159,10 @@ function renderEmailRequestForm(page) {
                 if (errorDiv) {
                     errorDiv.textContent = error.message || 'Failed to send reset email. Please try again.';
                     errorDiv.style.display = 'block';
+                }
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = originalBtnText;
                 }
             }
         };

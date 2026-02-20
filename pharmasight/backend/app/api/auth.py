@@ -12,7 +12,7 @@ from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -132,6 +132,10 @@ def _normalize_db_url(url: Optional[str]) -> str:
     return (url.strip() or "").lower()
 
 
+# Cap tenant search so login/request-reset don't block for minutes when many tenants exist.
+MAX_TENANTS_TO_SEARCH = 50
+
+
 def _find_user_in_all_tenants(
     master_db: Session, normalized_username: str, check_email: bool
 ) -> List[Tuple[Optional[Tenant], User]]:
@@ -139,13 +143,14 @@ def _find_user_in_all_tenants(
     Find all tenants where this username/email exists.
     Also searches the default/legacy DB (DATABASE_URL); if user found there, we pair them
     with a tenant whose database_url matches the default, or the first tenant, so the reset link works.
+    Search is limited to MAX_TENANTS_TO_SEARCH to keep response time bounded (e.g. on Render).
     Returns list of (tenant, user); tenant may be None for legacy-only (caller handles).
     """
     default_url = _normalize_db_url(settings.database_connection_string)
     tenants = master_db.query(Tenant).filter(
         Tenant.database_url.isnot(None),
         ~Tenant.status.in_(["cancelled", "suspended"]),
-    ).all()
+    ).limit(MAX_TENANTS_TO_SEARCH).all()
     found: List[Tuple[Optional[Tenant], User]] = []
     for tenant in tenants:
         try:
@@ -329,10 +334,12 @@ class RequestResetRequest(BaseModel):
 def auth_request_reset(
     request: Request,
     body: RequestResetRequest,
+    background_tasks: BackgroundTasks,
     master_db: Session = Depends(get_master_db),
 ):
     """
     Send password reset email if user exists. Always returns 200 to avoid leaking existence.
+    Email is sent in the background so the API returns quickly (avoids long waits and repeated clicks).
     Requires SMTP configured. Reset link uses internal JWT (no Supabase).
     Reset link base URL: APP_PUBLIC_URL when set (non-localhost); else request Origin (so Render works).
     """
@@ -349,22 +356,31 @@ def auth_request_reset(
     if _tenant_access_blocked(tenant):
         return {"message": "If an account exists, you will receive a reset link.", "email_sent": False}
     subdomain_for_token = tenant.subdomain if tenant else LEGACY_TENANT_SUBDOMAIN
-    logger.info("[request-reset] User found, sending reset email to %s (tenant=%s)", user.email, subdomain_for_token)
-    print(f"[request-reset] User found: {user.email}, tenant={subdomain_for_token}. Attempting to send reset email...")
+    logger.info("[request-reset] User found, queuing reset email to %s (tenant=%s)", user.email, subdomain_for_token)
     reset_token = create_reset_token(str(user.id), subdomain_for_token)
     base = get_public_base_url(request)
     reset_url = f"{base}/#password-reset?token={reset_token}"
-    sent = EmailService.send_password_reset(user.email, reset_url, settings.RESET_TOKEN_EXPIRE_MINUTES)
-    if not sent:
+    expire_minutes = settings.RESET_TOKEN_EXPIRE_MINUTES
+    to_email = user.email
+    if not EmailService.is_configured():
         logger.warning(
-            "Password reset email not sent (SMTP not configured or send failed). "
-            "Check SMTP_HOST, SMTP_USER, SMTP_PASSWORD and server logs. To=%s",
-            user.email,
+            "SMTP not configured; password reset email will not be sent. To=%s",
+            to_email,
         )
-        print("[request-reset] Email NOT sent (SMTP not configured or send failed). Check backend logs and .env SMTP_* vars.")
-    else:
-        print(f"[request-reset] Password reset email sent to {user.email}")
-    return {"message": "If an account exists, you will receive a reset link.", "email_sent": sent}
+        return {"message": "If an account exists, you will receive a reset link.", "email_sent": False}
+
+    def send_reset_email():
+        try:
+            sent = EmailService.send_password_reset(to_email, reset_url, expire_minutes)
+            if sent:
+                logger.info("[request-reset] Password reset email sent to %s", to_email)
+            else:
+                logger.warning("[request-reset] Password reset email failed for %s (check SMTP)", to_email)
+        except Exception as e:
+            logger.exception("[request-reset] Background send failed for %s: %s", to_email, e)
+
+    background_tasks.add_task(send_reset_email)
+    return {"message": "If an account exists, you will receive a reset link.", "email_sent": True}
 
 
 class ResetPasswordRequest(BaseModel):
