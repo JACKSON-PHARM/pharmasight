@@ -1291,13 +1291,6 @@ function initializeNavigation() {
             }
             
             navigationDebounceTimer = setTimeout(() => {
-                const action = navItem.dataset.action;
-                if (action === 'change-password') {
-                    if (typeof window.openChangePasswordModal === 'function') {
-                        window.openChangePasswordModal();
-                    }
-                    return;
-                }
                 const page = navItem.dataset.page;
                 const hasSub = navItem.dataset.hasSub === 'true';
                 
