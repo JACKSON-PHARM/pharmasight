@@ -1667,19 +1667,22 @@ def complete_branch_stock_take(
     db: Session = Depends(get_tenant_db)
 ):
     """
-    Complete stock take for branch
-    
-    Updates inventory with counted quantities and ends the session.
+    Complete stock take for branch.
+    Row-level lock on session prevents concurrent complete; entire operation in one transaction.
     """
     try:
-        # Get active session
-        session = db.query(StockTakeSession).filter(
-            and_(
-                StockTakeSession.branch_id == branch_id,
-                StockTakeSession.status == 'ACTIVE'
+        # Lock active session row before processing to prevent concurrent complete
+        session = (
+            db.query(StockTakeSession)
+            .filter(
+                and_(
+                    StockTakeSession.branch_id == branch_id,
+                    StockTakeSession.status == 'ACTIVE'
+                )
             )
-        ).first()
-        
+            .with_for_update()
+            .first()
+        )
         if not session:
             logger.warning(f"Attempt to complete stock take for branch {branch_id} but no active session found")
             raise HTTPException(

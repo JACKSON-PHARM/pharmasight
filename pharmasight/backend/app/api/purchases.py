@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from app.dependencies import get_tenant_db
 from app.models import (
     GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
@@ -199,7 +199,26 @@ def create_grn(grn: GRNCreate, db: Session = Depends(get_tenant_db)):
                 created_by=grn.created_by
             )
             ledger_entries.append(ledger_entry)
-    
+    # Reject duplicate POST within same request window (e.g. double submit)
+    window = datetime.now(timezone.utc) - timedelta(seconds=2)
+    recent_same = (
+        db.query(GRN)
+        .filter(
+            GRN.company_id == grn.company_id,
+            GRN.branch_id == grn.branch_id,
+            GRN.supplier_id == grn.supplier_id,
+            GRN.date_received == grn.date_received,
+            GRN.total_cost >= total_cost - Decimal("0.01"),
+            GRN.total_cost <= total_cost + Decimal("0.01"),
+            GRN.created_at >= window,
+        )
+        .first()
+    )
+    if recent_same:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A GRN with the same details was just created. If this was a duplicate request, ignore.",
+        )
     # Create GRN
     db_grn = GRN(
         company_id=grn.company_id,
@@ -617,8 +636,8 @@ def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCre
 def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
     """
     Batch Supplier Invoice - Add Stock to Inventory
-    
-    This endpoint processes a DRAFT invoice and adds stock to inventory based on batch data.
+
+    Row-level lock on invoice prevents concurrent batch; status checked after lock.
     Only DRAFT invoices can be batched. Once batched, status changes to BATCHED.
     Ensures invoice has a system document number (SPV...) before batching; assigns one if missing.
     """
@@ -626,6 +645,7 @@ def batch_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db
         db.query(SupplierInvoice)
         .options(selectinload(SupplierInvoice.items))
         .filter(SupplierInvoice.id == invoice_id)
+        .with_for_update()
         .first()
     )
     if not invoice:
@@ -870,18 +890,26 @@ def update_invoice_payment(
     db: Session = Depends(get_tenant_db)
 ):
     """
-    Update payment information for supplier invoice
-    
-    Updates amount_paid and calculates balance and payment_status.
+    Update payment information for supplier invoice.
+    Only BATCHED or DRAFT; amount_paid must not exceed total_inclusive.
     """
-    invoice = db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).first()
+    invoice = (
+        db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).with_for_update().first()
+    )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    if invoice.status not in ("DRAFT", "BATCHED"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot update payment for invoice with status {invoice.status}. Only DRAFT or BATCHED."
+        )
+    if amount_paid > invoice.total_inclusive:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Amount paid ({amount_paid}) cannot exceed invoice total ({invoice.total_inclusive})."
+        )
     invoice.amount_paid = amount_paid
     invoice.balance = invoice.total_inclusive - amount_paid
-    
-    # Update payment status and mark as complete when fully paid
     if amount_paid <= 0:
         invoice.payment_status = "UNPAID"
     elif amount_paid >= invoice.total_inclusive:

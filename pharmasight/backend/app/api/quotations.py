@@ -334,18 +334,19 @@ def convert_quotation_to_invoice(
     db: Session = Depends(get_tenant_db)
 ):
     """
-    Convert quotation to sales invoice
-    This will:
-    1. Check stock availability for all items
-    2. Create a sales invoice with FEFO stock allocation
-    3. Update quotation status to 'converted'
-    4. Link quotation to the new invoice
+    Convert quotation to sales invoice.
+    Row-level lock on quotation prevents concurrent convert; status checked after lock.
     """
-    # Get quotation
-    quotation = db.query(Quotation).filter(Quotation.id == quotation_id).first()
+    from sqlalchemy.orm import selectinload
+    quotation = (
+        db.query(Quotation)
+        .options(selectinload(Quotation.items))
+        .filter(Quotation.id == quotation_id)
+        .with_for_update()
+        .first()
+    )
     if not quotation:
         raise HTTPException(status_code=404, detail="Quotation not found")
-    
     if quotation.status == "converted":
         raise HTTPException(
             status_code=400,

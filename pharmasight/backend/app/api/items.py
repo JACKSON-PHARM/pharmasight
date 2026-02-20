@@ -6,7 +6,7 @@ X-Tenant-Subdomain is set, else default DB). Same company/DB as rest of app.
 """
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc
@@ -1002,6 +1002,25 @@ def adjust_stock(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid expiry_date; use YYYY-MM-DD.")
 
+    # Reject duplicate POST within same request window (e.g. double submit)
+    window = datetime.now(timezone.utc) - timedelta(seconds=2)
+    recent_same = (
+        db.query(InventoryLedger)
+        .filter(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == body.branch_id,
+            InventoryLedger.reference_type == "MANUAL_ADJUSTMENT",
+            InventoryLedger.quantity_delta == quantity_delta,
+            InventoryLedger.created_by == body.user_id,
+            InventoryLedger.created_at >= window,
+        )
+        .first()
+    )
+    if recent_same:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An identical stock adjustment was just recorded. If this was a duplicate request, ignore.",
+        )
     ledger_entry = InventoryLedger(
         company_id=item.company_id,
         branch_id=body.branch_id,

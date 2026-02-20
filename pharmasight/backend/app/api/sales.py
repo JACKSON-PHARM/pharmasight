@@ -8,8 +8,7 @@ from sqlalchemy import func
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
-from datetime import date
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 from fastapi import Query
 from app.dependencies import get_tenant_db
 from app.models import (
@@ -1183,34 +1182,45 @@ def add_invoice_payment(
     db: Session = Depends(get_tenant_db)
 ):
     """
-    Add a split payment to a sales invoice
-    
-    Supports multiple payment modes per invoice (cash, M-Pesa, card, etc.)
+    Add a split payment to a sales invoice.
+    Lock on invoice ensures consistent totals; duplicate identical payment within 5s rejected.
     """
-    invoice = db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).first()
+    invoice = (
+        db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).with_for_update().first()
+    )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
     if invoice.status not in ["BATCHED", "PAID"]:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot add payment to invoice with status {invoice.status}. Invoice must be BATCHED."
         )
-    
-    # Calculate total payments so far
     existing_payments = db.query(func.sum(InvoicePayment.amount)).filter(
         InvoicePayment.invoice_id == invoice_id
     ).scalar() or Decimal("0")
-    
     total_paid = existing_payments + payment.amount
-    
-    # Validate payment doesn't exceed invoice total
     if total_paid > invoice.total_inclusive:
         raise HTTPException(
             status_code=400,
             detail=f"Payment amount exceeds invoice total. Invoice: {invoice.total_inclusive}, Total paid: {total_paid}"
         )
-    
+    # Reject duplicate identical payment within same request window (e.g. double submit)
+    duplicate_window = datetime.now(timezone.utc) - timedelta(seconds=5)
+    recent_same = (
+        db.query(InvoicePayment)
+        .filter(
+            InvoicePayment.invoice_id == invoice_id,
+            InvoicePayment.amount == payment.amount,
+            InvoicePayment.payment_mode == payment.payment_mode,
+            InvoicePayment.created_at >= duplicate_window,
+        )
+        .first()
+    )
+    if recent_same:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An identical payment was just recorded. If this was a duplicate request, ignore.",
+        )
     # Create payment
     db_payment = InvoicePayment(
         invoice_id=invoice_id,
@@ -1227,8 +1237,7 @@ def add_invoice_payment(
         invoice.status = "PAID"
         invoice.cashier_approved = True
         invoice.approved_by = payment.paid_by
-        from datetime import datetime
-        invoice.approved_at = datetime.utcnow()
+        invoice.approved_at = datetime.now(timezone.utc)
     elif total_paid > 0:
         invoice.payment_status = "PARTIAL"
     
