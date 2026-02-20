@@ -90,3 +90,42 @@ class EmailService:
         except Exception as e:
             logger.exception(f"Failed to send tenant invite email to {to_email}: {e}")
             return False
+
+    @staticmethod
+    def send_password_reset(to_email: str, reset_url: str, expire_minutes: int = 60) -> bool:
+        """
+        Send password reset email with link. Returns True if sent successfully.
+        """
+        if not EmailService.is_configured():
+            logger.warning("SMTP not configured; skipping password reset email")
+            return False
+        safe_url = _escape(reset_url)
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <body style="font-family:sans-serif;line-height:1.5;color:#333;">
+            <h2>Reset your PharmaSight password</h2>
+            <p>Click the link below to set a new password:</p>
+            <p><a href="{safe_url}" style="background:#2563eb;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;display:inline-block;">Reset password</a></p>
+            <p style="word-break:break-all;font-size:12px;color:#666;">Or copy: {safe_url}</p>
+            <p style="color:#666;font-size:14px;">This link expires in {expire_minutes} minutes. If you didn't request this, ignore this email.</p>
+        </body>
+        </html>
+        """
+        plain = f"Reset your PharmaSight password: {reset_url}\n\nThis link expires in {expire_minutes} minutes.\n"
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Reset your PharmaSight password"
+        msg["From"] = settings.EMAIL_FROM
+        msg["To"] = to_email
+        msg.attach(MIMEText(plain, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+        try:
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+                server.starttls()
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.sendmail(settings.EMAIL_FROM, [to_email], msg.as_string())
+            logger.info(f"Password reset email sent to {to_email}")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to send password reset email to {to_email}: {e}")
+            return False

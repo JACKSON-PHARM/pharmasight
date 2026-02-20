@@ -1,24 +1,37 @@
 """
 Authentication API
 Handles username-based login (looks up email from username).
+Dual-auth: when user has password_hash we verify password and return internal JWT;
+otherwise return email for Supabase sign-in.
 
 Uses get_tenant_db: LEGACY when no X-Tenant-* header, TENANT DB when resolved.
-When no tenant header and user not in legacy DB, discovers which tenant the user
-belongs to so the app can route them to their tenant data.
-If the same username exists in more than one tenant, we require tenant context (link or picker).
 """
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database_master import get_master_db
 from app.dependencies import get_tenant_db, get_tenant_from_header, tenant_db_session
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.email_service import EmailService
+from app.utils.auth_internal import (
+    CLAIM_SUB,
+    CLAIM_TENANT_SUBDOMAIN,
+    TYPE_REFRESH,
+    TYPE_RESET,
+    create_access_token,
+    create_refresh_token,
+    create_reset_token,
+    decode_internal_token,
+    hash_password,
+    verify_password,
+)
 
 router = APIRouter()
 
@@ -45,12 +58,15 @@ class UsernameLoginRequest(BaseModel):
 
 
 class UsernameLoginResponse(BaseModel):
-    """Username login response with email for Supabase Auth and tenant context."""
+    """Username login response. When internal auth used: access_token/refresh_token set; else email for Supabase."""
     email: str
     user_id: str
-    username: Optional[str] = None  # Display name for UI (e.g. B-BRIDGIT1)
+    username: Optional[str] = None
     full_name: Optional[str] = None
-    tenant_subdomain: Optional[str] = None  # So frontend knows which tenant DB to use for this session
+    tenant_subdomain: Optional[str] = None
+    # Internal auth: when user has password_hash we verify and return these
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
 
 
 def _find_user_in_db(db: Session, normalized_username: str, check_email: bool) -> Optional[User]:
@@ -67,6 +83,35 @@ def _find_user_in_db(db: Session, normalized_username: str, check_email: bool) -
             User.deleted_at.is_(None)
         ).first()
     return user
+
+
+def _require_password_if_internal(user: User, password: str) -> None:
+    """If user has password_hash, verify password; else no-op (Supabase will verify). Raises 401 if wrong."""
+    if not getattr(user, "password_hash", None):
+        return
+    if not verify_password(password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid password")
+
+
+def _build_login_response(
+    user: User,
+    tenant: Optional[Tenant],
+    password: Optional[str] = None,
+) -> UsernameLoginResponse:
+    """Build login response; if user has password_hash and password matches, add tokens."""
+    subdomain = tenant.subdomain if tenant else None
+    out = UsernameLoginResponse(
+        email=user.email,
+        user_id=str(user.id),
+        username=getattr(user, "username", None) or None,
+        full_name=user.full_name,
+        tenant_subdomain=subdomain,
+    )
+    if getattr(user, "password_hash", None) and password is not None:
+        if verify_password(password, user.password_hash):
+            out.access_token = create_access_token(str(user.id), user.email, subdomain)
+            out.refresh_token = create_refresh_token(str(user.id), user.email, subdomain)
+    return out
 
 
 def _find_user_in_all_tenants(
@@ -128,13 +173,8 @@ def username_login(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Trial expired. Please contact support to upgrade.",
                 )
-            return UsernameLoginResponse(
-                email=user.email,
-                user_id=str(user.id),
-                username=getattr(user, "username", None) or None,
-                full_name=user.full_name,
-                tenant_subdomain=tenant.subdomain,
-            )
+            _require_password_if_internal(user, request.password)
+            return _build_login_response(user, tenant, request.password)
         else:
             # Same username exists in more than one tenant: require tenant context (invite link or picker)
             tenants_info = [
@@ -169,15 +209,138 @@ def username_login(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Trial expired. Please contact support to upgrade.",
             )
-        return UsernameLoginResponse(
-            email=user.email,
-            user_id=str(user.id),
-            username=getattr(user, "username", None) or None,
-            full_name=user.full_name,
-            tenant_subdomain=tenant.subdomain if tenant else None,
-        )
+        _require_password_if_internal(user, request.password)
+        return _build_login_response(user, tenant, request.password)
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="User not found"
     )
+
+
+# -----------------------------------------------------------------------------
+# Internal auth: refresh, set-password (invite), request-reset, reset-password
+# -----------------------------------------------------------------------------
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = None
+
+
+@router.post("/auth/refresh", response_model=RefreshResponse)
+def auth_refresh(body: RefreshRequest):
+    """Exchange a valid refresh token for a new access token (and optional new refresh token)."""
+    payload = decode_internal_token(body.refresh_token)
+    if not payload or payload.get("type") != TYPE_REFRESH:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+    sub = payload.get(CLAIM_SUB)
+    email = payload.get("email") or ""
+    tenant_subdomain = payload.get(CLAIM_TENANT_SUBDOMAIN)
+    if not sub:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    access_token = create_access_token(sub, email, tenant_subdomain)
+    new_refresh = create_refresh_token(sub, email, tenant_subdomain)
+    return RefreshResponse(access_token=access_token, refresh_token=new_refresh)
+
+
+class SetPasswordRequest(BaseModel):
+    """Set password via invitation_token (in-app invite flow). Requires X-Tenant-Subdomain."""
+    invitation_token: str
+    new_password: str = Field(..., min_length=6)
+
+
+@router.post("/auth/set-password", status_code=status.HTTP_200_OK)
+def auth_set_password(
+    body: SetPasswordRequest,
+    tenant: Optional[Tenant] = Depends(get_tenant_from_header),
+    db: Session = Depends(get_tenant_db),
+):
+    """Set password for invited user (invitation_token). Clears invitation_token and sets password_set."""
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tenant context required (X-Tenant-Subdomain)")
+    user = db.query(User).filter(
+        User.invitation_token == body.invitation_token,
+        User.deleted_at.is_(None),
+    ).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or expired invitation")
+    user.password_hash = hash_password(body.new_password)
+    user.password_updated_at = datetime.now(timezone.utc)
+    user.password_set = True
+    user.is_pending = False
+    user.invitation_token = None
+    user.is_active = True
+    db.commit()
+    return {"message": "Password set. Sign in with your username and password."}
+
+
+class RequestResetRequest(BaseModel):
+    """Request password reset email. Send email (or username) to look up user."""
+    email: Optional[str] = None
+    username: Optional[str] = None
+
+
+@router.post("/auth/request-reset", status_code=status.HTTP_200_OK)
+def auth_request_reset(
+    body: RequestResetRequest,
+    master_db: Session = Depends(get_master_db),
+):
+    """
+    Send password reset email if user exists. Always returns 200 to avoid leaking existence.
+    Requires SMTP configured. Reset link uses internal JWT (no Supabase).
+    """
+    email_or_username = (body.email or body.username or "").strip().lower()
+    if not email_or_username:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email or username required")
+    check_email = "@" in email_or_username
+    found_list = _find_user_in_all_tenants(master_db, email_or_username, check_email)
+    if not found_list:
+        return {"message": "If an account exists, you will receive a reset link."}
+    # Use first tenant; if multiple we could return a hint or send to first only
+    tenant, user = found_list[0]
+    if _tenant_access_blocked(tenant):
+        return {"message": "If an account exists, you will receive a reset link."}
+    reset_token = create_reset_token(str(user.id), tenant.subdomain)
+    base = (settings.APP_PUBLIC_URL or "").rstrip("/")
+    reset_url = f"{base}/#password-reset?token={reset_token}"
+    sent = EmailService.send_password_reset(user.email, reset_url, settings.RESET_TOKEN_EXPIRE_MINUTES)
+    return {"message": "If an account exists, you will receive a reset link.", "email_sent": sent}
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=6)
+
+
+@router.post("/auth/reset-password", status_code=status.HTTP_200_OK)
+def auth_reset_password(
+    body: ResetPasswordRequest,
+    master_db: Session = Depends(get_master_db),
+):
+    """Reset password using one-time token from email link. Sets password_hash (internal auth)."""
+    payload = decode_internal_token(body.token)
+    if not payload or payload.get("type") != TYPE_RESET:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset link")
+    sub = payload.get(CLAIM_SUB)
+    tenant_subdomain = payload.get(CLAIM_TENANT_SUBDOMAIN)
+    if not sub or not tenant_subdomain:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset token")
+    tenant = master_db.query(Tenant).filter(Tenant.subdomain == tenant_subdomain).first()
+    if not tenant or not tenant.database_url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if (tenant.status or "").lower() in ("suspended", "cancelled"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
+    from uuid import UUID
+    with tenant_db_session(tenant) as db:
+        user = db.query(User).filter(User.id == UUID(sub), User.deleted_at.is_(None)).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        user.password_hash = hash_password(body.new_password)
+        user.password_updated_at = datetime.now(timezone.utc)
+        user.password_set = True
+        db.commit()
+    return {"message": "Password reset. Sign in with your username and password."}

@@ -12,9 +12,12 @@ from sqlalchemy.orm import Session
 from app.database_master import get_master_db
 from app.dependencies import tenant_db_session
 from app.schemas.tenant import OnboardingSignupRequest, OnboardingSignupResponse
+from datetime import datetime, timezone
+
 from app.services.onboarding_service import OnboardingService
 from app.services.invite_service import InviteService
 from app.utils.username_generator import generate_username_from_name
+from app.utils.auth_internal import hash_password
 from app.models.user import User
 
 router = APIRouter()
@@ -165,6 +168,8 @@ def complete_tenant_invite(
             is_active=True,
             is_pending=False,
             password_set=True,
+            password_hash=hash_password(body.password),
+            password_updated_at=datetime.now(timezone.utc),
         )
         tenant_db.add(user)
         tenant_db.commit()

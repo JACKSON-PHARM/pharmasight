@@ -33,23 +33,19 @@ async function loadPasswordReset() {
     // Clear page
     page.innerHTML = '';
     
-    // Check if we have a token in the URL OR a persisted flag from app.js
     const hash = window.location.hash || '';
     const fullUrl = window.location.href || '';
-    const hasTokenInUrl = (
-        hash.includes('access_token') && hash.includes('type=recovery')
-    ) || (
-        fullUrl.includes('access_token') && fullUrl.includes('type=recovery')
+    const hasSupabaseToken = (
+        (hash.includes('access_token') && hash.includes('type=recovery')) ||
+        (fullUrl.includes('access_token') && fullUrl.includes('type=recovery'))
     );
+    const hasInternalToken = (fullUrl.indexOf('token=') >= 0 || hash.indexOf('token=') >= 0) && !hasSupabaseToken;
     const hasTokenFlag = window.__PASSWORD_RESET_TOKEN_PRESENT === true;
-    const hasToken = hasTokenInUrl || hasTokenFlag;
-    
-    console.log('[PASSWORD RESET] Has token in URL?', hasTokenInUrl, 'Has token flag?', hasTokenFlag);
-    
+    const hasToken = hasSupabaseToken || hasInternalToken || hasTokenFlag;
+
     if (hasToken) {
-        // Token in URL - show password update form
-        console.log('[PASSWORD RESET] Showing password update form (token detected)');
-        await renderPasswordUpdateForm(page);
+        console.log('[PASSWORD RESET] Showing password update form (token detected)', { hasSupabaseToken, hasInternalToken });
+        await renderPasswordUpdateForm(page, hasInternalToken);
     } else {
         // No token - show email request form
         console.log('[PASSWORD RESET] Showing email request form (no token)');
@@ -105,31 +101,51 @@ function renderEmailRequestForm(page) {
             }
             
             try {
-                const supabase = window.initSupabaseClient();
-                if (!supabase) throw new Error('Supabase client not available');
-                
-                // Send reset email
-                const { error } = await supabase.auth.resetPasswordForEmail(email, {
-                    redirectTo: (typeof CONFIG !== 'undefined' && CONFIG.APP_PUBLIC_URL) ? CONFIG.APP_PUBLIC_URL : window.location.origin
-                });
-                
-                if (error) throw error;
-                
-                // Show success
-                if (successDiv) {
-                    successDiv.innerHTML = `
-                        <i class="fas fa-check-circle"></i>
-                        <p>Password reset link has been sent to your email!</p>
-                        <p style="font-size: 0.875rem; margin-top: 0.5rem;">
-                            Please check your inbox and click the link to reset your password.
-                        </p>
-                    `;
-                    successDiv.style.display = 'block';
+                // Prefer internal auth: same base URL as login (backend sends our reset email; no Supabase).
+                const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
+                    ? CONFIG.API_BASE_URL
+                    : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
+                let usedInternal = false;
+                try {
+                    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/request-reset`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: email })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (res.ok) {
+                        usedInternal = true;
+                        if (successDiv) {
+                            successDiv.innerHTML = `
+                                <i class="fas fa-check-circle"></i>
+                                <p>If an account exists with this email, you will receive a reset link.</p>
+                                <p style="font-size: 0.875rem; margin-top: 0.5rem;">Check your inbox and use the link to set a new password.</p>
+                            `;
+                            successDiv.style.display = 'block';
+                        }
+                        form.style.display = 'none';
+                        return;
+                    }
+                } catch (internalErr) {
+                    console.warn('[PASSWORD RESET] Internal request-reset failed, falling back to Supabase:', internalErr);
                 }
-                
-                // Hide form
-                form.style.display = 'none';
-                
+                if (!usedInternal) {
+                    const supabase = window.initSupabaseClient();
+                    if (!supabase) throw new Error('Cannot send reset link. Please try again or contact support.');
+                    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+                        redirectTo: (typeof CONFIG !== 'undefined' && CONFIG.APP_PUBLIC_URL) ? CONFIG.APP_PUBLIC_URL : window.location.origin
+                    });
+                    if (error) throw error;
+                    if (successDiv) {
+                        successDiv.innerHTML = `
+                            <i class="fas fa-check-circle"></i>
+                            <p>If an account exists, a reset link has been sent to your email.</p>
+                            <p style="font-size: 0.875rem; margin-top: 0.5rem;">Check your inbox and click the link.</p>
+                        `;
+                        successDiv.style.display = 'block';
+                    }
+                    form.style.display = 'none';
+                }
             } catch (error) {
                 console.error('Password reset error:', error);
                 if (errorDiv) {
@@ -154,7 +170,17 @@ function renderEmailRequestForm(page) {
     }
 }
 
-async function renderPasswordUpdateForm(page) {
+function getResetTokenFromUrl() {
+    const search = window.location.search || '';
+    const hash = window.location.hash || '';
+    const fromSearch = search ? new URLSearchParams(search.slice(1)).get('token') : null;
+    if (fromSearch) return fromSearch;
+    const q = hash.indexOf('?');
+    if (q >= 0) return new URLSearchParams(hash.slice(q + 1)).get('token');
+    return null;
+}
+
+async function renderPasswordUpdateForm(page, isInternalReset) {
     page.innerHTML = `
         <div class="login-container">
             <div class="login-card">
@@ -309,10 +335,25 @@ async function renderPasswordUpdateForm(page) {
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating...';
             
             try {
+                if (isInternalReset) {
+                    const token = getResetTokenFromUrl();
+                    if (!token) throw new Error('Reset link invalid or expired.');
+                    const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL) ? CONFIG.API_BASE_URL : '';
+                    if (!baseUrl) throw new Error('Configuration error.');
+                    const res = await fetch(`${baseUrl}/api/auth/reset-password`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token: token, new_password: newPassword })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.detail || data.message || 'Failed to reset password.');
+                    if (typeof showToast === 'function') showToast('Password reset. Sign in with your username and password.', 'success');
+                    window.history.replaceState(null, null, window.location.pathname);
+                    setTimeout(() => { (window.loadPage && window.loadPage('login')) || (window.location.hash = '#login'); }, 1500);
+                    return;
+                }
                 const supabase = window.initSupabaseClient();
                 if (!supabase) throw new Error('Supabase client not available');
-                
-                // First, get the current session
                 const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
                 
                 if (sessionError) throw sessionError;

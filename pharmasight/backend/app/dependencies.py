@@ -5,10 +5,13 @@ Authority: DATABASE_PER_TENANT_IMPLEMENTATION_PLAN.md and architecture context.
 - Master DB: tenant management only. Never users, companies, branches, items.
 - Tenant DB: one per tenant; full app schema. Data isolated per tenant.
 - Legacy/default DB: current DATABASE_URL. No tenant header → use this.
+
+Auth: get_current_user_optional / get_current_user accept internal JWT or (when
+SUPABASE_JWT_SECRET set) Supabase JWT. Tenant from token or X-Tenant-* header.
 """
 import threading
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Generator, Optional, Tuple
 from uuid import UUID
 
 from fastapi import Request, Depends, HTTPException, status
@@ -19,6 +22,10 @@ from app.config import settings
 from app.database import SessionLocal
 from app.database_master import get_master_db
 from app.models.tenant import Tenant
+from app.models.user import User
+from app.utils.auth_internal import (
+    decode_token_dual,
+)
 
 # -----------------------------------------------------------------------------
 # Tenant engine pool (Step 2)
@@ -147,5 +154,117 @@ def tenant_db_session(tenant: Tenant) -> Generator[Session, None, None]:
     db = factory()
     try:
         yield db
+    finally:
+        db.close()
+
+
+# -----------------------------------------------------------------------------
+# Auth: current user from JWT (internal or Supabase dual-auth)
+# -----------------------------------------------------------------------------
+
+def _tenant_from_token_or_header(request: Request, master_db: Session, payload: dict) -> Optional[Tenant]:
+    """Resolve tenant from token tenant_subdomain or from X-Tenant-* headers."""
+    tenant_subdomain = (payload or {}).get("tenant_subdomain")
+    if tenant_subdomain:
+        return master_db.query(Tenant).filter(Tenant.subdomain == str(tenant_subdomain).strip()).first()
+    subdomain = request.headers.get("X-Tenant-Subdomain")
+    tenant_id_raw = request.headers.get("X-Tenant-ID")
+    if not subdomain and not tenant_id_raw:
+        return None
+    tenant = None
+    if tenant_id_raw:
+        try:
+            uid = UUID(str(tenant_id_raw).strip())
+            tenant = master_db.query(Tenant).filter(Tenant.id == uid).first()
+        except (ValueError, TypeError):
+            pass
+    if not tenant and subdomain:
+        tenant = master_db.query(Tenant).filter(Tenant.subdomain == str(subdomain).strip()).first()
+    return tenant
+
+
+def get_current_user_optional(
+    request: Request,
+    master_db: Session = Depends(get_master_db),
+) -> Generator[Optional[Tuple[User, Session]], None, None]:
+    """
+    If Authorization: Bearer <token> present and valid (internal or Supabase JWT),
+    yield (user, tenant_db_session). Otherwise yield None.
+    Tenant comes from token (internal) or X-Tenant-Subdomain header (Supabase).
+    """
+    auth = request.headers.get("Authorization")
+    token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
+    if not token:
+        yield None
+        return
+    payload = decode_token_dual(token)
+    if not payload or not payload.get("sub"):
+        yield None
+        return
+    try:
+        sub = UUID(str(payload["sub"]))
+    except (ValueError, TypeError):
+        yield None
+        return
+    tenant = _tenant_from_token_or_header(request, master_db, payload)
+    if not tenant or not tenant.database_url:
+        yield None
+        return
+    if (tenant.status or "").lower() in ("suspended", "cancelled"):
+        yield None
+        return
+    factory = _session_factory_for_url(tenant.database_url)
+    db = factory()
+    try:
+        user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
+        if not user or not user.is_active:
+            yield None
+            return
+        yield (user, db)
+    finally:
+        db.close()
+
+
+def get_current_user(
+    request: Request,
+    master_db: Session = Depends(get_master_db),
+) -> Generator[Tuple[User, Session], None, None]:
+    """
+    Require valid JWT; yield (user, tenant_db_session). Raises 401 if no/invalid token.
+    """
+    auth = request.headers.get("Authorization")
+    token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    payload = decode_token_dual(token)
+    if not payload or not payload.get("sub"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        sub = UUID(str(payload["sub"]))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    tenant = _tenant_from_token_or_header(request, master_db, payload)
+    if not tenant or not tenant.database_url:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Tenant not found or not provisioned",
+        )
+    if (tenant.status or "").lower() in ("suspended", "cancelled"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
+    factory = _session_factory_for_url(tenant.database_url)
+    db = factory()
+    try:
+        user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        yield (user, db)
     finally:
         db.close()

@@ -40,7 +40,11 @@ class User(Base):
     is_pending = Column(Boolean, default=False)  # True for newly invited users
     password_set = Column(Boolean, default=False)  # Set to True after first login with password
     deleted_at = Column(TIMESTAMP(timezone=True), nullable=True)  # Soft delete timestamp
-    
+
+    # Internal auth (dual-auth with Supabase): when set, user can login with internal JWT
+    password_hash = Column(String(255), nullable=True)
+    password_updated_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

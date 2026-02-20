@@ -90,11 +90,10 @@ async function loadLogin() {
                 </form>
                 <div id="loginError" class="error-message" style="display: none;"></div>
                 <p class="login-hint" style="font-size: 0.8rem; color: var(--text-secondary, #666); margin-top: 0.5rem;">
-                    <strong>Admin panel</strong>: username <code>admin</code> + admin password → tenant management.<br>
-                    <strong>Tenant</strong>: use the username from your invite (e.g. J-MWANGI). <a href="#password-reset">Forgot password?</a>
+                    Use the username from your invite. Admin: <code>admin</code> + admin password.
                 </p>
                 <div class="login-links">
-                    <a href="#password-reset">Forgot Password?</a>
+                    <a href="#password-reset">Forgot password?</a>
                 </div>
             </div>
         </div>
@@ -412,6 +411,38 @@ async function loadLogin() {
                         // Store username for UI display (status bar / sidebar show username instead of email)
                         if (typeof localStorage !== 'undefined' && (userData.username || username)) {
                             localStorage.setItem('pharmasight_username', userData.username || username);
+                        }
+
+                        // Internal auth: backend returned JWT tokens (user has password_hash)
+                        if (userData.access_token && userData.refresh_token) {
+                            try {
+                                if (typeof localStorage !== 'undefined') {
+                                    localStorage.setItem('pharmasight_access_token', userData.access_token);
+                                    localStorage.setItem('pharmasight_refresh_token', userData.refresh_token);
+                                    localStorage.setItem('pharmasight_user_id', userData.user_id);
+                                    localStorage.setItem('pharmasight_user_email', userData.email || '');
+                                }
+                            } catch (_) {}
+                            if (window.LoginSecurity) window.LoginSecurity.clearAttempts(username);
+                            CONFIG.USER_ID = userData.user_id;
+                            saveConfig();
+                            localStorage.removeItem('admin_token');
+                            localStorage.removeItem('is_admin');
+                            await AuthBootstrap.refresh();
+                            showToast('Welcome!', 'success');
+                            if (window.renderAppLayout) window.renderAppLayout();
+                            if (window.SessionTimeout) window.SessionTimeout.init();
+                            if (window.currentScreen !== undefined) window.currentScreen = null;
+                            const dataUser = { id: userData.user_id, email: userData.email };
+                            const needsPassword = await AuthBootstrap.needsPasswordSetup(dataUser, 'login');
+                            if (needsPassword) {
+                                if (window.loadPage) window.loadPage('password-set');
+                                else window.location.hash = '#password-set';
+                            } else {
+                                if (window.loadPage) window.loadPage('branch-select');
+                                else window.location.hash = '#branch-select';
+                            }
+                            return;
                         }
                     } else {
                         const errorData = await usernameResponse.json().catch(() => ({}));

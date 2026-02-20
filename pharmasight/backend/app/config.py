@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     # Optional: Supabase project/account owner email. If set, this email cannot be used as tenant admin
     # (avoids "already registered" in Auth when same email is used for Supabase dashboard login).
     SUPABASE_OWNER_EMAIL: str = os.getenv("SUPABASE_OWNER_EMAIL", "").strip().lower()
+    # Optional: verify Supabase JWTs for dual-auth (Project Settings -> API -> JWT Secret)
+    SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "").strip()
 
     # Build connection string if not provided
     @property
@@ -69,7 +71,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    RESET_TOKEN_EXPIRE_MINUTES: int = 60
+
     class Config:
         env_file = [".env", "../.env"]  # Look in backend/ first, then parent directory
         case_sensitive = True

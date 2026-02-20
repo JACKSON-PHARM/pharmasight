@@ -75,9 +75,34 @@ function notifyAuthStateListeners(user, session) {
 }
 
 /**
- * Refresh auth state from Supabase
+ * Check if we have a valid internal auth session (Bearer token + user id in storage).
+ */
+function getInternalAuthState() {
+    try {
+        if (typeof localStorage === 'undefined') return null;
+        const token = localStorage.getItem('pharmasight_access_token');
+        const userId = localStorage.getItem('pharmasight_user_id');
+        if (!token || !userId) return null;
+        return {
+            user: { id: userId, email: localStorage.getItem('pharmasight_user_email') || '' },
+            session: { access_token: token }
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+/**
+ * Refresh auth state: internal token first, then Supabase.
  */
 async function refreshAuthState() {
+    const internal = getInternalAuthState();
+    if (internal) {
+        currentUser = internal.user;
+        currentSession = internal.session;
+        notifyAuthStateListeners(currentUser, currentSession);
+        return { user: currentUser, session: currentSession };
+    }
     if (!supabaseClientInstance) return { user: null, session: null };
     
     try {
@@ -91,9 +116,7 @@ async function refreshAuthState() {
             currentUser = session?.user || null;
         }
         
-        // Notify listeners (but don't navigate here!)
         notifyAuthStateListeners(currentUser, currentSession);
-        
         return { user: currentUser, session: currentSession };
     } catch (error) {
         console.error('Error refreshing auth state:', error);
@@ -173,16 +196,20 @@ async function initAuthBootstrap() {
 }
 
 /**
- * Get current user (synchronous, from cache)
+ * Get current user (synchronous, from cache). Prefers internal auth if present.
  */
 function getCurrentUser() {
+    const internal = getInternalAuthState();
+    if (internal) return internal.user;
     return currentUser;
 }
 
 /**
- * Get current session (synchronous, from cache)
+ * Get current session (synchronous, from cache). Prefers internal auth if present.
  */
 function getCurrentSession() {
+    const internal = getInternalAuthState();
+    if (internal) return internal.session;
     return currentSession;
 }
 
@@ -227,16 +254,24 @@ async function signIn(email, password) {
 }
 
 /**
- * Sign out
+ * Sign out (clears internal tokens and Supabase session).
  */
 async function signOut() {
-    if (!supabaseClientInstance) {
-        return;
-    }
-    
+    try {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.removeItem('pharmasight_access_token');
+            localStorage.removeItem('pharmasight_refresh_token');
+            localStorage.removeItem('pharmasight_user_id');
+            localStorage.removeItem('pharmasight_user_email');
+        }
+    } catch (_) {}
+    currentUser = null;
+    currentSession = null;
+    notifyAuthStateListeners(null, null);
+    if (authChannel) authChannel.postMessage({ type: 'AUTH_STATE_CHANGE', user: null, session: null, timestamp: Date.now() });
+    if (!supabaseClientInstance) return;
     try {
         await supabaseClientInstance.auth.signOut();
-        // State will be updated by auth listener
     } catch (error) {
         console.error('Sign out error:', error);
         throw error;

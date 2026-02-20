@@ -49,6 +49,21 @@ class APIClient {
             }
         } catch (_) {}
 
+        // Internal auth: send Bearer token when we have one (skip for login, refresh, admin).
+        const isAuthEndpoint = endpoint.indexOf('/api/auth/username-login') !== -1 ||
+            endpoint.indexOf('/api/auth/refresh') !== -1 ||
+            endpoint.indexOf('/api/auth/request-reset') !== -1 ||
+            endpoint.indexOf('/api/auth/reset-password') !== -1 ||
+            endpoint.indexOf('/api/admin/') === 0;
+        try {
+            if (!isAuthEndpoint && typeof localStorage !== 'undefined') {
+                const accessToken = localStorage.getItem('pharmasight_access_token');
+                if (accessToken) {
+                    config.headers['Authorization'] = 'Bearer ' + accessToken;
+                }
+            }
+        } catch (_) {}
+
         try {
             const response = await fetch(url, config);
             clearTimeout(timeoutId);
