@@ -111,11 +111,18 @@ function renderEmailRequestForm(page) {
                 const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
                     ? CONFIG.API_BASE_URL
                     : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
-                const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/request-reset`, {
+                const url = `${baseUrl.replace(/\/$/, '')}/api/auth/request-reset`;
+                // Timeout so we don't leave "Sending..." forever (e.g. Render cold start or wrong API URL)
+                const timeoutMs = 28000;
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                const res = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email: email })
+                    body: JSON.stringify({ email: email }),
+                    signal: controller.signal
                 });
+                clearTimeout(timeoutId);
                 const data = await res.json().catch(() => ({}));
                 if (res.ok) {
                     if (successDiv) {
@@ -135,7 +142,13 @@ function renderEmailRequestForm(page) {
             } catch (error) {
                 console.error('Password reset error:', error);
                 if (errorDiv) {
-                    errorDiv.textContent = error.message || 'Failed to send reset email. Please try again.';
+                    let message = error.message || 'Failed to send reset email. Please try again.';
+                    if (error.name === 'AbortError') {
+                        message = 'Request timed out. The server may be starting (e.g. on Render). Please try again in a moment.';
+                    } else if (message.includes('Failed to fetch') || message.includes('Load failed') || message.includes('NetworkError')) {
+                        message = 'Cannot reach the server. Check that the app is deployed and the API URL is correct (e.g. Settings if using separate frontend/backend on Render).';
+                    }
+                    errorDiv.textContent = message;
                     errorDiv.style.display = 'block';
                 }
                 if (submitBtn) {

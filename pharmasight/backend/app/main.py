@@ -4,7 +4,7 @@ PharmaSight - Main FastAPI Application
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,12 +44,20 @@ async def health_check():
 
 
 @app.get("/api/config")
-async def public_config():
-    """Public config for frontend (e.g. app URL for invite links). No secrets."""
+async def public_config(request: Request):
+    """Public config for frontend (e.g. app URL for invite links, API base URL). No secrets."""
     from app.services.email_service import EmailService
+    # When frontend is served from same origin as API, empty string = use same origin for API calls
+    api_base_url = getattr(settings, "BACKEND_PUBLIC_URL", None) or ""
+    if not api_base_url:
+        try:
+            api_base_url = str(request.base_url).rstrip("/")
+        except Exception:
+            pass
     return {
         "app_public_url": settings.APP_PUBLIC_URL.rstrip("/"),
         "smtp_configured": EmailService.is_configured(),
+        "api_base_url": api_base_url,
     }
 
 

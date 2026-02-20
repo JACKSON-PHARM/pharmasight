@@ -163,19 +163,13 @@ def _find_user_in_all_tenants(
     if found:
         return found
     # Fallback: search default/legacy DB (where public.users often lives in single-DB setups)
+    # Always use (None, user) so the reset token gets LEGACY_TENANT_SUBDOMAIN and reset-password looks in the same DB.
     try:
         db = SessionLocal()
         try:
             user = _find_user_in_db(db, normalized_username, check_email)
             if user:
-                tenant_for_reset = None
-                for t in tenants:
-                    if _normalize_db_url(t.database_url) == default_url:
-                        tenant_for_reset = t
-                        break
-                if not tenant_for_reset and tenants:
-                    tenant_for_reset = tenants[0]
-                found.append((tenant_for_reset, user))
+                found.append((None, user))
         finally:
             db.close()
     except Exception:

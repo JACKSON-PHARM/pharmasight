@@ -111,7 +111,36 @@ The script prints whether SMTP is configured and tries to send one password-rese
 
 ---
 
-## 5. Summary
+## 5. Render vs localhost: sync, loading, and request-reset
+
+### 5.1 Keep Render in sync with local
+
+- Deploy from the same branch you use locally (e.g. `main`). After pushing fixes (auth, migrations, SMTP, timeout), trigger a redeploy on Render so the backend and frontend match.
+- Ensure **backend** env on Render matches what you need: `DATABASE_URL`, `SECRET_KEY`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, optional `EMAIL_FROM` and `APP_PUBLIC_URL`.
+
+### 5.2 Why request-reset fails on Render (“Failed to load response data”)
+
+Often the **API request** never reaches the backend:
+
+- **Two services**: If the frontend is one Render service (e.g. static site) and the API is another (e.g. `pharmasight-api.onrender.com`), the app uses a **relative** URL (`/api/auth/request-reset`). That request goes to the **frontend** host, which has no `/api` route, so it fails. **Fix**: In the app, open **Settings** and set **API Base URL** to your backend URL (e.g. `https://pharmasight-api.onrender.com`). Save; the value is stored in localStorage and used for all API calls.
+- **Single service**: If the same Render service serves both the app and the API (e.g. FastAPI serves static files and `/api`), relative URLs are correct. Then failure is usually cold start (request times out) or SMTP not set (see §3).
+
+### 5.3 Loading icon / “Sending…” stuck
+
+The reset page shows “Sending…” while the request is in flight. If the request **never completes** (wrong host, timeout, or server error), the button could stay in that state. The app now:
+
+- Uses a **~28 s timeout** for the reset request. After that, the request is aborted and an error is shown (e.g. “Request timed out. The server may be starting (e.g. on Render). Please try again in a moment.”).
+- On network/parse errors, shows a clear message and re-enables the button (no success message).
+
+So the loading state should no longer stay forever: either you get success, or an error and the button back. If you still see a stuck spinner, check the Network tab for the `request-reset` call (correct URL, status, or timeout).
+
+### 5.4 Backend config for the frontend
+
+`GET /api/config` returns `api_base_url` (and `app_public_url`, `smtp_configured`). When the frontend is served from the **same origin** as the API, it can use this to know the API base (e.g. after a cold start). If you run **two** Render services, the frontend must get the backend URL from **Settings** (API Base URL), not from `/api/config`, because the first request would have to go to the correct host.
+
+---
+
+## 6. Summary
 
 | Concern | Where it’s handled |
 |--------|--------------------|
@@ -122,4 +151,4 @@ The script prints whether SMTP is configured and tries to send one password-rese
 | **Branch access** | `user_branch_roles`: user can only use branches they’re assigned to |
 | **Password reset** | `POST /api/auth/request-reset` → background email with link → `POST /api/auth/reset-password`; requires SMTP configured and working |
 
-If reset emails still don’t arrive after fixing SMTP and checking logs, use the test script above from the backend environment to see the exact SMTP error.
+If reset emails still don’t arrive after fixing SMTP and checking logs, use the test script above from the backend environment to see the exact SMTP error. For “request-reset” failing on Render (e.g. “Failed to load response data”), see **§5 Render vs localhost** (API URL, one vs two services, timeout).
