@@ -46,7 +46,29 @@ async def health_check():
 @app.get("/api/config")
 async def public_config():
     """Public config for frontend (e.g. app URL for invite links). No secrets."""
-    return {"app_public_url": settings.APP_PUBLIC_URL.rstrip("/")}
+    from app.services.email_service import EmailService
+    return {
+        "app_public_url": settings.APP_PUBLIC_URL.rstrip("/"),
+        "smtp_configured": EmailService.is_configured(),
+    }
+
+
+@app.on_event("startup")
+def log_smtp_and_migrations():
+    """Log SMTP status and run migrations so we can see why reset emails might not send."""
+    from app.services.email_service import EmailService
+    smtp_ok = EmailService.is_configured()
+    logger.info(
+        "SMTP for password reset: %s (SMTP_HOST=%s, SMTP_USER=%s, SMTP_PASSWORD=%s)",
+        "configured" if smtp_ok else "NOT CONFIGURED",
+        "set" if settings.SMTP_HOST else "empty",
+        "set" if settings.SMTP_USER else "empty",
+        "set" if settings.SMTP_PASSWORD else "empty",
+    )
+    if not smtp_ok:
+        logger.warning(
+            "Password reset emails will not be sent until SMTP_HOST, SMTP_USER, and SMTP_PASSWORD are set (e.g. in pharmasight/.env). Restart the server after changing .env."
+        )
 
 
 @app.on_event("startup")

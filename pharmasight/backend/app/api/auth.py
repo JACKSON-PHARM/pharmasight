@@ -6,8 +6,11 @@ otherwise return email for Supabase sign-in.
 
 Uses get_tenant_db: LEGACY when no X-Tenant-* header, TENANT DB when resolved.
 """
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -299,15 +302,22 @@ def auth_request_reset(
     check_email = "@" in email_or_username
     found_list = _find_user_in_all_tenants(master_db, email_or_username, check_email)
     if not found_list:
+        logger.info("[request-reset] No user found for %s; not sending email (same response for security)", email_or_username[:3] + "***")
         return {"message": "If an account exists, you will receive a reset link."}
-    # Use first tenant; if multiple we could return a hint or send to first only
     tenant, user = found_list[0]
     if _tenant_access_blocked(tenant):
         return {"message": "If an account exists, you will receive a reset link."}
+    logger.info("[request-reset] User found, sending reset email to %s (tenant=%s)", user.email, tenant.subdomain)
     reset_token = create_reset_token(str(user.id), tenant.subdomain)
     base = (settings.APP_PUBLIC_URL or "").rstrip("/")
     reset_url = f"{base}/#password-reset?token={reset_token}"
     sent = EmailService.send_password_reset(user.email, reset_url, settings.RESET_TOKEN_EXPIRE_MINUTES)
+    if not sent:
+        logger.warning(
+            "Password reset email not sent (SMTP not configured or send failed). "
+            "Check SMTP_HOST, SMTP_USER, SMTP_PASSWORD and server logs. To=%s",
+            user.email,
+        )
     return {"message": "If an account exists, you will receive a reset link.", "email_sent": sent}
 
 

@@ -2,9 +2,29 @@
 Configuration settings for PharmaSight
 """
 import os
+from pathlib import Path
 from typing import Optional, List
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+# Resolve .env paths relative to this file so SMTP/email works regardless of cwd.
+_CONFIG_DIR = Path(__file__).resolve().parent.parent  # backend/
+_PHARMASIGHT_ROOT = _CONFIG_DIR.parent               # pharmasight/
+_ENV_CANDIDATES = [
+    _CONFIG_DIR / ".env",      # backend/.env
+    _PHARMASIGHT_ROOT / ".env", # pharmasight/.env (your .env location)
+]
+_ENV_FILE = [str(p) for p in _ENV_CANDIDATES if p.is_file()]
+
+# Load .env into os.environ so SMTP and other vars are set even if pydantic env_file is skipped.
+try:
+    import dotenv
+    for p in _ENV_CANDIDATES:
+        if p.is_file():
+            dotenv.load_dotenv(p, override=False)
+            break
+except Exception:
+    pass
 
 
 class Settings(BaseSettings):
@@ -75,7 +95,7 @@ class Settings(BaseSettings):
     RESET_TOKEN_EXPIRE_MINUTES: int = 60
 
     class Config:
-        env_file = [".env", "../.env"]  # Look in backend/ first, then parent directory
+        env_file = _ENV_FILE if _ENV_FILE else [".env", "../.env"]
         case_sensitive = True
 
 

@@ -97,7 +97,13 @@ class EmailService:
         Send password reset email with link. Returns True if sent successfully.
         """
         if not EmailService.is_configured():
-            logger.warning("SMTP not configured; skipping password reset email")
+            logger.warning(
+                "SMTP not configured; skipping password reset email. "
+                "SMTP_HOST=%s SMTP_USER=%s SMTP_PASSWORD=%s (values hidden)",
+                "set" if settings.SMTP_HOST else "MISSING",
+                "set" if settings.SMTP_USER else "MISSING",
+                "set" if settings.SMTP_PASSWORD else "MISSING",
+            )
             return False
         safe_url = _escape(reset_url)
         html_body = f"""
