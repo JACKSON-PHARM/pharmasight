@@ -268,3 +268,46 @@ def get_current_user(
         yield (user, db)
     finally:
         db.close()
+
+
+def get_tenant_required(
+    request: Request,
+    db: Session = Depends(get_master_db),
+) -> Tenant:
+    """Require tenant from header (for storage and tenant-scoped asset paths). Raises 400 if no tenant."""
+    tenant = get_tenant_from_header(request, db)
+    if tenant is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Tenant-ID or X-Tenant-Subdomain required for this request",
+        )
+    return tenant
+
+
+def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bool:
+    """True if user has the given permission in any of their branch-role assignments."""
+    from app.models.user import UserBranchRole
+    from app.models.permission import Permission, RolePermission
+    has_perm = db.query(Permission.id).join(
+        RolePermission, RolePermission.permission_id == Permission.id
+    ).join(
+        UserBranchRole,
+        (UserBranchRole.role_id == RolePermission.role_id)
+        & (UserBranchRole.user_id == user_id)
+    ).filter(Permission.name == permission_name).first()
+    return has_perm is not None
+
+
+def require_settings_edit(
+    user_db: Tuple[User, Session] = Depends(get_current_user),
+) -> Tuple[User, Session]:
+    """Require authenticated user with settings.edit permission. Yields (user, db)."""
+    user, db = user_db
+    if not _user_has_permission(db, user.id, "settings.edit"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission settings.edit required",
+        )
+    return (user, db)
+
+

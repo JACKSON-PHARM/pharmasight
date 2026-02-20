@@ -1054,7 +1054,8 @@ window.subNavItems = {
         { page: 'settings', subPage: 'branches', label: 'Branches', icon: 'fa-code-branch' },
         { page: 'settings', subPage: 'users', label: 'Users & Roles', icon: 'fa-users' },
         { page: 'settings', subPage: 'transaction', label: 'Transaction', icon: 'fa-receipt' },
-        { page: 'settings', subPage: 'print', label: 'Print', icon: 'fa-print' }
+        { page: 'settings', subPage: 'print', label: 'Print', icon: 'fa-print' },
+        { page: 'settings', subPage: 'documentBranding', label: 'Document Branding', icon: 'fa-file-signature' }
     ]
 };
 

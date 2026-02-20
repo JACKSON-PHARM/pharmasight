@@ -181,6 +181,11 @@ const API = {
                 headers: {} // Let browser set Content-Type with boundary
             });
         },
+        uploadStamp: (companyId, file) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            return api.post(`/api/companies/${companyId}/stamp`, formData, { headers: {} });
+        },
     },
     branch: {
         list: (companyId) => api.get(`/api/branches/company/${companyId}`),
@@ -354,6 +359,8 @@ const API = {
         getOrder: (orderId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
         updateOrder: (orderId, data) => api.put(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`, data),
         deleteOrder: (orderId) => api.delete(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
+        approveOrder: (orderId) => api.patch(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}/approve`, null),
+        getOrderPdfUrl: (orderId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}/pdf-url`),
         listInvoices: (params) => {
             const queryString = new URLSearchParams();
             Object.keys(params).forEach(key => {
@@ -418,6 +425,11 @@ const API = {
         get: (userId, params = {}) => api.get(`/api/users/${userId}`, params),
         create: (data) => api.post('/api/users', data),
         update: (userId, data) => api.put(`/api/users/${userId}`, data),
+        uploadSignature: (userId, file) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            return api.post(`/api/users/${userId}/signature`, formData, { headers: {} });
+        },
         activate: (userId, isActive) => api.post(`/api/users/${userId}/activate`, { is_active: isActive }),
         delete: (userId) => api.delete(`/api/users/${userId}`),
         restore: (userId) => api.post(`/api/users/${userId}/restore`, null),

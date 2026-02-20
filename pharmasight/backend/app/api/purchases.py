@@ -7,7 +7,9 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_current_user, get_tenant_required
+from app.models.tenant import Tenant
+from app.models.settings import CompanySetting
 from app.models import (
     GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
     PurchaseOrder, PurchaseOrderItem,
@@ -23,7 +25,10 @@ from app.schemas.purchase import (
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
+from app.services.po_pdf_service import build_po_pdf
+from app.services.tenant_storage_service import upload_po_pdf, get_signed_url
 from app.utils.vat import vat_rate_to_percent
+import json
 
 router = APIRouter()
 
@@ -1010,7 +1015,8 @@ def create_purchase_order(order: PurchaseOrderCreate, db: Session = Depends(get_
         notes=order.notes,
         total_amount=total_amount,
         status=order.status or "PENDING",
-        created_by=order.created_by
+        created_by=order.created_by,
+        is_official=getattr(order, "is_official", True),
     )
     db.add(db_order)
     db.flush()
@@ -1103,16 +1109,22 @@ def list_purchase_orders(
         selectinload(PurchaseOrder.items)
     ).order_by(PurchaseOrder.order_date.desc(), PurchaseOrder.created_at.desc()).all()
     
-    # Load supplier, branch, and user names
+    # Load supplier, branch, user names, approved_by_name
     for order in orders:
         if order.supplier:
             order.supplier_name = order.supplier.name
         if order.branch:
             order.branch_name = order.branch.name
-        # Load created_by user name
         created_by_user = db.query(User).filter(User.id == order.created_by).first()
         if created_by_user:
             order.created_by_name = created_by_user.full_name or created_by_user.email
+        if order.approved_by_user_id:
+            approver = db.query(User).filter(User.id == order.approved_by_user_id).first()
+            if approver:
+                order.approved_by_name = approver.full_name or approver.email
+        for oi in order.items:
+            if oi.item:
+                oi.is_controlled = getattr(oi.item, "is_controlled", False)
     
     return orders
 
@@ -1146,10 +1158,14 @@ def get_purchase_order(order_id: UUID, db: Session = Depends(get_tenant_db)):
             order_item.item_name = order_item.item.name or ''
             order_item.item_category = order_item.item.category or ''
             order_item.base_unit = order_item.item.base_unit or ''
+            order_item.is_controlled = getattr(order_item.item, 'is_controlled', False)
             # Cost from inventory_ledger only (never from items table)
             from app.services.canonical_pricing import CanonicalPricingService
             order_item.default_cost = float(CanonicalPricingService.get_best_available_cost(db, order_item.item_id, order.branch_id, order.company_id)) if order.branch_id else 0.0
-    
+    if order.approved_by_user_id:
+        approver = db.query(User).filter(User.id == order.approved_by_user_id).first()
+        if approver:
+            order.approved_by_name = approver.full_name or approver.email
     return order
 
 
@@ -1172,6 +1188,8 @@ def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db:
     db_order.reference = order_update.reference
     db_order.notes = order_update.notes
     db_order.status = order_update.status or "PENDING"
+    if hasattr(order_update, "is_official") and order_update.is_official is not None:
+        db_order.is_official = order_update.is_official
     
     # Delete existing items
     db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id == order_id).delete()
@@ -1207,6 +1225,121 @@ def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db:
         db_order.created_by_name = created_by_user.full_name or created_by_user.email
     
     return db_order
+
+
+@router.patch("/order/{order_id}/approve", response_model=PurchaseOrderResponse)
+def approve_purchase_order(
+    order_id: UUID,
+    tenant: Tenant = Depends(get_tenant_required),
+    user_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Approve a purchase order. Sets status=APPROVED, approved_by_user_id, approved_at,
+    generates immutable PDF (logo, stamp, approver signature), uploads to Supabase, sets pdf_path.
+    """
+    current_user, _ = user_db
+    db_order = db.query(PurchaseOrder).options(
+        selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.item),
+        selectinload(PurchaseOrder.company),
+        selectinload(PurchaseOrder.branch),
+        selectinload(PurchaseOrder.supplier),
+    ).filter(PurchaseOrder.id == order_id).first()
+    if not db_order:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    if db_order.status != "PENDING":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only PENDING orders can be approved. Current status: {db_order.status}",
+        )
+    now = datetime.now(timezone.utc)
+    db_order.status = "APPROVED"
+    db_order.approved_by_user_id = current_user.id
+    db_order.approved_at = now
+    db.flush()
+    # Load document_branding and stamp path
+    branding_row = db.query(CompanySetting).filter(
+        CompanySetting.company_id == db_order.company_id,
+        CompanySetting.setting_key == "document_branding",
+    ).first()
+    try:
+        document_branding = json.loads(branding_row.setting_value or "{}") if branding_row else {}
+    except json.JSONDecodeError:
+        document_branding = {}
+    stamp_path = document_branding.get("stamp_url")
+    company = db_order.company
+    branch = db_order.branch
+    approver = current_user
+    items_data = []
+    for oi in db_order.items:
+        items_data.append({
+            "item_code": oi.item.sku if oi.item else None,
+            "item_name": oi.item.name if oi.item else None,
+            "quantity": float(oi.quantity),
+            "unit_name": oi.unit_name,
+            "unit_price": float(oi.unit_price),
+            "total_price": float(oi.total_price),
+            "is_controlled": getattr(oi.item, "is_controlled", False) if oi.item else False,
+        })
+    order_dt = db_order.order_date
+    if hasattr(order_dt, "isoformat") and not isinstance(order_dt, datetime):
+        order_dt = datetime.combine(order_dt, datetime.min.time().replace(tzinfo=timezone.utc))
+    pdf_bytes = build_po_pdf(
+        company_name=company.name or "—",
+        company_address=company.address,
+        company_phone=company.phone,
+        company_pin=company.pin,
+        company_logo_path=company.logo_url,
+        branch_name=branch.name if branch else None,
+        branch_address=branch.address if branch else None,
+        order_number=db_order.order_number,
+        order_date=order_dt,
+        supplier_name=db_order.supplier.name if db_order.supplier else "—",
+        reference=db_order.reference,
+        items=items_data,
+        total_amount=db_order.total_amount or Decimal("0"),
+        document_branding=document_branding,
+        stamp_path=stamp_path,
+        approver_name=approver.full_name or approver.email,
+        approver_designation=getattr(approver, "designation", None),
+        approver_ppb_number=getattr(approver, "ppb_number", None),
+        signature_path=getattr(approver, "signature_path", None),
+        approved_at=now,
+    )
+    stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes)
+    if stored_path:
+        db_order.pdf_path = stored_path
+    db.commit()
+    db.refresh(db_order)
+    # Load names for response
+    if db_order.supplier:
+        db_order.supplier_name = db_order.supplier.name
+    if db_order.branch:
+        db_order.branch_name = db_order.branch.name
+    created_by_user = db.query(User).filter(User.id == db_order.created_by).first()
+    if created_by_user:
+        db_order.created_by_name = created_by_user.full_name or created_by_user.email
+    approver_user = db.query(User).filter(User.id == db_order.approved_by_user_id).first()
+    if approver_user:
+        db_order.approved_by_name = approver_user.full_name or approver_user.email
+    for oi in db_order.items:
+        if oi.item:
+            oi.item_code = oi.item.sku or ""
+            oi.item_name = oi.item.name or ""
+            oi.is_controlled = getattr(oi.item, "is_controlled", False)
+    return db_order
+
+
+@router.get("/order/{order_id}/pdf-url")
+def get_purchase_order_pdf_url(order_id: UUID, db: Session = Depends(get_tenant_db)):
+    """Return signed URL for the stored PO PDF (only when approved and pdf_path set). Expires in 1 hour."""
+    order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not order or not order.pdf_path:
+        raise HTTPException(status_code=404, detail="No PDF available for this order")
+    url = get_signed_url(order.pdf_path, expires_in=3600)
+    if not url:
+        raise HTTPException(status_code=503, detail="Could not generate PDF URL")
+    return {"url": url}
 
 
 @router.delete("/order/{order_id}", status_code=status.HTTP_200_OK)

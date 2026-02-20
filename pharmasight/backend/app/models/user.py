@@ -45,6 +45,11 @@ class User(Base):
     password_hash = Column(String(255), nullable=True)
     password_updated_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
+    # Document compliance (user-level; signature NOT at company level)
+    signature_path = Column(Text, nullable=True)  # tenant-assets/{tenant_id}/users/{user_id}/signature.png
+    ppb_number = Column(String(100), nullable=True)  # Pharmacists and Poisons Board number
+    designation = Column(String(255), nullable=True)  # e.g. Superintendent Pharmacist
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

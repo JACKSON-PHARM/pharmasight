@@ -4,7 +4,8 @@ User Management API
 Handles user creation, listing, updating, activating/deactivating, and deletion.
 Admin-only endpoints for managing organization users.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
@@ -13,8 +14,14 @@ from uuid import UUID
 import secrets
 import hashlib
 from datetime import datetime
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_tenant_required, get_current_user, require_settings_edit
+from app.models.tenant import Tenant
 from app.models.user import User, UserRole, UserBranchRole
+from app.services.tenant_storage_service import (
+    upload_user_signature as upload_signature_to_storage,
+    ALLOWED_IMAGE_EXTENSIONS,
+    MAX_IMAGE_BYTES,
+)
 from app.models.company import Branch
 from app.models.permission import Permission, RolePermission
 from app.schemas.user import (
@@ -282,8 +289,70 @@ def get_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
         deleted_at=user.deleted_at,
         branch_roles=branch_roles,
         created_at=user.created_at,
-        updated_at=user.updated_at
+        updated_at=user.updated_at,
+        signature_path=getattr(user, 'signature_path', None),
+        ppb_number=getattr(user, 'ppb_number', None),
+        designation=getattr(user, 'designation', None),
     )
+
+
+@router.post("/users/{user_id}/signature")
+async def upload_user_signature(
+    user_id: UUID,
+    file: UploadFile = File(...),
+    tenant: Tenant = Depends(get_tenant_required),
+    user_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Upload current user's signature image. User can upload own signature or admin (settings.edit).
+    Stores in Supabase tenant-assets/{tenant_id}/users/{user_id}/signature.png.
+    PNG/JPG only, max 2MB.
+    """
+    current_user, _ = user_db
+    if current_user.id != user_id:
+        if not _user_has_permission(db, current_user.id, "settings.edit"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only upload your own signature, or need settings.edit",
+            )
+    target = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    file_ext = Path(file.filename or "").suffix.lower()
+    if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file type. Allowed: PNG, JPG, JPEG",
+        )
+    content = await file.read()
+    if len(content) > MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File too large. Maximum size is 2MB",
+        )
+    content_type = "image/png" if file_ext == ".png" else "image/jpeg"
+    stored_path = upload_signature_to_storage(tenant.id, user_id, content, content_type)
+    if not stored_path:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Storage unavailable. Check Supabase configuration.",
+        )
+    target.signature_path = stored_path
+    db.commit()
+    db.refresh(target)
+    return {"signature_path": stored_path}
+
+
+def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bool:
+    """True if user has the given permission in any branch-role."""
+    has_perm = db.query(Permission.id).join(
+        RolePermission, RolePermission.permission_id == Permission.id
+    ).join(
+        UserBranchRole,
+        (UserBranchRole.role_id == RolePermission.role_id) & (UserBranchRole.user_id == user_id),
+    ).filter(Permission.name == permission_name).first()
+    return has_perm is not None
 
 
 @router.get("/users/{user_id}/permissions")

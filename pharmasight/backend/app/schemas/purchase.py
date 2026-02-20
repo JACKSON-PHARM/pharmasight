@@ -183,6 +183,7 @@ class PurchaseOrderItemResponse(PurchaseOrderItemBase):
     item_category: Optional[str] = None
     base_unit: Optional[str] = None
     default_cost: Optional[float] = None
+    is_controlled: Optional[bool] = None  # From Item, for document branding rules
 
     class Config:
         from_attributes = True
@@ -196,6 +197,7 @@ class PurchaseOrderBase(BaseModel):
     reference: Optional[str] = None
     notes: Optional[str] = None
     status: Optional[str] = Field(default="PENDING", description="PENDING, APPROVED, RECEIVED, CANCELLED")
+    is_official: Optional[bool] = Field(default=True, description="If true, apply stamp/signature on official PO")
 
 
 class PurchaseOrderCreate(PurchaseOrderBase):
@@ -218,6 +220,10 @@ class PurchaseOrderResponse(PurchaseOrderBase):
     supplier_name: Optional[str] = None  # From relationship
     branch_name: Optional[str] = None  # From relationship
     created_by_name: Optional[str] = None  # From User relationship
+    approved_by_user_id: Optional[UUID] = None
+    approved_at: Optional[datetime] = None
+    pdf_path: Optional[str] = None
+    approved_by_name: Optional[str] = None
 
     class Config:
         from_attributes = True

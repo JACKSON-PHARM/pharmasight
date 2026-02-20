@@ -1,7 +1,7 @@
 """
 Purchase models (GRN and Purchase Invoices)
 """
-from sqlalchemy import Column, String, Numeric, Date, Text, ForeignKey
+from sqlalchemy import Column, String, Numeric, Date, Text, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -134,9 +134,15 @@ class PurchaseOrder(Base):
     created_by = Column(UUID(as_uuid=True), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+    # Approval workflow: set when status becomes APPROVED; PDF generated and stored
+    approved_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    is_official = Column(Boolean, default=True)  # Apply stamp/signature on official PO
+    pdf_path = Column(Text, nullable=True)  # tenant-assets/{tenant_id}/documents/purchase_orders/{po_id}.pdf
 
     # Relationships
     company = relationship("Company")
+    approved_by_user = relationship("User", foreign_keys=[approved_by_user_id])
     branch = relationship("Branch")
     supplier = relationship("Supplier")
     items = relationship("PurchaseOrderItem", back_populates="purchase_order", cascade="all, delete-orphan")

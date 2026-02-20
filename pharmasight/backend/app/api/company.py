@@ -6,16 +6,21 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 from uuid import UUID
-import os
-import shutil
 from pathlib import Path
 from pydantic import BaseModel
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_tenant_required, require_settings_edit
+from app.models.tenant import Tenant
 from app.models.company import Company, Branch
 from app.models.settings import CompanySetting
 from app.schemas.company import (
     CompanyCreate, CompanyResponse, CompanyUpdate,
     BranchCreate, BranchResponse, BranchUpdate
+)
+from app.services.tenant_storage_service import (
+    upload_stamp,
+    BUCKET,
+    ALLOWED_IMAGE_EXTENSIONS,
+    MAX_IMAGE_BYTES,
 )
 
 router = APIRouter()
@@ -26,7 +31,7 @@ class CompanySettingUpdate(BaseModel):
     key: str
     value: Any  # string, number, bool, or dict (stored as JSON)
 
-# Logo upload directory
+# Legacy logo upload directory (used when Supabase storage not configured)
 UPLOAD_DIR = Path("uploads/logos")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -101,8 +106,13 @@ def get_company(company_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.put("/companies/{company_id}", response_model=CompanyResponse)
-def update_company(company_id: UUID, company_update: CompanyUpdate, db: Session = Depends(get_tenant_db)):
-    """Update company"""
+def update_company(
+    company_id: UUID,
+    company_update: CompanyUpdate,
+    db: Session = Depends(get_tenant_db),
+    _auth: tuple = Depends(require_settings_edit),
+):
+    """Update company (requires settings.edit)."""
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -159,9 +169,10 @@ def get_company_settings(
 def update_company_setting(
     company_id: UUID,
     body: CompanySettingUpdate,
-    db: Session = Depends(get_tenant_db)
+    db: Session = Depends(get_tenant_db),
+    _auth: tuple = Depends(require_settings_edit),
 ) -> Dict[str, Any]:
-    """Upsert a company setting (e.g. print_config). Used by admin in Settings > Print."""
+    """Upsert a company setting (e.g. print_config, document_branding). Requires settings.edit."""
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -191,15 +202,74 @@ def update_company_setting(
     return {"key": body.key, "value": val}
 
 
+@router.post("/companies/{company_id}/stamp")
+async def upload_company_stamp(
+    company_id: UUID,
+    file: UploadFile = File(...),
+    tenant: Tenant = Depends(get_tenant_required),
+    db: Session = Depends(get_tenant_db),
+    _auth: tuple = Depends(require_settings_edit),
+) -> Dict[str, Any]:
+    """
+    Upload company stamp (e.g. pharmacy seal). Requires settings.edit.
+    Stores in Supabase tenant-assets/{tenant_id}/stamp.png. Saves path in document_branding.
+    PNG/JPG only, max 2MB.
+    """
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    file_ext = Path(file.filename or "").suffix.lower()
+    if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file type. Allowed: PNG, JPG, JPEG",
+        )
+    content = await file.read()
+    if len(content) > MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File too large. Maximum size is 2MB",
+        )
+    content_type = "image/png" if file_ext == ".png" else "image/jpeg"
+    stored_path = upload_stamp(tenant.id, content, content_type)
+    if not stored_path:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Storage unavailable. Check Supabase configuration.",
+        )
+    # Merge stamp_url into document_branding
+    row = db.query(CompanySetting).filter(
+        CompanySetting.company_id == company_id,
+        CompanySetting.setting_key == "document_branding",
+    ).first()
+    try:
+        branding = json.loads(row.setting_value or "{}") if row else {}
+    except json.JSONDecodeError:
+        branding = {}
+    branding["stamp_url"] = stored_path
+    if row:
+        row.setting_value = json.dumps(branding)
+        row.setting_type = "json"
+    else:
+        db.add(CompanySetting(
+            company_id=company_id,
+            setting_key="document_branding",
+            setting_value=json.dumps(branding),
+            setting_type="json",
+        ))
+    db.commit()
+    return {"stamp_url": stored_path, "document_branding": branding}
+
+
 @router.post("/companies/{company_id}/logo", response_model=CompanyResponse)
 async def upload_company_logo(
     company_id: UUID,
     file: UploadFile = File(...),
-    db: Session = Depends(get_tenant_db)
+    db: Session = Depends(get_tenant_db),
+    _auth: tuple = Depends(require_settings_edit),
 ):
     """
-    Upload company logo
-    
+    Upload company logo (requires settings.edit).
     Accepts image files (PNG, JPG, JPEG, GIF, WEBP)
     Returns the company with updated logo_url
     """

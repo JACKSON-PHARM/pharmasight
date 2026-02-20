@@ -71,6 +71,8 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
     is_active: Optional[bool] = None
+    ppb_number: Optional[str] = None
+    designation: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -81,6 +83,9 @@ class UserResponse(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool
+    signature_path: Optional[str] = None  # Path in storage; no URL in company settings
+    ppb_number: Optional[str] = None
+    designation: Optional[str] = None
     is_pending: bool
     password_set: bool
     invitation_code: Optional[str] = None  # Show invitation code if pending

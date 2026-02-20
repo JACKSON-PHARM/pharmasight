@@ -68,6 +68,10 @@ async function loadSettingsSubPage(subPage) {
             console.log('[SETTINGS] Case: print');
             await renderPrintSettingsPage();
             break;
+        case 'documentBranding':
+            console.log('[SETTINGS] Case: documentBranding');
+            await renderDocumentBrandingPage();
+            break;
         default:
             console.log('[SETTINGS] Case: default (general)');
             await renderGeneralSettingsPage();
@@ -1439,6 +1443,24 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
                             <span>Active</span>
                         </label>
                     </div>
+                    <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Compliance (PO approval)</h4>
+                    <div class="form-group">
+                        <label class="form-label">PPB Number</label>
+                        <input type="text" class="form-input" name="ppb_number" 
+                               value="${escapeHtml(user.ppb_number || '')}" placeholder="e.g. 12345">
+                        <small style="color: var(--text-secondary);">Pharmacists and Poisons Board registration number</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Designation</label>
+                        <input type="text" class="form-input" name="designation" 
+                               value="${escapeHtml(user.designation || '')}" placeholder="e.g. Superintendent Pharmacist">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Signature (for approved POs)</label>
+                        <input type="file" id="editUserSignatureFile" accept=".png,.jpg,.jpeg">
+                        <button type="button" class="btn btn-outline" id="editUserSignatureUploadBtn"><i class="fas fa-upload"></i> Upload signature</button>
+                        <span id="editUserSignatureStatus" style="margin-left: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">${user.signature_path ? 'Uploaded' : ''}</span>
+                    </div>
                     ${permissionsHtml}
                     <div style="margin-top: 2rem; display: flex; gap: 1rem;">
                         <button type="submit" class="btn btn-primary" disabled>
@@ -1452,6 +1474,26 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
             </div>
         </div>
     `;
+    
+    const sigBtn = document.getElementById('editUserSignatureUploadBtn');
+    const sigFile = document.getElementById('editUserSignatureFile');
+    const sigStatus = document.getElementById('editUserSignatureStatus');
+    if (sigBtn && sigFile) {
+        sigBtn.onclick = async function() {
+            const file = sigFile.files[0];
+            if (!file) { if (sigStatus) sigStatus.textContent = 'Select a file first'; return; }
+            if (file.size > 2 * 1024 * 1024) { if (sigStatus) sigStatus.textContent = 'Max 2MB'; return; }
+            sigStatus.textContent = 'Uploading…';
+            try {
+                await API.users.uploadSignature(user.id, file);
+                sigStatus.textContent = 'Uploaded';
+                showToast('Signature uploaded', 'success');
+            } catch (err) {
+                sigStatus.textContent = 'Failed';
+                showToast(err.message || 'Upload failed', 'error');
+            }
+        };
+    }
     
     // Initialize validation
     setTimeout(() => updateFormValidation('editUserForm'), 100);
@@ -1699,7 +1741,9 @@ async function handleEditUser(event, userId) {
         phone: formData.get('phone'),
         role_name: formData.get('role_name'),
         branch_id: formData.get('branch_id') || null,
-        is_active: formData.get('is_active') === 'on'
+        is_active: formData.get('is_active') === 'on',
+        ppb_number: formData.get('ppb_number') || null,
+        designation: formData.get('designation') || null
     };
     
     try {
@@ -2267,6 +2311,120 @@ function savePrintSettings(event) {
     if (event) event.preventDefault();
     const form = document.getElementById('printSettingsForm');
     savePrintSettingsFromForm(form || (event && event.target));
+}
+
+// =====================================================
+// DOCUMENT BRANDING PAGE (stamp, toggles for PO/documents)
+// =====================================================
+
+const DOCUMENT_BRANDING_DEFAULTS = {
+    show_logo_on_po: true,
+    show_company_address_on_po: true,
+    show_branch_address_on_po: true,
+    show_stamp_on_controlled_orders: true,
+    show_stamp_on_official_po: true,
+    show_signature_on_controlled_orders: true,
+    show_signature_on_official_po: true,
+};
+
+async function renderDocumentBrandingPage() {
+    const page = document.getElementById('settings');
+    if (!page) return;
+    const cid = typeof CONFIG !== 'undefined' ? CONFIG.COMPANY_ID : null;
+    if (!cid || !window.API || !window.API.company) {
+        page.innerHTML = '<div class="card"><div class="card-body"><p>Set Company in General Settings first.</p></div></div>';
+        return;
+    }
+    let branding = { ...DOCUMENT_BRANDING_DEFAULTS };
+    try {
+        const res = await window.API.company.getSettings(cid, 'document_branding');
+        if (res && res.value && typeof res.value === 'object') branding = { ...branding, ...res.value };
+        else if (res && res.settings && res.settings.document_branding) branding = { ...branding, ...res.settings.document_branding };
+    } catch (e) {
+        console.warn('Load document_branding:', e);
+    }
+    const cb = (key) => (branding[key] !== false ? 'checked' : '');
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-file-signature"></i> Document Branding</h3>
+                <p style="margin: 0.25rem 0 0 0; font-size: 0.875rem; color: var(--text-secondary);">Company name, logo, address, and stamp on POs and other documents. Admin only.</p>
+            </div>
+            <div class="card-body">
+                <form id="documentBrandingForm">
+                    <h4 style="margin-bottom: 0.5rem;">Purchase orders &amp; documents</h4>
+                    <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_logo_on_po" ${cb('show_logo_on_po')}> Show logo on PO</label></div>
+                    <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_company_address_on_po" ${cb('show_company_address_on_po')}> Show company address on PO</label></div>
+                    <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_branch_address_on_po" ${cb('show_branch_address_on_po')}> Show branch address on PO</label></div>
+                    <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Stamp &amp; signature (compliance)</h4>
+                    <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_stamp_on_controlled_orders" ${cb('show_stamp_on_controlled_orders')}> Show stamp on controlled-item orders</label></div>
+                    <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_stamp_on_official_po" ${cb('show_stamp_on_official_po')}> Show stamp on official PO</label></div>
+                    <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_signature_on_controlled_orders" ${cb('show_signature_on_controlled_orders')}> Show signature on controlled-item orders</label></div>
+                    <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_signature_on_official_po" ${cb('show_signature_on_official_po')}> Show signature on official PO</label></div>
+                    <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Company stamp</h4>
+                    <div class="form-group">
+                        <label class="form-label">Upload stamp image (PNG/JPG, max 2MB)</label>
+                        <input type="file" id="documentBrandingStampFile" accept=".png,.jpg,.jpeg">
+                        <button type="button" class="btn btn-outline" id="documentBrandingStampUploadBtn"><i class="fas fa-upload"></i> Upload stamp</button>
+                        <span id="documentBrandingStampStatus" style="margin-left: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);"></span>
+                    </div>
+                    <div style="margin-top: 1.5rem;">
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save document branding</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+    const form = document.getElementById('documentBrandingForm');
+    if (form) {
+        form.onsubmit = async function(e) {
+            e.preventDefault();
+            const fd = new FormData(form);
+            const next = {
+                show_logo_on_po: fd.has('show_logo_on_po'),
+                show_company_address_on_po: fd.has('show_company_address_on_po'),
+                show_branch_address_on_po: fd.has('show_branch_address_on_po'),
+                show_stamp_on_controlled_orders: fd.has('show_stamp_on_controlled_orders'),
+                show_stamp_on_official_po: fd.has('show_stamp_on_official_po'),
+                show_signature_on_controlled_orders: fd.has('show_signature_on_controlled_orders'),
+                show_signature_on_official_po: fd.has('show_signature_on_official_po'),
+            };
+            if (branding.stamp_url) next.stamp_url = branding.stamp_url;
+            try {
+                await window.API.company.updateSetting(cid, { key: 'document_branding', value: next });
+                if (typeof showToast === 'function') showToast('Document branding saved', 'success');
+            } catch (err) {
+                if (typeof showToast === 'function') showToast(err.message || 'Failed to save', 'error');
+            }
+        };
+    }
+    const stampFile = document.getElementById('documentBrandingStampFile');
+    const stampBtn = document.getElementById('documentBrandingStampUploadBtn');
+    const stampStatus = document.getElementById('documentBrandingStampStatus');
+    if (stampBtn && stampFile) {
+        stampBtn.onclick = async function() {
+            const file = stampFile.files[0];
+            if (!file) {
+                if (stampStatus) stampStatus.textContent = 'Select a file first';
+                return;
+            }
+            if (file.size > 2 * 1024 * 1024) {
+                if (stampStatus) stampStatus.textContent = 'File too large (max 2MB)';
+                return;
+            }
+            stampStatus.textContent = 'Uploading…';
+            try {
+                const res = await window.API.company.uploadStamp(cid, file);
+                if (res && res.document_branding) branding = res.document_branding;
+                if (res && res.stamp_url) branding.stamp_url = res.stamp_url;
+                stampStatus.textContent = 'Uploaded';
+                if (typeof showToast === 'function') showToast('Stamp uploaded', 'success');
+            } catch (err) {
+                stampStatus.textContent = 'Upload failed';
+                if (typeof showToast === 'function') showToast(err.message || 'Stamp upload failed', 'error');
+            }
+        };
+    }
 }
 
 // =====================================================

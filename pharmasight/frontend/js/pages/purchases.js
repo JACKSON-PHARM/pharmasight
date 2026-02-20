@@ -977,6 +977,11 @@ async function renderCreatePurchaseOrderPage() {
                 Order is ${orderStatus} - cannot be edited or deleted
             </span>
         `}
+        ${orderStatus === 'PENDING' ? `
+        <button type="button" class="btn btn-primary" onclick="if(window.approvePurchaseOrder) window.approvePurchaseOrder('${orderId}')" title="Approve (generates PDF with stamp &amp; signature)">
+            <i class="fas fa-check-circle"></i> Approve
+        </button>
+        ` : ''}
         <button type="button" class="btn btn-outline" onclick="if(window.printPurchaseOrder) window.printPurchaseOrder('${orderId}')" title="Print">
             <i class="fas fa-print"></i> Print
         </button>
@@ -2008,6 +2013,9 @@ async function viewPurchaseDocument(docId, docType) {
             <button class="btn btn-outline btn-danger" onclick="closeModal(); if(window.deletePurchaseOrder) window.deletePurchaseOrder('${order.id}')" title="Delete">
                 <i class="fas fa-trash"></i> Delete
             </button>
+            <button class="btn btn-primary" onclick="closeModal(); if(window.approvePurchaseOrder) window.approvePurchaseOrder('${order.id}')" title="Approve (generates PDF)">
+                <i class="fas fa-check-circle"></i> Approve
+            </button>
             ` : ''}
             <button class="btn btn-primary" onclick="if(window.printPurchaseOrder) window.printPurchaseOrder('${order.id}')" title="Print">
                 <i class="fas fa-print"></i> Print
@@ -2260,11 +2268,32 @@ async function deletePurchaseOrder(orderId) {
     }
 }
 
-// Print purchase order
+// Approve purchase order (sets approved_by, approved_at, generates immutable PDF)
+async function approvePurchaseOrder(orderId) {
+    try {
+        await API.purchases.approveOrder(orderId);
+        showToast('Purchase order approved. PDF generated.', 'success');
+        if (typeof loadPurchaseSubPage === 'function') loadPurchaseSubPage('orders');
+        if (typeof renderPurchaseOrderDetail === 'function') renderPurchaseOrderDetail(orderId);
+    } catch (error) {
+        console.error('Error approving purchase order:', error);
+        showToast(error.message || 'Error approving purchase order', 'error');
+    }
+}
+
+// Print purchase order: use stored PDF if approved, else dynamic preview
 async function printPurchaseOrder(orderId) {
     try {
         const order = await API.purchases.getOrder(orderId);
-        
+        if (order.status === 'APPROVED' && order.pdf_path && typeof API.purchases.getOrderPdfUrl === 'function') {
+            const { url } = await API.purchases.getOrderPdfUrl(orderId);
+            const printWindow = window.open(url, '_blank');
+            if (printWindow) {
+                printWindow.onload = () => { try { printWindow.print(); } catch (e) {} };
+                setTimeout(() => { try { printWindow.print(); } catch (e) {} }, 1000);
+            }
+            return;
+        }
         const formatDate = (dateStr) => {
             if (!dateStr) return '—';
             const date = new Date(dateStr);
@@ -2742,6 +2771,7 @@ if (typeof window !== 'undefined') {
     window.autoSavePurchaseOrder = autoSavePurchaseOrder;
     window.updatePurchaseOrder = updatePurchaseOrder;
     window.printPurchaseOrder = printPurchaseOrder;
+    window.approvePurchaseOrder = approvePurchaseOrder;
     // New Page-Shell First pattern functions
     window.fetchAndRenderPurchaseOrdersData = fetchAndRenderPurchaseOrdersData;
     window.fetchAndRenderSupplierInvoicesData = fetchAndRenderSupplierInvoicesData;
