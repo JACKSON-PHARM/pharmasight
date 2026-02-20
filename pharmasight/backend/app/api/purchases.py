@@ -7,7 +7,7 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
-from app.dependencies import get_tenant_db, get_current_user, get_tenant_required
+from app.dependencies import get_tenant_db, get_current_user, get_tenant_or_default
 from app.models.tenant import Tenant
 from app.models.settings import CompanySetting
 from app.models import (
@@ -1230,7 +1230,7 @@ def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db:
 @router.patch("/order/{order_id}/approve", response_model=PurchaseOrderResponse)
 def approve_purchase_order(
     order_id: UUID,
-    tenant: Tenant = Depends(get_tenant_required),
+    tenant: Tenant = Depends(get_tenant_or_default),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):

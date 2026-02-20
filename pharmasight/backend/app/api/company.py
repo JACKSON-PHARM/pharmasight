@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from pathlib import Path
 from pydantic import BaseModel
-from app.dependencies import get_tenant_db, get_tenant_required, require_settings_edit
+from app.dependencies import get_tenant_db, get_tenant_or_default, require_settings_edit
 from app.models.tenant import Tenant
 from app.models.company import Company, Branch
 from app.models.settings import CompanySetting
@@ -18,6 +18,7 @@ from app.schemas.company import (
 )
 from app.services.tenant_storage_service import (
     upload_stamp,
+    upload_logo,
     get_signed_url,
     BUCKET,
     ALLOWED_IMAGE_EXTENSIONS,
@@ -120,6 +121,8 @@ def update_company(
         raise HTTPException(status_code=404, detail="Company not found")
     
     update_data = company_update.model_dump(exclude_unset=True) if hasattr(company_update, 'model_dump') else company_update.dict(exclude_unset=True)
+    if "logo_url" in update_data and (not update_data["logo_url"] or not str(update_data["logo_url"]).strip()) and (company.logo_url or "").startswith("tenant-assets/"):
+        del update_data["logo_url"]
     for field, value in update_data.items():
         setattr(company, field, value)
     
@@ -238,7 +241,7 @@ def update_company_setting(
 async def upload_company_stamp(
     company_id: UUID,
     file: UploadFile = File(...),
-    tenant: Tenant = Depends(get_tenant_required),
+    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
     _auth: tuple = Depends(require_settings_edit),
 ) -> Dict[str, Any]:
@@ -304,63 +307,56 @@ async def upload_company_stamp(
 async def upload_company_logo(
     company_id: UUID,
     file: UploadFile = File(...),
+    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
     _auth: tuple = Depends(require_settings_edit),
 ):
     """
     Upload company logo (requires settings.edit).
-    Accepts image files (PNG, JPG, JPEG, GIF, WEBP)
-    Returns the company with updated logo_url
+    Prefer Supabase tenant-assets (PNG/JPG, max 2MB). Falls back to local uploads if storage unavailable.
+    Returns the company with updated logo_url (stored path or local URL).
     """
+    import os
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    
-    # Validate file type
-    allowed_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
-    file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in allowed_extensions:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
-        )
-    
-    # Validate file size (max 5MB)
     file_content = await file.read()
-    if len(file_content) > 5 * 1024 * 1024:  # 5MB
+    file_ext = Path(file.filename or "").suffix.lower()
+    content_type = (file.content_type or "image/png").split(";")[0].strip()
+    if file_ext not in {".png", ".jpg", ".jpeg"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File too large. Maximum size is 5MB"
+            detail="Invalid file type. Allowed: .png, .jpg, .jpeg",
         )
-    
+    if len(file_content) > MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File too large. Maximum size is 2MB",
+        )
+    stored_path = upload_logo(tenant.id, file_content, content_type)
+    if stored_path:
+        company.logo_url = stored_path
+        db.commit()
+        db.refresh(company)
+        return company
+    file_path = None
     try:
-        # Generate unique filename
         filename = f"{company_id}_{int(os.urandom(4).hex(), 16)}{file_ext}"
         file_path = UPLOAD_DIR / filename
-        
-        # Save file
         with open(file_path, "wb") as buffer:
             buffer.write(file_content)
-        
-        # Generate URL (relative path for now, can be absolute URL in production)
-        # In production, you might want to use S3, Cloudinary, or similar
         logo_url = f"/uploads/logos/{filename}"
-        
-        # Update company
         company.logo_url = logo_url
         db.commit()
         db.refresh(company)
-        
         return company
-        
     except Exception as e:
         db.rollback()
-        # Clean up file if database update fails
-        if file_path.exists():
+        if file_path and file_path.exists():
             file_path.unlink()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error uploading logo: {str(e)}"
+            detail=f"Error uploading logo: {str(e)}",
         )
 
 

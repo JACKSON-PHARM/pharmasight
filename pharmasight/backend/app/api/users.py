@@ -14,7 +14,7 @@ from uuid import UUID
 import secrets
 import hashlib
 from datetime import datetime
-from app.dependencies import get_tenant_db, get_tenant_required, get_current_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole, UserBranchRole
 from app.services.tenant_storage_service import (
@@ -302,7 +302,7 @@ def get_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
 async def upload_user_signature(
     user_id: UUID,
     file: UploadFile = File(...),
-    tenant: Tenant = Depends(get_tenant_required),
+    tenant: Tenant = Depends(get_tenant_or_default),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):

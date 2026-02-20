@@ -478,8 +478,12 @@ async function loadLogin() {
                     if (window.LoginSecurity) {
                         window.LoginSecurity.recordFailedAttempt(username);
                     }
-                    
-                    const errorMsg = error.message || 'Invalid username or password';
+                    // "Failed to fetch" = backend unreachable (not running, wrong URL, or CORS)
+                    let errorMsg = error.message || 'Invalid username or password';
+                    if (errorMsg.includes('Failed to fetch') || errorMsg.includes('Load failed') || errorMsg.includes('NetworkError')) {
+                        const apiUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL) ? CONFIG.API_BASE_URL : 'backend';
+                        errorMsg = 'Cannot reach the server. Check that the backend is running (e.g. ' + apiUrl + '). If using localhost, start the API on port 8000.';
+                    }
                     if (errorDiv) {
                         errorDiv.textContent = errorMsg;
                         errorDiv.style.display = 'block';

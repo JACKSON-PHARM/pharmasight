@@ -70,3 +70,17 @@ tenant-assets/{tenant_id}/documents/purchase_orders/{po_id}.pdf
 - **1, 100, or 10,000 pharmacies** → still one bucket.
 - Simple structure, no bucket proliferation.
 - Tenant isolation by path and backend checks only.
+
+---
+
+## Default tenant (development / demos)
+
+When using the **master** (default) database as the only DB — no tenant header — the app can still treat it as a tenant so that:
+
+- Company stamp upload works
+- User signature upload works
+- PO approve and PDF storage work
+
+**Requirement:** The same database must be **listed in the tenants table** in the master DB, with `database_url` equal to the app’s `DATABASE_URL`. Then, when no `X-Tenant-ID` or `X-Tenant-Subdomain` header is sent, the backend resolves this “default” tenant and uses its `tenant_id` for storage paths.
+
+**Setup:** Run the script `database/setup_default_tenant_for_dev.sql` on the **master** database, after replacing `YOUR_DATABASE_URL` with your actual `DATABASE_URL` (same value as in `.env`). That registers the default DB as a tenant (e.g. subdomain `default`) so it can be used for development, testing, and demos.

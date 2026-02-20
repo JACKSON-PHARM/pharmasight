@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from uuid import UUID
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
@@ -53,11 +53,15 @@ def build_po_pdf(
     """
     Build PO PDF and return bytes. Items: list of dicts with item_name, quantity, unit_name,
     unit_price, total_price, is_controlled (optional).
+    document_branding may include po_orientation: "portrait" (default) or "landscape".
+    Logo, stamp, and signature scale to fit the page; layout adapts to orientation.
     """
+    orientation = (document_branding or {}).get("po_orientation", "portrait")
+    pagesize = A4 if (orientation or "").lower() == "portrait" else landscape(A4)
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=A4,
+        pagesize=pagesize,
         rightMargin=15 * mm,
         leftMargin=15 * mm,
         topMargin=15 * mm,

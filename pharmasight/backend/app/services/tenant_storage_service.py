@@ -39,7 +39,8 @@ def _client() -> Optional[Client]:
         return None
     try:
         from supabase import create_client
-        return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        url = (settings.SUPABASE_URL or "").rstrip("/") + "/"
+        return create_client(url, settings.SUPABASE_SERVICE_ROLE_KEY)
     except Exception as e:
         logger.warning("Supabase storage client: %s", e)
         return None
@@ -120,8 +121,10 @@ def upload_file(
         client.storage.from_(BUCKET).upload(
             relative,
             content,
-            file_options={"content-type": content_type},
-            upsert=True,
+            file_options={
+                "content-type": content_type,
+                "x-upsert": "true",
+            },
         )
         return f"{BUCKET}/{relative}"
     except Exception as e:

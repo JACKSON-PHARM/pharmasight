@@ -289,15 +289,25 @@ async function renderCompanyProfilePage() {
                                    value="${companyData?.pin || ''}"
                                    placeholder="Tax identification number">
                         </div>
-                        <div class="form-group">
-                            <label class="form-label">Logo URL</label>
-                            <input type="url" class="form-input" name="logo_url" 
-                                   value="${companyData?.logo_url || ''}"
-                                   placeholder="https://example.com/logo.png">
-                            <small style="color: var(--text-secondary);">
-                                URL to your company logo (will appear on receipts/invoices)
-                            </small>
+                    </div>
+                    
+                    <div class="form-group" style="margin-top: 1rem;">
+                        <label class="form-label">Company logo</label>
+                        <p style="margin: 0.25rem 0 0.5rem 0; font-size: 0.875rem; color: var(--text-secondary);">Upload logo image (PNG/JPG, max 2MB). Used on POs and documents.</p>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                            <input type="file" id="companyLogoFile" accept=".png,.jpg,.jpeg" style="max-width: 220px;">
+                            <button type="button" class="btn btn-outline" id="companyLogoUploadBtn"><i class="fas fa-upload"></i> Upload logo</button>
+                            <span id="companyLogoUploadStatus" style="font-size: 0.875rem; color: var(--text-secondary);">${companyData?.logo_url ? 'Uploaded' : ''}</span>
                         </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Logo URL (optional fallback)</label>
+                        <input type="url" class="form-input" name="logo_url" 
+                               value="${(companyData?.logo_url && !String(companyData.logo_url).startsWith('tenant-assets/')) ? companyData.logo_url : ''}"
+                               placeholder="https://example.com/logo.png">
+                        <small style="color: var(--text-secondary);">
+                            Or paste a URL to your logo if you don't upload a file
+                        </small>
                     </div>
                     
                     <div style="margin-top: 2rem;">
@@ -309,6 +319,38 @@ async function renderCompanyProfilePage() {
             </div>
         </div>
     `;
+    const logoBtn = document.getElementById('companyLogoUploadBtn');
+    const logoFile = document.getElementById('companyLogoFile');
+    const logoStatus = document.getElementById('companyLogoUploadStatus');
+    if (logoBtn && logoFile) {
+        logoBtn.onclick = async function() {
+            const file = logoFile.files[0];
+            if (!file) {
+                if (logoStatus) logoStatus.textContent = 'Select a file first';
+                return;
+            }
+            if (file.size > 2 * 1024 * 1024) {
+                if (logoStatus) logoStatus.textContent = 'File too large (max 2MB)';
+                return;
+            }
+            if (!CONFIG.COMPANY_ID) {
+                if (logoStatus) logoStatus.textContent = 'Save company first';
+                return;
+            }
+            logoStatus.textContent = 'Uploading…';
+            try {
+                await API.company.uploadLogo(CONFIG.COMPANY_ID, file);
+                if (logoStatus) logoStatus.textContent = 'Uploaded';
+                if (typeof showToast === 'function') showToast('Logo uploaded', 'success');
+                const updated = await API.company.get(CONFIG.COMPANY_ID);
+                const urlInput = document.querySelector('#companyProfileForm input[name="logo_url"]');
+                if (urlInput && updated && updated.logo_url) urlInput.value = updated.logo_url;
+            } catch (err) {
+                if (logoStatus) logoStatus.textContent = 'Upload failed';
+                if (typeof showToast === 'function') showToast(err.message || 'Logo upload failed', 'error');
+            }
+        };
+    }
 }
 
 async function saveCompanyProfile(event) {
@@ -2321,6 +2363,7 @@ const DOCUMENT_BRANDING_DEFAULTS = {
     show_logo_on_po: true,
     show_company_address_on_po: true,
     show_branch_address_on_po: true,
+    po_orientation: 'portrait',
     show_stamp_on_controlled_orders: true,
     show_stamp_on_official_po: true,
     show_signature_on_controlled_orders: true,
@@ -2356,6 +2399,14 @@ async function renderDocumentBrandingPage() {
                     <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_logo_on_po" ${cb('show_logo_on_po')}> Show logo on PO</label></div>
                     <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_company_address_on_po" ${cb('show_company_address_on_po')}> Show company address on PO</label></div>
                     <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_branch_address_on_po" ${cb('show_branch_address_on_po')}> Show branch address on PO</label></div>
+                    <div class="form-group">
+                        <label class="form-label">PO document orientation</label>
+                        <select name="po_orientation" class="form-input" style="max-width: 12rem;">
+                            <option value="portrait" ${(branding.po_orientation || 'portrait') === 'portrait' ? 'selected' : ''}>Portrait</option>
+                            <option value="landscape" ${(branding.po_orientation || '') === 'landscape' ? 'selected' : ''}>Landscape</option>
+                        </select>
+                        <small style="color: var(--text-secondary);">Logo, stamp and signature adapt to the chosen layout.</small>
+                    </div>
                     <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Stamp &amp; signature (compliance)</h4>
                     <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_stamp_on_controlled_orders" ${cb('show_stamp_on_controlled_orders')}> Show stamp on controlled-item orders</label></div>
                     <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="show_stamp_on_official_po" ${cb('show_stamp_on_official_po')}> Show stamp on official PO</label></div>
@@ -2384,6 +2435,7 @@ async function renderDocumentBrandingPage() {
                 show_logo_on_po: fd.has('show_logo_on_po'),
                 show_company_address_on_po: fd.has('show_company_address_on_po'),
                 show_branch_address_on_po: fd.has('show_branch_address_on_po'),
+                po_orientation: (fd.get('po_orientation') || 'portrait').toLowerCase() === 'landscape' ? 'landscape' : 'portrait',
                 show_stamp_on_controlled_orders: fd.has('show_stamp_on_controlled_orders'),
                 show_stamp_on_official_po: fd.has('show_stamp_on_official_po'),
                 show_signature_on_controlled_orders: fd.has('show_signature_on_controlled_orders'),

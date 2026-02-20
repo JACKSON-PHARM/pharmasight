@@ -183,6 +183,23 @@ def _tenant_from_token_or_header(request: Request, master_db: Session, payload: 
     return tenant
 
 
+def _get_default_tenant(master_db: Session) -> Optional[Tenant]:
+    """Return the tenant whose database_url equals this app's DATABASE_URL, or None."""
+    default_url = settings.database_connection_string
+    if not default_url:
+        return None
+    tenant = master_db.query(Tenant).filter(
+        Tenant.database_url == default_url,
+        Tenant.database_url.isnot(None),
+    ).first()
+    if tenant is not None:
+        return tenant
+    for t in master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).all():
+        if (t.database_url or "").strip() == default_url.strip():
+            return t
+    return None
+
+
 def get_current_user_optional(
     request: Request,
     master_db: Session = Depends(get_master_db),
@@ -207,6 +224,8 @@ def get_current_user_optional(
         yield None
         return
     tenant = _tenant_from_token_or_header(request, master_db, payload)
+    if tenant is None:
+        tenant = _get_default_tenant(master_db)
     if not tenant or not tenant.database_url:
         yield None
         return
@@ -252,6 +271,8 @@ def get_current_user(
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     tenant = _tenant_from_token_or_header(request, master_db, payload)
+    if tenant is None:
+        tenant = _get_default_tenant(master_db)
     if not tenant or not tenant.database_url:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -282,6 +303,61 @@ def get_tenant_required(
             detail="X-Tenant-ID or X-Tenant-Subdomain required for this request",
         )
     return tenant
+
+
+def get_tenant_or_default(
+    request: Request,
+    master_db: Session = Depends(get_master_db),
+) -> Tenant:
+    """
+    Resolve tenant for storage/tenant-scoped ops: from header, or as the default DB tenant.
+
+    Master/default DB can function as a tenant DB for development, testing, and demos.
+    When no X-Tenant-* header is sent, look up a tenant in the tenants table whose
+    database_url equals this app's DATABASE_URL. That tenant is the "default" and
+    provides tenant_id for storage (e.g. tenant-assets/{tenant_id}/stamp.png).
+
+    If no such tenant exists, raises 400 with instructions to add the default DB
+    as a tenant (so it can be listed and used for dev/demos).
+    """
+    tenant = get_tenant_from_header(request, master_db)
+    if tenant is not None:
+        return tenant
+    # No header: use default DB as tenant if it is listed in tenants table
+    default_url = settings.database_connection_string
+    if not default_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Tenant required for this request. Send X-Tenant-ID or X-Tenant-Subdomain, "
+                "or add your default database as a tenant in the tenants table for development/demos."
+            ),
+        )
+    default_tenant = master_db.query(Tenant).filter(
+        Tenant.database_url == default_url,
+        Tenant.database_url.isnot(None),
+    ).first()
+    if default_tenant is None:
+        # Try normalized comparison (e.g. strip trailing slash or whitespace)
+        for t in master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).all():
+            if (t.database_url or "").strip() == default_url.strip():
+                default_tenant = t
+                break
+    if default_tenant is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This operation requires a tenant (for storage paths). "
+                "Either send X-Tenant-ID or X-Tenant-Subdomain, or add your current database as a tenant "
+                "in the tenants table (same database_url as DATABASE_URL) so the default DB can be used for development and demos."
+            ),
+        )
+    if (default_tenant.status or "").lower() in ("suspended", "cancelled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account suspended. Please contact support.",
+        )
+    return default_tenant
 
 
 def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bool:
