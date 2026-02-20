@@ -83,7 +83,7 @@ class UserResponse(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool
-    signature_path: Optional[str] = None  # Path in storage; no URL in company settings
+    has_signature: bool = False  # True if user has uploaded signature; use GET /users/{id}/signature-preview-url for display
     ppb_number: Optional[str] = None
     designation: Optional[str] = None
     is_pending: bool

@@ -1459,7 +1459,7 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
                         <label class="form-label">Signature (for approved POs)</label>
                         <input type="file" id="editUserSignatureFile" accept=".png,.jpg,.jpeg">
                         <button type="button" class="btn btn-outline" id="editUserSignatureUploadBtn"><i class="fas fa-upload"></i> Upload signature</button>
-                        <span id="editUserSignatureStatus" style="margin-left: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">${user.signature_path ? 'Uploaded' : ''}</span>
+                        <span id="editUserSignatureStatus" style="margin-left: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">${user.has_signature ? 'Uploaded' : ''}</span>
                     </div>
                     ${permissionsHtml}
                     <div style="margin-top: 2rem; display: flex; gap: 1rem;">
@@ -2389,7 +2389,7 @@ async function renderDocumentBrandingPage() {
                 show_signature_on_controlled_orders: fd.has('show_signature_on_controlled_orders'),
                 show_signature_on_official_po: fd.has('show_signature_on_official_po'),
             };
-            if (branding.stamp_url) next.stamp_url = branding.stamp_url;
+            // stamp_url is preserved by backend when updating document_branding (never sent from frontend)
             try {
                 await window.API.company.updateSetting(cid, { key: 'document_branding', value: next });
                 if (typeof showToast === 'function') showToast('Document branding saved', 'success');
@@ -2416,7 +2416,6 @@ async function renderDocumentBrandingPage() {
             try {
                 const res = await window.API.company.uploadStamp(cid, file);
                 if (res && res.document_branding) branding = res.document_branding;
-                if (res && res.stamp_url) branding.stamp_url = res.stamp_url;
                 stampStatus.textContent = 'Uploaded';
                 if (typeof showToast === 'function') showToast('Stamp uploaded', 'success');
             } catch (err) {

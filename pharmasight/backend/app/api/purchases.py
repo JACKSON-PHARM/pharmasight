@@ -1336,7 +1336,7 @@ def get_purchase_order_pdf_url(order_id: UUID, db: Session = Depends(get_tenant_
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not order or not order.pdf_path:
         raise HTTPException(status_code=404, detail="No PDF available for this order")
-    url = get_signed_url(order.pdf_path, expires_in=3600)
+    url = get_signed_url(order.pdf_path)  # Uses 10 min expiry; never expose raw path
     if not url:
         raise HTTPException(status_code=503, detail="Could not generate PDF URL")
     return {"url": url}

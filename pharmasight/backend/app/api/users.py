@@ -14,13 +14,15 @@ from uuid import UUID
 import secrets
 import hashlib
 from datetime import datetime
-from app.dependencies import get_tenant_db, get_tenant_required, get_current_user, require_settings_edit
+from app.dependencies import get_tenant_db, get_tenant_required, get_current_user
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole, UserBranchRole
 from app.services.tenant_storage_service import (
     upload_user_signature as upload_signature_to_storage,
+    get_signed_url,
     ALLOWED_IMAGE_EXTENSIONS,
     MAX_IMAGE_BYTES,
+    SIGNED_URL_EXPIRY_SECONDS,
 )
 from app.models.company import Branch
 from app.models.permission import Permission, RolePermission
@@ -290,7 +292,7 @@ def get_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
         branch_roles=branch_roles,
         created_at=user.created_at,
         updated_at=user.updated_at,
-        signature_path=getattr(user, 'signature_path', None),
+        has_signature=bool(getattr(user, 'signature_path', None)),
         ppb_number=getattr(user, 'ppb_number', None),
         designation=getattr(user, 'designation', None),
     )
@@ -331,7 +333,12 @@ async def upload_user_signature(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File too large. Maximum size is 2MB",
         )
-    content_type = "image/png" if file_ext == ".png" else "image/jpeg"
+    content_type = (file.content_type or "").strip().lower() or ("image/png" if file_ext == ".png" else "image/jpeg")
+    if content_type not in ("image/png", "image/jpeg"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid content-type. Allowed: image/png, image/jpeg",
+        )
     stored_path = upload_signature_to_storage(tenant.id, user_id, content, content_type)
     if not stored_path:
         raise HTTPException(
@@ -341,7 +348,27 @@ async def upload_user_signature(
     target.signature_path = stored_path
     db.commit()
     db.refresh(target)
-    return {"signature_path": stored_path}
+    # Never expose raw storage path to frontend
+    return {"success": True}
+
+
+@router.get("/users/{user_id}/signature-preview-url")
+def get_user_signature_preview_url(
+    user_id: UUID,
+    user_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Return a short-lived signed URL for the user's signature image. Own user or settings.edit only. Never expose raw path."""
+    current_user, _ = user_db
+    if current_user.id != user_id and not _user_has_permission(db, current_user.id, "settings.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if not user or not getattr(user, "signature_path", None):
+        raise HTTPException(status_code=404, detail="No signature")
+    url = get_signed_url(user.signature_path, expires_in=SIGNED_URL_EXPIRY_SECONDS)
+    if not url:
+        raise HTTPException(status_code=503, detail="Could not generate preview URL")
+    return {"url": url}
 
 
 def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bool:

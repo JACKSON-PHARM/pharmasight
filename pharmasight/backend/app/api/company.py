@@ -18,9 +18,11 @@ from app.schemas.company import (
 )
 from app.services.tenant_storage_service import (
     upload_stamp,
+    get_signed_url,
     BUCKET,
     ALLOWED_IMAGE_EXTENSIONS,
     MAX_IMAGE_BYTES,
+    SIGNED_URL_EXPIRY_SECONDS,
 )
 
 router = APIRouter()
@@ -127,13 +129,24 @@ def update_company(
 
 
 # Company settings (e.g. print_config for receipts - set by admin, applies to all users)
+def _mask_document_branding_for_frontend(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Never expose raw storage paths. Replace stamp_url with short-lived signed URL."""
+    out = {k: v for k, v in raw.items() if k != "stamp_url"}
+    stamp_path = raw.get("stamp_url")
+    if stamp_path and isinstance(stamp_path, str):
+        signed = get_signed_url(stamp_path, expires_in=SIGNED_URL_EXPIRY_SECONDS)
+        if signed:
+            out["stamp_preview_url"] = signed
+    return out
+
+
 @router.get("/companies/{company_id}/settings")
 def get_company_settings(
     company_id: UUID,
     key: Optional[str] = Query(None, description="Setting key, e.g. 'print_config'. Omit to get all."),
     db: Session = Depends(get_tenant_db)
 ) -> Dict[str, Any]:
-    """Get company-level settings. Admin configures print layout here."""
+    """Get company-level settings. Raw storage paths are never returned; use signed URLs for preview."""
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -147,7 +160,10 @@ def get_company_settings(
         r = rows[0]
         if r.setting_type == "json":
             try:
-                return {"key": r.setting_key, "value": json.loads(r.setting_value or "{}")}
+                val = json.loads(r.setting_value or "{}")
+                if r.setting_key == "document_branding" and isinstance(val, dict):
+                    val = _mask_document_branding_for_frontend(val)
+                return {"key": r.setting_key, "value": val}
             except json.JSONDecodeError:
                 return {"key": r.setting_key, "value": r.setting_value}
         return {"key": r.setting_key, "value": r.setting_value}
@@ -157,7 +173,10 @@ def get_company_settings(
     for r in rows:
         if r.setting_type == "json":
             try:
-                out[r.setting_key] = json.loads(r.setting_value or "{}")
+                val = json.loads(r.setting_value or "{}")
+                if r.setting_key == "document_branding" and isinstance(val, dict):
+                    val = _mask_document_branding_for_frontend(val)
+                out[r.setting_key] = val
             except json.JSONDecodeError:
                 out[r.setting_key] = r.setting_value
         else:
@@ -179,6 +198,19 @@ def update_company_setting(
     val = body.value
     if isinstance(val, (dict, list)):
         setting_type = "json"
+        # Preserve stamp_url when updating document_branding (frontend never sends raw path)
+        if body.key == "document_branding" and isinstance(val, dict) and "stamp_url" not in val:
+            row = db.query(CompanySetting).filter(
+                CompanySetting.company_id == company_id,
+                CompanySetting.setting_key == body.key,
+            ).first()
+            if row and row.setting_value:
+                try:
+                    existing = json.loads(row.setting_value)
+                    if isinstance(existing, dict) and existing.get("stamp_url"):
+                        val = {**val, "stamp_url": existing["stamp_url"]}
+                except json.JSONDecodeError:
+                    pass
         setting_value = json.dumps(val)
     else:
         setting_type = "string"
@@ -230,7 +262,12 @@ async def upload_company_stamp(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File too large. Maximum size is 2MB",
         )
-    content_type = "image/png" if file_ext == ".png" else "image/jpeg"
+    content_type = (file.content_type or "").strip().lower() or ("image/png" if file_ext == ".png" else "image/jpeg")
+    if content_type not in ("image/png", "image/jpeg"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid content-type. Allowed: image/png, image/jpeg",
+        )
     stored_path = upload_stamp(tenant.id, content, content_type)
     if not stored_path:
         raise HTTPException(
@@ -258,7 +295,9 @@ async def upload_company_stamp(
             setting_type="json",
         ))
     db.commit()
-    return {"stamp_url": stored_path, "document_branding": branding}
+    # Never expose raw path to frontend; return signed preview URL only
+    out_branding = _mask_document_branding_for_frontend(branding)
+    return {"document_branding": out_branding}
 
 
 @router.post("/companies/{company_id}/logo", response_model=CompanyResponse)
