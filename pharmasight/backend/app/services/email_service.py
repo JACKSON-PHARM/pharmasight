@@ -3,6 +3,7 @@ Email service for sending tenant invite emails via SMTP.
 """
 import html
 import logging
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -15,6 +16,20 @@ logger = logging.getLogger(__name__)
 
 def _escape(s: str) -> str:
     return html.escape(s, quote=True)
+
+
+def _envelope_sender() -> str:
+    """Return address to use as SMTP envelope sender. Gmail expects the authenticated user's email."""
+    raw = (settings.EMAIL_FROM or "").strip()
+    if not raw:
+        return (settings.SMTP_USER or "").strip()
+    # "Name <user@domain.com>" -> user@domain.com
+    m = re.search(r"<([^>]+)>", raw)
+    if m:
+        return m.group(1).strip().lower()
+    if "@" in raw:
+        return raw
+    return (settings.SMTP_USER or "").strip()
 
 
 class EmailService:
@@ -84,7 +99,7 @@ class EmailService:
             with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
                 server.starttls()
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.EMAIL_FROM, [to_email], msg.as_string())
+                server.sendmail(_envelope_sender(), [to_email], msg.as_string())
             logger.info(f"Tenant invite email sent to {to_email}")
             return True
         except Exception as e:
@@ -129,9 +144,11 @@ class EmailService:
             with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
                 server.starttls()
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.EMAIL_FROM, [to_email], msg.as_string())
+                server.sendmail(_envelope_sender(), [to_email], msg.as_string())
             logger.info(f"Password reset email sent to {to_email}")
             return True
         except Exception as e:
-            logger.exception(f"Failed to send password reset email to {to_email}: {e}")
-            return False
+            err_msg = f"{type(e).__name__}: {e}"
+            logger.exception("Failed to send password reset email to %s: %s", to_email, e)
+            # Re-raise so caller can log a short message (e.g. for Render logs)
+            raise RuntimeError(err_msg) from e

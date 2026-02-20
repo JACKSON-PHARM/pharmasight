@@ -374,7 +374,7 @@ def auth_request_reset(
                 print(f"  [request-reset] Email NOT sent to {to_email} (SMTP failed or not configured – check SMTP_* env and server logs)")
         except Exception as e:
             logger.exception("[request-reset] Background send failed for %s: %s", to_email, e)
-            print(f"  [request-reset] Email send ERROR for {to_email}: {e}")
+            print(f"  [request-reset] Email send ERROR for {to_email}: {type(e).__name__}: {e}")
 
     background_tasks.add_task(send_reset_email)
     return {"message": "If an account exists, you will receive a reset link.", "email_sent": True}

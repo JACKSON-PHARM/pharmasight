@@ -73,9 +73,12 @@ def log_smtp_and_migrations():
         "set" if settings.SMTP_USER else "empty",
         "set" if settings.SMTP_PASSWORD else "empty",
     )
-    if not smtp_ok:
+    if smtp_ok:
+        print("  [SMTP] Password reset emails: configured (SMTP_HOST/SMTP_USER/SMTP_PASSWORD set on this service)")
+    else:
+        print("  [SMTP] Password reset emails: NOT configured. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD on this Render service (the one running the API).")
         logger.warning(
-            "Password reset emails will not be sent until SMTP_HOST, SMTP_USER, and SMTP_PASSWORD are set (e.g. in pharmasight/.env). Restart the server after changing .env."
+            "Password reset emails will not be sent until SMTP_HOST, SMTP_USER, and SMTP_PASSWORD are set on the backend service. Restart after changing env."
         )
 
 
