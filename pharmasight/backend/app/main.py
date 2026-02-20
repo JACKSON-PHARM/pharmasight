@@ -77,15 +77,23 @@ def run_tenant_migrations():
     try:
         from app.services.migration_service import MigrationService, run_migrations_for_url
 
-        # 1) Run app migrations on the default/master app DB (tenant management + transactions when no tenant)
-        try:
-            default_url = settings.database_connection_string
-            if default_url:
+        # 1) Run app migrations on the default/master app DB (same DB as tenant when Option A)
+        default_url = settings.database_connection_string
+        if not default_url:
+            logger.warning("DATABASE_URL not set; skipping startup migrations. App tables will not exist.")
+        else:
+            try:
                 ran_default = run_migrations_for_url(default_url)
                 if ran_default:
                     logger.info("Startup migrations applied on default/master DB: %s", ran_default)
-        except Exception as e:
-            logger.warning("Startup migrations on default/master DB failed: %s", e)
+                else:
+                    logger.info("Default/master DB already up to date (no new migrations applied).")
+            except Exception as e:
+                logger.error(
+                    "Startup migrations on default/master DB FAILED: %s. App tables (companies, users, branches, etc.) may be missing. Fix: ensure database/migrations is deployed and DB is reachable.",
+                    e,
+                    exc_info=True,
+                )
 
         # 2) Run app migrations on each tenant DB (Supabase per tenant)
         svc = MigrationService()

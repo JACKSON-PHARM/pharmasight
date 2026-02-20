@@ -120,7 +120,6 @@ def decode_internal_token(token: str) -> Optional[dict]:
         if not payload.get(CLAIM_SUB):
             return None
         return payload
-        return payload
     except (JWTError, Exception):
         return None
 

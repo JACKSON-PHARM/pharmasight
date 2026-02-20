@@ -22,7 +22,26 @@ from app.models.tenant import Tenant
 
 logger = logging.getLogger(__name__)
 
-_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "database" / "migrations"
+# Resolved at import (used by MigrationService and discovery)
+_MIGRATIONS_DIR_CANDIDATES = [
+    Path(__file__).resolve().parent.parent.parent.parent / "database" / "migrations",  # pharmasight/database/migrations
+    Path(__file__).resolve().parent.parent.parent / "database" / "migrations",          # repo root database/migrations
+    Path.cwd() / "database" / "migrations",
+    Path.cwd() / "pharmasight" / "database" / "migrations",
+]
+
+
+def _get_migrations_dir() -> Path:
+    """Return first existing database/migrations dir so migrations run on any deploy layout (e.g. Render)."""
+    for d in _MIGRATIONS_DIR_CANDIDATES:
+        if d.is_dir():
+            return d
+    fallback = _MIGRATIONS_DIR_CANDIDATES[0]
+    logger.warning(
+        "Migrations dir not found (tried %s). App tables may be missing. Fix: ensure 'database/migrations' is deployed.",
+        [str(p) for p in _MIGRATIONS_DIR_CANDIDATES],
+    )
+    return fallback
 
 
 def _ensure_schema_migrations(conn) -> None:
@@ -47,10 +66,11 @@ def _get_applied_versions(conn) -> Set[str]:
 
 def _discover_migration_files() -> List[tuple[str, Path]]:
     """Return ordered (version, path) for migrations. Version = stem (e.g. 001_initial)."""
-    if not _MIGRATIONS_DIR.is_dir():
+    migrations_dir = _get_migrations_dir()
+    if not migrations_dir.is_dir():
         return []
     out = []
-    for p in sorted(_MIGRATIONS_DIR.iterdir()):
+    for p in sorted(migrations_dir.iterdir()):
         if p.suffix.lower() != ".sql":
             continue
         stem = p.stem
@@ -119,7 +139,13 @@ def run_migrations_for_url(database_url: str) -> List[str]:
             applied_this_run.append(baseline)
 
         applied = _get_applied_versions(conn)
-        for version, path in _discover_migration_files():
+        files = _discover_migration_files()
+        if not files:
+            logger.warning(
+                "No migration files found in %s. App tables (companies, users, branches, etc.) will not exist. Check that 'database/migrations' is present in the deployed app.",
+                _get_migrations_dir(),
+            )
+        for version, path in files:
             if version in applied:
                 continue
             sql = path.read_text(encoding="utf-8", errors="replace")
@@ -150,7 +176,7 @@ class MigrationService:
     """Service for applying migrations to all tenant databases."""
 
     def __init__(self):
-        self.migrations_dir = str(_MIGRATIONS_DIR)
+        self.migrations_dir = str(_get_migrations_dir())
 
     def get_all_tenants_with_db(self) -> List[Tenant]:
         """Tenants that have database_url set (for migration runs)."""
