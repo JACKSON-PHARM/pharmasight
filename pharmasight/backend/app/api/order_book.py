@@ -30,7 +30,63 @@ from app.services.order_book_service import OrderBookService
 router = APIRouter()
 
 
-def _serialize_order_book_entry(entry, _get_stock):
+def _get_days_in_order_book_90(db: Session, branch_id: UUID, item_ids: List[UUID]) -> dict:
+    """Return map item_id -> number of distinct days the item appeared in the order book in the past 90 days."""
+    if not item_ids:
+        return {}
+    since = date.today() - timedelta(days=90)
+    since_dt = datetime.combine(since, datetime.min.time())
+
+    # Distinct (item_id, date) from current order book
+    daily_rows = (
+        db.query(DailyOrderBook.item_id, DailyOrderBook.entry_date)
+        .filter(
+            DailyOrderBook.branch_id == branch_id,
+            DailyOrderBook.item_id.in_(item_ids),
+            DailyOrderBook.entry_date >= since,
+        )
+        .distinct()
+        .all()
+    )
+    # Distinct (item_id, date) from history
+    history_rows = (
+        db.query(
+            OrderBookHistory.item_id,
+            func.date(OrderBookHistory.created_at).label("d"),
+        )
+        .filter(
+            OrderBookHistory.branch_id == branch_id,
+            OrderBookHistory.item_id.in_(item_ids),
+            OrderBookHistory.created_at >= since_dt,
+        )
+        .distinct()
+        .all()
+    )
+
+    # Merge and count distinct dates per item_id
+    from collections import defaultdict
+    def to_date(v):
+        return v.date() if isinstance(v, datetime) else v
+    by_item = defaultdict(set)
+    for item_id, d in daily_rows:
+        by_item[item_id].add(to_date(d))
+    for row in history_rows:
+        by_item[row.item_id].add(to_date(row.d))
+    return {item_id: len(dates) for item_id, dates in by_item.items()}
+
+
+def _reason_display(entry) -> str:
+    """Display reason: AUTO_* as-is, otherwise show creator name."""
+    reason = (entry.reason or "").strip()
+    if reason.upper().startswith("AUTO_"):
+        return reason
+    creator = getattr(entry, "creator", None)
+    if creator:
+        return (creator.full_name or creator.username or "Unknown").strip() or "Unknown"
+    return reason or "Unknown"
+
+
+def _serialize_order_book_entry(entry, _get_stock, days_in_book_90: Optional[int] = None):
     """Build a JSON-serializable dict for one order book entry."""
     def _dt(d):
         return d.isoformat() if d and hasattr(d, "isoformat") else str(d) if d else None
@@ -46,11 +102,12 @@ def _serialize_order_book_entry(entry, _get_stock):
         "supplier_id": _uuid(entry.supplier_id),
         "quantity_needed": float(entry.quantity_needed) if entry.quantity_needed is not None else 1,
         "unit_name": entry.unit_name or "unit",
-        "reason": entry.reason or "MANUAL_ADD",
+        "reason": _reason_display(entry),
         "source_reference_type": entry.source_reference_type,
         "source_reference_id": _uuid(entry.source_reference_id),
         "notes": entry.notes,
         "priority": int(entry.priority) if entry.priority is not None else 5,
+        "days_in_order_book_90": days_in_book_90,
         "status": entry.status or "PENDING",
         "purchase_order_id": _uuid(entry.purchase_order_id),
         "created_by": _uuid(entry.created_by),
@@ -116,7 +173,8 @@ def list_order_book_entries(
         entries = (
             query.options(
                 selectinload(DailyOrderBook.item),
-                selectinload(DailyOrderBook.supplier)
+                selectinload(DailyOrderBook.supplier),
+                selectinload(DailyOrderBook.creator),
             )
             .order_by(
                 DailyOrderBook.priority.desc(),
@@ -126,6 +184,7 @@ def list_order_book_entries(
         )
 
         item_ids = [e.item_id for e in entries]
+        days_map = _get_days_in_order_book_90(db, branch_id, item_ids)
         stock_map = {}
         if item_ids:
             try:
@@ -154,7 +213,8 @@ def list_order_book_entries(
         result = []
         for entry in entries:
             try:
-                result.append(_serialize_order_book_entry(entry, _get_stock))
+                days_in_book = days_map.get(entry.item_id, 0)
+                result.append(_serialize_order_book_entry(entry, _get_stock, days_in_book_90=days_in_book))
             except Exception as e:
                 logging.getLogger(__name__).warning("Skipping order book entry %s: %s", entry.id, e)
         return JSONResponse(content=result, media_type="application/json")
@@ -198,11 +258,14 @@ def get_order_book_today_summary(
             q.options(
                 selectinload(DailyOrderBook.item),
                 selectinload(DailyOrderBook.supplier),
+                selectinload(DailyOrderBook.creator),
             )
             .order_by(DailyOrderBook.priority.desc(), DailyOrderBook.created_at.desc())
             .limit(limit)
             .all()
         )
+        item_ids = [e.item_id for e in rows]
+        days_map = _get_days_in_order_book_90(db, branch_id, item_ids)
         for e in rows:
             entries_out.append(
                 {
@@ -214,7 +277,8 @@ def get_order_book_today_summary(
                     "unit_name": e.unit_name or "unit",
                     "supplier_id": str(e.supplier_id) if e.supplier_id else None,
                     "supplier_name": e.supplier.name if e.supplier else None,
-                    "priority": int(e.priority) if e.priority is not None else 5,
+                    "reason": _reason_display(e),
+                    "priority": days_map.get(e.item_id, 0),
                     "created_at": e.created_at.isoformat() if e.created_at else None,
                 }
             )
@@ -318,7 +382,12 @@ def create_order_book_entry(
             detail="This item is already in the order book."
         )
 
-    # Enhance response
+    # Load creator for reason display and compute days-in-book for priority
+    db.refresh(db_entry, ["creator", "supplier"])
+    days_map = _get_days_in_order_book_90(db, branch_id, [db_entry.item_id])
+    reason_display = _reason_display(db_entry)
+    priority_display = days_map.get(db_entry.item_id, 0)
+
     entry_dict = {
         "id": db_entry.id,
         "company_id": db_entry.company_id,
@@ -328,11 +397,12 @@ def create_order_book_entry(
         "entry_date": getattr(db_entry, "entry_date", None),
         "quantity_needed": db_entry.quantity_needed,
         "unit_name": db_entry.unit_name,
-        "reason": db_entry.reason,
+        "reason": reason_display,
         "source_reference_type": db_entry.source_reference_type,
         "source_reference_id": db_entry.source_reference_id,
         "notes": db_entry.notes,
-        "priority": db_entry.priority,
+        "priority": db_entry.priority if db_entry.priority is not None else 5,
+        "days_in_order_book_90": priority_display,
         "status": db_entry.status,
         "purchase_order_id": db_entry.purchase_order_id,
         "created_by": db_entry.created_by,
@@ -429,9 +499,11 @@ def bulk_create_order_book_entries(
             detail="One or more items are already in the order book. Please refresh and try again."
         )
 
+    item_ids_created = [e.item_id for e in created_entries]
+    days_map = _get_days_in_order_book_90(db, branch_id, item_ids_created)
     result = []
     for entry in created_entries:
-        db.refresh(entry)
+        db.refresh(entry, ["creator", "item", "supplier"])
         entry_dict = {
             "id": entry.id,
             "company_id": entry.company_id,
@@ -441,11 +513,12 @@ def bulk_create_order_book_entries(
             "supplier_id": entry.supplier_id,
             "quantity_needed": entry.quantity_needed,
             "unit_name": entry.unit_name,
-            "reason": entry.reason,
+            "reason": _reason_display(entry),
             "source_reference_type": entry.source_reference_type,
             "source_reference_id": entry.source_reference_id,
             "notes": entry.notes,
-            "priority": entry.priority,
+            "priority": entry.priority if entry.priority is not None else 5,
+            "days_in_order_book_90": days_map.get(entry.item_id, 0),
             "status": entry.status,
             "purchase_order_id": entry.purchase_order_id,
             "created_by": entry.created_by,
@@ -504,8 +577,10 @@ def update_order_book_entry(
     
     entry.updated_at = datetime.utcnow()
     db.commit()
-    db.refresh(entry)
-    
+    db.refresh(entry, ["creator", "item", "supplier"])
+    days_map = _get_days_in_order_book_90(db, entry.branch_id, [entry.item_id])
+    priority_display = days_map.get(entry.item_id, 0)
+
     # Enhance response
     entry_dict = {
         "id": entry.id,
@@ -515,11 +590,12 @@ def update_order_book_entry(
         "supplier_id": entry.supplier_id,
         "quantity_needed": entry.quantity_needed,
         "unit_name": entry.unit_name,
-        "reason": entry.reason,
+        "reason": _reason_display(entry),
         "source_reference_type": entry.source_reference_type,
         "source_reference_id": entry.source_reference_id,
         "notes": entry.notes,
-        "priority": entry.priority,
+        "priority": entry.priority if entry.priority is not None else 5,
+        "days_in_order_book_90": priority_display,
         "status": entry.status,
         "purchase_order_id": entry.purchase_order_id,
         "created_by": entry.created_by,

@@ -91,6 +91,10 @@
                     <span>Settings</span>
                     <i class="fas fa-chevron-right nav-arrow"></i>
                 </a>
+                <a href="#" class="nav-item" data-action="change-password" data-page="change-password" data-has-sub="false" title="Change your password">
+                    <i class="fas fa-key"></i>
+                    <span>Password</span>
+                </a>
             </nav>
             <!-- Sub Navigation (shown when main nav is collapsed) -->
             <nav class="sidebar-sub-nav" id="subNav" style="display: none;">
@@ -117,6 +121,7 @@
                 </div>
             </div>
         </aside>
+        <div class="sidebar-backdrop" id="sidebarBackdrop" aria-hidden="true" title="Close menu"></div>
 
         <!-- Main Content -->
         <main class="main-content">
@@ -127,9 +132,17 @@
                 </button>
                 <!-- Status Bar (phAMACore style) -->
                 <div class="status-bar" id="statusBar">
-                    <div class="status-item">
-                        <i class="fas fa-user"></i>
-                        <span id="statusUser">Loading...</span>
+                    <div class="user-menu-trigger" id="userMenuTrigger" title="Click for options">
+                        <div class="status-item status-clickable">
+                            <i class="fas fa-user"></i>
+                            <span id="statusUser">Loading...</span>
+                            <i class="fas fa-chevron-down user-menu-chevron"></i>
+                        </div>
+                        <div class="user-menu-dropdown" id="userMenuDropdown" aria-hidden="true">
+                            <button type="button" class="user-menu-item" id="userMenuChangePassword">
+                                <i class="fas fa-key"></i> Change password
+                            </button>
+                        </div>
                     </div>
                     <div class="status-divider">|</div>
                     <div class="status-item status-clickable" onclick="if(window.loadPage) window.loadPage('settings'); if(window.loadSettingsSubPage) setTimeout(() => window.loadSettingsSubPage('company'), 100);" title="Click to configure company">
@@ -143,9 +156,6 @@
                     </div>
                 </div>
                 <div class="top-bar-right">
-                    <button class="btn btn-primary" id="newSaleBtn" style="display: none;">
-                        <i class="fas fa-plus"></i> New Sale
-                    </button>
                     <button class="btn btn-primary" id="newPurchaseBtn" style="display: none;">
                         <i class="fas fa-plus"></i> New Purchase
                     </button>
@@ -360,6 +370,7 @@
     <script src="js/pages/inventory.js?v=9"></script>
     <script src="js/pages/reports.js?v=1"></script>
     <script src="js/pages/settings.js?v=7"></script>
+    <script src="js/pages/change_password.js?v=1"></script>
 </body>
 </html>
 

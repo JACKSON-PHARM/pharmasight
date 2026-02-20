@@ -107,6 +107,7 @@ function initializeAppShell() {
         // Initialize navigation and menu toggle (only for app layout)
         initializeNavigation();
         initializeMenuToggle();
+        initializeUserMenu();
         initializeHashRouting();
         
         // Set up branch change listener (only for app layout)
@@ -1290,6 +1291,13 @@ function initializeNavigation() {
             }
             
             navigationDebounceTimer = setTimeout(() => {
+                const action = navItem.dataset.action;
+                if (action === 'change-password') {
+                    if (typeof window.openChangePasswordModal === 'function') {
+                        window.openChangePasswordModal();
+                    }
+                    return;
+                }
                 const page = navItem.dataset.page;
                 const hasSub = navItem.dataset.hasSub === 'true';
                 
@@ -1314,16 +1322,54 @@ function initializeNavigation() {
 window.showMainNav = showMainNav;
 window.showSubNav = showSubNav;
 
-// Menu toggle (mobile)
+// Menu toggle (mobile): hamburger opens/closes sidebar; backdrop closes it
 function initializeMenuToggle() {
     const menuToggle = document.getElementById('menuToggle');
     const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebarBackdrop');
     
-    if (menuToggle) {
+    if (menuToggle && sidebar) {
         menuToggle.addEventListener('click', () => {
             sidebar.classList.toggle('open');
         });
     }
+    if (backdrop && sidebar) {
+        backdrop.addEventListener('click', () => {
+            sidebar.classList.remove('open');
+        });
+    }
+}
+
+// User menu (top bar): click username -> dropdown with "Change password"
+function initializeUserMenu() {
+    const trigger = document.getElementById('userMenuTrigger');
+    const dropdown = document.getElementById('userMenuDropdown');
+    const changePasswordBtn = document.getElementById('userMenuChangePassword');
+    
+    if (!trigger || !dropdown) return;
+    
+    function closeMenu() {
+        trigger.classList.remove('open');
+        dropdown.setAttribute('aria-hidden', 'true');
+    }
+    
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = trigger.classList.toggle('open');
+        dropdown.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+    });
+    
+    if (changePasswordBtn) {
+        changePasswordBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeMenu();
+            if (typeof window.openChangePasswordModal === 'function') {
+                window.openChangePasswordModal();
+            }
+        });
+    }
+    
+    document.addEventListener('click', () => closeMenu());
 }
 
 // Check if navigation is allowed (block during stock take)
@@ -1591,6 +1637,15 @@ async function loadPage(pageName) {
         pageElement.style.visibility = 'visible';
         pageElement.style.opacity = '1';
         
+        // When showing any app page other than branch-select, ensure sidebar and top bar are visible
+        // (branch-select hides them; without this, they can stay hidden after navigating to dashboard etc.)
+        if (!isAuthPage && mainPage !== 'branch-select' && authenticated) {
+            const sidebar = document.getElementById('sidebar');
+            const topBar = document.querySelector('.top-bar');
+            if (sidebar) sidebar.style.display = 'flex';
+            if (topBar) topBar.style.display = 'flex';
+        }
+        
         // CRITICAL: Ensure auth layout container is visible for auth pages
         // Must use 'flex' not 'block' to prevent container collapse (matches renderAuthLayout)
         if (isAuthPage) {
@@ -1628,11 +1683,8 @@ async function loadPage(pageName) {
         }
     }
     
-    // Show/hide action buttons
-    const newSaleBtn = document.getElementById('newSaleBtn');
+    // Show/hide action buttons (global New Sale removed; sales page has its own "+ New Invoice")
     const newPurchaseBtn = document.getElementById('newPurchaseBtn');
-    
-    newSaleBtn.style.display = pageName === 'sales' ? 'block' : 'none';
     if (newPurchaseBtn) {
         if (pageName === 'purchases') {
             newPurchaseBtn.style.display = 'block';

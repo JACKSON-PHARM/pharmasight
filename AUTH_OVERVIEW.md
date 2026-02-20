@@ -138,6 +138,13 @@ So the loading state should no longer stay forever: either you get success, or a
 
 `GET /api/config` returns `api_base_url` (and `app_public_url`, `smtp_configured`). When the frontend is served from the **same origin** as the API, it can use this to know the API base (e.g. after a cold start). If you run **two** Render services, the frontend must get the backend URL from **Settings** (API Base URL), not from `/api/config`, because the first request would have to go to the correct host.
 
+### 5.5 Render: “Network is unreachable” (tenant DB or SMTP)
+
+On Render you may see:
+
+- **Tenant DB:** `connection to server at "db.xxx.supabase.co" ... Network is unreachable` — Render’s network often can’t reach Supabase’s direct DB host (IPv6). **Fix:** Use the **Supabase connection pooler** URL for that tenant’s `database_url` (see **RENDER.md**).
+- **SMTP:** `[Errno 101] Network is unreachable` when sending reset email — Render’s **free tier** usually **blocks outbound SMTP** (port 587). **Fix:** Use a paid Render plan, or an email API over HTTPS (e.g. Resend, SendGrid); see **RENDER.md**.
+
 ---
 
 ## 6. Summary

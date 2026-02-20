@@ -226,7 +226,20 @@ body {
     left: 0;
     top: 0;
     z-index: 1000;
-    transition: transform 0.3s ease;
+    transition: width 0.25s ease, transform 0.25s ease;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+/* Backdrop when sidebar is open on mobile (tap outside to close) */
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 999;
+    transition: opacity 0.25s ease;
+    cursor: pointer;
 }
 
 .sidebar-header {
@@ -527,6 +540,66 @@ body {
 
 .status-item.status-clickable:active {
     background-color: rgba(37, 99, 235, 0.2);
+}
+
+/* User menu (username dropdown in top bar) */
+.user-menu-trigger {
+    position: relative;
+    cursor: pointer;
+}
+
+.user-menu-trigger .user-menu-chevron {
+    font-size: 0.65rem;
+    margin-left: 0.25rem;
+    opacity: 0.7;
+    transition: transform 0.2s;
+}
+
+.user-menu-trigger.open .user-menu-chevron {
+    transform: rotate(180deg);
+}
+
+.user-menu-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 0.25rem;
+    min-width: 180px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    box-shadow: var(--shadow-lg);
+    z-index: 1100;
+    padding: 0.25rem 0;
+}
+
+.user-menu-trigger.open .user-menu-dropdown {
+    display: block;
+}
+
+.user-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.5rem 1rem;
+    border: none;
+    background: none;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+
+.user-menu-item:hover {
+    background-color: rgba(37, 99, 235, 0.08);
+}
+
+.user-menu-item i {
+    color: var(--primary-color);
+    width: 1.25rem;
 }
 
 /* Responsive status bar */
@@ -1003,10 +1076,16 @@ tbody tr:hover {
 @media (max-width: 768px) {
     .sidebar {
         transform: translateX(-100%);
+        box-shadow: none;
     }
 
     .sidebar.open {
         transform: translateX(0);
+        box-shadow: var(--shadow-lg);
+    }
+
+    .sidebar.open + .sidebar-backdrop {
+        display: block;
     }
 
     .main-content {
@@ -1014,7 +1093,10 @@ tbody tr:hover {
     }
 
     .menu-toggle {
-        display: block;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.5rem;
     }
 
     .stats-grid {

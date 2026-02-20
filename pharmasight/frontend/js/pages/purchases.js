@@ -3109,7 +3109,7 @@ function renderOrderBookShell(suppliers = []) {
                                 <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Unit</th>
                                 <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Supplier</th>
                                 <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Reason</th>
-                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: center;">Priority</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: center;" title="Number of days this item appeared in the order book in the past 90 days">Days in book (90d)</th>
                                 <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: center;">Actions</th>
                             </tr>
                         </thead>
@@ -3268,8 +3268,8 @@ function renderOrderBookTable() {
                 <span class="badge badge-info">${escapeHtml(entry.reason)}</span>
             </td>
             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: center;">
-                <span class="badge ${entry.priority >= 8 ? 'badge-danger' : entry.priority >= 5 ? 'badge-warning' : 'badge-info'}">
-                    ${entry.priority}
+                <span class="badge ${(entry.days_in_order_book_90 ?? entry.priority) >= 8 ? 'badge-danger' : (entry.days_in_order_book_90 ?? entry.priority) >= 5 ? 'badge-warning' : 'badge-info'}" title="Days this item appeared in the order book (past 90 days)">
+                    ${entry.days_in_order_book_90 != null ? entry.days_in_order_book_90 : entry.priority}
                 </span>
             </td>
             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: center;">

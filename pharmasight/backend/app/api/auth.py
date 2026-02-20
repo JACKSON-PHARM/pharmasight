@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.database_master import get_master_db
-from app.dependencies import get_tenant_db, get_tenant_from_header, tenant_db_session
+from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_header, tenant_db_session
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.email_service import EmailService
@@ -383,6 +383,36 @@ def auth_request_reset(
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str = Field(..., min_length=6)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Change password while logged in: current password + new password."""
+    current_password: str
+    new_password: str = Field(..., min_length=6)
+
+
+@router.post("/auth/change-password", status_code=status.HTTP_200_OK)
+def auth_change_password(
+    body: ChangePasswordRequest,
+    current_user_and_db: Tuple[User, Session] = Depends(get_current_user),
+):
+    """Change password for the authenticated user. Requires current password."""
+    user, db = current_user_and_db
+    if not getattr(user, "password_hash", None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password change is not available for this account.",
+        )
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect.",
+        )
+    user.password_hash = hash_password(body.new_password)
+    user.password_updated_at = datetime.now(timezone.utc)
+    user.password_set = True
+    db.commit()
+    return {"message": "Password updated successfully."}
 
 
 @router.post("/auth/reset-password", status_code=status.HTTP_200_OK)

@@ -260,7 +260,10 @@ class MigrationService:
                 if ran:
                     applied[str(t.id)] = ran
             except Exception as e:
-                errors[str(t.id)] = str(e)
+                err_str = str(e)
+                if "Network is unreachable" in err_str and "supabase.co" in (t.database_url or ""):
+                    err_str += " (On Render, use Supabase connection pooler URL instead of db.xxx.supabase.co – see RENDER.md)"
+                errors[str(t.id)] = err_str
                 logger.exception("Migrations failed for tenant %s: %s", t.name, e)
         return {"applied": applied, "errors": errors}
 

@@ -43,6 +43,7 @@ class OrderBookEntryResponse(OrderBookEntryBase):
     item_sku: Optional[str] = None
     supplier_name: Optional[str] = None
     current_stock: Optional[int] = None  # Current stock at branch
+    days_in_order_book_90: Optional[int] = None  # Distinct days item appeared in order book in past 90 days (for display)
     
     class Config:
         from_attributes = True
