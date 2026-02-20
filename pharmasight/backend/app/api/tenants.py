@@ -23,6 +23,7 @@ from app.schemas.tenant import (
     SubscriptionPlanResponse, TenantSubscriptionResponse, TenantModuleResponse,
 )
 from app.utils.username_generator import generate_username_from_name
+from app.utils.public_url import get_public_base_url
 from app.services.email_service import EmailService
 from app.services.tenant_provisioning import initialize_tenant_database
 from app.services.migration_service import get_public_table_count
@@ -253,18 +254,6 @@ def delete_tenant(tenant_id: UUID, db: Session = Depends(get_master_db)):
 # TENANT INVITES
 # =====================================================
 
-def _get_public_base_url(request: Request) -> str:
-    """Base URL for invite/setup links. Uses APP_PUBLIC_URL; if that is localhost, infer from request (for Render etc.)."""
-    base = (settings.APP_PUBLIC_URL or "").strip().rstrip("/")
-    if not base or "localhost" in base or "127.0.0.1" in base:
-        # Infer from request so links work on Render even when APP_PUBLIC_URL is not set
-        scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
-        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
-        if host:
-            return f"{scheme}://{host.split(',')[0].strip()}"
-    return base
-
-
 @router.post("/tenants/{tenant_id}/invites", response_model=TenantInviteResponse, status_code=status.HTTP_201_CREATED)
 def create_invite(
     request: Request,
@@ -326,7 +315,7 @@ def create_invite(
     db.refresh(invite)
     
     # Build setup URL so email and UI use a reachable link (APP_PUBLIC_URL or inferred from request on Render)
-    base_url = _get_public_base_url(request)
+    base_url = get_public_base_url(request)
     setup_url = f"{base_url.rstrip('/')}/setup?token={invite.token}"
     
     # Return response immediately; send email in background to avoid timeout on Render (cold start / slow SMTP)

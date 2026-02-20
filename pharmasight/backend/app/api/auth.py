@@ -12,7 +12,7 @@ from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -24,6 +24,7 @@ from app.dependencies import get_tenant_db, get_tenant_from_header, tenant_db_se
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.email_service import EmailService
+from app.utils.public_url import get_public_base_url
 from app.utils.auth_internal import (
     CLAIM_SUB,
     CLAIM_TENANT_SUBDOMAIN,
@@ -326,12 +327,14 @@ class RequestResetRequest(BaseModel):
 
 @router.post("/auth/request-reset", status_code=status.HTTP_200_OK)
 def auth_request_reset(
+    request: Request,
     body: RequestResetRequest,
     master_db: Session = Depends(get_master_db),
 ):
     """
     Send password reset email if user exists. Always returns 200 to avoid leaking existence.
     Requires SMTP configured. Reset link uses internal JWT (no Supabase).
+    Reset link base URL: APP_PUBLIC_URL when set (non-localhost); else request Origin (so Render works).
     """
     email_or_username = (body.email or body.username or "").strip().lower()
     if not email_or_username:
@@ -349,7 +352,7 @@ def auth_request_reset(
     logger.info("[request-reset] User found, sending reset email to %s (tenant=%s)", user.email, subdomain_for_token)
     print(f"[request-reset] User found: {user.email}, tenant={subdomain_for_token}. Attempting to send reset email...")
     reset_token = create_reset_token(str(user.id), subdomain_for_token)
-    base = (settings.APP_PUBLIC_URL or "").rstrip("/")
+    base = get_public_base_url(request)
     reset_url = f"{base}/#password-reset?token={reset_token}"
     sent = EmailService.send_password_reset(user.email, reset_url, settings.RESET_TOKEN_EXPIRE_MINUTES)
     if not sent:

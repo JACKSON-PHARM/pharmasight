@@ -5,7 +5,7 @@ Authority: database-per-tenant. Users live in TENANT DB only.
 - Master: validate token, mark invite used.
 - Tenant DB: username derivation, user create. Resolved from token → tenant.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from app.services.onboarding_service import OnboardingService
 from app.services.invite_service import InviteService
+from app.utils.public_url import get_public_base_url
 from app.utils.username_generator import generate_username_from_name
 from app.utils.auth_internal import hash_password
 from app.models.user import User
@@ -50,7 +51,7 @@ class CompleteTenantInviteRequest(BaseModel):
 
 
 @router.post("/onboarding/signup", response_model=OnboardingSignupResponse, status_code=status.HTTP_201_CREATED)
-def signup(request: OnboardingSignupRequest, db: Session = Depends(get_master_db)):
+def signup(http_request: Request, request: OnboardingSignupRequest, db: Session = Depends(get_master_db)):
     """
     Client signup endpoint
     Only requires email and company name
@@ -64,8 +65,8 @@ def signup(request: OnboardingSignupRequest, db: Session = Depends(get_master_db
         
         # TODO: Send welcome email with invite link
         # For now, return the token (in production, send via email)
-        
-        invite_url = f"https://{result['subdomain']}.pharmasight.com/setup?token={result['invite_token']}"
+        base_url = get_public_base_url(http_request)
+        invite_url = f"{base_url.rstrip('/')}/setup?token={result['invite_token']}"
         
         return OnboardingSignupResponse(
             success=True,
