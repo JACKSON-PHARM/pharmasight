@@ -78,7 +78,7 @@ class DocumentService:
         """
         Get next sales invoice number
         
-        Format: CS001 (Cash Sale), CS002, etc.
+        Format: SD-{BRANCH_CODE}-{NUMBER} (e.g. SD-MAIN-000001), same style as PO.
         Branch-specific sequence.
         """
         return DocumentService.get_next_document_number(

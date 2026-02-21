@@ -17,7 +17,7 @@ class SalesInvoice(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
-    invoice_no = Column(String(100), nullable=False)  # Sequential, KRA compliant
+    invoice_no = Column(String(100), nullable=False)  # SD-{BRANCH_CODE}-{NUMBER}, e.g. SD-MAIN-000001
     invoice_date = Column(Date, nullable=False)
     customer_name = Column(String(255))
     customer_pin = Column(String(50))
