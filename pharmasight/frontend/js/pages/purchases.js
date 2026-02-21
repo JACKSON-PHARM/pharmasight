@@ -332,6 +332,11 @@ function renderPurchaseOrdersTableBody() {
                     <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')" title="View">
                         <i class="fas fa-eye"></i>
                     </button>
+                    ${statusText === 'APPROVED' ? `
+                    <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.downloadPurchaseOrderPdf) window.downloadPurchaseOrderPdf('${doc.id}')" title="Download PDF">
+                        <i class="fas fa-file-pdf"></i>
+                    </button>
+                    ` : ''}
                     ${statusText === 'PENDING' ? `
                     <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.editPurchaseDocument) window.editPurchaseDocument('${doc.id}', '${docType}')" title="Edit">
                         <i class="fas fa-edit"></i>
@@ -548,6 +553,9 @@ function renderSupplierInvoicesTableBody() {
                     </button>
                     <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'invoice')" title="View">
                         <i class="fas fa-eye"></i>
+                    </button>
+                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${doc.id}', ${JSON.stringify(doc.invoice_number || '')})" title="Download PDF">
+                        <i class="fas fa-file-pdf"></i>
                     </button>
                 </td>
             </tr>
@@ -1205,6 +1213,9 @@ async function renderCreateSupplierInvoicePage() {
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
                     ${isEditMode && invoiceData ? `
+                        <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${invoiceData.id}', ${JSON.stringify(invoiceData.invoice_number || '')})" title="Download PDF">
+                            <i class="fas fa-file-pdf"></i> Download PDF
+                        </button>
                         ${invoiceData.status === 'DRAFT' ? `
                             <button type="button" class="btn btn-primary" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${invoiceData.id}')" title="Batch Invoice (Add Stock)">
                                 <i class="fas fa-boxes"></i> Batch Invoice
@@ -2254,17 +2265,30 @@ async function deletePurchaseOrder(orderId) {
             closeModal();
         }
     } catch (error) {
+        isDeletingOrder = false;
         console.error('Error deleting purchase order:', error);
-        isDeletingOrder = false; // Reset flag on error
-        
-        // Handle 404 (order already deleted) gracefully
-        if (error.status === 404 || error.message.includes('404') || error.message.includes('Not Found')) {
-            showToast('Purchase order not found. It may have already been deleted.', 'info');
-            // Still refresh the list in case it was deleted by another process
-            await fetchAndRenderPurchaseOrdersData();
-        } else {
-            showToast(error.message || 'Error deleting purchase order', 'error');
+        showToast(error.message || 'Error deleting purchase order', 'error');
+    }
+}
+
+// Download approved purchase order PDF (opens signed URL; user can save from browser)
+async function downloadPurchaseOrderPdf(orderId) {
+    try {
+        const order = await API.purchases.getOrder(orderId);
+        if (order.status !== 'APPROVED' || !order.pdf_path) {
+            showToast('PDF is available only for approved orders.', 'info');
+            return;
         }
+        const { url } = await API.purchases.getOrderPdfUrl(orderId);
+        if (url) {
+            window.open(url, '_blank');
+            showToast('PDF opened in new tab; you can save from there.', 'success');
+        } else {
+            showToast('Could not get PDF URL', 'error');
+        }
+    } catch (error) {
+        console.error('Error opening PO PDF:', error);
+        showToast(error.message || 'Failed to open PDF', 'error');
     }
 }
 
@@ -2513,6 +2537,16 @@ async function deleteSupplierInvoice(invoiceId) {
     }
 }
 
+async function downloadSupplierInvoicePdf(invoiceId, invoiceNumber) {
+    try {
+        await API.purchases.downloadSupplierInvoicePdf(invoiceId, invoiceNumber || null);
+        showToast('PDF downloaded', 'success');
+    } catch (error) {
+        console.error('Error downloading supplier invoice PDF:', error);
+        showToast(error.message || 'Failed to download PDF', 'error');
+    }
+}
+
 // Auto-save invoice when changes occur
 async function autoSaveInvoice() {
     if (!currentDocument || !currentDocument.invoiceId || !currentDocument.invoiceData) {
@@ -2752,6 +2786,7 @@ if (typeof window !== 'undefined') {
     window.viewSupplierInvoice = viewSupplierInvoice;
     window.editSupplierInvoice = editSupplierInvoice;
     window.deleteSupplierInvoice = deleteSupplierInvoice;
+    window.downloadSupplierInvoicePdf = downloadSupplierInvoicePdf;
     window.autoSaveInvoice = autoSaveInvoice;
     window.updatePurchaseSubNavActiveState = updatePurchaseSubNavActiveState;
     window.showCreateSupplierModal = showCreateSupplierModal;
@@ -2772,6 +2807,7 @@ if (typeof window !== 'undefined') {
     window.autoSavePurchaseOrder = autoSavePurchaseOrder;
     window.updatePurchaseOrder = updatePurchaseOrder;
     window.printPurchaseOrder = printPurchaseOrder;
+    window.downloadPurchaseOrderPdf = downloadPurchaseOrderPdf;
     window.approvePurchaseOrder = approvePurchaseOrder;
     // New Page-Shell First pattern functions
     window.fetchAndRenderPurchaseOrdersData = fetchAndRenderPurchaseOrdersData;

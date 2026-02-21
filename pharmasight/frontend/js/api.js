@@ -317,6 +317,36 @@ const API = {
             api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/payments/${paymentId}`),
         convertToQuotation: (invoiceId) => 
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/convert-to-quotation`, null),
+        /** Download sales invoice as PDF. */
+        downloadPdf: async (invoiceId, invoiceNo = null) => {
+            const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/pdf`;
+            const headers = {};
+            try {
+                const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
+                if (sub) headers['X-Tenant-Subdomain'] = sub;
+                const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
+                if (token) headers['Authorization'] = 'Bearer ' + token;
+            } catch (_) {}
+            const res = await fetch(url, { method: 'GET', headers });
+            if (!res.ok) {
+                let msg = 'Failed to download PDF';
+                try {
+                    const text = await res.text();
+                    let data;
+                    try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                    const d = data.detail || data.message;
+                    if (d) msg += ': ' + (typeof d === 'string' ? d : JSON.stringify(d));
+                } catch (_) {}
+                throw new Error(msg);
+            }
+            const blob = await res.blob();
+            const name = (invoiceNo != null && invoiceNo !== '') ? String(invoiceNo).replace(/\s+/g, '-') : invoiceId;
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `sales-invoice-${name}.pdf`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        },
     },
 
     // Quotations (sales documents that do not affect stock)
@@ -326,6 +356,37 @@ const API = {
         listByBranch: (branchId) => api.get(`/api/quotations/branch/${branchId}`),
         update: (quotationId, data) => api.put(`/api/quotations/${quotationId}`, data),
         delete: (quotationId) => api.delete(`/api/quotations/${quotationId}`),
+        /** Download quotation as PDF (opens with auth, triggers file save). */
+        downloadPdf: async (quotationId, quotationNo = null) => {
+            const url = `${api.baseURL}/api/quotations/${quotationId}/pdf`;
+            const headers = {};
+            try {
+                const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
+                if (sub) headers['X-Tenant-Subdomain'] = sub;
+                const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
+                if (token) headers['Authorization'] = 'Bearer ' + token;
+            } catch (_) {}
+            const res = await fetch(url, { method: 'GET', headers });
+            if (!res.ok) {
+                let msg = 'Failed to download PDF';
+                try {
+                    const text = await res.text();
+                    let data;
+                    try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                    const d = data.detail || data.message;
+                    if (d) msg += ': ' + (typeof d === 'string' ? d : JSON.stringify(d));
+                } catch (_) {}
+                throw new Error(msg);
+            }
+            const blob = await res.blob();
+            const name = (quotationNo || quotationId).toString().replace(/\s+/g, '-');
+            const filename = `quotation-${name}.pdf`;
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        },
         convertToInvoice: (quotationId, data = {}) => 
             api.post(`/api/quotations/${quotationId}/convert-to-invoice`, data),
     },
@@ -334,6 +395,36 @@ const API = {
     purchases: {
         createGRN: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/grn`, data),
         getGRN: (grnId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/grn/${grnId}`),
+        /** Download GRN as PDF. */
+        downloadGrnPdf: async (grnId, grnNo = null) => {
+            const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.purchases}/grn/${grnId}/pdf`;
+            const headers = {};
+            try {
+                const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
+                if (sub) headers['X-Tenant-Subdomain'] = sub;
+                const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
+                if (token) headers['Authorization'] = 'Bearer ' + token;
+            } catch (_) {}
+            const res = await fetch(url, { method: 'GET', headers });
+            if (!res.ok) {
+                let msg = 'Failed to download PDF';
+                try {
+                    const text = await res.text();
+                    let data;
+                    try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                    const d = data.detail || data.message;
+                    if (d) msg += ': ' + (typeof d === 'string' ? d : JSON.stringify(d));
+                } catch (_) {}
+                throw new Error(msg);
+            }
+            const blob = await res.blob();
+            const name = (grnNo != null && grnNo !== '') ? String(grnNo).replace(/\s+/g, '-') : grnId;
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `grn-${name}.pdf`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        },
         createInvoice: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice`, data),
         getInvoice: (invoiceId) => 
             api.get(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`),
@@ -345,6 +436,36 @@ const API = {
             api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/batch`, null),
         updateInvoicePayment: (invoiceId, amountPaid) => 
             api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/payment?amount_paid=${amountPaid}`, null),
+        /** Download supplier invoice as PDF. */
+        downloadSupplierInvoicePdf: async (invoiceId, invoiceNumber = null) => {
+            const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/pdf`;
+            const headers = {};
+            try {
+                const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
+                if (sub) headers['X-Tenant-Subdomain'] = sub;
+                const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
+                if (token) headers['Authorization'] = 'Bearer ' + token;
+            } catch (_) {}
+            const res = await fetch(url, { method: 'GET', headers });
+            if (!res.ok) {
+                let msg = 'Failed to download PDF';
+                try {
+                    const text = await res.text();
+                    let data;
+                    try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                    const d = data.detail || data.message;
+                    if (d) msg += ': ' + (typeof d === 'string' ? d : JSON.stringify(d));
+                } catch (_) {}
+                throw new Error(msg);
+            }
+            const blob = await res.blob();
+            const name = (invoiceNumber != null && invoiceNumber !== '') ? String(invoiceNumber).replace(/\s+/g, '-') : invoiceId;
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `supplier-invoice-${name}.pdf`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        },
         // Purchase Orders
         createOrder: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/order`, data),
         listOrders: (params) => {

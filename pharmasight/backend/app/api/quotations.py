@@ -31,6 +31,9 @@ from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
 from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
+from fastapi.responses import Response
+
+from app.services.quotation_pdf_service import build_quotation_pdf
 
 router = APIRouter()
 
@@ -136,6 +139,56 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
     db.commit()
     db.refresh(db_quotation)
     return db_quotation
+
+
+@router.get("/{quotation_id}/pdf")
+def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
+    """Generate and return quotation as PDF (Download PDF). No approval; on-demand only."""
+    from sqlalchemy.orm import selectinload
+    quotation = db.query(Quotation).options(
+        selectinload(Quotation.items).selectinload(QuotationItem.item)
+    ).filter(Quotation.id == quotation_id).first()
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    company = db.query(Company).filter(Company.id == quotation.company_id).first()
+    branch = db.query(Branch).filter(Branch.id == quotation.branch_id).first()
+    company_name = company.name if company else "—"
+    company_address = getattr(company, "address", None) if company else None
+    branch_name = branch.name if branch else None
+    branch_address = getattr(branch, "address", None) if branch else None
+    items_data = []
+    for oi in quotation.items:
+        item_name = oi.item.name if oi.item else "—"
+        items_data.append({
+            "item_name": item_name,
+            "quantity": float(oi.quantity),
+            "unit_name": oi.unit_name or "",
+            "unit_price_exclusive": float(oi.unit_price_exclusive or 0),
+            "line_total_exclusive": float(oi.line_total_exclusive or 0),
+            "line_total_inclusive": float(oi.line_total_inclusive or 0),
+        })
+    pdf_bytes = build_quotation_pdf(
+        company_name=company_name,
+        company_address=company_address,
+        branch_name=branch_name,
+        branch_address=branch_address,
+        quotation_no=quotation.quotation_no,
+        quotation_date=quotation.quotation_date,
+        valid_until=quotation.valid_until,
+        customer_name=quotation.customer_name,
+        reference=quotation.reference,
+        notes=quotation.notes,
+        items=items_data,
+        total_exclusive=quotation.total_exclusive or Decimal("0"),
+        vat_amount=quotation.vat_amount or Decimal("0"),
+        total_inclusive=quotation.total_inclusive or Decimal("0"),
+    )
+    filename = f"quotation-{quotation.quotation_no or quotation_id}.pdf".replace(" ", "-")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{quotation_id}", response_model=QuotationResponse)

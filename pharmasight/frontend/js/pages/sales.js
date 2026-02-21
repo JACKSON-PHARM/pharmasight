@@ -349,9 +349,12 @@ function renderSalesQuotationsTableBody() {
                 <td style="padding: 0.75rem; text-align: right; font-weight: 600;">${formatCurrency(q.total_inclusive)}</td>
                 <td style="padding: 0.75rem;">${statusBadge}</td>
                 <td style="padding: 0.75rem;" onclick="event.stopPropagation();">
-                    <div style="display: flex; gap: 0.5rem;">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                         <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.viewQuotation) window.viewQuotation('${q.id}')" title="View/Edit">
                             <i class="fas fa-eye"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.downloadQuotationPdf) window.downloadQuotationPdf('${q.id}', ${JSON.stringify(q.quotation_no || '')})" title="Download PDF">
+                            <i class="fas fa-file-pdf"></i>
                         </button>
                         ${q.status === 'draft' ? `
                             <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); if(window.deleteQuotation) window.deleteQuotation('${q.id}')" title="Delete (Draft only)">
@@ -557,6 +560,9 @@ function renderSalesInvoicesTableBody() {
                                 <i class="fas fa-print"></i>
                             </button>
                         ` : ''}
+                        <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoice.id}', ${JSON.stringify(invoice.invoice_no || '')})" title="Download PDF">
+                            <i class="fas fa-file-pdf"></i>
+                        </button>
                     </div>
                 </td>
             </tr>
@@ -1212,6 +1218,9 @@ async function renderCreateSalesQuotationPage() {
         <button type="button" class="btn btn-outline" onclick="if(window.printQuotation) window.printQuotation('${quotationId}')" title="Print">
             <i class="fas fa-print"></i> Print
         </button>
+        <button type="button" class="btn btn-outline" onclick="if(window.downloadQuotationPdf) window.downloadQuotationPdf('${quotationId}', '${quotationData?.quotation_no ? String(quotationData.quotation_no).replace(/'/g, "\\'") : ''}')" title="Download PDF">
+            <i class="fas fa-file-pdf"></i> Download PDF
+        </button>
         <button type="button" class="btn btn-secondary" onclick="loadSalesSubPage('quotations')">
             <i class="fas fa-arrow-left"></i> Back
         </button>
@@ -1470,22 +1479,41 @@ function updateSalesQuotationSummary() {
     }, 80);
 }
 
+let isSavingQuotation = false;
+
+function setQuotationSaveButtonsState(disabled) {
+    const submitBtn = document.querySelector('#salesQuotationForm button[type="submit"]');
+    const updateBtn = document.querySelector('.btn-save-quotation');
+    if (submitBtn) {
+        submitBtn.disabled = disabled;
+        submitBtn.innerHTML = disabled ? '<i class="fas fa-spinner fa-spin"></i> Saving...' : '<i class="fas fa-save"></i> Save Quotation';
+    }
+    if (updateBtn) {
+        updateBtn.disabled = disabled;
+        updateBtn.innerHTML = disabled ? '<i class="fas fa-spinner fa-spin"></i> Saving...' : '<i class="fas fa-save"></i> Update Quotation';
+    }
+}
+
 async function saveSalesQuotation(event) {
     event.preventDefault();
+    if (isSavingQuotation) return;
     const form = event.target;
     const formData = new FormData(form);
-    
+
     // Get items from the component instance and dedupe so we never save duplicates
     let validItems = [];
     if (salesQuotationItemsTable && typeof salesQuotationItemsTable.getItems === 'function') {
         validItems = dedupeQuotationItems(salesQuotationItemsTable.getItems());
     }
-    
+
     if (validItems.length === 0) {
         showToast('Please add at least one item', 'warning');
         return;
     }
-    
+
+    isSavingQuotation = true;
+    setQuotationSaveButtonsState(true);
+
     const quotationData = {
         company_id: CONFIG.COMPANY_ID,
         branch_id: CONFIG.BRANCH_ID,
@@ -1514,6 +1542,9 @@ async function saveSalesQuotation(event) {
     } catch (error) {
         console.error('Error creating quotation:', error);
         showToast(error.message || 'Error creating quotation', 'error');
+    } finally {
+        isSavingQuotation = false;
+        setQuotationSaveButtonsState(false);
     }
 }
 
@@ -1531,21 +1562,25 @@ function dedupeQuotationItems(items) {
 // Update Sales Quotation
 async function updateSalesQuotation(event, quotationId) {
     event.preventDefault();
-    
+    if (isSavingQuotation) return;
+
     const form = event.target;
     const formData = new FormData(form);
-    
+
     // Get items from the component instance and dedupe so we never save duplicates
     let validItems = [];
     if (salesQuotationItemsTable && typeof salesQuotationItemsTable.getItems === 'function') {
         validItems = dedupeQuotationItems(salesQuotationItemsTable.getItems());
     }
-    
+
     if (validItems.length === 0) {
         showToast('Please add at least one item', 'warning');
         return;
     }
-    
+
+    isSavingQuotation = true;
+    setQuotationSaveButtonsState(true);
+
     // QuotationUpdate schema expects optional fields and items
     const quotationUpdateData = {
         customer_name: formData.get('customer_name') || null,
@@ -1571,6 +1606,9 @@ async function updateSalesQuotation(event, quotationId) {
     } catch (error) {
         console.error('Error updating quotation:', error);
         showToast(error.message || 'Error updating quotation', 'error');
+    } finally {
+        isSavingQuotation = false;
+        setQuotationSaveButtonsState(false);
     }
 }
 
@@ -1703,6 +1741,9 @@ async function viewSalesInvoice(invoiceId) {
                                 <i class="fas fa-money-bill-wave"></i> Collect Payment
                             </button>
                         ` : ''}
+                        <button type="button" class="btn btn-outline" onclick="if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoiceId}', ${JSON.stringify(invoice.invoice_no || '')})" title="Download PDF">
+                            <i class="fas fa-file-pdf"></i> Download PDF
+                        </button>
                         ${showPrint ? `
                             <button type="button" class="btn btn-outline" onclick="if(window.printSalesInvoice) window.printSalesInvoice('${invoiceId}')" title="Print">
                                 <i class="fas fa-print"></i> Print
@@ -2531,6 +2572,16 @@ async function printSalesInvoice(invoiceId) {
     }
 }
 
+async function downloadSalesInvoicePdf(invoiceId, invoiceNo) {
+    try {
+        await API.sales.downloadPdf(invoiceId, invoiceNo || null);
+        showToast('PDF downloaded', 'success');
+    } catch (error) {
+        console.error('Error downloading sales invoice PDF:', error);
+        showToast(error.message || 'Failed to download PDF', 'error');
+    }
+}
+
 /** Format quantity for print: whole number when integer, else up to 2 decimals, strip trailing zeros */
 function formatQuantityForPrint(q) {
     const n = parseFloat(q);
@@ -2812,6 +2863,16 @@ async function printQuotation(quotationId, printType) {
     } catch (error) {
         console.error('Error printing quotation:', error);
         showToast('Error loading quotation for printing', 'error');
+    }
+}
+
+async function downloadQuotationPdf(quotationId, quotationNo) {
+    try {
+        await API.quotations.downloadPdf(quotationId, quotationNo || null);
+        showToast('PDF downloaded', 'success');
+    } catch (error) {
+        console.error('Error downloading quotation PDF:', error);
+        showToast(error.message || 'Failed to download PDF', 'error');
     }
 }
 
@@ -3144,9 +3205,11 @@ if (typeof window !== 'undefined') {
     window.deleteSalesInvoice = deleteSalesInvoice;
     window.collectPayment = collectPayment;
     window.printSalesInvoice = printSalesInvoice;
+    window.downloadSalesInvoicePdf = downloadSalesInvoicePdf;
     window.submitSplitPayment = submitSplitPayment;
     window.convertSalesInvoiceToQuotation = convertSalesInvoiceToQuotation;
     window.handlePaymentModeChange = handlePaymentModeChange;
     window.handleSalesTypeChange = handleSalesTypeChange;
     window.printQuotation = printQuotation;
+    window.downloadQuotationPdf = downloadQuotationPdf;
 }

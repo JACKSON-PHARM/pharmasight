@@ -14,7 +14,7 @@ from app.models import (
     GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
     PurchaseOrder, PurchaseOrderItem,
     DailyOrderBook,
-    InventoryLedger, Item, Supplier, Branch, User
+    InventoryLedger, Item, Supplier, Branch, User, Company
 )
 from app.services.item_units_helper import get_unit_multiplier_from_item
 from app.schemas.purchase import (
@@ -28,6 +28,8 @@ from app.services.snapshot_service import SnapshotService
 from app.services.po_pdf_service import build_po_pdf
 from app.services.tenant_storage_service import upload_po_pdf, get_signed_url, download_file
 from app.utils.vat import vat_rate_to_percent
+from fastapi.responses import Response
+from app.services.transaction_document_pdf_service import build_grn_pdf, build_supplier_invoice_pdf
 import json
 
 router = APIRouter()
@@ -264,6 +266,43 @@ def create_grn(grn: GRNCreate, db: Session = Depends(get_tenant_db)):
     return db_grn
 
 
+@router.get("/grn/{grn_id}/pdf")
+def get_grn_pdf(grn_id: UUID, db: Session = Depends(get_tenant_db)):
+    """Generate and return GRN as PDF (Download PDF). On-demand only."""
+    grn = db.query(GRN).options(
+        selectinload(GRN.items).selectinload(GRNItem.item)
+    ).filter(GRN.id == grn_id).first()
+    if not grn:
+        raise HTTPException(status_code=404, detail="GRN not found")
+    company = db.query(Company).filter(Company.id == grn.company_id).first()
+    branch = db.query(Branch).filter(Branch.id == grn.branch_id).first()
+    supplier_name = grn.supplier.name if grn.supplier else "—"
+    items_data = []
+    for oi in grn.items:
+        item_name = oi.item.name if oi.item else "—"
+        items_data.append({
+            "item_name": item_name,
+            "quantity": float(oi.quantity),
+            "unit_name": oi.unit_name or "",
+            "unit_cost": float(oi.unit_cost or 0),
+            "total_cost": float(oi.total_cost or 0),
+        })
+    pdf_bytes = build_grn_pdf(
+        company_name=company.name if company else "—",
+        company_address=getattr(company, "address", None) if company else None,
+        branch_name=branch.name if branch else None,
+        branch_address=getattr(branch, "address", None) if branch else None,
+        grn_no=grn.grn_no,
+        date_received=grn.date_received,
+        supplier_name=supplier_name,
+        items=items_data,
+        total_cost=grn.total_cost or Decimal("0"),
+        notes=grn.notes,
+    )
+    filename = f"grn-{grn.grn_no or grn_id}.pdf".replace(" ", "-")
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 @router.get("/grn/{grn_id}", response_model=GRNResponse)
 def get_grn(grn_id: UUID, db: Session = Depends(get_tenant_db)):
     """Get GRN by ID"""
@@ -457,6 +496,48 @@ def list_supplier_invoices(
                 pass
     
     return invoices
+
+
+@router.get("/invoice/{invoice_id}/pdf")
+def get_supplier_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
+    """Generate and return supplier invoice as PDF (Download PDF). On-demand only."""
+    invoice = db.query(SupplierInvoice).options(
+        selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
+    ).filter(SupplierInvoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    company = db.query(Company).filter(Company.id == invoice.company_id).first()
+    branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
+    supplier_name = invoice.supplier.name if invoice.supplier else "—"
+    items_data = []
+    for oi in invoice.items:
+        item_name = oi.item.name if oi.item else "—"
+        items_data.append({
+            "item_name": item_name,
+            "quantity": float(oi.quantity),
+            "unit_name": oi.unit_name or "",
+            "unit_price_exclusive": float(oi.unit_cost_exclusive or 0),
+            "line_total_exclusive": float(oi.line_total_exclusive or 0),
+            "line_total_inclusive": float(oi.line_total_inclusive or 0),
+        })
+    pdf_bytes = build_supplier_invoice_pdf(
+        company_name=company.name if company else "—",
+        company_address=getattr(company, "address", None) if company else None,
+        branch_name=branch.name if branch else None,
+        branch_address=getattr(branch, "address", None) if branch else None,
+        invoice_number=invoice.invoice_number,
+        invoice_date=invoice.invoice_date,
+        supplier_name=supplier_name,
+        reference=invoice.reference,
+        status=invoice.status,
+        items=items_data,
+        total_exclusive=invoice.total_exclusive or Decimal("0"),
+        vat_amount=invoice.vat_amount or Decimal("0"),
+        total_inclusive=invoice.total_inclusive or Decimal("0"),
+        notes=invoice.reference,
+    )
+    filename = f"supplier-invoice-{invoice.invoice_number or invoice_id}.pdf".replace(" ", "-")
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/invoice/{invoice_id}", response_model=SupplierInvoiceResponse)

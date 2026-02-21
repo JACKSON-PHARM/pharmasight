@@ -10,7 +10,9 @@ from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 from fastapi import Query
+from fastapi.responses import Response
 from app.dependencies import get_tenant_db
+from app.services.transaction_document_pdf_service import build_sales_invoice_pdf
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
     Item, InvoicePayment, UserBranchRole, UserRole
@@ -314,6 +316,49 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
     db.commit()
     db.refresh(db_invoice)
     return db_invoice
+
+
+@router.get("/invoice/{invoice_id}/pdf")
+def get_sales_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
+    """Generate and return sales invoice as PDF (Download PDF). On-demand only."""
+    from sqlalchemy.orm import selectinload
+    invoice = db.query(SalesInvoice).options(
+        selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item)
+    ).filter(SalesInvoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    company = db.query(Company).filter(Company.id == invoice.company_id).first()
+    branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
+    items_data = []
+    for oi in invoice.items:
+        item_name = oi.item.name if oi.item else (getattr(oi, "item_name", None) or "—")
+        items_data.append({
+            "item_name": item_name,
+            "quantity": float(oi.quantity),
+            "unit_name": oi.unit_name or "",
+            "unit_price_exclusive": float(oi.unit_price_exclusive or 0),
+            "line_total_exclusive": float(oi.line_total_exclusive or 0),
+            "line_total_inclusive": float(oi.line_total_inclusive or 0),
+        })
+    pdf_bytes = build_sales_invoice_pdf(
+        company_name=company.name if company else "—",
+        company_address=getattr(company, "address", None) if company else None,
+        branch_name=branch.name if branch else None,
+        branch_address=getattr(branch, "address", None) if branch else None,
+        invoice_no=invoice.invoice_no,
+        invoice_date=invoice.invoice_date,
+        customer_name=invoice.customer_name,
+        customer_phone=getattr(invoice, "customer_phone", None),
+        payment_mode=getattr(invoice, "payment_mode", None),
+        status=getattr(invoice, "status", None),
+        items=items_data,
+        total_exclusive=invoice.total_exclusive or Decimal("0"),
+        vat_amount=invoice.vat_amount or Decimal("0"),
+        total_inclusive=invoice.total_inclusive or Decimal("0"),
+        notes=getattr(invoice, "notes", None),
+    )
+    filename = f"sales-invoice-{invoice.invoice_no or invoice_id}.pdf".replace(" ", "-")
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/invoice/{invoice_id}", response_model=SalesInvoiceResponse)
