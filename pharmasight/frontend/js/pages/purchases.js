@@ -558,7 +558,7 @@ function renderSupplierInvoicesTableBody() {
                     <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'invoice')" title="View">
                         <i class="fas fa-eye"></i>
                     </button>
-                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${doc.id}', ${JSON.stringify(doc.invoice_number || '')})" title="Download PDF">
+                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${doc.id}', '${String(doc.invoice_number || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="Download PDF">
                         <i class="fas fa-file-pdf"></i>
                     </button>
                 </td>
@@ -1217,7 +1217,7 @@ async function renderCreateSupplierInvoicePage() {
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
                     ${isEditMode && invoiceData ? `
-                        <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${invoiceData.id}', ${JSON.stringify(invoiceData.invoice_number || '')})" title="Download PDF">
+                        <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${invoiceData.id}', '${String(invoiceData.invoice_number || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="Download PDF">
                             <i class="fas fa-file-pdf"></i> Download PDF
                         </button>
                         ${invoiceData.status === 'DRAFT' ? `
@@ -2277,22 +2277,32 @@ async function deletePurchaseOrder(orderId) {
 
 // Download approved purchase order PDF (opens signed URL; user can save from browser)
 async function downloadPurchaseOrderPdf(orderId) {
+    if (!orderId) {
+        if (typeof showToast === 'function') showToast('Invalid order', 'error');
+        return;
+    }
+    if (typeof API === 'undefined' || !API.purchases) {
+        if (typeof showToast === 'function') showToast('PDF download not available', 'error');
+        return;
+    }
     try {
+        if (typeof showToast === 'function') showToast('Opening PDF...', 'info');
         const order = await API.purchases.getOrder(orderId);
         if (order.status !== 'APPROVED' || !order.pdf_path) {
-            showToast('PDF is available only for approved orders.', 'info');
+            if (typeof showToast === 'function') showToast('PDF is available only for approved orders.', 'info');
             return;
         }
         const { url } = await API.purchases.getOrderPdfUrl(orderId);
         if (url) {
             window.open(url, '_blank');
-            showToast('PDF opened in new tab; you can save from there.', 'success');
+            if (typeof showToast === 'function') showToast('PDF opened in new tab; you can save from there.', 'success');
         } else {
-            showToast('Could not get PDF URL', 'error');
+            if (typeof showToast === 'function') showToast('Could not get PDF URL', 'error');
         }
     } catch (error) {
         console.error('Error opening PO PDF:', error);
-        showToast(error.message || 'Failed to open PDF', 'error');
+        const msg = error && (error.message || error.detail || String(error));
+        if (typeof showToast === 'function') showToast(msg || 'Failed to open PDF', 'error');
     }
 }
 
@@ -2583,12 +2593,22 @@ async function deleteSupplierInvoice(invoiceId) {
 }
 
 async function downloadSupplierInvoicePdf(invoiceId, invoiceNumber) {
+    if (typeof showToast === 'function') showToast('Preparing PDF...', 'info');
+    if (!invoiceId) {
+        if (typeof showToast === 'function') showToast('Invalid invoice', 'error');
+        return;
+    }
+    if (typeof API === 'undefined' || !API.purchases || typeof API.purchases.downloadSupplierInvoicePdf !== 'function') {
+        if (typeof showToast === 'function') showToast('PDF download not available', 'error');
+        return;
+    }
     try {
         await API.purchases.downloadSupplierInvoicePdf(invoiceId, invoiceNumber || null);
-        showToast('PDF downloaded', 'success');
+        if (typeof showToast === 'function') showToast('PDF downloaded', 'success');
     } catch (error) {
         console.error('Error downloading supplier invoice PDF:', error);
-        showToast(error.message || 'Failed to download PDF', 'error');
+        const msg = error && (error.message || error.detail || String(error));
+        if (typeof showToast === 'function') showToast(msg || 'Failed to download PDF', 'error');
     }
 }
 

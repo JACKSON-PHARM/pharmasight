@@ -45,6 +45,7 @@ function showToast(message, type = 'info') {
         return;
     }
     const container = document.getElementById('toastContainer');
+    if (!container) return;
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     

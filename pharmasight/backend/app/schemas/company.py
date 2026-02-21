@@ -57,6 +57,8 @@ class BranchBase(BaseModel):
     code: str = Field(..., min_length=1, max_length=50, description="REQUIRED: Used in invoice numbering")
     address: Optional[str] = None
     phone: Optional[str] = None
+    till_number: Optional[str] = Field(None, max_length=50, description="Till number for sales invoice PDF footer")
+    paybill: Optional[str] = Field(None, max_length=50, description="Paybill for sales invoice PDF footer")
     is_active: bool = Field(default=True)
     is_hq: bool = Field(default=False, description="HQ branch: exclusive create items, suppliers, users, roles, branches")
 
@@ -72,6 +74,8 @@ class BranchUpdate(BaseModel):
     code: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
+    till_number: Optional[str] = None
+    paybill: Optional[str] = None
     is_active: Optional[bool] = None
     is_hq: Optional[bool] = None
 

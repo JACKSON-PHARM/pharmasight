@@ -490,7 +490,11 @@ function showCreateBranchModal() {
         <form id="createBranchForm" onsubmit="createBranch(event)">
             <div class="form-group">
                 <label class="form-label">Branch Name *</label>
-                <input type="text" class="form-input" name="name" required placeholder="Branch Name">
+                <input type="text" class="form-input" name="name" required placeholder="e.g. Main Branch">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Branch Code *</label>
+                <input type="text" class="form-input" name="code" required placeholder="e.g. MAIN (used in invoice numbers)" maxlength="50">
             </div>
             <div class="form-group">
                 <label class="form-label">Address</label>
@@ -499,6 +503,14 @@ function showCreateBranchModal() {
             <div class="form-group">
                 <label class="form-label">Phone</label>
                 <input type="tel" class="form-input" name="phone" placeholder="Phone number">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Till Number</label>
+                <input type="text" class="form-input" name="till_number" placeholder="Till number (for sales invoice PDF)">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Paybill</label>
+                <input type="text" class="form-input" name="paybill" placeholder="Paybill (for sales invoice PDF)">
             </div>
         </form>
     `;
@@ -523,11 +535,19 @@ async function createBranch(event) {
         return;
     }
     
+    const code = (formData.get('code') || '').trim().toUpperCase();
+    if (!code) {
+        showToast('Branch code is required (used in invoice numbers)', 'error');
+        return;
+    }
     const branchData = {
         company_id: CONFIG.COMPANY_ID,
-        name: formData.get('name'),
-        address: formData.get('address') || null,
-        phone: formData.get('phone') || null
+        name: (formData.get('name') || '').trim(),
+        code: code,
+        address: (formData.get('address') || '').trim() || null,
+        phone: (formData.get('phone') || '').trim() || null,
+        till_number: (formData.get('till_number') || '').trim() || null,
+        paybill: (formData.get('paybill') || '').trim() || null
     };
     
     try {
@@ -571,8 +591,78 @@ async function setBranchAsHq(branchId) {
     }
 }
 
-function editBranch(branchId) {
-    showToast('Branch editing coming soon', 'info');
+async function editBranch(branchId) {
+    if (!branchId) return;
+    try {
+        const branch = await API.branch.get(branchId);
+        const content = `
+            <form id="editBranchForm" onsubmit="saveBranchEdit(event, '${branchId}')">
+                <div class="form-group">
+                    <label class="form-label">Branch Name *</label>
+                    <input type="text" class="form-input" name="name" required value="${escapeHtml(branch.name || '')}" placeholder="Branch Name">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Branch Code *</label>
+                    <input type="text" class="form-input" name="code" required value="${escapeHtml(branch.code || '')}" placeholder="e.g. MAIN" maxlength="50">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Address</label>
+                    <textarea class="form-textarea" name="address" rows="2" placeholder="Branch address">${escapeHtml(branch.address || '')}</textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Phone</label>
+                    <input type="tel" class="form-input" name="phone" value="${escapeHtml(branch.phone || '')}" placeholder="Phone number">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Till Number</label>
+                    <input type="text" class="form-input" name="till_number" value="${escapeHtml(branch.till_number || '')}" placeholder="Till number (for sales invoice PDF)">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Paybill</label>
+                    <input type="text" class="form-input" name="paybill" value="${escapeHtml(branch.paybill || '')}" placeholder="Paybill (for sales invoice PDF)">
+                </div>
+            </form>
+        `;
+        const footer = `
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" type="submit" form="editBranchForm">
+                <i class="fas fa-save"></i> Save Changes
+            </button>
+        `;
+        showModal('Edit Branch', content, footer);
+    } catch (error) {
+        console.error('Error loading branch:', error);
+        showToast(error.message || 'Failed to load branch', 'error');
+    }
+}
+
+async function saveBranchEdit(event, branchId) {
+    event.preventDefault();
+    const form = document.getElementById('editBranchForm');
+    if (!form || !branchId) return;
+    const formData = new FormData(form);
+    const code = (formData.get('code') || '').trim().toUpperCase();
+    if (!code) {
+        showToast('Branch code is required', 'error');
+        return;
+    }
+    const data = {
+        name: (formData.get('name') || '').trim(),
+        code: code,
+        address: (formData.get('address') || '').trim() || null,
+        phone: (formData.get('phone') || '').trim() || null,
+        till_number: (formData.get('till_number') || '').trim() || null,
+        paybill: (formData.get('paybill') || '').trim() || null
+    };
+    try {
+        await API.branch.update(branchId, data);
+        showToast('Branch updated successfully', 'success');
+        closeModal();
+        await renderBranchesPage();
+    } catch (error) {
+        console.error('Error updating branch:', error);
+        showToast(error.message || 'Failed to update branch', 'error');
+    }
 }
 
 async function setCurrentBranch(branchId) {
@@ -2617,6 +2707,7 @@ function switchSettingsSubPage(subPage) {
         window.showCreateBranchModal = showCreateBranchModal;
         window.createBranch = createBranch;
         window.editBranch = editBranch;
+        window.saveBranchEdit = saveBranchEdit;
         window.setCurrentBranch = setCurrentBranch;
         
         // Print settings

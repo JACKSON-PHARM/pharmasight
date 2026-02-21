@@ -49,6 +49,8 @@ class Branch(Base):
     code = Column(String(50), nullable=False)  # REQUIRED for invoice numbering
     address = Column(Text)
     phone = Column(String(50))
+    till_number = Column(String(50), nullable=True)  # Till number for sales invoice footer (branch characteristic)
+    paybill = Column(String(50), nullable=True)  # Paybill for sales invoice footer
     is_active = Column(Boolean, default=True)
     is_hq = Column(Boolean, default=False)  # HQ branch: exclusive create items, suppliers, users, roles, branches
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())

@@ -13,6 +13,7 @@ from fastapi import Query
 from fastapi.responses import Response
 from app.dependencies import get_tenant_db
 from app.services.document_pdf_generator import build_sales_invoice_pdf
+from app.services.tenant_storage_service import download_file
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
     Item, InvoicePayment, UserBranchRole, UserRole
@@ -320,7 +321,8 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
 
 @router.get("/invoice/{invoice_id}/pdf")
 def get_sales_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
-    """Generate and return sales invoice as PDF (Download PDF). On-demand only."""
+    """Generate and return sales invoice as PDF (Download PDF). On-demand only.
+    Logo on right, company on left; footer: prepared by, printed by, served by, till/paybill from branch. No status."""
     from sqlalchemy.orm import selectinload
     invoice = db.query(SalesInvoice).options(
         selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item)
@@ -340,12 +342,24 @@ def get_sales_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)
             "line_total_exclusive": float(oi.line_total_exclusive or 0),
             "line_total_inclusive": float(oi.line_total_inclusive or 0),
         })
+    company_logo_bytes = None
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
+        company_logo_bytes = download_file(company.logo_url)
+    till_number = getattr(branch, "till_number", None) if branch else None
+    paybill = getattr(branch, "paybill", None) if branch else None
+    prepared_by = None
+    served_by = None
+    creator = db.query(User).filter(User.id == invoice.created_by).first()
+    if creator:
+        prepared_by = getattr(creator, "full_name", None) or getattr(creator, "username", None) or str(invoice.created_by)
+        served_by = prepared_by
     try:
         pdf_bytes = build_sales_invoice_pdf(
             company_name=company.name if company else "—",
             company_address=getattr(company, "address", None) if company else None,
             company_phone=getattr(company, "phone", None) if company else None,
             company_pin=getattr(company, "pin", None) if company else None,
+            company_logo_bytes=company_logo_bytes,
             branch_name=branch.name if branch else None,
             branch_address=getattr(branch, "address", None) if branch else None,
             invoice_no=invoice.invoice_no,
@@ -353,12 +367,16 @@ def get_sales_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)
             customer_name=invoice.customer_name,
             customer_phone=getattr(invoice, "customer_phone", None),
             payment_mode=getattr(invoice, "payment_mode", None),
-            status=getattr(invoice, "status", None),
             items=items_data,
             total_exclusive=invoice.total_exclusive or Decimal("0"),
             vat_amount=invoice.vat_amount or Decimal("0"),
             total_inclusive=invoice.total_inclusive or Decimal("0"),
             notes=getattr(invoice, "notes", None),
+            till_number=till_number,
+            paybill=paybill,
+            prepared_by=prepared_by,
+            printed_by=None,
+            served_by=served_by,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate sales invoice PDF: {str(e)}")

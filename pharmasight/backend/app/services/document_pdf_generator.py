@@ -31,6 +31,7 @@ from app.services.document_pdf_commons import (
     build_document_header,
     build_document_metadata_client_table,
     build_payment_details_table,
+    build_sales_quotation_footer_table,
     get_document_styles,
 )
 
@@ -90,16 +91,17 @@ def _items_table_flowable(items: List[Dict], doc_type: str) -> Table:
     if len(data) == 1:
         data.append(["—", "—", "—", "—"])
     t = Table(data, colWidths=col_widths, repeatRows=1)
-    t.setStyle(
-        TableStyle([
-            ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
-            ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ])
-    )
+    style = [
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+    ]
+    # Underline only (no box): line below each row
+    for r in range(len(data)):
+        style.append(("LINEBELOW", (0, r), (-1, r), 0.5, colors.grey))
+    t.setStyle(TableStyle(style))
     return t
 
 
@@ -117,6 +119,7 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
       - metadata_rows: List[Tuple[str, str]] e.g. [("Date:", "2025-01-01")]
       - client_label ("Customer" / "Supplier"), client_name, extra_client_rows (optional)
       - till_number, paybill (sales invoice only)
+      - prepared_by, printed_by, served_by (sales invoice and quotation footer)
       - items: List[Dict] with item_name, quantity, unit_name, unit_price*/unit_cost, total*
       - total_exclusive, vat_amount, total_inclusive (invoice/quotation)
       - total_amount (PO), total_cost (GRN)
@@ -136,7 +139,7 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
     st = get_document_styles()
     flow: List[Any] = []
 
-    # ----- 1. Header (all documents) -----
+    # ----- 1. Header (all documents incl. PO): same as sales/quotations — company left, logo right; underline only, no box -----
     flow.append(
         build_document_header(
             company_name=payload.get("company_name") or "—",
@@ -146,23 +149,25 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
             branch_name=payload.get("branch_name"),
             branch_address=payload.get("branch_address"),
             company_logo_bytes=payload.get("company_logo_bytes"),
-            with_border=True,
+            with_border=False,
         )
     )
     flow.append(Spacer(1, 7 * mm))
 
-    # ----- 2. Document title + number -----
+    # ----- 2. Document title only (number goes in metadata block on the right) -----
     title = payload.get("document_title") or ""
-    number = payload.get("document_number") or ""
     flow.append(Paragraph(title, st["heading"]))
-    flow.append(Paragraph(number, st["detail"]))
     flow.append(Spacer(1, 4 * mm))
 
-    # ----- 3. Metadata + client block (all documents) -----
+    # ----- 3. Metadata + client block: client left (one line: Customer | Payment | Till for sales), Document right -----
     metadata_rows = payload.get("metadata_rows") or []
+    document_number = payload.get("document_number") or ""
     client_label = payload.get("client_label") or "—"
     client_name = payload.get("client_name") or "—"
     extra_client_rows = payload.get("extra_client_rows") or []
+    payment_mode = payload.get("payment_mode") if doc_type == DOC_TYPE_SALES_INVOICE else None
+    till_number = payload.get("till_number") if doc_type == DOC_TYPE_SALES_INVOICE else None
+    paybill = payload.get("paybill") if doc_type == DOC_TYPE_SALES_INVOICE else None
     flow.append(
         build_document_metadata_client_table(
             metadata_rows=metadata_rows,
@@ -170,22 +175,13 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
             client_name=client_name,
             extra_client_rows=extra_client_rows if extra_client_rows else None,
             with_border=False,
+            document_number=document_number,
+            payment_mode=payment_mode,
+            till_number=till_number,
+            paybill=paybill if (paybill and str(paybill).strip()) else None,
         )
     )
     flow.append(Spacer(1, 7 * mm))
-
-    # ----- 4. Payment details (sales invoice only) -----
-    if doc_type == DOC_TYPE_SALES_INVOICE and (
-        payload.get("till_number") or payload.get("paybill")
-    ):
-        flow.append(
-            build_payment_details_table(
-                till_number=payload.get("till_number"),
-                paybill=payload.get("paybill"),
-                with_border=True,
-            )
-        )
-        flow.append(Spacer(1, 4 * mm))
 
     # ----- 5. Items table (all documents) -----
     items = payload.get("items") or []
@@ -209,12 +205,24 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
 
     flow.append(Spacer(1, 7 * mm))
 
+    # ----- 6b. Footer: prepared by, printed by, served by only (till/paybill in metadata; no duplication) -----
+    if doc_type in (DOC_TYPE_SALES_INVOICE, DOC_TYPE_QUOTATION):
+        flow.append(
+            build_sales_quotation_footer_table(
+                prepared_by=payload.get("prepared_by"),
+                printed_by=payload.get("printed_by"),
+                served_by=payload.get("served_by"),
+                with_border=False,
+            )
+        )
+        flow.append(Spacer(1, 4 * mm))
+
     # ----- 7. Approval block (purchase order only) -----
     if doc_type == DOC_TYPE_PURCHASE_ORDER:
         flow.extend(
             build_approval_block_flowables(
                 approver_name=payload.get("approver_name") or "",
-                approved_at_str=payload.get("approved_at_str") or _format_datetime(datetime.now(timezone.utc)),
+                approved_at_str=payload.get("approved_at_str") or "—",
                 approver_designation=payload.get("approver_designation"),
                 approver_ppb_number=payload.get("approver_ppb_number"),
                 stamp_bytes=payload.get("stamp_bytes"),
@@ -249,9 +257,14 @@ def _format_order_date(dt) -> str:
 
 
 def _format_approved_at(dt) -> str:
-    now_utc = datetime.now(timezone.utc)
+    """Format approval datetime for PDF; uses actual approved_at, displayed in local time."""
     if dt is None:
-        return now_utc.strftime("%Y-%m-%d %H:%M")
+        return "—"
+    if hasattr(dt, "astimezone") and getattr(dt, "tzinfo", None) is not None:
+        try:
+            dt = dt.astimezone()  # convert to server local time for display
+        except Exception:
+            pass
     if hasattr(dt, "strftime"):
         return dt.strftime("%Y-%m-%d %H:%M")
     return str(dt)
@@ -275,8 +288,11 @@ def build_quotation_pdf(
     total_exclusive: Optional[Decimal] = None,
     vat_amount: Optional[Decimal] = None,
     total_inclusive: Optional[Decimal] = None,
+    prepared_by: Optional[str] = None,
+    printed_by: Optional[str] = None,
+    served_by: Optional[str] = None,
 ) -> bytes:
-    """Build A4 PDF for a sales quotation. No payment details, no approval block."""
+    """Build A4 PDF for a sales quotation. Logo right, company left; footer: prepared/printed/served."""
     items = items or []
     total_exclusive = total_exclusive or Decimal("0")
     vat_amount = vat_amount or Decimal("0")
@@ -311,6 +327,9 @@ def build_quotation_pdf(
         "vat_amount": vat_amount,
         "total_inclusive": total_inclusive,
         "notes": notes,
+        "prepared_by": prepared_by,
+        "printed_by": printed_by,
+        "served_by": served_by,
     }
     return build_document_pdf(DOC_TYPE_QUOTATION, payload)
 
@@ -387,7 +406,6 @@ def build_sales_invoice_pdf(
     customer_name: Optional[str] = None,
     customer_phone: Optional[str] = None,
     payment_mode: Optional[str] = None,
-    status: Optional[str] = None,
     items: Optional[List[Dict[str, Any]]] = None,
     total_exclusive: Optional[Decimal] = None,
     vat_amount: Optional[Decimal] = None,
@@ -395,8 +413,11 @@ def build_sales_invoice_pdf(
     notes: Optional[str] = None,
     till_number: Optional[str] = None,
     paybill: Optional[str] = None,
+    prepared_by: Optional[str] = None,
+    printed_by: Optional[str] = None,
+    served_by: Optional[str] = None,
 ) -> bytes:
-    """Build A4 PDF for a sales invoice. Optional till/paybill; no approval block."""
+    """Build A4 PDF for a sales invoice. Logo right, company left; footer: prepared/printed/served, till; no status."""
     items = items or []
     total_exclusive = total_exclusive or Decimal("0")
     vat_amount = vat_amount or Decimal("0")
@@ -408,10 +429,7 @@ def build_sales_invoice_pdf(
     extra_client: List[Tuple[str, str]] = []
     if customer_phone:
         extra_client.append(("Phone:", customer_phone))
-    if payment_mode:
-        extra_client.append(("Payment:", payment_mode))
-    if status:
-        extra_client.append(("Status:", status))
+    # Customer defaults to "Walk in"; payment/till/paybill go in one line in metadata (no extra_client for Payment).
     payload = {
         "company_name": company_name,
         "company_address": company_address,
@@ -424,10 +442,14 @@ def build_sales_invoice_pdf(
         "document_number": invoice_no or "",
         "metadata_rows": metadata,
         "client_label": "Customer",
-        "client_name": customer_name or "—",
+        "client_name": (customer_name or "").strip() or "Walk in",
         "extra_client_rows": extra_client if extra_client else None,
+        "payment_mode": payment_mode,
         "till_number": till_number,
-        "paybill": paybill,
+        "paybill": (paybill or "").strip() or None,
+        "prepared_by": prepared_by,
+        "printed_by": printed_by,
+        "served_by": served_by,
         "items": items,
         "total_exclusive": total_exclusive,
         "vat_amount": vat_amount,

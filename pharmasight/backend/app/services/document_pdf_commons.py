@@ -1,7 +1,7 @@
 """
 Central PDF building blocks for all transaction documents (PO, sales invoice, quotation, GRN, etc.).
-Ensures consistent: header (company + logo) with border, document metadata + client with border,
-and approval block with stamp (bottom-right, faded) and signature overlay (solid).
+Ensures consistent: header (company left, logo right; underline only, no box), document metadata + client,
+and approval block with stamp and signature side-by-side (no overlay).
 """
 from io import BytesIO
 from typing import Any, List, Optional, Tuple
@@ -19,16 +19,16 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-# Max display sizes (mm)
-LOGO_MAX_WIDTH_MM = 40
-LOGO_MAX_HEIGHT_MM = 18
+# Max display sizes (mm) – logo large and proportional on A4 (use available header space)
+LOGO_MAX_WIDTH_MM = 70
+LOGO_MAX_HEIGHT_MM = 34
 STAMP_MAX_WIDTH_MM = 32
 STAMP_MAX_HEIGHT_MM = 32
 SIGNATURE_MAX_WIDTH_MM = 38
 SIGNATURE_MAX_HEIGHT_MM = 16
 
-# Stamp opacity (faded); signature is 1.0 (solid)
-STAMP_OPACITY = 0.45
+# Stamp opacity (faded but clearly visible); signature is 1.0 (solid)
+STAMP_OPACITY = 0.65
 
 
 def _escape(s: str) -> str:
@@ -83,8 +83,8 @@ def _image_size_from_bytes(data: bytes, max_width_mm: float, max_height_mm: floa
 
 class StampAndSignatureFlowable(Flowable):
     """
-    Draws stamp (faded) at bottom-right, then signature (solid) overlaid on it.
-    Used in the approval block so stamp is not at top-center.
+    Draws stamp and signature side-by-side (horizontal), no overlap.
+    Stamp left, signature right; both aligned on the same baseline.
     """
 
     def __init__(
@@ -100,10 +100,9 @@ class StampAndSignatureFlowable(Flowable):
         self._sig_w, self._sig_h = _image_size_from_bytes(
             signature_bytes or b"", SIGNATURE_MAX_WIDTH_MM, SIGNATURE_MAX_HEIGHT_MM
         )
-        # Box size: max of both + small padding; min size so we have room
-        pad = 4 * mm
-        self._width = max(self._stamp_w, self._sig_w) + pad
-        self._height = max(self._stamp_h, self._sig_h) + pad
+        gap = 8 * mm
+        self._width = self._stamp_w + gap + self._sig_w + (4 * mm)
+        self._height = max(self._stamp_h, self._sig_h) + (4 * mm)
 
     def wrap(self, availWidth, availHeight):
         return (self._width, self._height)
@@ -112,34 +111,32 @@ class StampAndSignatureFlowable(Flowable):
         canvas = self.canv
         if not self.stamp_bytes and not self.signature_bytes:
             return
-        # Our flowable is positioned at (0,0) bottom-left by the frame; we draw in our box
-        # Right-align: draw so right edge of images aligns with our right edge
-        x_right = self._width
         y_base = 0
+        gap = 8 * mm
+        x_stamp = 2 * mm
 
-        # 1) Draw stamp first (faded), right-aligned at bottom
+        # 1) Draw stamp (faded) on the left
         if self.stamp_bytes and self._stamp_w > 0 and self._stamp_h > 0:
             canvas.saveState()
             canvas.setFillAlpha(STAMP_OPACITY)
             canvas.setStrokeAlpha(STAMP_OPACITY)
             try:
                 reader = ImageReader(BytesIO(self.stamp_bytes))
-                x_stamp = x_right - self._stamp_w
-                canvas.drawImage(reader, x_stamp, y_base, width=self._stamp_w, height=self._stamp_h)
+                y_stamp = y_base + (self._height - self._stamp_h) / 2
+                canvas.drawImage(reader, x_stamp, y_stamp, width=self._stamp_w, height=self._stamp_h)
             except Exception:
                 pass
             canvas.restoreState()
 
-        # 2) Draw signature (solid) overlaid, right-aligned
+        # 2) Draw signature (solid) on the right, horizontally aligned
         if self.signature_bytes and self._sig_w > 0 and self._sig_h > 0:
             canvas.saveState()
             canvas.setFillAlpha(1.0)
             canvas.setStrokeAlpha(1.0)
             try:
                 reader = ImageReader(BytesIO(self.signature_bytes))
-                x_sig = x_right - self._sig_w
-                # Slight vertical nudge so signature sits nicely over stamp
-                y_sig = y_base + (self._height - self._sig_h) * 0.3
+                x_sig = x_stamp + self._stamp_w + gap
+                y_sig = y_base + (self._height - self._sig_h) / 2
                 canvas.drawImage(reader, x_sig, y_sig, width=self._sig_w, height=self._sig_h)
             except Exception:
                 pass
@@ -188,11 +185,11 @@ def build_document_header(
     branch_name: Optional[str] = None,
     branch_address: Optional[str] = None,
     company_logo_bytes: Optional[bytes] = None,
-    with_border: bool = True,
+    with_border: bool = False,
 ) -> Table:
     """
-    Header: company details (left), logo (right). Optional border around the block.
-    Used by PO, sales invoice, quotation, GRN, supplier invoice.
+    Header: company details (left), logo (right). No box; underline only under the block.
+    Logo uses more column width so it can display bigger and proportional.
     """
     st = get_document_styles()
     left_lines = [f"<b>{_escape(company_name or '—')}</b>"]
@@ -215,13 +212,13 @@ def build_document_header(
     right_cell = _image_flowable_from_bytes(
         company_logo_bytes, LOGO_MAX_WIDTH_MM, LOGO_MAX_HEIGHT_MM
     ) if company_logo_bytes else Spacer(1, 2 * mm)
-    table = Table([[left_para, right_cell]], colWidths=[110 * mm, 75 * mm])
+    # Give logo column plenty of width so logo uses available space
+    table = Table([[left_para, right_cell]], colWidths=[85 * mm, 100 * mm])
     style = [
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.grey),
     ]
-    if with_border:
-        style.append(("BOX", (0, 0), (-1, -1), 0.5, colors.grey))
     table.setStyle(TableStyle(style))
     return table
 
@@ -231,24 +228,95 @@ def build_document_metadata_client_table(
     client_label: str,
     client_name: str,
     extra_client_rows: Optional[List[Tuple[str, str]]] = None,
-    with_border: bool = True,
+    with_border: bool = False,
+    document_number: Optional[str] = None,
+    payment_mode: Optional[str] = None,
+    till_number: Optional[str] = None,
+    paybill: Optional[str] = None,
 ) -> Table:
     """
-    One bordered table: document metadata (e.g. Order date, Reference) and client block
-    (e.g. Supplier: X / Customer: Y). Used by PO (supplier), sales (customer), quotation (customer), etc.
+    Two-column layout: left = client (or one line: Customer | Payment | Till [| Paybill]); right = "Document:" block.
+    When payment_mode/till_number are provided (sales invoice), left is one line; paybill only if set.
     """
     extra_client_rows = extra_client_rows or []
-    data = list(metadata_rows)
-    data.append(("", ""))  # blank spacer row to separate metadata from client section
-    data.append((client_label + ":", (client_name or "—").strip()))
-    data.extend(extra_client_rows)
-    col_widths = [40 * mm, 145 * mm]
-    t = Table(data, colWidths=col_widths)
+    st = get_document_styles()
+    # Left: one line (Customer | Payment | Till [| Paybill]) when payment/till provided, else multi-line client block
+    if payment_mode is not None or till_number or paybill:
+        parts = [f"<b>{client_label}</b>: " + _escape((client_name or "Walk in").strip())]
+        if payment_mode:
+            parts.append("Payment: " + _escape(str(payment_mode)))
+        if till_number and str(till_number).strip():
+            parts.append("Till: " + _escape(str(till_number).strip()))
+        if paybill and str(paybill).strip():
+            parts.append("Paybill: " + _escape(str(paybill).strip()))
+        left_para = Paragraph(
+            " | ".join(parts),
+            ParagraphStyle(name="ClientBlock", parent=st["detail"], fontSize=10, leading=13, spaceAfter=0),
+        )
+    else:
+        left_lines = [f"<b>{client_label}</b> " + _escape((client_name or "—").strip())]
+        for label, value in extra_client_rows:
+            left_lines.append(f"{_escape(label)} {_escape(str(value))}")
+        left_para = Paragraph(
+            "<br/>".join(left_lines),
+            ParagraphStyle(name="ClientBlock", parent=st["detail"], fontSize=10, leading=13, spaceAfter=0),
+        )
+    # Right: "Document:" then number, then metadata rows (right-aligned)
+    right_lines = ["<b>Document:</b>"]
+    if document_number:
+        right_lines.append(_escape(document_number))
+    for label, value in metadata_rows:
+        right_lines.append(f"{_escape(label)} {_escape(str(value))}")
+    right_para = Paragraph(
+        "<br/>".join(right_lines),
+        ParagraphStyle(
+            name="DocumentBlock",
+            parent=st["detail"],
+            fontSize=10,
+            leading=13,
+            spaceAfter=0,
+            alignment=2,
+        ),
+    )
+    col_widths = [95 * mm, 90 * mm]
+    t = Table([[left_para, right_para]], colWidths=col_widths)
+    style = [
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.grey),
+    ]
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def build_sales_quotation_footer_table(
+    prepared_by: Optional[str] = None,
+    printed_by: Optional[str] = None,
+    served_by: Optional[str] = None,
+    with_border: bool = False,
+) -> Table:
+    """
+    Footer for sales invoice and quotation: prepared by, printed by, served by only.
+    Till/paybill stay in metadata line; no duplication in footer.
+    """
+    rows = []
+    if prepared_by:
+        rows.append(("Prepared by:", prepared_by.strip()))
+    if printed_by:
+        rows.append(("Printed by:", printed_by.strip()))
+    if served_by:
+        rows.append(("Served by:", served_by.strip()))
+    if not rows:
+        return Table([["—", "—"]], colWidths=[35 * mm, 130 * mm])
+    col_widths = [35 * mm, 130 * mm]
+    t = Table(rows, colWidths=col_widths)
     style = [
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
     ]
     if with_border:
         style.append(("BOX", (0, 0), (-1, -1), 0.5, colors.grey))
@@ -259,11 +327,11 @@ def build_document_metadata_client_table(
 def build_payment_details_table(
     till_number: Optional[str] = None,
     paybill: Optional[str] = None,
-    with_border: bool = True,
+    with_border: bool = False,
 ) -> Table:
     """
     Payment details block for sales invoice only (Till number, Paybill).
-    Not used for purchase orders, quotations, or supplier invoices.
+    No box; underline only below the block.
     """
     rows = []
     if till_number:
@@ -279,9 +347,8 @@ def build_payment_details_table(
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.grey),
     ]
-    if with_border:
-        style.append(("BOX", (0, 0), (-1, -1), 0.5, colors.grey))
     t.setStyle(TableStyle(style))
     return t
 
@@ -296,7 +363,7 @@ def build_approval_block_flowables(
 ) -> List[Any]:
     """
     Approval section: left = text (Approved by, Designation, PPB No., Date);
-    right = stamp (faded) with signature (solid) overlay at bottom-right.
+    right = stamp and signature side-by-side (no overlay), with clear separation from text.
     Returns list of flowables (heading + table with text left, stamp+signature right).
     """
     st = get_document_styles()
@@ -312,17 +379,17 @@ def build_approval_block_flowables(
         name="ApprovalText", parent=st["detail"], fontSize=11, leading=14, spaceAfter=0
     ))
     right_block = StampAndSignatureFlowable(stamp_bytes=stamp_bytes, signature_bytes=signature_bytes)
-    # Table: left column text, right column stamp+signature (right-aligned in cell)
+    # Table: left = approval text (fixed width), right = stamp then signature with gap so they don't overlap text
     approval_table = Table(
         [[left_block, right_block]],
-        colWidths=[90 * mm, 95 * mm],
+        colWidths=[70 * mm, 115 * mm],
     )
     approval_table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-        ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (1, 0), (1, 0), 12),
     ]))
     flow.append(approval_table)
     return flow

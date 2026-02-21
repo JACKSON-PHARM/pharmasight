@@ -353,7 +353,7 @@ function renderSalesQuotationsTableBody() {
                         <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.viewQuotation) window.viewQuotation('${q.id}')" title="View/Edit">
                             <i class="fas fa-eye"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.downloadQuotationPdf) window.downloadQuotationPdf('${q.id}', ${JSON.stringify(q.quotation_no || '')})" title="Download PDF">
+                        <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.downloadQuotationPdf) window.downloadQuotationPdf('${q.id}', '${String(q.quotation_no || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="Download PDF">
                             <i class="fas fa-file-pdf"></i>
                         </button>
                         ${q.status === 'draft' ? `
@@ -560,7 +560,7 @@ function renderSalesInvoicesTableBody() {
                                 <i class="fas fa-print"></i>
                             </button>
                         ` : ''}
-                        <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoice.id}', ${JSON.stringify(invoice.invoice_no || '')})" title="Download PDF">
+                        <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoice.id}', '${String(invoice.invoice_no || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="Download PDF">
                             <i class="fas fa-file-pdf"></i>
                         </button>
                     </div>
@@ -1741,7 +1741,7 @@ async function viewSalesInvoice(invoiceId) {
                                 <i class="fas fa-money-bill-wave"></i> Collect Payment
                             </button>
                         ` : ''}
-                        <button type="button" class="btn btn-outline" onclick="if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoiceId}', ${JSON.stringify(invoice.invoice_no || '')})" title="Download PDF">
+                        <button type="button" class="btn btn-outline" onclick="if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoiceId}', '${String(invoice.invoice_no || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="Download PDF">
                             <i class="fas fa-file-pdf"></i> Download PDF
                         </button>
                         ${showPrint ? `
@@ -2574,12 +2574,22 @@ async function printSalesInvoice(invoiceId, printType) {
 }
 
 async function downloadSalesInvoicePdf(invoiceId, invoiceNo) {
+    if (typeof showToast === 'function') showToast('Preparing PDF...', 'info');
+    if (!invoiceId) {
+        if (typeof showToast === 'function') showToast('Invalid invoice', 'error');
+        return;
+    }
+    if (typeof API === 'undefined' || !API.sales || typeof API.sales.downloadPdf !== 'function') {
+        if (typeof showToast === 'function') showToast('PDF download not available', 'error');
+        return;
+    }
     try {
         await API.sales.downloadPdf(invoiceId, invoiceNo || null);
-        showToast('PDF downloaded', 'success');
+        if (typeof showToast === 'function') showToast('PDF downloaded', 'success');
     } catch (error) {
         console.error('Error downloading sales invoice PDF:', error);
-        showToast(error.message || 'Failed to download PDF', 'error');
+        const msg = error && (error.message || error.detail || String(error));
+        if (typeof showToast === 'function') showToast(msg || 'Failed to download PDF', 'error');
     }
 }
 
@@ -2867,12 +2877,22 @@ async function printQuotation(quotationId, printType) {
 }
 
 async function downloadQuotationPdf(quotationId, quotationNo) {
+    if (typeof showToast === 'function') showToast('Preparing PDF...', 'info');
+    if (!quotationId) {
+        if (typeof showToast === 'function') showToast('Invalid quotation', 'error');
+        return;
+    }
+    if (typeof API === 'undefined' || !API.quotations || typeof API.quotations.downloadPdf !== 'function') {
+        if (typeof showToast === 'function') showToast('PDF download not available', 'error');
+        return;
+    }
     try {
         await API.quotations.downloadPdf(quotationId, quotationNo || null);
-        showToast('PDF downloaded', 'success');
+        if (typeof showToast === 'function') showToast('PDF downloaded', 'success');
     } catch (error) {
         console.error('Error downloading quotation PDF:', error);
-        showToast(error.message || 'Failed to download PDF', 'error');
+        const msg = error && (error.message || error.detail || String(error));
+        if (typeof showToast === 'function') showToast(msg || 'Failed to download PDF', 'error');
     }
 }
 

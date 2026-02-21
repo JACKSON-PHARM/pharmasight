@@ -325,7 +325,8 @@ const API = {
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/convert-to-quotation`, null),
         /** Download sales invoice as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadPdf: async (invoiceId, invoiceNo = null) => {
-            const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/pdf`;
+            const base = (typeof CONFIG !== 'undefined' && CONFIG.API_ENDPOINTS && CONFIG.API_ENDPOINTS.sales) ? CONFIG.API_ENDPOINTS.sales : '/api/sales';
+            const url = `${api.baseURL}${base}/invoice/${invoiceId}/pdf`;
             const headers = {};
             try {
                 const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
@@ -416,7 +417,8 @@ const API = {
         getGRN: (grnId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/grn/${grnId}`),
         /** Download GRN as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadGrnPdf: async (grnId, grnNo = null) => {
-            const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.purchases}/grn/${grnId}/pdf`;
+            const base = (typeof CONFIG !== 'undefined' && CONFIG.API_ENDPOINTS && CONFIG.API_ENDPOINTS.purchases) ? CONFIG.API_ENDPOINTS.purchases : '/api/purchases';
+            const url = `${api.baseURL}${base}/grn/${grnId}/pdf`;
             const headers = {};
             try {
                 const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
@@ -465,7 +467,8 @@ const API = {
             api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/payment?amount_paid=${amountPaid}`, null),
         /** Download supplier invoice as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadSupplierInvoicePdf: async (invoiceId, invoiceNumber = null) => {
-            const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/pdf`;
+            const base = (typeof CONFIG !== 'undefined' && CONFIG.API_ENDPOINTS && CONFIG.API_ENDPOINTS.purchases) ? CONFIG.API_ENDPOINTS.purchases : '/api/purchases';
+            const url = `${api.baseURL}${base}/invoice/${invoiceId}/pdf`;
             const headers = {};
             try {
                 const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));

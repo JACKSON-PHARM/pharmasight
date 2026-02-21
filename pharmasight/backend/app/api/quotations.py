@@ -15,7 +15,7 @@ from app.dependencies import get_tenant_db
 logger = logging.getLogger(__name__)
 from app.models import (
     Quotation, QuotationItem, SalesInvoice, SalesInvoiceItem,
-    Item, InventoryLedger, Company, Branch, User
+    Item, InventoryLedger, Company, Branch, User,
 )
 from app.schemas.sale import (
     QuotationCreate, QuotationResponse, QuotationUpdate,
@@ -34,6 +34,7 @@ from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
 
 from app.services.document_pdf_generator import build_quotation_pdf
+from app.services.tenant_storage_service import download_file
 
 router = APIRouter()
 
@@ -143,7 +144,7 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
 
 @router.get("/{quotation_id}/pdf")
 def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
-    """Generate and return quotation as PDF (Download PDF). No approval; on-demand only."""
+    """Generate and return quotation as PDF (Download PDF). Logo right, company left; footer: prepared/printed/served."""
     from sqlalchemy.orm import selectinload
     quotation = db.query(Quotation).options(
         selectinload(Quotation.items).selectinload(QuotationItem.item)
@@ -156,6 +157,15 @@ def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
     company_address = getattr(company, "address", None) if company else None
     branch_name = branch.name if branch else None
     branch_address = getattr(branch, "address", None) if branch else None
+    company_logo_bytes = None
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
+        company_logo_bytes = download_file(company.logo_url)
+    prepared_by = None
+    served_by = None
+    creator = db.query(User).filter(User.id == quotation.created_by).first()
+    if creator:
+        prepared_by = getattr(creator, "full_name", None) or getattr(creator, "username", None) or str(quotation.created_by)
+        served_by = prepared_by
     items_data = []
     for oi in quotation.items:
         item_name = oi.item.name if oi.item else "—"
@@ -173,6 +183,7 @@ def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
             company_address=company_address,
             company_phone=getattr(company, "phone", None) if company else None,
             company_pin=getattr(company, "pin", None) if company else None,
+            company_logo_bytes=company_logo_bytes,
             branch_name=branch_name,
             branch_address=branch_address,
             quotation_no=quotation.quotation_no,
@@ -185,6 +196,9 @@ def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
             total_exclusive=quotation.total_exclusive or Decimal("0"),
             vat_amount=quotation.vat_amount or Decimal("0"),
             total_inclusive=quotation.total_inclusive or Decimal("0"),
+            prepared_by=prepared_by,
+            printed_by=None,
+            served_by=served_by,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate quotation PDF: {str(e)}")

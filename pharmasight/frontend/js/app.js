@@ -2043,6 +2043,44 @@ window.renderAppLayout = renderAppLayout;
 window.renderAuthLayout = renderAuthLayout;
 window.isAuthenticated = isAuthenticated;
 
+// Ensure PDF download handlers exist so Download PDF works on sales, quotations, supplier invoices (even if page script failed)
+(function ensurePdfDownloadHandlers() {
+    function toast(m, t) { try { if (typeof window.showToast === 'function') window.showToast(m, t); } catch (_) {} }
+    if (typeof window.downloadSalesInvoicePdf !== 'function' && typeof window.API !== 'undefined' && window.API.sales) {
+        window.downloadSalesInvoicePdf = async function(invoiceId, invoiceNo) {
+            toast('Preparing PDF...', 'info');
+            try {
+                await window.API.sales.downloadPdf(invoiceId, invoiceNo || null);
+                toast('PDF downloaded', 'success');
+            } catch (e) {
+                toast(e && (e.message || e.detail || String(e)) || 'Failed to download PDF', 'error');
+            }
+        };
+    }
+    if (typeof window.downloadQuotationPdf !== 'function' && typeof window.API !== 'undefined' && window.API.quotations) {
+        window.downloadQuotationPdf = async function(quotationId, quotationNo) {
+            toast('Preparing PDF...', 'info');
+            try {
+                await window.API.quotations.downloadPdf(quotationId, quotationNo || null);
+                toast('PDF downloaded', 'success');
+            } catch (e) {
+                toast(e && (e.message || e.detail || String(e)) || 'Failed to download PDF', 'error');
+            }
+        };
+    }
+    if (typeof window.downloadSupplierInvoicePdf !== 'function' && typeof window.API !== 'undefined' && window.API.purchases) {
+        window.downloadSupplierInvoicePdf = async function(invoiceId, invoiceNumber) {
+            toast('Preparing PDF...', 'info');
+            try {
+                await window.API.purchases.downloadSupplierInvoicePdf(invoiceId, invoiceNumber || null);
+                toast('PDF downloaded', 'success');
+            } catch (e) {
+                toast(e && (e.message || e.detail || String(e)) || 'Failed to download PDF', 'error');
+            }
+        };
+    }
+})();
+
 // Desktop mouse: Shift+wheel scrolls horizontally in scrollable areas (no trackpad/touch)
 (function() {
     function findScrollableX(el) {
