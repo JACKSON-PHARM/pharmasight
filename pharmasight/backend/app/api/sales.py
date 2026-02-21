@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
 from app.dependencies import get_tenant_db
-from app.services.transaction_document_pdf_service import build_sales_invoice_pdf
+from app.services.document_pdf_generator import build_sales_invoice_pdf
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
     Item, InvoicePayment, UserBranchRole, UserRole

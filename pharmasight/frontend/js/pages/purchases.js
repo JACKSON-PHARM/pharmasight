@@ -42,6 +42,10 @@ async function loadPurchases() {
         return;
     }
     
+    // Ensure company print settings are loaded before any print (thermal vs A4, margins, etc.)
+    if (typeof window.loadCompanyPrintSettings === 'function') {
+        window.loadCompanyPrintSettings().catch(() => {});
+    }
     console.log('Loading purchase sub-page:', currentPurchaseSubPage);
     // Load sub-page based on current selection (default to 'orders' if not set)
     const subPageToLoad = currentPurchaseSubPage || 'orders';
@@ -986,7 +990,7 @@ async function renderCreatePurchaseOrderPage() {
             </span>
         `}
         ${orderStatus === 'PENDING' ? `
-        <button type="button" class="btn btn-primary" onclick="if(window.approvePurchaseOrder) window.approvePurchaseOrder('${orderId}')" title="Approve (generates PDF with stamp &amp; signature)">
+        <button type="button" class="btn btn-primary btn-approve-po" data-order-id="${orderId}" onclick="if(window.approvePurchaseOrder) window.approvePurchaseOrder('${orderId}')" title="Approve (generates PDF with stamp &amp; signature)">
             <i class="fas fa-check-circle"></i> Approve
         </button>
         ` : ''}
@@ -2024,7 +2028,7 @@ async function viewPurchaseDocument(docId, docType) {
             <button class="btn btn-outline btn-danger" onclick="closeModal(); if(window.deletePurchaseOrder) window.deletePurchaseOrder('${order.id}')" title="Delete">
                 <i class="fas fa-trash"></i> Delete
             </button>
-            <button class="btn btn-primary" onclick="closeModal(); if(window.approvePurchaseOrder) window.approvePurchaseOrder('${order.id}')" title="Approve (generates PDF)">
+            <button class="btn btn-primary btn-approve-po" data-order-id="${order.id}" onclick="closeModal(); if(window.approvePurchaseOrder) window.approvePurchaseOrder('${order.id}')" title="Approve (generates PDF)">
                 <i class="fas fa-check-circle"></i> Approve
             </button>
             ` : ''}
@@ -2294,6 +2298,16 @@ async function downloadPurchaseOrderPdf(orderId) {
 
 // Approve purchase order (sets approved_by, approved_at, generates immutable PDF)
 async function approvePurchaseOrder(orderId) {
+    const buttons = document.querySelectorAll(`button.btn-approve-po[data-order-id="${orderId}"]`);
+    const setButtonsLoading = (loading) => {
+        buttons.forEach(btn => {
+            btn.disabled = loading;
+            btn.innerHTML = loading
+                ? '<i class="fas fa-spinner fa-spin"></i> Approving...'
+                : '<i class="fas fa-check-circle"></i> Approve';
+        });
+    };
+    setButtonsLoading(true);
     try {
         await API.purchases.approveOrder(orderId);
         showToast('Purchase order approved. PDF generated.', 'success');
@@ -2302,11 +2316,16 @@ async function approvePurchaseOrder(orderId) {
     } catch (error) {
         console.error('Error approving purchase order:', error);
         showToast(error.message || 'Error approving purchase order', 'error');
+        setButtonsLoading(false);
+    } finally {
+        setButtonsLoading(false);
     }
 }
 
-// Print purchase order: use stored PDF if approved, else dynamic preview
-async function printPurchaseOrder(orderId) {
+// Print purchase order: use stored PDF if approved, else dynamic preview. printType optional; if omitted, shows Thermal/Normal choice.
+async function printPurchaseOrder(orderId, printType) {
+    const layout = printType != null ? printType : (typeof choosePrintLayout === 'function' ? await choosePrintLayout() : ((typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal'));
+    if (layout == null) return;
     try {
         const order = await API.purchases.getOrder(orderId);
         if (order.status === 'APPROVED' && order.pdf_path && typeof API.purchases.getOrderPdfUrl === 'function') {
@@ -2317,71 +2336,102 @@ async function printPurchaseOrder(orderId) {
                 setTimeout(() => { try { printWindow.print(); } catch (e) {} }, 1000);
             }
             return;
-
         }
+
+        // Load company print settings so thermal/regular and margins are correct
+        if (typeof window.loadCompanyPrintSettings === 'function') {
+            await window.loadCompanyPrintSettings().catch(() => {});
+        }
+        const isThermal = layout === 'thermal';
+        const noMargin = !!(typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN);
+        const pageWidthMm = isThermal
+            ? Math.min(88, Math.max(58, parseInt((typeof CONFIG !== 'undefined' && CONFIG.PRINT_PAGE_WIDTH_MM) || 80, 10) || 80))
+            : 210;
+        const autoCut = !!(typeof CONFIG !== 'undefined' && CONFIG.PRINT_AUTO_CUT);
+        const contentWidthMm = isThermal ? 76 : null;
+        const bodyPad = isThermal ? (noMargin ? '2mm' : '3mm') : (noMargin ? '10px' : '20px');
+        const pageStyle = isThermal
+            ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
+               html, body { height: auto !important; min-height: 0 !important; }
+               body { font-size: 10pt; max-width: ${contentWidthMm}mm; width: ${contentWidthMm}mm; padding: ${bodyPad}; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
+               .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: center; border-bottom: 1px solid #000; }
+               .header h1 { margin: 0; font-size: 10pt; }
+               .info-section { margin: 2mm 0; font-size: 9pt; }
+               .info-grid { gap: 1mm; }
+               .info-item { margin: 0.5mm 0; word-wrap: break-word; overflow-wrap: break-word; }
+               table { margin: 2mm 0; table-layout: fixed; width: 100%; }
+               th, td { padding: 1mm 2mm; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
+               .footer { margin-top: 2mm; padding-top: 2mm; font-size: 8pt; }
+               .no-print { display: none !important; }
+               .print-content-wrap { margin-top: 0 !important; max-width: ${contentWidthMm}mm; }`
+            : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
+               html, body { height: auto !important; min-height: 0 !important; }
+               body { font-size: 12px; max-width: 210mm; padding: ${bodyPad}; margin: 0 auto; }
+               .no-print { display: none !important; }
+               .print-content-wrap { margin-top: 0 !important; }`;
+        const layoutLabel = isThermal ? `Thermal (${pageWidthMm}mm)` : 'Regular (A4)';
+        const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
+
         const formatDate = (dateStr) => {
             if (!dateStr) return '—';
             const date = new Date(dateStr);
             return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
         };
-        
         const formatCurrency = (amount) => {
             return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES' }).format(amount || 0);
         };
-        
-        // Create print-friendly HTML
+
         const printContent = `
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Purchase Order ${order.order_number}</title>
+                <meta charset="utf-8">
+                <title>Purchase Order ${escapeHtml(order.order_number || '')}</title>
                 <style>
-                    body { font-family: Arial, sans-serif; margin: 20px; }
-                    .header { text-align: center; margin-bottom: 30px; }
+                    @media print { ${pageStyle} }
+                    body { font-family: Arial, sans-serif; }
+                    .header { margin-bottom: ${isThermal ? '2mm' : '12px'}; }
                     .header h1 { margin: 0; color: #333; }
-                    .info-section { margin-bottom: 30px; }
-                    .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-                    .info-item { margin: 5px 0; }
+                    .info-section { margin-bottom: ${isThermal ? '2mm' : '16px'}; }
+                    .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: ${isThermal ? '1mm' : '10px'}; }
+                    .info-item { margin: ${isThermal ? '0.5mm 0' : '5px 0'}; }
                     .info-label { font-weight: bold; }
-                    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-                    th { background: #f8f9fa; padding: 10px; text-align: left; border-bottom: 2px solid #333; }
-                    td { padding: 8px; border-bottom: 1px solid #ddd; }
+                    table { width: 100%; border-collapse: collapse; margin-top: ${isThermal ? '2mm' : '12px'}; }
+                    th { background: #f8f9fa; padding: ${isThermal ? '1mm 2mm' : '10px'}; text-align: left; border-bottom: 2px solid #333; }
+                    td { padding: ${isThermal ? '1mm 2mm' : '8px'}; border-bottom: 1px solid #ddd; }
                     .text-right { text-align: right; }
                     .text-center { text-align: center; }
                     .total-row { font-weight: bold; background: #f8f9fa; }
-                    .footer { margin-top: 40px; text-align: center; font-size: 0.9em; color: #666; }
+                    .footer { margin-top: ${isThermal ? '2mm' : '24px'}; text-align: center; color: #666; }
                 </style>
             </head>
             <body>
+                <div class="no-print" style="position: fixed; top: 0; left: 0; right: 0; background: #f0f0f0; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; z-index: 9999; border-bottom: 1px solid #ccc; font-family: Arial, sans-serif; font-size: 14px;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span style="color: #555;">Layout: <strong>${layoutLabel}</strong></span>
+                        ${!isThermal ? '<span style="color: #856404; font-size: 12px;">For receipt printers (e.g. XP-80), switch to Thermal in Print Settings to avoid paper waste.</span>' : ''}
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <a href="#" onclick="if(window.opener){window.opener.focus();window.opener.loadPage(\'settings-print\');} return false;" style="padding: 6px 12px; background: #0066cc; color: white; text-decoration: none; border-radius: 4px; font-size: 13px;">&#9881; Customize Print Settings</a>
+                        <button type="button" onclick="window.print();" style="padding: 6px 16px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">Print</button>
+                    </div>
+                </div>
+                <div class="print-content-wrap" style="margin-top: 48px;">
                 <div class="header">
                     <h1>PURCHASE ORDER</h1>
-                    <p>${order.order_number || '—'}</p>
+                    <p>${escapeHtml(order.order_number || '—')}</p>
                 </div>
-                
                 <div class="info-section">
                     <div class="info-grid">
-                        <div class="info-item">
-                            <span class="info-label">Date:</span> ${formatDate(order.order_date)}
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Supplier:</span> ${order.supplier_name || '—'}
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Branch:</span> ${order.branch_name || '—'}
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Reference:</span> ${order.reference || '—'}
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Status:</span> ${order.status || 'PENDING'}
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Created By:</span> ${order.created_by_name || '—'}
-                        </div>
+                        <div class="info-item"><span class="info-label">Date:</span> ${formatDate(order.order_date)}</div>
+                        <div class="info-item"><span class="info-label">Supplier:</span> ${escapeHtml(order.supplier_name || '—')}</div>
+                        <div class="info-item"><span class="info-label">Branch:</span> ${escapeHtml(order.branch_name || '—')}</div>
+                        <div class="info-item"><span class="info-label">Reference:</span> ${escapeHtml(order.reference || '—')}</div>
+                        <div class="info-item"><span class="info-label">Status:</span> ${escapeHtml(order.status || 'PENDING')}</div>
+                        <div class="info-item"><span class="info-label">Created By:</span> ${escapeHtml(order.created_by_name || '—')}</div>
                     </div>
-                    ${order.notes ? `<div class="info-item" style="margin-top: 15px;"><span class="info-label">Notes:</span> ${order.notes}</div>` : ''}
+                    ${order.notes ? `<div class="info-item" style="margin-top: 4px;"><span class="info-label">Notes:</span> ${escapeHtml(order.notes)}</div>` : ''}
                 </div>
-                
                 <table>
                     <thead>
                         <tr>
@@ -2395,9 +2445,9 @@ async function printPurchaseOrder(orderId) {
                     <tbody>
                         ${(order.items || []).map(item => `
                             <tr>
-                                <td>${item.item_name || 'Item'}${item.item_code ? ` (${item.item_code})` : ''}</td>
-                                <td class="text-center">${item.quantity || 0}</td>
-                                <td>${item.unit_name || '—'}</td>
+                                <td>${escapeHtml(item.item_name || 'Item')}${!isThermal && item.item_code ? ' (' + escapeHtml(item.item_code) + ')' : ''}</td>
+                                <td class="text-center">${item.quantity != null ? Number(item.quantity) : '—'}</td>
+                                <td>${escapeHtml(item.unit_name || '—')}</td>
                                 <td class="text-right">${formatCurrency(item.unit_price || 0)}</td>
                                 <td class="text-right">${formatCurrency(item.total_price || 0)}</td>
                             </tr>
@@ -2408,25 +2458,20 @@ async function printPurchaseOrder(orderId) {
                         </tr>
                     </tbody>
                 </table>
-                
                 <div class="footer">
                     <p>Generated on ${new Date().toLocaleString('en-KE')}</p>
+                </div>
+                ${autoCutSpacer}
                 </div>
             </body>
             </html>
         `;
-        
-        // Open print window
+
         const printWindow = window.open('', '_blank');
         printWindow.document.write(printContent);
         printWindow.document.close();
         printWindow.focus();
-        
-        // Wait for content to load, then print
-        setTimeout(() => {
-            printWindow.print();
-        }, 250);
-        
+        setTimeout(() => { printWindow.print(); }, 250);
     } catch (error) {
         console.error('Error printing purchase order:', error);
         showToast(error.message || 'Error printing purchase order', 'error');

@@ -25,11 +25,11 @@ from app.schemas.purchase import (
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
-from app.services.po_pdf_service import build_po_pdf
+from app.services.document_pdf_generator import build_po_pdf
 from app.services.tenant_storage_service import upload_po_pdf, get_signed_url, download_file
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
-from app.services.transaction_document_pdf_service import build_grn_pdf, build_supplier_invoice_pdf
+from app.services.document_pdf_generator import build_grn_pdf, build_supplier_invoice_pdf
 import json
 
 router = APIRouter()

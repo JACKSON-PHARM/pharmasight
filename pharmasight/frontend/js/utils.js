@@ -177,6 +177,32 @@ function closeModal() {
     if (overlay) overlay.style.display = 'none';
 }
 
+/** Show modal to choose print layout; returns Promise<'thermal'|'normal'|null>. Use for transaction documents (invoice, quotation, PO). */
+function choosePrintLayout() {
+    return new Promise((resolve) => {
+        const overlay = document.getElementById('modalOverlay');
+        const modal = document.getElementById('modal');
+        if (!overlay || !modal) {
+            resolve((typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE === 'thermal') ? 'thermal' : 'normal');
+            return;
+        }
+        window._printLayoutResolve = (value) => {
+            if (window._printLayoutResolve) {
+                window._printLayoutResolve = null;
+                closeModal();
+                resolve(value);
+            }
+        };
+        const content = '<p>Print as:</p>';
+        const footer = `
+            <button type="button" class="btn btn-primary" onclick="window._printLayoutResolve && window._printLayoutResolve('thermal')">Thermal (80mm)</button>
+            <button type="button" class="btn btn-outline" onclick="window._printLayoutResolve && window._printLayoutResolve('normal')">Normal (A4)</button>
+            <button type="button" class="btn btn-secondary" onclick="window._printLayoutResolve && window._printLayoutResolve(null)">Cancel</button>
+        `;
+        showModal('Print', content, footer);
+    });
+}
+
 // Close modal on overlay click (only when overlay exists, e.g. on main app pages)
 document.addEventListener('DOMContentLoaded', () => {
     const overlay = document.getElementById('modalOverlay');

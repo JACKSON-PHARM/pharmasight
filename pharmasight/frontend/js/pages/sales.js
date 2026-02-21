@@ -2264,7 +2264,7 @@ async function batchSalesInvoice(invoiceId, buttonEl) {
             await salesInvoiceItemsTable.refreshStockForAllItems();
         }
         await fetchAndRenderSalesInvoicesData();
-        if (confirm('Print thermal receipt?')) await printSalesInvoice(invoiceId);
+        if (confirm('Print receipt?')) await printSalesInvoice(invoiceId);
         return invoice;
     };
     try {
@@ -2550,10 +2550,11 @@ async function checkIfAdminOrManager() {
     }
 }
 
-async function printSalesInvoice(invoiceId) {
+async function printSalesInvoice(invoiceId, printType) {
+    const layout = printType != null ? printType : (typeof choosePrintLayout === 'function' ? await choosePrintLayout() : ((typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal'));
+    if (layout == null) return;
     try {
         const invoice = await API.sales.getInvoice(invoiceId);
-        const layout = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal';
         const printContent = generateInvoicePrintHTML(invoice, layout);
         
         const printWindow = window.open('', '_blank');
@@ -2638,7 +2639,7 @@ function generateInvoicePrintHTML(invoice, printType) {
     const showAddress = getPrintOpt('PRINT_HEADER_ADDRESS', true);
     const showPhone = getPrintOpt('PRINT_HEADER_PHONE', true);
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
-    const showItemCode = getPrintOpt('PRINT_ITEM_CODE', true);
+    const showItemCode = isThermal ? false : getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
     const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
     const showBatch = getPrintOpt('PRINT_ITEM_BATCH', true); // Default to true for invoices
@@ -2704,26 +2705,26 @@ function generateInvoicePrintHTML(invoice, printType) {
     const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     const generatedTime = new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 
-    const contentWidthMm = Math.min(88, Math.max(58, pageWidthMm)) - 4;
+    const contentWidthMm = isThermal ? 76 : null;
     const bodyPadMm = noMargin ? '2mm' : '3mm';
     const cellPadMm = '1mm 2mm';
     const pageStyle = isThermal
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
-           body { font-size: 10pt; max-width: ${contentWidthMm}mm; padding: ${bodyPadMm}; margin: 0 auto; box-sizing: border-box; }
+           body { font-size: 10pt; max-width: ${contentWidthMm}mm; width: ${contentWidthMm}mm; padding: ${bodyPadMm}; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
            .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: ${headerAlign}; border-bottom: 1px solid #000; }
            .header .company-name { font-size: 10pt; font-weight: bold; line-height: 1.2; }
-           .header .company-details, .header p { margin: 0 !important; font-size: 9pt; line-height: 1.25; }
+           .header .company-details, .header p { margin: 0 !important; font-size: 9pt; line-height: 1.25; word-wrap: break-word; overflow-wrap: break-word; }
            .invoice-info { margin: 2mm 0; font-size: 9pt; line-height: 1.3; }
            .invoice-info p { margin: 0.5mm 0; }
            .footer { margin-top: 2mm; padding-top: 2mm; font-size: 8pt; border-top: 1px solid #ccc; }
            .footer p { margin: 0.5mm 0; }
-           th, td { padding: ${cellPadMm}; font-size: 9pt; }
+           table { margin: 2mm 0; table-layout: fixed; width: 100%; }
+           th, td { padding: ${cellPadMm}; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
            .item-sub { font-size: 8pt; color: #555; border-bottom: 1px dotted #ccc; margin-top: 1mm; padding-bottom: 1mm; }
-           table { margin: 2mm 0; }
            .total { font-size: 10pt; }
            .no-print { display: none !important; }
-           .print-content-wrap { margin-top: 0 !important; }`
+           .print-content-wrap { margin-top: 0 !important; max-width: ${contentWidthMm}mm; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
@@ -2780,7 +2781,6 @@ function generateInvoicePrintHTML(invoice, printType) {
         <p><strong>Invoice #:</strong> ${escapeHtml(invoice.invoice_no)} &nbsp; <strong>Date:</strong> ${invoiceDate}</p>
         ${invoice.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(invoice.customer_name)}</p>` : ''}
         ${invoice.customer_phone ? `<p><strong>Phone:</strong> ${escapeHtml(invoice.customer_phone)}</p>` : ''}
-        <p><strong>Status:</strong> ${invoice.status || 'DRAFT'}</p>
     </div>
 
     <table>
@@ -2843,12 +2843,12 @@ async function convertSalesInvoiceToQuotation(invoiceId) {
 }
 
 // Print Quotation (enabled for all statuses including draft)
-// printType: 'normal' (A4) or 'thermal' (narrow) - from CONFIG.PRINT_TYPE or default 'normal'
+// printType: 'normal' (A4) or 'thermal' (narrow); if omitted, shows Thermal/Normal choice
 async function printQuotation(quotationId, printType) {
+    const layout = printType != null ? printType : (typeof choosePrintLayout === 'function' ? await choosePrintLayout() : ((typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'normal'));
+    if (layout == null) return;
     try {
         const quotation = await API.quotations.get(quotationId);
-        const layout = printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'normal';
-        
         const printWindow = window.open('', '_blank');
         const printContent = generateQuotationPrintHTML(quotation, layout);
         
@@ -2885,7 +2885,7 @@ function generateQuotationPrintHTML(quotation, printType) {
     const showCompany = getPrintOpt('PRINT_HEADER_COMPANY', true);
     const showAddress = getPrintOpt('PRINT_HEADER_ADDRESS', true);
     const showPhone = getPrintOpt('PRINT_HEADER_PHONE', true);
-    const showItemCode = getPrintOpt('PRINT_ITEM_CODE', true);
+    const showItemCode = isThermal ? false : getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
     const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
     const showBatch = getPrintOpt('PRINT_ITEM_BATCH', false);
@@ -2953,22 +2953,22 @@ function generateQuotationPrintHTML(quotation, printType) {
     const vatHeader = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const colSpanTotal = colCount - 1;
 
-    const contentWidthMmQ = Math.min(88, Math.max(58, pageWidthMm)) - 4;
+    const contentWidthMmQ = isThermal ? 76 : null;
     const bodyPadMmQ = noMargin ? '2mm' : '3mm';
     const cellPadMmQ = '1mm 2mm';
     const pageStyle = isThermal
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
-           body { font-size: 10pt; max-width: ${contentWidthMmQ}mm; padding: ${bodyPadMmQ}; margin: 0 auto; box-sizing: border-box; }
+           body { font-size: 10pt; max-width: ${contentWidthMmQ}mm; width: ${contentWidthMmQ}mm; padding: ${bodyPadMmQ}; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
            .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: ${headerAlign}; border-bottom: 1px solid #000; }
            .header .company-name { font-size: 10pt; font-weight: bold; line-height: 1.2; }
-           .header .company-details, .header p { margin: 0 !important; font-size: 9pt; line-height: 1.25; }
+           .header .company-details, .header p { margin: 0 !important; font-size: 9pt; line-height: 1.25; word-wrap: break-word; overflow-wrap: break-word; }
            .quotation-info { margin: 2mm 0; font-size: 9pt; line-height: 1.3; }
            .quotation-info p { margin: 0.5mm 0; }
            .footer { margin-top: 2mm; padding-top: 2mm; font-size: 8pt; border-top: 1px solid #ccc; }
-           th, td { padding: ${cellPadMmQ}; font-size: 9pt; }
+           table { margin: 2mm 0; table-layout: fixed; width: 100%; }
+           th, td { padding: ${cellPadMmQ}; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
            .item-sub { font-size: 8pt; color: #555; border-bottom: 1px dotted #ccc; margin-top: 1mm; padding-bottom: 1mm; }
-           table { margin: 2mm 0; }
            .total { font-size: 10pt; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
@@ -3012,7 +3012,6 @@ function generateQuotationPrintHTML(quotation, printType) {
     <div class="quotation-info">
         <p><strong>Quotation #:</strong> ${escapeHtml(quotation.quotation_no)} &nbsp; <strong>Date:</strong> ${quotationDate} &nbsp; <strong>Valid Until:</strong> ${validUntil}</p>
         ${quotation.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(quotation.customer_name)}</p>` : ''}
-        <p><strong>Status:</strong> ${(quotation.status || 'draft')}</p>
     </div>
 
     <table>

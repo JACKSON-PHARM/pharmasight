@@ -82,6 +82,12 @@ class APIClient {
                 error.status = response.status;
                 error.data = data;
                 console.error('API Error Response:', { url, status: response.status, data });
+                // Invalid or expired token: clear session and redirect to login
+                if (response.status === 401) {
+                    if (typeof window.globalLogout === 'function') {
+                        window.globalLogout();
+                    }
+                }
                 throw error;
             }
 

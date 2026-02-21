@@ -33,7 +33,7 @@ from app.services.snapshot_service import SnapshotService
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
 
-from app.services.quotation_pdf_service import build_quotation_pdf
+from app.services.document_pdf_generator import build_quotation_pdf
 
 router = APIRouter()
 
