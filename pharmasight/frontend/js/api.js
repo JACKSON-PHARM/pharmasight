@@ -323,7 +323,7 @@ const API = {
             api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/payments/${paymentId}`),
         convertToQuotation: (invoiceId) => 
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/convert-to-quotation`, null),
-        /** Download sales invoice as PDF. */
+        /** Download sales invoice as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadPdf: async (invoiceId, invoiceNo = null) => {
             const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/pdf`;
             const headers = {};
@@ -333,8 +333,10 @@ const API = {
                 const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
                 if (token) headers['Authorization'] = 'Bearer ' + token;
             } catch (_) {}
+            const w = window.open('', '_blank');
             const res = await fetch(url, { method: 'GET', headers });
             if (!res.ok) {
+                if (w) w.close();
                 let msg = 'Failed to download PDF';
                 try {
                     const text = await res.text();
@@ -346,12 +348,17 @@ const API = {
                 throw new Error(msg);
             }
             const blob = await res.blob();
-            const name = (invoiceNo != null && invoiceNo !== '') ? String(invoiceNo).replace(/\s+/g, '-') : invoiceId;
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `sales-invoice-${name}.pdf`;
-            a.click();
-            URL.revokeObjectURL(a.href);
+            const blobUrl = URL.createObjectURL(blob);
+            if (w && !w.closed) {
+                w.location.href = blobUrl;
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+            } else {
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = `sales-invoice-${(invoiceNo != null && invoiceNo !== '') ? String(invoiceNo).replace(/\s+/g, '-') : invoiceId}.pdf`;
+                a.click();
+                URL.revokeObjectURL(blobUrl);
+            }
         },
     },
 
@@ -362,7 +369,7 @@ const API = {
         listByBranch: (branchId) => api.get(`/api/quotations/branch/${branchId}`),
         update: (quotationId, data) => api.put(`/api/quotations/${quotationId}`, data),
         delete: (quotationId) => api.delete(`/api/quotations/${quotationId}`),
-        /** Download quotation as PDF (opens with auth, triggers file save). */
+        /** Download quotation as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadPdf: async (quotationId, quotationNo = null) => {
             const url = `${api.baseURL}/api/quotations/${quotationId}/pdf`;
             const headers = {};
@@ -372,8 +379,10 @@ const API = {
                 const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
                 if (token) headers['Authorization'] = 'Bearer ' + token;
             } catch (_) {}
+            const w = window.open('', '_blank');
             const res = await fetch(url, { method: 'GET', headers });
             if (!res.ok) {
+                if (w) w.close();
                 let msg = 'Failed to download PDF';
                 try {
                     const text = await res.text();
@@ -385,13 +394,17 @@ const API = {
                 throw new Error(msg);
             }
             const blob = await res.blob();
-            const name = (quotationNo || quotationId).toString().replace(/\s+/g, '-');
-            const filename = `quotation-${name}.pdf`;
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = filename;
-            a.click();
-            URL.revokeObjectURL(a.href);
+            const blobUrl = URL.createObjectURL(blob);
+            if (w && !w.closed) {
+                w.location.href = blobUrl;
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+            } else {
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = `quotation-${(quotationNo || quotationId).toString().replace(/\s+/g, '-')}.pdf`;
+                a.click();
+                URL.revokeObjectURL(blobUrl);
+            }
         },
         convertToInvoice: (quotationId, data = {}) => 
             api.post(`/api/quotations/${quotationId}/convert-to-invoice`, data),
@@ -401,7 +414,7 @@ const API = {
     purchases: {
         createGRN: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/grn`, data),
         getGRN: (grnId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/grn/${grnId}`),
-        /** Download GRN as PDF. */
+        /** Download GRN as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadGrnPdf: async (grnId, grnNo = null) => {
             const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.purchases}/grn/${grnId}/pdf`;
             const headers = {};
@@ -411,8 +424,10 @@ const API = {
                 const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
                 if (token) headers['Authorization'] = 'Bearer ' + token;
             } catch (_) {}
+            const w = window.open('', '_blank');
             const res = await fetch(url, { method: 'GET', headers });
             if (!res.ok) {
+                if (w) w.close();
                 let msg = 'Failed to download PDF';
                 try {
                     const text = await res.text();
@@ -424,12 +439,18 @@ const API = {
                 throw new Error(msg);
             }
             const blob = await res.blob();
+            const blobUrl = URL.createObjectURL(blob);
             const name = (grnNo != null && grnNo !== '') ? String(grnNo).replace(/\s+/g, '-') : grnId;
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `grn-${name}.pdf`;
-            a.click();
-            URL.revokeObjectURL(a.href);
+            if (w && !w.closed) {
+                w.location.href = blobUrl;
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+            } else {
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = `grn-${name}.pdf`;
+                a.click();
+                URL.revokeObjectURL(blobUrl);
+            }
         },
         createInvoice: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice`, data),
         getInvoice: (invoiceId) => 
@@ -442,7 +463,7 @@ const API = {
             api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/batch`, null),
         updateInvoicePayment: (invoiceId, amountPaid) => 
             api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/payment?amount_paid=${amountPaid}`, null),
-        /** Download supplier invoice as PDF. */
+        /** Download supplier invoice as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadSupplierInvoicePdf: async (invoiceId, invoiceNumber = null) => {
             const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/pdf`;
             const headers = {};
@@ -452,8 +473,10 @@ const API = {
                 const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
                 if (token) headers['Authorization'] = 'Bearer ' + token;
             } catch (_) {}
+            const w = window.open('', '_blank');
             const res = await fetch(url, { method: 'GET', headers });
             if (!res.ok) {
+                if (w) w.close();
                 let msg = 'Failed to download PDF';
                 try {
                     const text = await res.text();
@@ -465,12 +488,18 @@ const API = {
                 throw new Error(msg);
             }
             const blob = await res.blob();
+            const blobUrl = URL.createObjectURL(blob);
             const name = (invoiceNumber != null && invoiceNumber !== '') ? String(invoiceNumber).replace(/\s+/g, '-') : invoiceId;
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `supplier-invoice-${name}.pdf`;
-            a.click();
-            URL.revokeObjectURL(a.href);
+            if (w && !w.closed) {
+                w.location.href = blobUrl;
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+            } else {
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = `supplier-invoice-${name}.pdf`;
+                a.click();
+                URL.revokeObjectURL(blobUrl);
+            }
         },
         // Purchase Orders
         createOrder: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/order`, data),
