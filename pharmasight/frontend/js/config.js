@@ -25,12 +25,12 @@ const CONFIG = {
     BRANCH_ID: null,
     USER_ID: null,
     VAT_RATE: 16.00,
-    // Print: 'normal' (A4) or 'thermal' (narrow receipt). Used for quotations, invoices, etc.
-    PRINT_TYPE: 'normal',
+    // Print: 'normal' (A4) or 'thermal' (80mm receipt). Default thermal so receipt printers work without setup.
+    PRINT_TYPE: 'thermal',
     // Optional message shown on printed documents (quotations, sales invoices, credit notes)
     TRANSACTION_MESSAGE: '',
-    // Minimize margins on thermal print (less paper waste)
-    PRINT_REMOVE_MARGIN: false,
+    // Minimize margins on thermal print (thermal layout is already tight; this is extra)
+    PRINT_REMOVE_MARGIN: true,
     // Default number of copies when printing (user can still change in print dialog)
     PRINT_COPIES: 1,
     // Auto-cut receipts: add extra feed so thermal printer cuts at end of content
@@ -96,7 +96,7 @@ function loadConfig() {
 function buildPrintConfigForApi() {
     const bool = (k) => CONFIG[k] === true;
     return {
-        PRINT_TYPE: CONFIG.PRINT_TYPE || 'normal',
+        PRINT_TYPE: CONFIG.PRINT_TYPE || 'thermal',
         TRANSACTION_MESSAGE: CONFIG.TRANSACTION_MESSAGE || '',
         PRINT_REMOVE_MARGIN: bool('PRINT_REMOVE_MARGIN'),
         PRINT_COPIES: Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1),

@@ -2079,9 +2079,9 @@ function buildPrintPreviewHTML() {
     const noMargin = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN) === true;
     const theme = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_THEME) || 'theme1';
     const pageWidthMm = isThermal ? (Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80))) : 210;
-    const maxW = isThermal ? (pageWidthMm - 8) : 202;
-    const pad = noMargin ? '2px 4px' : '8px';
-    const bodyPad = noMargin ? '2px 4px' : '8px';
+    const contentWidthMm = isThermal ? (pageWidthMm - 4) : 202;
+    const bodyPadMm = isThermal ? (noMargin ? '2mm' : '3mm') : (noMargin ? '10px' : '20px');
+    const cellPadMm = isThermal ? '1mm 2mm' : '8px';
     const showCompany = CONFIG.PRINT_HEADER_COMPANY !== false;
     const showAddress = CONFIG.PRINT_HEADER_ADDRESS !== false;
     const showVat = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_SHOW_VAT) === true;
@@ -2091,14 +2091,16 @@ function buildPrintPreviewHTML() {
     const pageStyle = isThermal
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
-           body { font-size: 9px; max-width: ${maxW}mm; padding: ${bodyPad}; margin: 0 auto; }
-           .header { padding-bottom: 4px; margin-bottom: 6px; text-align: ${headerAlign}; }
-           .footer { margin-top: 6px; padding-top: 6px; font-size: 8px; }
-           th, td { padding: ${pad}; font-size: 9px; }
-           table { margin: 4px 0; }`
+           body { font-size: 10pt; max-width: ${contentWidthMm}mm; padding: ${bodyPadMm}; margin: 0 auto; box-sizing: border-box; }
+           .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: ${headerAlign}; border-bottom: 1px solid #000; }
+           .header .company-name { font-size: 10pt; font-weight: bold; line-height: 1.2; }
+           .header .company-details, .header p { margin: 0; font-size: 9pt; line-height: 1.25; }
+           .footer { margin-top: 2mm; padding-top: 2mm; font-size: 8pt; border-top: 1px solid #ccc; }
+           th, td { padding: ${cellPadMm}; font-size: 9pt; }
+           table { margin: 2mm 0; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
-           body { font-size: 12px; max-width: 210mm; padding: ${bodyPad}; margin: 0 auto; }
+           body { font-size: 12px; max-width: 210mm; padding: ${bodyPadMm}; margin: 0 auto; }
            th, td { padding: 8px; }
            .header { text-align: ${headerAlign}; }`;
     const headerHtml = showCompany || showAddress
