@@ -26,7 +26,7 @@ from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
 from app.services.po_pdf_service import build_po_pdf
-from app.services.tenant_storage_service import upload_po_pdf, get_signed_url
+from app.services.tenant_storage_service import upload_po_pdf, get_signed_url, download_file
 from app.utils.vat import vat_rate_to_percent
 import json
 
@@ -1284,12 +1284,26 @@ def approve_purchase_order(
     order_dt = db_order.order_date
     if hasattr(order_dt, "isoformat") and not isinstance(order_dt, datetime):
         order_dt = datetime.combine(order_dt, datetime.min.time().replace(tzinfo=timezone.utc))
+
+    # Download logo, stamp, signature from tenant storage for embedding in PDF (live/Render)
+    company_logo_bytes = None
+    if company.logo_url and str(company.logo_url or "").startswith("tenant-assets/"):
+        company_logo_bytes = download_file(company.logo_url)
+    stamp_bytes = None
+    if stamp_path and str(stamp_path).startswith("tenant-assets/"):
+        stamp_bytes = download_file(stamp_path)
+    signature_bytes = None
+    approver_sig_path = getattr(approver, "signature_path", None)
+    if approver_sig_path and str(approver_sig_path).startswith("tenant-assets/"):
+        signature_bytes = download_file(approver_sig_path)
+
     pdf_bytes = build_po_pdf(
         company_name=company.name or "—",
         company_address=company.address,
         company_phone=company.phone,
         company_pin=company.pin,
         company_logo_path=company.logo_url,
+        company_logo_bytes=company_logo_bytes,
         branch_name=branch.name if branch else None,
         branch_address=branch.address if branch else None,
         order_number=db_order.order_number,
@@ -1300,10 +1314,12 @@ def approve_purchase_order(
         total_amount=db_order.total_amount or Decimal("0"),
         document_branding=document_branding,
         stamp_path=stamp_path,
+        stamp_bytes=stamp_bytes,
         approver_name=approver.full_name or approver.email,
         approver_designation=getattr(approver, "designation", None),
         approver_ppb_number=getattr(approver, "ppb_number", None),
-        signature_path=getattr(approver, "signature_path", None),
+        signature_path=approver_sig_path,
+        signature_bytes=signature_bytes,
         approved_at=now,
     )
     stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes)
