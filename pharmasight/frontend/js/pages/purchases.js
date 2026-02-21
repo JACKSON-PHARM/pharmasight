@@ -2293,6 +2293,7 @@ async function printPurchaseOrder(orderId) {
                 setTimeout(() => { try { printWindow.print(); } catch (e) {} }, 1000);
             }
             return;
+
         }
         const formatDate = (dateStr) => {
             if (!dateStr) return '—';
