@@ -281,10 +281,7 @@ def build_payment_details_table(
         ("TOPPADDING", (0, 0), (-1, -1), 3),
     ]
     if with_border:
-        style.extend([
-            ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ])
+        style.append(("BOX", (0, 0), (-1, -1), 0.5, colors.grey))
     t.setStyle(TableStyle(style))
     return t
 

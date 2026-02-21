@@ -287,18 +287,23 @@ def get_grn_pdf(grn_id: UUID, db: Session = Depends(get_tenant_db)):
             "unit_cost": float(oi.unit_cost or 0),
             "total_cost": float(oi.total_cost or 0),
         })
-    pdf_bytes = build_grn_pdf(
-        company_name=company.name if company else "—",
-        company_address=getattr(company, "address", None) if company else None,
-        branch_name=branch.name if branch else None,
-        branch_address=getattr(branch, "address", None) if branch else None,
-        grn_no=grn.grn_no,
-        date_received=grn.date_received,
-        supplier_name=supplier_name,
-        items=items_data,
-        total_cost=grn.total_cost or Decimal("0"),
-        notes=grn.notes,
-    )
+    try:
+        pdf_bytes = build_grn_pdf(
+            company_name=company.name if company else "—",
+            company_address=getattr(company, "address", None) if company else None,
+            company_phone=getattr(company, "phone", None) if company else None,
+            company_pin=getattr(company, "pin", None) if company else None,
+            branch_name=branch.name if branch else None,
+            branch_address=getattr(branch, "address", None) if branch else None,
+            grn_no=grn.grn_no,
+            date_received=grn.date_received,
+            supplier_name=supplier_name,
+            items=items_data,
+            total_cost=grn.total_cost or Decimal("0"),
+            notes=grn.notes,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate GRN PDF: {str(e)}")
     filename = f"grn-{grn.grn_no or grn_id}.pdf".replace(" ", "-")
     return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -520,22 +525,27 @@ def get_supplier_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_
             "line_total_exclusive": float(oi.line_total_exclusive or 0),
             "line_total_inclusive": float(oi.line_total_inclusive or 0),
         })
-    pdf_bytes = build_supplier_invoice_pdf(
-        company_name=company.name if company else "—",
-        company_address=getattr(company, "address", None) if company else None,
-        branch_name=branch.name if branch else None,
-        branch_address=getattr(branch, "address", None) if branch else None,
-        invoice_number=invoice.invoice_number,
-        invoice_date=invoice.invoice_date,
-        supplier_name=supplier_name,
-        reference=invoice.reference,
-        status=invoice.status,
-        items=items_data,
-        total_exclusive=invoice.total_exclusive or Decimal("0"),
-        vat_amount=invoice.vat_amount or Decimal("0"),
-        total_inclusive=invoice.total_inclusive or Decimal("0"),
-        notes=invoice.reference,
-    )
+    try:
+        pdf_bytes = build_supplier_invoice_pdf(
+            company_name=company.name if company else "—",
+            company_address=getattr(company, "address", None) if company else None,
+            company_phone=getattr(company, "phone", None) if company else None,
+            company_pin=getattr(company, "pin", None) if company else None,
+            branch_name=branch.name if branch else None,
+            branch_address=getattr(branch, "address", None) if branch else None,
+            invoice_number=invoice.invoice_number,
+            invoice_date=invoice.invoice_date,
+            supplier_name=supplier_name,
+            reference=invoice.reference,
+            status=invoice.status,
+            items=items_data,
+            total_exclusive=invoice.total_exclusive or Decimal("0"),
+            vat_amount=invoice.vat_amount or Decimal("0"),
+            total_inclusive=invoice.total_inclusive or Decimal("0"),
+            notes=invoice.reference,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate supplier invoice PDF: {str(e)}")
     filename = f"supplier-invoice-{invoice.invoice_number or invoice_id}.pdf".replace(" ", "-")
     return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 

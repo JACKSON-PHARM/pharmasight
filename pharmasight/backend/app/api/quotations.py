@@ -167,22 +167,27 @@ def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
             "line_total_exclusive": float(oi.line_total_exclusive or 0),
             "line_total_inclusive": float(oi.line_total_inclusive or 0),
         })
-    pdf_bytes = build_quotation_pdf(
-        company_name=company_name,
-        company_address=company_address,
-        branch_name=branch_name,
-        branch_address=branch_address,
-        quotation_no=quotation.quotation_no,
-        quotation_date=quotation.quotation_date,
-        valid_until=quotation.valid_until,
-        customer_name=quotation.customer_name,
-        reference=quotation.reference,
-        notes=quotation.notes,
-        items=items_data,
-        total_exclusive=quotation.total_exclusive or Decimal("0"),
-        vat_amount=quotation.vat_amount or Decimal("0"),
-        total_inclusive=quotation.total_inclusive or Decimal("0"),
-    )
+    try:
+        pdf_bytes = build_quotation_pdf(
+            company_name=company_name,
+            company_address=company_address,
+            company_phone=getattr(company, "phone", None) if company else None,
+            company_pin=getattr(company, "pin", None) if company else None,
+            branch_name=branch_name,
+            branch_address=branch_address,
+            quotation_no=quotation.quotation_no,
+            quotation_date=quotation.quotation_date,
+            valid_until=quotation.valid_until,
+            customer_name=quotation.customer_name,
+            reference=quotation.reference,
+            notes=quotation.notes,
+            items=items_data,
+            total_exclusive=quotation.total_exclusive or Decimal("0"),
+            vat_amount=quotation.vat_amount or Decimal("0"),
+            total_inclusive=quotation.total_inclusive or Decimal("0"),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate quotation PDF: {str(e)}")
     filename = f"quotation-{quotation.quotation_no or quotation_id}.pdf".replace(" ", "-")
     return Response(
         content=pdf_bytes,

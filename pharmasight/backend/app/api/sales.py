@@ -340,23 +340,28 @@ def get_sales_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)
             "line_total_exclusive": float(oi.line_total_exclusive or 0),
             "line_total_inclusive": float(oi.line_total_inclusive or 0),
         })
-    pdf_bytes = build_sales_invoice_pdf(
-        company_name=company.name if company else "—",
-        company_address=getattr(company, "address", None) if company else None,
-        branch_name=branch.name if branch else None,
-        branch_address=getattr(branch, "address", None) if branch else None,
-        invoice_no=invoice.invoice_no,
-        invoice_date=invoice.invoice_date,
-        customer_name=invoice.customer_name,
-        customer_phone=getattr(invoice, "customer_phone", None),
-        payment_mode=getattr(invoice, "payment_mode", None),
-        status=getattr(invoice, "status", None),
-        items=items_data,
-        total_exclusive=invoice.total_exclusive or Decimal("0"),
-        vat_amount=invoice.vat_amount or Decimal("0"),
-        total_inclusive=invoice.total_inclusive or Decimal("0"),
-        notes=getattr(invoice, "notes", None),
-    )
+    try:
+        pdf_bytes = build_sales_invoice_pdf(
+            company_name=company.name if company else "—",
+            company_address=getattr(company, "address", None) if company else None,
+            company_phone=getattr(company, "phone", None) if company else None,
+            company_pin=getattr(company, "pin", None) if company else None,
+            branch_name=branch.name if branch else None,
+            branch_address=getattr(branch, "address", None) if branch else None,
+            invoice_no=invoice.invoice_no,
+            invoice_date=invoice.invoice_date,
+            customer_name=invoice.customer_name,
+            customer_phone=getattr(invoice, "customer_phone", None),
+            payment_mode=getattr(invoice, "payment_mode", None),
+            status=getattr(invoice, "status", None),
+            items=items_data,
+            total_exclusive=invoice.total_exclusive or Decimal("0"),
+            vat_amount=invoice.vat_amount or Decimal("0"),
+            total_inclusive=invoice.total_inclusive or Decimal("0"),
+            notes=getattr(invoice, "notes", None),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate sales invoice PDF: {str(e)}")
     filename = f"sales-invoice-{invoice.invoice_no or invoice_id}.pdf".replace(" ", "-")
     return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 

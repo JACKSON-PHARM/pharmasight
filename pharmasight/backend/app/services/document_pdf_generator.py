@@ -95,7 +95,7 @@ def _items_table_flowable(items: List[Dict], doc_type: str) -> Table:
             ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ("TOPPADDING", (0, 0), (-1, -1), 4),
         ])
@@ -169,7 +169,7 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
             client_label=client_label,
             client_name=client_name,
             extra_client_rows=extra_client_rows if extra_client_rows else None,
-            with_border=True,
+            with_border=False,
         )
     )
     flow.append(Spacer(1, 7 * mm))
