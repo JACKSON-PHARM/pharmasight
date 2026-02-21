@@ -2234,6 +2234,7 @@ async function renderPrintSettingsPage() {
                                 <input type="checkbox" name="print_auto_cut" ${autoCut ? 'checked' : ''}>
                                 <span>Auto-cut receipts (thermal)</span>
                             </label>
+                            <p class="form-help" style="margin: 0.25rem 0 0 1.5rem; font-size: 0.8rem; color: var(--text-secondary);">Adds extra paper feed at the end so the printer can cut. If yours still doesn&apos;t cut, check the printer driver (e.g. Windows: right‑click printer → Printing preferences) for a &quot;Cut at end of job&quot; or similar option.</p>
                         </div>
 
                         <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Company / Header</h4>

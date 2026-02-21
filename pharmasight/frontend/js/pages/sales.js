@@ -2684,7 +2684,7 @@ function generateInvoicePrintHTML(invoice, printType) {
            .no-print { display: none !important; }
            .print-content-wrap { margin-top: 0 !important; }`;
 
-    const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
+    const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
     const layoutLabel = isThermal ? `Thermal (${pageWidthMm}mm)` : 'Regular (A4)';
     const headerBlock = `<div class="header">
@@ -2916,7 +2916,7 @@ function generateQuotationPrintHTML(quotation, printType) {
            .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
            th, td { padding: 8px; }`;
 
-    const autoCutSpacer = (isThermal && autoCut) ? '<div style="height: 20mm; min-height: 20mm;"></div>' : '';
+    const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
 
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
     const headerBlock = `<div class="header">
