@@ -255,8 +255,7 @@ function renderAdminUserSetup() {
                     <h3>Step 2: Admin User Information</h3>
                     <p>Set up the administrator account for your pharmacy</p>
                     <small style="color: var(--text-secondary); display: block; margin-top: 0.5rem;">
-                        Note: If using Supabase Auth, the User ID should match your Supabase Auth user_id.
-                        Otherwise, you can use a temporary UUID for now.
+                        Your user ID and email are set from your sign-in. Update name and phone below if needed.
                     </small>
                 </div>
                 <form id="adminUserForm" onsubmit="saveAdminUserStep(event)">
@@ -269,7 +268,7 @@ function renderAdminUserSetup() {
                                readonly
                                style="background-color: #f5f5f5; cursor: not-allowed;">
                         <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
-                            <i class="fas fa-info-circle"></i> This is your authenticated user ID from Supabase Auth
+                            <i class="fas fa-info-circle"></i> Your account ID (set when you signed in)
                         </small>
                     </div>
 
@@ -281,7 +280,7 @@ function renderAdminUserSetup() {
                                readonly
                                style="background-color: #f5f5f5; cursor: not-allowed;">
                         <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
-                            <i class="fas fa-info-circle"></i> This is your authenticated email from Supabase Auth
+                            <i class="fas fa-info-circle"></i> Your account email (set when you signed in)
                         </small>
                     </div>
 
@@ -548,7 +547,7 @@ async function saveBranchStep(event) {
         
         console.log('Setup completed successfully:', result);
         
-        // Mark setup as complete in Supabase Auth metadata
+        // Mark setup as complete in user metadata
         try {
             await API.invite.markSetupComplete(setupData.admin_user.id);
             console.log('User metadata updated: must_setup_company = false');

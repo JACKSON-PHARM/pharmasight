@@ -681,6 +681,9 @@ async function startAppFlow() {
         updateUserUI(user);
         CONFIG.USER_ID = user.id;
         saveConfig();
+        if (typeof window.Permissions !== 'undefined' && typeof window.Permissions.clearPermissionsCache === 'function') {
+            window.Permissions.clearPermissionsCache();
+        }
 
         // Ensure tenant context is set even for recovery/password-reset sessions.
         // Recovery links don't contain tenant info; we can discover tenant by email via backend.

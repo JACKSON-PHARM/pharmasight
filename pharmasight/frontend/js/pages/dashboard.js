@@ -46,13 +46,21 @@ async function loadDashboard() {
     // Use session branch (same as header) so dashboard matches branch context
     const branchId = getBranchIdForStock();
     
-    // Check permissions and hide/show cards accordingly
-    if (typeof window.Permissions !== 'undefined' && window.Permissions.canViewDashboardCard) {
-        const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
+    // Check permissions and hide/show cards accordingly.
+    // Fail-open: if permissions could not be loaded (empty set), show all cards so dashboard is never blank.
+    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
+    if (typeof window.Permissions !== 'undefined' && window.Permissions.getUserPermissions && window.Permissions.canViewDashboardCard) {
+        let permissionsLoaded = false;
+        try {
+            const perms = await window.Permissions.getUserPermissions(branchId);
+            permissionsLoaded = perms && perms.size > 0;
+        } catch (e) {
+            console.warn('Dashboard: could not load permissions, showing all cards.', e);
+        }
         for (const cardId of cardIds) {
             const card = document.getElementById(cardId)?.closest('.stat-card');
             if (card) {
-                const canView = await window.Permissions.canViewDashboardCard(cardId, branchId);
+                const canView = !permissionsLoaded || await window.Permissions.canViewDashboardCard(cardId, branchId);
                 card.style.display = canView ? '' : 'none';
             }
         }

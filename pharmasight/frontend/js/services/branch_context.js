@@ -102,6 +102,10 @@ function setBranchInternal(branch, shouldBroadcast = true) {
     if (typeof window !== 'undefined' && window.searchCache && typeof window.searchCache.clear === 'function') {
         window.searchCache.clear();
     }
+    // Clear permissions cache so dashboard cards reflect this branch/tenant
+    if (typeof window !== 'undefined' && window.Permissions && typeof window.Permissions.clearPermissionsCache === 'function') {
+        window.Permissions.clearPermissionsCache();
+    }
     
     // Broadcast to other tabs
     if (shouldBroadcast) {
