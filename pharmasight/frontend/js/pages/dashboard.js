@@ -46,9 +46,14 @@ async function loadDashboard() {
     // Use session branch (same as header) so dashboard matches branch context
     const branchId = getBranchIdForStock();
     
+    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
+    // Reset all cards visible first so a previous load cannot leave them hidden
+    for (const cardId of cardIds) {
+        const card = document.getElementById(cardId)?.closest('.stat-card');
+        if (card) card.style.display = '';
+    }
     // Check permissions and hide/show cards accordingly.
     // Fail-open: if permissions could not be loaded (empty set), show all cards so dashboard is never blank.
-    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
     if (typeof window.Permissions !== 'undefined' && window.Permissions.getUserPermissions && window.Permissions.canViewDashboardCard) {
         let permissionsLoaded = false;
         try {
@@ -60,7 +65,12 @@ async function loadDashboard() {
         for (const cardId of cardIds) {
             const card = document.getElementById(cardId)?.closest('.stat-card');
             if (card) {
-                const canView = !permissionsLoaded || await window.Permissions.canViewDashboardCard(cardId, branchId);
+                let canView = true;
+                try {
+                    canView = !permissionsLoaded || await window.Permissions.canViewDashboardCard(cardId, branchId);
+                } catch (e) {
+                    console.warn('Dashboard: permission check failed for card', cardId, e);
+                }
                 card.style.display = canView ? '' : 'none';
             }
         }

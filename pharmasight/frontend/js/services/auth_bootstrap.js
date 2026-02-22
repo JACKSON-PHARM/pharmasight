@@ -170,17 +170,30 @@ async function initAuthBootstrap() {
         // Set up auth state change listener
         // CRITICAL: This listener NEVER navigates or calls startAppFlow
         // It ONLY updates state and notifies listeners (UI updates only)
+        // When using internal auth (username/password), Supabase may fire INITIAL_SESSION or SIGNED_OUT with session=null.
+        // Do NOT overwrite with null if we still have valid internal auth - avoids false "user logged out" and dashboard disappearing.
         authListener = supabaseClientInstance.auth.onAuthStateChange((event, session) => {
             console.log('[AUTH BOOTSTRAP] Auth state changed:', event);
             
-            currentSession = session;
-            currentUser = session?.user || null;
+            if (session) {
+                currentSession = session;
+                currentUser = session.user || null;
+            } else {
+                const internal = getInternalAuthState();
+                if (internal) {
+                    // Keep internal auth; ignore Supabase "signed out" when we're using our own token
+                    currentUser = internal.user;
+                    currentSession = internal.session;
+                } else {
+                    currentSession = null;
+                    currentUser = null;
+                }
+            }
             
             // Broadcast to other tabs
             broadcastAuthStateChange(currentUser, currentSession);
             
             // Notify listeners (ONLY state updates, NO navigation)
-            // Listeners should only update UI elements, never navigate
             notifyAuthStateListeners(currentUser, currentSession);
         });
         

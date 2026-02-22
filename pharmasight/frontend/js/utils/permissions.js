@@ -97,12 +97,22 @@ const DASHBOARD_CARD_PERMISSIONS = {
 };
 
 /**
+ * Permissions that imply full admin (see all dashboard cards).
+ * Uses permissions that exist in DB: users.edit is granted to admin in migration 019.
+ */
+const ADMIN_IMPLYING_PERMISSIONS = ['users.edit', 'admin.manage_company'];
+
+/**
  * Check if a dashboard card should be visible
  * @param {string} cardId - Card ID (e.g., 'totalItems', 'todaySales')
  * @param {string} branchId - Optional branch ID
  * @returns {Promise<boolean>}
  */
 async function canViewDashboardCard(cardId, branchId = null) {
+    // Admin-style roles (users.edit / admin.manage_company) see all dashboard cards
+    if (await hasAnyPermission(ADMIN_IMPLYING_PERMISSIONS, branchId)) {
+        return true;
+    }
     const requiredPerms = DASHBOARD_CARD_PERMISSIONS[cardId];
     if (!requiredPerms || requiredPerms.length === 0) {
         return true; // No restrictions, show by default

@@ -67,17 +67,29 @@ class Settings(BaseSettings):
     # CORS - parse from comma-separated string or use default
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8000,http://127.0.0.1:5500,http://127.0.0.1:3000"
     
+    # Dev origins we always include so local frontend (different port) works even if CORS_ORIGINS is overridden
+    _DEV_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+    
     @property
     def cors_origins_list(self) -> List[str]:
-        """Get CORS origins as a list"""
+        """Get CORS origins as a list. Always includes common dev origins so frontend on :3000 works."""
         if not self.CORS_ORIGINS:
-            return ["http://localhost:3000", "http://localhost:5173"]
+            return list(dict.fromkeys(self._DEV_ORIGINS))  # dedupe, preserve order
         # Split by comma and strip whitespace
         origins = [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
-        # If "*" is in the list, return ["*"] for allow all
+        # If "*" is in the list, we still can't use it with allow_credentials=True; use explicit list instead
         if "*" in origins:
-            return ["*"]
-        return origins if origins else ["http://localhost:3000", "http://localhost:5173"]
+            return list(dict.fromkeys(self._DEV_ORIGINS))
+        # Always merge in dev origins so localhost:3000 is never blocked
+        merged = list(dict.fromkeys(origins + self._DEV_ORIGINS))
+        return merged if merged else list(dict.fromkeys(self._DEV_ORIGINS))
     
     # Email (tenant invites via SMTP)
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")

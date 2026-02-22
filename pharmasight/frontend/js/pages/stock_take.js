@@ -1914,6 +1914,118 @@ function showNotification(message, type = 'info') {
     alert(message);
 }
 
+// Count ID currently being edited (for saveEditedCount from modal)
+let editingCountId = null;
+
+async function deleteCount(countId) {
+    if (!countId) return;
+    if (!confirm('Delete this count? This cannot be undone.')) return;
+    try {
+        const userId = await getCurrentUserId();
+        if (!userId) {
+            showNotification('Unable to identify user. Please refresh and try again.', 'error');
+            return;
+        }
+        await API.stockTake.deleteCount(countId, userId);
+        showNotification('Count deleted.', 'success');
+        await loadMyCounts();
+        await updateShelfItemCount();
+        if (typeof updateProgress === 'function') await updateProgress();
+    } catch (err) {
+        console.error('[STOCK TAKE] Delete count error:', err);
+        showNotification(stockTakeErrorMessage(err, 'Failed to delete count.'), 'error');
+    }
+}
+
+async function editCount(countId) {
+    if (!countId) return;
+    editingCountId = countId;
+    try {
+        const count = await API.stockTake.getCount(countId);
+        if (!count) {
+            showNotification('Count not found.', 'error');
+            return;
+        }
+        const qty = count.quantity_in_unit != null ? count.quantity_in_unit : count.counted_quantity;
+        const notes = count.notes || '';
+        const content = `
+            <div class="form-group">
+                <label class="form-label">Quantity</label>
+                <input type="number" id="editCountQty" class="form-input" min="0" step="any" value="${qty}">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notes</label>
+                <input type="text" id="editCountNotes" class="form-input" value="${typeof escapeHtml === 'function' ? escapeHtml(notes) : notes}" placeholder="Optional">
+            </div>
+        `;
+        const footer = `
+            <button type="button" class="btn btn-primary" onclick="if(window.saveEditedCount) window.saveEditedCount()">
+                <i class="fas fa-save"></i> Save
+            </button>
+            <button type="button" class="btn btn-outline" onclick="if(window.cancelEditCount) window.cancelEditCount()">Cancel</button>
+        `;
+        if (typeof window.showModal === 'function') {
+            window.showModal('Edit count', content, footer);
+        } else {
+            const newQty = prompt('New quantity:', qty);
+            if (newQty !== null && newQty !== '') {
+                const num = parseFloat(newQty);
+                if (!isNaN(num) && num >= 0) {
+                    await saveEditedCountWithPayload(countId, { quantity_in_unit: num, unit_name: count.unit_name });
+                }
+            }
+            editingCountId = null;
+        }
+    } catch (err) {
+        console.error('[STOCK TAKE] Edit count error:', err);
+        showNotification(stockTakeErrorMessage(err, 'Failed to load count.'), 'error');
+        editingCountId = null;
+    }
+}
+
+async function saveEditedCountWithPayload(countId, payload) {
+    try {
+        const userId = await getCurrentUserId();
+        if (!userId) {
+            showNotification('Unable to identify user.', 'error');
+            return;
+        }
+        await API.stockTake.updateCount(countId, payload, userId);
+        showNotification('Count updated.', 'success');
+        if (typeof closeModal === 'function') closeModal();
+        editingCountId = null;
+        await loadMyCounts();
+        await updateShelfItemCount();
+        if (typeof updateProgress === 'function') await updateProgress();
+    } catch (err) {
+        console.error('[STOCK TAKE] Save edited count error:', err);
+        showNotification(stockTakeErrorMessage(err, 'Failed to update count.'), 'error');
+    }
+}
+
+async function saveEditedCount() {
+    const countId = editingCountId;
+    if (!countId) {
+        if (typeof closeModal === 'function') closeModal();
+        return;
+    }
+    const qtyEl = document.getElementById('editCountQty');
+    const notesEl = document.getElementById('editCountNotes');
+    const qty = qtyEl ? parseFloat(qtyEl.value) : NaN;
+    const notes = notesEl ? notesEl.value.trim() : '';
+    if (isNaN(qty) || qty < 0) {
+        showNotification('Please enter a valid quantity (0 or greater).', 'error');
+        return;
+    }
+    const count = await API.stockTake.getCount(countId).catch(() => null);
+    const unitName = (count && count.unit_name) ? count.unit_name : null;
+    await saveEditedCountWithPayload(countId, {
+        quantity_in_unit: qty,
+        unit_name: unitName,
+        notes: notes || null
+    });
+}
+
 // Export to Window
 if (typeof window !== 'undefined') {
     window.loadStockTake = loadStockTake;
@@ -1928,6 +2040,7 @@ if (typeof window !== 'undefined') {
     window.refreshDraftCheck = refreshDraftCheck;
     window.editCount = editCount;
     window.saveEditedCount = saveEditedCount;
+    window.cancelEditCount = function () { editingCountId = null; if (typeof closeModal === 'function') closeModal(); };
     window.deleteCount = deleteCount;
     window.switchCountView = switchCountView;
     window.startShelfCounting = startShelfCounting;

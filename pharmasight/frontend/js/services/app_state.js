@@ -40,24 +40,36 @@ async function clearAppState() {
 }
 
 /**
+ * Build login URL without any tenant query param so the next user can sign in to any tenant.
+ * Prevents "invalid token" when a user from another tenant opens the same browser.
+ */
+function getCleanLoginUrl() {
+    const origin = typeof window !== 'undefined' && window.location.origin ? window.location.origin : '';
+    const pathname = (typeof window !== 'undefined' && window.location.pathname) ? window.location.pathname : '/';
+    const base = origin + (pathname === '' ? '/' : pathname);
+    return (base.endsWith('/') ? base : base + '/') + '#login';
+}
+
+/**
  * Global logout function
- * Forces immediate redirect to login, then signs out and clears state
+ * Forces immediate redirect to login, then signs out and clears state.
+ * Resets URL to a tenant-free login URL so the next user can sign in to any tenant.
  */
 async function globalLogout() {
     console.log('[LOGOUT] Starting logout process...');
     
     try {
         // STEP 1: Force immediate switch to auth layout and #login (CRITICAL: before signOut)
-        // This prevents any app pages from trying to render during logout
         if (window.renderAuthLayout) {
             window.renderAuthLayout();
         }
         
-        // Force hash to login immediately (before any async operations)
+        // Force hash to login and strip tenant (and any other query) from URL so next user gets clean login
+        const cleanLoginUrl = getCleanLoginUrl();
         window.location.hash = '#login';
-        window.history.replaceState(null, '', window.location.href.split('#')[0] + '#login');
+        window.history.replaceState(null, '', cleanLoginUrl);
         
-        console.log('[LOGOUT] Switched to auth layout and set hash to #login');
+        console.log('[LOGOUT] Switched to auth layout and set URL to tenant-free login:', cleanLoginUrl);
         
         // STEP 2: Sign out from Supabase (this will trigger auth state change)
         if (window.AuthBootstrap && window.AuthBootstrap.signOut) {
@@ -76,12 +88,13 @@ async function globalLogout() {
         
     } catch (error) {
         console.error('[LOGOUT] Error during logout:', error);
-        // Even if signOut fails, ensure auth layout and login page
         if (window.renderAuthLayout) {
             window.renderAuthLayout();
         }
         await clearAppState();
+        const cleanLoginUrl = getCleanLoginUrl();
         window.location.hash = '#login';
+        window.history.replaceState(null, '', cleanLoginUrl);
         if (window.loadPage) {
             window.loadPage('login');
         }
@@ -97,5 +110,6 @@ const AppState = {
 // Expose to window
 if (typeof window !== 'undefined') {
     window.AppState = AppState;
-    window.globalLogout = globalLogout; // Also expose as global function
+    window.globalLogout = globalLogout;
+    window.getCleanLoginUrl = getCleanLoginUrl; // For auth-state-change logout path
 }

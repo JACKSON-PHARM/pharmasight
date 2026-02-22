@@ -336,6 +336,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Set up auth state listener for authenticated state
             AuthBootstrap.onAuthStateChange((user, session) => {
                 if (!user || !session) {
+                    // Supabase may fire null when using internal auth only - don't treat as logout if we still have internal auth
+                    const stillLoggedIn = AuthBootstrap.getCurrentUser && AuthBootstrap.getCurrentUser();
+                    if (stillLoggedIn) {
+                        return; // Ignore spurious sign-out; keep app layout and dashboard
+                    }
                     // User logged out - FORCE immediate switch to auth layout and login
                     console.log('[AUTH STATE CHANGE] User logged out, forcing auth layout and login...');
                     
@@ -366,9 +371,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const appRoutes = ['dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set'];
                     
                     if (appRoutes.includes(currentHash) || !currentHash || currentHash === '') {
-                        console.log('[AUTH STATE CHANGE] Redirecting from app route to login:', currentHash);
+                        console.log('[AUTH STATE CHANGE] Redirecting from app route to login (tenant-free URL):', currentHash);
                         window.location.hash = '#login';
-                        window.history.replaceState(null, '', window.location.href.split('#')[0] + '#login');
+                        const cleanUrl = (typeof window.getCleanLoginUrl === 'function') ? window.getCleanLoginUrl() : (window.location.origin + (window.location.pathname || '/').replace(/\/$/, '') + '#login');
+                        window.history.replaceState(null, '', cleanUrl);
                     }
                     
                     // Reset screen tracking

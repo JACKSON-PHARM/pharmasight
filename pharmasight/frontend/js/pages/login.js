@@ -10,9 +10,7 @@ async function loadLogin() {
         const params = new URLSearchParams(window.location.search || '');
         const tenantFromUrl = params.get('tenant') || params.get('subdomain');
         if (tenantFromUrl) {
-            // Per-tab tenant context first (prevents collisions across tabs).
             try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', tenantFromUrl); } catch (_) {}
-            // Also persist last-used tenant for convenience across reloads.
             try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', tenantFromUrl); } catch (_) {}
         }
         if (sessionStorage.getItem('tenant_invite_setup_done') === '1') {
@@ -407,6 +405,15 @@ async function loadLogin() {
                         if (userData.tenant_subdomain) {
                             try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
                             try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
+                            // Clear company/branch from any previous tenant so we load this user's data only
+                            if (typeof CONFIG !== 'undefined') {
+                                CONFIG.COMPANY_ID = null;
+                                CONFIG.BRANCH_ID = null;
+                                if (typeof saveConfig === 'function') saveConfig();
+                            }
+                            if (window.BranchContext && typeof window.BranchContext.clearBranch === 'function') {
+                                window.BranchContext.clearBranch();
+                            }
                         }
                         // Store username for UI display (status bar / sidebar show username instead of email)
                         if (typeof localStorage !== 'undefined' && (userData.username || username)) {
