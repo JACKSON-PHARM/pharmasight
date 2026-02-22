@@ -198,7 +198,10 @@ def username_login(
 
     if not user and tenant is None:
         # No tenant header and not in legacy DB: discover which tenant(s) this user belongs to
+        logger.info("Username not in legacy DB, searching all tenants for username=%s", normalized_username[:50])
         found_list = _find_user_in_all_tenants(master_db, normalized_username, check_email)
+        if len(found_list) == 0:
+            logger.warning("User not found in legacy DB or any tenant DB (username=%s). On Render, ensure tenant DBs are reachable or use ?tenant=SUBDOMAIN in the login URL.", normalized_username[:50])
         if len(found_list) == 0:
             pass  # fall through to 404 below
         elif len(found_list) == 1:
@@ -234,9 +237,12 @@ def username_login(
                 },
             )
     elif not user:
+        detail = "User not found"
+        if tenant:
+            detail = f"User not found in this organization ({tenant.subdomain}). Check username or sign in from your invite link."
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail=detail
         )
     else:
         if tenant and _tenant_access_blocked(tenant):

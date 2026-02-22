@@ -385,13 +385,19 @@ async function loadLogin() {
                     }
                 }
                 
-                // Regular user authentication: Lookup email from username (must send tenant context so backend uses tenant DB)
+                // When we know the tenant (from URL or storage), send it so the backend looks in that tenant's DB.
+                // On Render, tenant DB discovery (_find_user_in_all_tenants) can fail due to network/DB config;
+                // sending the tenant when known fixes "user not found" for tenant users.
                 let userEmail = null;
                 try {
-                    // IMPORTANT: Do NOT send tenant header during login.
-                    // The backend can discover the correct tenant for this username and return tenant_subdomain.
-                    // This avoids "wrong tenant" collisions across tabs/devices.
+                    const params = new URLSearchParams(window.location.search || '');
+                    const tenantForLogin = params.get('tenant') || params.get('subdomain')
+                        || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('pharmasight_tenant_subdomain') : null)
+                        || (typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_tenant_subdomain') : null);
                     const headers = { 'Content-Type': 'application/json' };
+                    if (tenantForLogin) {
+                        headers['X-Tenant-Subdomain'] = tenantForLogin;
+                    }
                     const usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
                         method: 'POST',
                         headers,
