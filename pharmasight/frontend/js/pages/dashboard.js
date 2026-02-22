@@ -54,6 +54,7 @@ async function loadDashboard() {
     }
     // Check permissions and hide/show cards accordingly.
     // Fail-open: if permissions could not be loaded (empty set), show all cards so dashboard is never blank.
+    // Also fail-open: if we would hide every card, show all (avoids blank dashboard after data fetch).
     if (typeof window.Permissions !== 'undefined' && window.Permissions.getUserPermissions && window.Permissions.canViewDashboardCard) {
         let permissionsLoaded = false;
         try {
@@ -62,6 +63,7 @@ async function loadDashboard() {
         } catch (e) {
             console.warn('Dashboard: could not load permissions, showing all cards.', e);
         }
+        let visibleCount = 0;
         for (const cardId of cardIds) {
             const card = document.getElementById(cardId)?.closest('.stat-card');
             if (card) {
@@ -72,6 +74,14 @@ async function loadDashboard() {
                     console.warn('Dashboard: permission check failed for card', cardId, e);
                 }
                 card.style.display = canView ? '' : 'none';
+                if (canView) visibleCount++;
+            }
+        }
+        // If permission check hid every card, show all so dashboard is never blank
+        if (visibleCount === 0) {
+            for (const cardId of cardIds) {
+                const card = document.getElementById(cardId)?.closest('.stat-card');
+                if (card) card.style.display = '';
             }
         }
     }

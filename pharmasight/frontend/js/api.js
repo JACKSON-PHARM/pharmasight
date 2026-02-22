@@ -163,8 +163,8 @@ const API = {
     // Invite & Setup
     invite: {
         inviteAdmin: (data) => api.post('/api/invite/admin', data),
-        // Tenant setup status (company exists?) for the authenticated user
-        getSetupStatus: (userId) => api.get('/api/invite/setup/status', { user_id: userId }),
+        // Tenant setup status (company exists?) for the authenticated user (backend route is /api/setup/status)
+        getSetupStatus: (userId) => api.get('/api/setup/status', { user_id: userId }),
         markSetupComplete: (userId) => api.post(`/api/invite/mark-setup-complete?user_id=${userId}`, null),
     },
     tenantInviteSetup: {

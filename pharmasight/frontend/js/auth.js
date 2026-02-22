@@ -176,20 +176,18 @@ async function shouldRedirectToSetup() {
     const metadata = getUserMetadata(user);
     const mustSetupCompany = metadata?.must_setup_company === 'true' || metadata?.must_setup_company === true;
     
-    // Check database status with timeout
-    let setupStatus = { needs_setup: true, company_exists: false };
+    // Check database status with timeout; on failure or timeout, fail-open (don't redirect to setup)
+    let setupStatus = { needs_setup: false, company_exists: true };
     try {
-        // Use Promise.race to timeout after 5 seconds
         const statusPromise = checkSetupStatus(user.id);
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Setup check timeout')), 5000)
         );
-        
         setupStatus = await Promise.race([statusPromise, timeoutPromise]);
     } catch (error) {
         console.warn('Setup status check failed or timed out:', error);
-        // Default to needing setup if check fails
-        setupStatus = { needs_setup: true, company_exists: false };
+        // Fail-open: do not redirect to setup so dashboard stays visible (tenant may be fine)
+        setupStatus = { needs_setup: false, company_exists: true };
     }
     
     if (mustSetupCompany || setupStatus.needs_setup || !setupStatus.company_exists) {
