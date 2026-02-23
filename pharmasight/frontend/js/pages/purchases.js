@@ -2427,9 +2427,12 @@ async function printPurchaseOrder(orderId, printType) {
                     </div>
                 </div>
                 <div class="print-content-wrap" style="margin-top: 48px;">
-                <div class="header">
-                    <h1>PURCHASE ORDER</h1>
-                    <p>${escapeHtml(order.order_number || '—')}</p>
+                <div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
+                    <div style="flex: 1; min-width: 0;">
+                        <h1>PURCHASE ORDER</h1>
+                        <p>${escapeHtml(order.order_number || '—')}</p>
+                    </div>
+                    ${(order.logo_url && typeof order.logo_url === 'string' && (order.logo_url.startsWith('http://') || order.logo_url.startsWith('https://'))) ? `<div style="flex-shrink: 0;"><img src="${order.logo_url.replace(/"/g, '&quot;')}" alt="Logo" style="max-height: 34px; max-width: 70px; object-fit: contain;" onerror="this.style.display=\'none\'" /></div>` : ''}
                 </div>
                 <div class="info-section">
                     <div class="info-grid">

@@ -13,7 +13,7 @@ from fastapi import Query
 from fastapi.responses import Response
 from app.dependencies import get_tenant_db
 from app.services.document_pdf_generator import build_sales_invoice_pdf
-from app.services.tenant_storage_service import download_file
+from app.services.tenant_storage_service import download_file, get_signed_url
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
     Item, InvoicePayment, UserBranchRole, UserRole
@@ -440,11 +440,14 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
             invoice_item.batch_number = None
             invoice_item.expiry_date = None
 
-    # Print letterhead: company, branch, user (like quotation)
+    # Print letterhead: company, branch, user, logo URL for print (like quotation)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     if company:
         invoice.company_name = company.name
         invoice.company_address = getattr(company, "address", None) or ""
+        logo_path = getattr(company, "logo_url", None)
+        if logo_path and str(logo_path or "").startswith("tenant-assets/"):
+            invoice.logo_url = get_signed_url(logo_path)
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     if branch:
         invoice.branch_name = branch.name

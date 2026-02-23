@@ -1236,6 +1236,10 @@ def get_purchase_order(order_id: UUID, db: Session = Depends(get_tenant_db)):
         order.supplier_name = order.supplier.name
     if order.branch:
         order.branch_name = order.branch.name
+    # Logo URL for print (when company has tenant-assets logo)
+    company = getattr(order, "company", None) or db.query(Company).filter(Company.id == order.company_id).first()
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
+        order.logo_url = get_signed_url(company.logo_url)
     # Load created_by user name
     created_by_user = db.query(User).filter(User.id == order.created_by).first()
     if created_by_user:
@@ -1445,7 +1449,10 @@ def get_purchase_order_pdf_url(order_id: UUID, db: Session = Depends(get_tenant_
         raise HTTPException(status_code=404, detail="No PDF available for this order")
     url = get_signed_url(order.pdf_path)  # Uses 10 min expiry; never expose raw path
     if not url:
-        raise HTTPException(status_code=503, detail="Could not generate PDF URL")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not generate PDF URL. Check Supabase storage config (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) and Render logs.",
+        )
     return {"url": url}
 
 

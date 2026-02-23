@@ -224,6 +224,7 @@ class PurchaseOrderResponse(PurchaseOrderBase):
     approved_at: Optional[datetime] = None
     pdf_path: Optional[str] = None
     approved_by_name: Optional[str] = None
+    logo_url: Optional[str] = None  # Short-lived signed URL for print header
 
     class Config:
         from_attributes = True

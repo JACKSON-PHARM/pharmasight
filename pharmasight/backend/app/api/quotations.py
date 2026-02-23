@@ -30,6 +30,7 @@ from app.services.document_items_helper import deduplicate_quotation_items
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
 from app.services.snapshot_service import SnapshotService
+from app.services.tenant_storage_service import get_signed_url
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
 
@@ -248,11 +249,14 @@ def get_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
                         (price - cost_per_sale_unit) / price * Decimal("100")
                     )
     
-    # Print header: company, branch, user
+    # Print header: company, branch, user, logo URL for print
     company = db.query(Company).filter(Company.id == quotation.company_id).first()
     if company:
         quotation.company_name = company.name
         quotation.company_address = getattr(company, "address", None) or ""
+        logo_path = getattr(company, "logo_url", None)
+        if logo_path and str(logo_path or "").startswith("tenant-assets/"):
+            quotation.logo_url = get_signed_url(logo_path)
     branch = db.query(Branch).filter(Branch.id == quotation.branch_id).first()
     if branch:
         quotation.branch_name = branch.name

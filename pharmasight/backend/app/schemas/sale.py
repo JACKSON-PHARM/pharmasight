@@ -111,6 +111,8 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     branch_address: Optional[str] = None
     branch_phone: Optional[str] = None
     created_by_username: Optional[str] = None
+    # Short-lived signed URL for company logo (for print/HTML); only when logo in tenant-assets
+    logo_url: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -300,6 +302,7 @@ class QuotationResponse(QuotationBase):
     branch_address: Optional[str] = None
     branch_phone: Optional[str] = None
     created_by_username: Optional[str] = None
+    logo_url: Optional[str] = None  # Short-lived signed URL for print
 
     class Config:
         from_attributes = True

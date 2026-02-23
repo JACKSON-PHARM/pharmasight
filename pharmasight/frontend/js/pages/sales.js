@@ -2749,11 +2749,16 @@ function generateInvoicePrintHTML(invoice, printType) {
     const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
     const layoutLabel = isThermal ? `Thermal (${pageWidthMm}mm)` : 'Regular (A4)';
-    const headerBlock = `<div class="header">
-        ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
-        ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
-        ${branchLine}
-        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
+    const logoUrl = (invoice.logo_url && typeof invoice.logo_url === 'string' && (invoice.logo_url.startsWith('http://') || invoice.logo_url.startsWith('https://'))) ? invoice.logo_url : '';
+    const logoImg = logoUrl ? `<img src="${logoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="max-height: 34px; max-width: 70px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
+    const headerBlock = `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
+        <div style="flex: 1; min-width: 0;">
+            ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
+            ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
+            ${branchLine}
+            <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
+        </div>
+        ${logoImg ? `<div class="print-header-logo-wrap" style="flex-shrink: 0;">${logoImg}</div>` : ''}
     </div>`;
 
     return `
@@ -2998,13 +3003,17 @@ function generateQuotationPrintHTML(quotation, printType) {
            th, td { padding: 8px; }`;
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
-
+    const quotationLogoUrl = (quotation.logo_url && typeof quotation.logo_url === 'string' && (quotation.logo_url.startsWith('http://') || quotation.logo_url.startsWith('https://'))) ? quotation.logo_url : '';
+    const quotationLogoImg = quotationLogoUrl ? `<img src="${quotationLogoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="max-height: 34px; max-width: 70px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
-    const headerBlock = `<div class="header">
-        ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
-        ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
-        ${branchLine}
-        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
+    const headerBlock = `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
+        <div style="flex: 1; min-width: 0;">
+            ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
+            ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
+            ${branchLine}
+            <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
+        </div>
+        ${quotationLogoImg ? `<div class="print-header-logo-wrap" style="flex-shrink: 0;">${quotationLogoImg}</div>` : ''}
     </div>`;
 
     return `

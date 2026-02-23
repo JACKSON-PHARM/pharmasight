@@ -184,18 +184,31 @@ def get_signed_url(stored_path: str, expires_in: int = SIGNED_URL_EXPIRY_SECONDS
     Returns a signed URL for temporary read access (e.g. 5–15 min). Use for PDF retrieval, stamp/logo preview.
     """
     client = _client()
-    if not client or not stored_path or not stored_path.startswith(BUCKET + "/"):
+    if not client:
+        logger.warning(
+            "get_signed_url: Supabase client not available. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+        )
+        return None
+    if not stored_path or not stored_path.startswith(BUCKET + "/"):
+        logger.warning("get_signed_url: invalid stored_path (expected %s/...): %s", BUCKET, stored_path[:80] if stored_path else "")
         return None
     try:
         object_path = stored_path[len(BUCKET) + 1:]
         result = client.storage.from_(BUCKET).create_signed_url(object_path, expires_in)
+        url = None
         if isinstance(result, dict):
-            return result.get("signedUrl") or result.get("signed_url")
-        if hasattr(result, "signed_url"):
-            return result.signed_url
-        if hasattr(result, "signedUrl"):
-            return result.signedUrl
-        return None
+            url = result.get("signedUrl") or result.get("signed_url") or result.get("url")
+            if not url and result:
+                logger.warning("get_signed_url: dict result has no signedUrl/signed_url; keys=%s", list(result.keys()))
+        elif hasattr(result, "signed_url"):
+            url = result.signed_url
+        elif hasattr(result, "signedUrl"):
+            url = result.signedUrl
+        elif hasattr(result, "url"):
+            url = result.url
+        if not url:
+            logger.warning("get_signed_url: could not extract URL from result type=%s", type(result).__name__)
+        return url
     except Exception as e:
-        logger.warning("get_signed_url %s: %s", stored_path, e)
+        logger.warning("get_signed_url %s: %s", stored_path, e, exc_info=True)
         return None
