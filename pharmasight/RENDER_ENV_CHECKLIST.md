@@ -33,8 +33,7 @@ Use this with your **local `.env`** so nothing is missed on Render.
 | **SMTP_PORT** | No | Usually `587` |
 | **EMAIL_FROM** | No | e.g. `PharmaSight <noreply@yourdomain.com>` |
 | **APP_PUBLIC_URL** | No | Optional; if unset, invite links use your Render URL. Set to `https://pharmasight.onrender.com` (or your Render URL). |
-| **USE_SUPABASE_POOLER_FOR_TENANTS** | **Yes (Render)** | Set to `true` so tenant DBs use Supabase session pooler (IPv4-friendly). Required for tenant login; avoids "User not found" when tenant DBs use direct URLs. When your DATABASE_URL already uses the pooler (e.g. aws-1-eu-west-1.pooler.supabase.com), the app derives the pooler host for tenant DBs automatically. |
-| **SUPABASE_POOLER_HOST** | No | Only if DATABASE_URL is a direct URL; set to your session pooler host (e.g. `aws-1-eu-west-1.pooler.supabase.com`). If DATABASE_URL uses pooler.supabase.com, this is derived automatically. |
+| **USE_SUPABASE_POOLER_FOR_TENANTS** | **Yes (Render)** | Set to `true` so tenant DBs use Supabase **transaction** pooler (port 6543 on each tenant's db.xxx.supabase.co). Do not use the master's pooler host for tenant DBs—it causes "FATAL: Tenant or user not found". If port 6543 is still unreachable (IPv6), enable Supabase IPv4 add-on for that tenant project or store that tenant's session pooler URL in `tenants.database_url`. |
 | **MASTER_DATABASE_URL** | No | Only if you use a different DB for tenant registry. Otherwise leave unset (app uses DATABASE_URL). |
 | **SUPABASE_OWNER_EMAIL** | No | Optional; Supabase account owner email |
 
