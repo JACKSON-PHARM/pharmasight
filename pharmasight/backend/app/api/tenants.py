@@ -70,7 +70,7 @@ def list_tenants(
         tenants = query.order_by(Tenant.created_at.desc()).offset(skip).limit(limit).all()
         
         return TenantListResponse(
-            tenants=[TenantResponse.model_validate(t) for t in tenants],
+            tenants=[_tenant_to_response(t) for t in tenants],
             total=total
         )
     except Exception as e:
@@ -85,6 +85,13 @@ def list_tenants(
         )
 
 
+def _tenant_to_response(tenant: Tenant) -> TenantResponse:
+    """Build TenantResponse; never expose supabase_storage_service_role_key, set supabase_storage_configured."""
+    r = TenantResponse.model_validate(tenant)
+    return r.model_copy(update={
+        "supabase_storage_configured": bool((getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()),
+    })
+
 @router.get("/tenants/{tenant_id}", response_model=TenantResponse)
 def get_tenant(tenant_id: UUID, db: Session = Depends(get_master_db)):
     """Get tenant by ID"""
@@ -94,7 +101,7 @@ def get_tenant(tenant_id: UUID, db: Session = Depends(get_master_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tenant not found"
         )
-    return TenantResponse.model_validate(tenant)
+    return _tenant_to_response(tenant)
 
 
 @router.post("/tenants", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
@@ -133,7 +140,7 @@ def create_tenant(tenant_data: TenantCreate, db: Session = Depends(get_master_db
     db.commit()
     db.refresh(tenant)
     
-    return TenantResponse.model_validate(tenant)
+    return _tenant_to_response(tenant)
 
 
 @router.patch("/tenants/{tenant_id}", response_model=TenantResponse)
@@ -158,7 +165,7 @@ def update_tenant(
     db.commit()
     db.refresh(tenant)
     
-    return TenantResponse.model_validate(tenant)
+    return _tenant_to_response(tenant)
 
 
 @router.get("/tenants/{tenant_id}/initialize-status")

@@ -620,6 +620,19 @@ async function showTenantDetailModal(tenant) {
                         <p>${formatDate(tenant.created_at)}</p>
                     </div>
                 </div>
+                <div id="tenant-supabase-storage-section" style="margin-top: 24px; padding: 16px; background: #f0f7ff; border-radius: 8px; border: 1px solid #c5d9f0;">
+                    <p style="margin: 0 0 12px 0;"><strong>Supabase Storage (per-tenant)</strong></p>
+                    <p style="margin: 0 0 10px 0; color: #555; font-size: 0.9rem;">When set, this tenant uses its own Supabase project for storage (logos, PO PDFs, signed URLs). Leave blank to use the app-wide Supabase (Render env).</p>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label><strong>Supabase project URL:</strong></label>
+                        <input type="url" name="supabase_storage_url" value="${escapeHtml(tenant.supabase_storage_url || '')}" placeholder="https://xxxx.supabase.co" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label><strong>Service role key:</strong></label>
+                        <input type="password" name="supabase_storage_service_role_key" placeholder="${tenant.supabase_storage_configured ? '•••••••• (leave blank to keep existing)' : 'eyJ... (from Supabase → Settings → API)'}" autocomplete="off" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace;">
+                        <small style="color: #666;">Supabase → Project Settings → API → service_role secret. Not shown after save.</small>
+                    </div>
+                </div>
                 <div id="tenant-initialize-section" style="margin-top: 24px; padding: 16px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e0e0e0;">
                                         ${initSectionHtml}
                 </div>
@@ -670,14 +683,20 @@ async function showTenantDetailModal(tenant) {
         const formData = new FormData(form);
         const trialEndInput = modal.querySelector('#tenant-trial-ends-at');
         const trialEndVal = trialEndInput && trialEndInput.value ? trialEndInput.value : null;
+        const supabaseStorageUrl = (formData.get('supabase_storage_url') || '').trim();
+        const supabaseStorageKey = (formData.get('supabase_storage_service_role_key') || '').trim();
         const updateData = {
             name: formData.get('name'),
             admin_email: formData.get('admin_email'),
             admin_full_name: formData.get('admin_full_name') || null,
             phone: formData.get('phone') || null,
             status: formData.get('status') || undefined,
-            trial_ends_at: trialEndVal ? new Date(trialEndVal + 'T12:00:00Z').toISOString() : null
+            trial_ends_at: trialEndVal ? new Date(trialEndVal + 'T12:00:00Z').toISOString() : null,
+            supabase_storage_url: supabaseStorageUrl || null
         };
+        if (supabaseStorageKey) {
+            updateData.supabase_storage_service_role_key = supabaseStorageKey;
+        }
         
         try {
             const response = await window.API.admin.tenants.update(tenant.id, updateData);
