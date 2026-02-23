@@ -41,11 +41,12 @@ If **`database_url`** is NULL, the app will **never** try to connect to Harte’
 
 ---
 
-## 4. After fixing `tenants`: Render env and deploy
+## 4. Render: pooler and IPv4
 
-- **USE_SUPABASE_POOLER_FOR_TENANTS** = `true` on Render (so tenant DBs use the pooler; no need to change `database_url` in the DB).
-- **DATABASE_URL** on Render = master DB URL (pooler format is fine).
-- Redeploy so the app (and any pooler logic) is up to date.
+- **USE_SUPABASE_POOLER_FOR_TENANTS** = `true` on Render.
+- **DATABASE_URL** on Render = master DB URL; use the **session pooler** URL (e.g. `aws-1-eu-west-1.pooler.supabase.com:5432`) so the app can derive the pooler host for tenant DBs. Tenant direct URLs (`db.xxx.supabase.co:5432`) are then rewritten to the same regional session pooler with `postgres.TENANT_PROJECT_REF` (IPv4-friendly).
+- If you still get **"FATAL: Tenant or user not found"** when using the shared pooler, set that tenant’s **`database_url`** in `public.tenants` to the **session pooler** connection string from **that tenant’s** Supabase project (Dashboard → Connect → Session pooler). Then the app uses that URL as-is (no rewrite).
+- If you get **"Network is unreachable"** to `db.xxx.supabase.co`, the app is trying the transaction pooler (port 6543) on that host (IPv6). Ensure DATABASE_URL uses the session pooler so the session-pooler rewrite runs, or set the tenant’s `database_url` to that tenant’s session pooler URL as above.
 
 ---
 

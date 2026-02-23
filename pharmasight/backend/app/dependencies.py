@@ -8,6 +8,8 @@ Legacy/default DB: current DATABASE_URL. No tenant header → use this.
 Auth: get_current_user_optional / get_current_user accept internal JWT or (when
 SUPABASE_JWT_SECRET set) Supabase JWT. Tenant from token or X-Tenant-* header.
 """
+from urllib.parse import urlparse, quote
+
 import logging
 import threading
 from contextlib import contextmanager
@@ -39,25 +41,58 @@ _tenant_engines: dict[str, object] = {}
 _tenant_sessions: dict[str, sessionmaker] = {}
 _pool_lock = threading.Lock()
 
-# Supabase transaction pooler port; session pooler uses 5432 on pooler.supabase.com host.
+# Supabase: transaction pooler port on db.xxx (IPv6); session pooler on pooler.supabase.com (IPv4).
 _SUPABASE_TRANSACTION_POOLER_PORT = "6543"
+_SESSION_POOLER_PORT = "5432"
+
+
+def _get_pooler_host() -> Optional[str]:
+    """Session pooler host from SUPABASE_POOLER_HOST or from DATABASE_URL (master). Same region = same host for tenants."""
+    host = getattr(settings, "SUPABASE_POOLER_HOST", None) or ""
+    if host:
+        return host.strip()
+    master_url = getattr(settings, "database_connection_string", "") or ""
+    if "pooler.supabase.com" in str(master_url):
+        try:
+            parsed = urlparse(master_url)
+            if parsed.hostname and "pooler.supabase.com" in parsed.hostname:
+                return parsed.hostname
+        except Exception:
+            pass
+    return None
 
 
 def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
     """
-    Resolve tenant DB URL for the current environment.
-    When USE_SUPABASE_POOLER_FOR_TENANTS is true (e.g. on Render), rewrite Supabase direct URLs
-    (db.XXX.supabase.co:5432) to use the **transaction** pooler on the **same** host (port 6543).
-    We do NOT use the master's session pooler host for tenant DBs: each Supabase project has its
-    own pooler; using the master's pooler host with postgres.TENANT_PROJECT_REF causes
-    "FATAL: Tenant or user not found".
+    Resolve tenant DB URL for Render (IPv4). When USE_SUPABASE_POOLER_FOR_TENANTS is true:
+    - If we have a session pooler host (from master DATABASE_URL), rewrite db.XXX:5432 to
+      postgres.XXX@POOLER_HOST:5432 (Supabase shared pooler in same region routes by PROJECT_REF).
+    - Else rewrite to transaction pooler db.XXX:6543 (may be IPv6 and unreachable on Render).
     """
     if not raw_url or not raw_url.strip():
         return raw_url or ""
     url = raw_url.strip()
     if not getattr(settings, "USE_SUPABASE_POOLER_FOR_TENANTS", False):
         return url
-    # Only rewrite direct Supabase URLs to transaction pooler (same host, port 6543).
+    if "db." not in url or ".supabase.co" not in url or ":5432" not in url:
+        return url
+    pooler_host = _get_pooler_host()
+    if pooler_host:
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname or ""
+            if hostname.startswith("db.") and hostname.endswith(".supabase.co"):
+                project_ref = hostname[3:-14]
+                password = parsed.password or ""
+                dbname = (parsed.path or "/postgres").lstrip("/") or "postgres"
+                new_user = f"postgres.{project_ref}"
+                safe_pass = quote(password, safe=".-_~") if password else ""
+                netloc = f"{new_user}:{safe_pass}@{pooler_host}:{_SESSION_POOLER_PORT}"
+                new_url = f"{parsed.scheme or 'postgresql'}://{netloc}/{dbname}"
+                logger.debug("Using Supabase session pooler (%s) for tenant DB (IPv4).", pooler_host)
+                return new_url
+        except Exception as e:
+            logger.warning("Session pooler rewrite failed, falling back to transaction pooler: %s", e)
     if ".supabase.co:5432" in url or ".supabase.co:5432/" in url:
         url = url.replace(".supabase.co:5432", ".supabase.co:" + _SUPABASE_TRANSACTION_POOLER_PORT)
         logger.debug("Using Supabase transaction pooler (port %s) for tenant DB.", _SUPABASE_TRANSACTION_POOLER_PORT)
