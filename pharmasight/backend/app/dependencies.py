@@ -9,13 +9,15 @@ Authority: DATABASE_PER_TENANT_IMPLEMENTATION_PLAN.md and architecture context.
 Auth: get_current_user_optional / get_current_user accept internal JWT or (when
 SUPABASE_JWT_SECRET set) Supabase JWT. Tenant from token or X-Tenant-* header.
 """
+import logging
 import threading
 from contextlib import contextmanager
 from typing import Generator, Optional, Tuple
 from uuid import UUID
 
 from fastapi import Request, Depends, HTTPException, status
-from sqlalchemy import create_engine, pool
+from sqlalchemy import create_engine, pool, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -26,6 +28,8 @@ from app.models.user import User
 from app.utils.auth_internal import (
     decode_token_dual,
 )
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Tenant engine pool (Step 2)
@@ -128,8 +132,21 @@ def get_tenant_db(
             db.close()
         return
 
-    factory = _session_factory_for_url(tenant.database_url)
-    db = factory()
+    # Architecture: tenant.database_url comes from master DB (tenants table). We connect to that URL only.
+    try:
+        factory = _session_factory_for_url(tenant.database_url)
+        db = factory()
+        db.execute(text("SELECT 1"))  # force connection so unreachable DB returns 503 here
+    except (OperationalError, OSError) as e:
+        logger.warning(
+            "Tenant DB unreachable subdomain=%s: %s",
+            getattr(tenant, "subdomain", None),
+            e,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tenant database is temporarily unreachable (network or DNS). The URL is read from the master DB; check connectivity to that host.",
+        ) from e
     try:
         yield db
     finally:
