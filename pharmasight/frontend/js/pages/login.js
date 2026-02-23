@@ -87,9 +87,6 @@ async function loadLogin() {
                     </button>
                 </form>
                 <div id="loginError" class="error-message" style="display: none;"></div>
-                <p class="login-hint" style="font-size: 0.8rem; color: var(--text-secondary, #666); margin-top: 0.5rem;">
-                    Use the username from your invite. Admin: <code>admin</code> + admin password.
-                </p>
                 <div class="login-links">
                     <a href="#password-reset">Forgot password?</a>
                 </div>
@@ -445,19 +442,23 @@ async function loadLogin() {
                     if (usernameResponse.ok) {
                         const userData = await usernameResponse.json();
                         userEmail = userData.email;
-                        // Persist tenant so app knows where this user belongs (all API calls use this tenant DB)
+                        // Persist tenant only when backend says this user belongs to a tenant; otherwise clear so we use legacy/default DB.
                         if (userData.tenant_subdomain) {
                             try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
                             try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
-                            // Clear company/branch from any previous tenant so we load this user's data only
-                            if (typeof CONFIG !== 'undefined') {
-                                CONFIG.COMPANY_ID = null;
-                                CONFIG.BRANCH_ID = null;
-                                if (typeof saveConfig === 'function') saveConfig();
-                            }
-                            if (window.BranchContext && typeof window.BranchContext.clearBranch === 'function') {
-                                window.BranchContext.clearBranch();
-                            }
+                        } else {
+                            // Legacy/default user: clear any stored tenant so API calls don't send X-Tenant-Subdomain (backend then uses legacy DB).
+                            try { if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('pharmasight_tenant_subdomain'); } catch (_) {}
+                            try { if (typeof localStorage !== 'undefined') localStorage.removeItem('pharmasight_tenant_subdomain'); } catch (_) {}
+                        }
+                        // Clear company/branch from any previous session so we load this user's data only (tenant or legacy).
+                        if (typeof CONFIG !== 'undefined') {
+                            CONFIG.COMPANY_ID = null;
+                            CONFIG.BRANCH_ID = null;
+                            if (typeof saveConfig === 'function') saveConfig();
+                        }
+                        if (window.BranchContext && typeof window.BranchContext.clearBranch === 'function') {
+                            window.BranchContext.clearBranch();
                         }
                         // Store username for UI display (status bar / sidebar show username instead of email)
                         if (typeof localStorage !== 'undefined' && (userData.username || username)) {

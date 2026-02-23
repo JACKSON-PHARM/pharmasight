@@ -5,6 +5,7 @@ Uses bcrypt directly to avoid passlib/bcrypt 4.x compatibility issues.
 """
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
+from uuid import uuid4
 
 import bcrypt
 from jose import JWTError, jwt

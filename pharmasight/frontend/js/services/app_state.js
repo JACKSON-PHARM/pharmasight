@@ -1,21 +1,33 @@
 /**
  * App State Service
- * 
+ *
  * Manages global app state and logout functionality.
- * Ensures all state is cleared on logout.
+ * Ensures full cleanup on logout and on 401 (expired/revoked token): no memory of
+ * session, tenant, or user so the next login never sees another user's or tenant's data.
  */
 
+/** Session-related keys we always remove on logout / 401 (explicit so tenant is never left behind). */
+const SESSION_KEYS_TO_CLEAR = [
+    'pharmasight_tenant_subdomain',
+    'pharmasight_username',
+    'pharmasight_access_token',
+    'pharmasight_refresh_token',
+    'pharmasight_user_id',
+    'pharmasight_user_email',
+];
+
 /**
- * Clear all app state
+ * Clear all app state (used on logout and on 401). Removes tenant, user, tokens, and config
+ * so there is no memory of the session.
  */
 async function clearAppState() {
     // Clear branch context
     if (window.BranchContext) {
         BranchContext.clearBranch();
     }
-    
-    // Clear config
-    if (CONFIG) {
+
+    // Clear in-memory config
+    if (typeof CONFIG !== 'undefined' && CONFIG) {
         CONFIG.COMPANY_ID = null;
         CONFIG.BRANCH_ID = null;
         CONFIG.USER_ID = null;
@@ -23,20 +35,38 @@ async function clearAppState() {
             saveConfig();
         }
     }
-    
-    // Clear localStorage items (keep Supabase config)
+
+    // Explicitly remove session keys (tenant, user, tokens) so we never leave another tenant in storage
+    try {
+        SESSION_KEYS_TO_CLEAR.forEach(function (key) {
+            try {
+                localStorage.removeItem(key);
+            } catch (_) {}
+            try {
+                sessionStorage.removeItem(key);
+            } catch (_) {}
+        });
+    } catch (_) {}
+
+    // Remove any other pharmasight_* from localStorage (keep only Supabase config)
     const keysToKeep = ['pharmasight_supabase_config'];
-    const keysToRemove = [];
-    for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('pharmasight_') && !keysToKeep.includes(key)) {
-            keysToRemove.push(key);
+    try {
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('pharmasight_') && !keysToKeep.includes(key)) {
+                keysToRemove.push(key);
+            }
         }
-    }
-    keysToRemove.forEach(key => localStorage.removeItem(key));
-    
-    // Clear sessionStorage
-    sessionStorage.clear();
+        keysToRemove.forEach(function (key) {
+            localStorage.removeItem(key);
+        });
+    } catch (_) {}
+
+    // Clear entire sessionStorage so nothing is left
+    try {
+        sessionStorage.clear();
+    } catch (_) {}
 }
 
 /**
