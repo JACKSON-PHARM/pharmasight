@@ -483,7 +483,19 @@ async function loadLogin() {
                             return;
                         }
                         if (!userEmail) {
-                            throw new Error(typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'User not found');
+                            const msg = typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'User not found';
+                            if (errorDiv) {
+                                const params = new URLSearchParams(window.location.search || '');
+                                const hasTenant = params.get('tenant') || params.get('subdomain');
+                                const baseUrl = (window.location.origin || '') + (window.location.pathname || '/');
+                                const tenantLoginUrl = baseUrl + '?tenant=harte-pharmacy-ltd#login';
+                                errorDiv.innerHTML = '<span>' + String(msg).replace(/</g, '&lt;') + '</span>' +
+                                    (!hasTenant ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or <a href="' + tenantLoginUrl.replace(/"/g, '&quot;') + '" style="text-decoration:underline;">sign in with Harte Pharmacy Ltd</a>.</p>' : '');
+                                errorDiv.style.display = 'block';
+                            } else {
+                                showToast(msg, 'error');
+                            }
+                            return;
                         }
                     }
                 } catch (error) {
@@ -498,7 +510,8 @@ async function loadLogin() {
                         errorMsg = 'Cannot reach the server. Check that the backend is running (e.g. ' + apiUrl + '). If using localhost, start the API on port 8000.';
                     }
                     if (errorDiv) {
-                        errorDiv.textContent = errorMsg;
+                        errorDiv.innerHTML = '<span>' + String(errorMsg).replace(/</g, '&lt;') + '</span>' +
+                            (errorMsg.toLowerCase().includes('user not found') ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL (e.g. <code>?tenant=harte-pharmacy-ltd</code> then #login).</p>' : '');
                         errorDiv.style.display = 'block';
                     } else {
                         showToast(errorMsg, 'error');
