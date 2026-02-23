@@ -239,6 +239,27 @@ async function loadLogin() {
     // Setup form handler
     const form = document.getElementById('loginForm');
     const errorDiv = document.getElementById('loginError');
+    const usernameInput = document.getElementById('loginUsername');
+    const passwordInput = document.getElementById('loginPassword');
+    const submitBtn = form ? form.querySelector('button[type="submit"]') : null;
+    const submitBtnOriginalHtml = submitBtn ? submitBtn.innerHTML : null;
+    let isSubmitting = false;
+
+    function setSubmitting(submitting) {
+        try {
+            if (submitBtn) {
+                submitBtn.disabled = !!submitting;
+                submitBtn.setAttribute('aria-busy', submitting ? 'true' : 'false');
+                if (submitting) {
+                    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in...';
+                } else if (submitBtnOriginalHtml != null) {
+                    submitBtn.innerHTML = submitBtnOriginalHtml;
+                }
+            }
+            if (usernameInput) usernameInput.disabled = !!submitting;
+            if (passwordInput) passwordInput.disabled = !!submitting;
+        } catch (_) {}
+    }
     
     // Setup "Forgot Password?" link handler
     const forgotPasswordLink = page.querySelector('a[href="#password-reset"]');
@@ -260,6 +281,11 @@ async function loadLogin() {
         form.onsubmit = async (e) => {
             e.preventDefault();
             
+            if (isSubmitting) return;
+            isSubmitting = true;
+            setSubmitting(true);
+            let didComplete = false;
+
             const username = document.getElementById('loginUsername').value.trim();
             const password = document.getElementById('loginPassword').value;
             
@@ -357,6 +383,7 @@ async function loadLogin() {
                             localStorage.setItem('admin_token', adminData.token);
                             localStorage.setItem('is_admin', 'true');
                             showToast('Welcome Admin!', 'success');
+                            didComplete = true;
                             window.location.href = '/admin.html';
                             return;
                         }
@@ -459,6 +486,7 @@ async function loadLogin() {
                             if (window.currentScreen !== undefined) window.currentScreen = null;
                             const dataUser = { id: userData.user_id, email: userData.email };
                             const needsPassword = await AuthBootstrap.needsPasswordSetup(dataUser, 'login');
+                            didComplete = true;
                             if (needsPassword) {
                                 if (window.loadPage) window.loadPage('password-set');
                                 else window.location.hash = '#password-set';
@@ -606,6 +634,7 @@ async function loadLogin() {
                                               hash.includes('invitation_token') ||
                                               fullUrl.includes('invitation_token');
                     
+                    didComplete = true;
                     if (isPasswordResetFlow || hasInvitationToken) {
                         // User needs to set/reset password (invitation/reset flow)
                         console.log('[LOGIN] Password setup required (invitation/reset flow)');
@@ -683,6 +712,19 @@ async function loadLogin() {
                         showToast(error.message || 'Login failed', 'error');
                     }
                 }
+            } finally {
+                // Prevent duplicate submissions; keep disabled during navigation, but recover if we stayed on #login.
+                if (didComplete) {
+                    setTimeout(() => {
+                        try {
+                            const h = (window.location && window.location.hash) ? window.location.hash : '';
+                            if (String(h).startsWith('#login')) setSubmitting(false);
+                        } catch (_) {}
+                    }, 1500);
+                } else {
+                    setSubmitting(false);
+                }
+                isSubmitting = false;
             }
         };
     }

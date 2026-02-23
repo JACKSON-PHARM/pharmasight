@@ -43,6 +43,25 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/api/debug/tenants")
+async def debug_tenants_count():
+    """When DEBUG=true: returns count of tenants with database_url (confirms master DB and tenants table)."""
+    if not settings.DEBUG:
+        return {"error": "Enable DEBUG in .env to use this endpoint."}
+    try:
+        from app.services.migration_service import MigrationService
+        svc = MigrationService()
+        tenants = svc.get_all_tenants_with_db()
+        return {
+            "tenants_with_db": len(tenants),
+            "subdomains": [t.subdomain for t in tenants],
+            "master_ok": True,
+        }
+    except Exception as e:
+        logger.exception("Debug tenants: %s", e)
+        return {"master_ok": False, "error": str(e)}
+
+
 @app.get("/api/config")
 async def public_config(request: Request):
     """Public config for frontend (e.g. app URL for invite links, API base URL). No secrets."""
@@ -126,11 +145,18 @@ def run_tenant_migrations():
 
         print("  [Migrations] Tenant DBs...")
         svc = MigrationService()
+        tenants_with_db = svc.get_all_tenants_with_db()
+        subdomains = [t.subdomain for t in tenants_with_db]
+        print(f"  [Migrations] Found {len(tenants_with_db)} tenant(s) with database_url: {subdomains or '(none)'}")
+        if not tenants_with_db:
+            print("  [Migrations] Tip: In master DB (public.tenants), ensure each row has database_url set (e.g. session pooler URL).")
         out = svc.run_migrations_all_tenant_dbs()
         if out["applied"]:
             for tid, versions in out["applied"].items():
                 print(f"  [Migrations] Tenant {tid}: applied {len(versions)} migration(s)")
             logger.info("Startup migrations applied on tenant DBs: %s", out["applied"])
+        elif tenants_with_db:
+            print("  [Migrations] All tenant DBs already at latest version.")
         else:
             print("  [Migrations] No tenant DBs to migrate (or already up to date).")
         if out["errors"]:

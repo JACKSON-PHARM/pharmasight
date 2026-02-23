@@ -5,10 +5,11 @@ Uses bcrypt directly to avoid passlib/bcrypt 4.x compatibility issues.
 """
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
-from uuid import UUID
 
 import bcrypt
 from jose import JWTError, jwt
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.config import settings
 
@@ -23,6 +24,7 @@ CLAIM_TENANT_SUBDOMAIN = "tenant_subdomain"
 CLAIM_TYPE = "type"
 CLAIM_EXP = "exp"
 CLAIM_ISS = "iss"
+CLAIM_JTI = "jti"
 
 TYPE_ACCESS = "access"
 TYPE_REFRESH = "refresh"
@@ -61,6 +63,7 @@ def _internal_encode(
     now = datetime.now(timezone.utc)
     payload = {
         **payload,
+        CLAIM_JTI: str(uuid4()),
         CLAIM_TYPE: token_type,
         CLAIM_ISS: ISSUER_INTERNAL,
         CLAIM_EXP: now + expires_delta,
@@ -117,14 +120,14 @@ def create_reset_token(user_id: str, tenant_subdomain: str) -> str:
     )
 
 
-def decode_internal_token(token: str) -> Optional[dict]:
-    """Decode and verify internal JWT. Returns payload dict or None."""
+def decode_internal_token(token: str, verify_exp: bool = True) -> Optional[dict]:
+    """Decode and verify internal JWT. Returns payload dict or None. Does not check DB revocation (caller checks with is_token_revoked_in_db)."""
     try:
         payload = jwt.decode(
             token,
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM],
-            options={"verify_iss": True},
+            options={"verify_iss": True, "verify_exp": verify_exp},
             issuer=ISSUER_INTERNAL,
         )
         if not payload.get(CLAIM_SUB):
@@ -132,6 +135,38 @@ def decode_internal_token(token: str) -> Optional[dict]:
         return payload
     except (JWTError, Exception):
         return None
+
+
+def is_token_revoked_in_db(session: Session, jti: Optional[str]) -> bool:
+    """
+    True if jti is in this DB's revoked_tokens table (tenant or legacy).
+    The tenant/legacy DB is the source of truth for its users' sessions.
+    """
+    if not jti:
+        return False
+    try:
+        row = session.execute(text("SELECT 1 FROM revoked_tokens WHERE jti = :jti"), {"jti": jti}).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def revoke_token_in_db(session: Session, jti: str, expires_at: Optional[datetime] = None) -> None:
+    """
+    Insert jti into this DB's revoked_tokens table (tenant or legacy).
+    Call from logout after resolving the user's tenant/legacy DB.
+    """
+    try:
+        session.execute(
+            text(
+                "INSERT INTO revoked_tokens (jti, revoked_at, expires_at) VALUES (:jti, NOW(), :expires_at) ON CONFLICT (jti) DO NOTHING"
+            ),
+            {"jti": jti, "expires_at": expires_at},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
 
 def decode_supabase_token(token: str) -> Optional[dict]:

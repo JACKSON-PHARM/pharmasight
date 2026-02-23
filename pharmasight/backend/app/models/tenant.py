@@ -24,9 +24,9 @@ class Tenant(Base):
     database_url = Column(Text, nullable=True)  # Should be encrypted
     supabase_project_id = Column(String(255), nullable=True)
     supabase_project_ref = Column(String(255), nullable=True)
-    # Per-tenant Supabase Storage (optional). When set, storage uses this project instead of global env.
-    supabase_storage_url = Column(Text, nullable=True)
-    supabase_storage_service_role_key = Column(Text, nullable=True)
+    # Per-tenant Supabase Storage (optional). Add columns to master DB and uncomment when ready.
+    # supabase_storage_url = Column(Text, nullable=True)
+    # supabase_storage_service_role_key = Column(Text, nullable=True)
     is_provisioned = Column(Boolean, default=False, nullable=False)
     provisioned_at = Column(DateTime(timezone=True), nullable=True)
 

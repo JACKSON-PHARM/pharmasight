@@ -4,7 +4,8 @@ Handles username-based login (looks up email from username).
 Dual-auth: when user has password_hash we verify password and return internal JWT;
 otherwise return email for Supabase sign-in.
 
-Uses get_tenant_db: LEGACY when no X-Tenant-* header, TENANT DB when resolved.
+Login always uses legacy + tenant discovery (ignores X-Tenant-Subdomain for lookup).
+Logout revokes the access token server-side so the session is fully terminated.
 """
 import logging
 from datetime import datetime, timezone
@@ -21,6 +22,13 @@ from app.config import settings
 from app.database import SessionLocal
 from app.database_master import get_master_db
 from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_header, tenant_db_session
+from app.utils.auth_internal import (
+    CLAIM_EXP,
+    CLAIM_JTI,
+    CLAIM_TENANT_SUBDOMAIN,
+    decode_internal_token,
+    revoke_token_in_db,
+)
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.email_service import EmailService
@@ -189,88 +197,106 @@ def _find_user_in_all_tenants(
 @router.post("/auth/username-login", response_model=UsernameLoginResponse)
 def username_login(
     request: UsernameLoginRequest,
-    tenant: Optional[Tenant] = Depends(get_tenant_from_header),
-    db: Session = Depends(get_tenant_db),
     master_db: Session = Depends(get_master_db),
 ):
     """
     Lookup user by username and return email for Supabase Auth.
 
-    - With X-Tenant-Subdomain: lookup in that tenant's DB; return tenant_subdomain so frontend persists it.
-    - Without header: lookup in legacy DB; if not found, discover tenant by searching provisioned tenant DBs,
-      then return user and tenant_subdomain so the app knows where the user belongs.
+    Always uses legacy + tenant discovery: first search legacy DB, then all tenant DBs
+    (from master). Ignores X-Tenant-Subdomain for lookup so master and tenant users
+    both resolve correctly regardless of frontend state.
     """
     normalized_username = request.username.lower().strip()
     check_email = "@" in request.username
 
-    user = _find_user_in_db(db, normalized_username, check_email)
-
-    if not user and tenant is None:
-        # No tenant header and not in legacy DB: discover which tenant(s) this user belongs to
-        logger.info("Username not in legacy DB, searching all tenants for username=%s", normalized_username[:50])
-        found_list = _find_user_in_all_tenants(master_db, normalized_username, check_email)
-        if len(found_list) == 0:
-            logger.warning("User not found in legacy DB or any tenant DB (username=%s). On Render, ensure tenant DBs are reachable or use ?tenant=SUBDOMAIN in the login URL.", normalized_username[:50])
-        if len(found_list) == 0:
-            pass  # fall through to 404 below
-        elif len(found_list) == 1:
-            tenant, user = found_list[0]
-            if _tenant_access_blocked(tenant):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Account suspended. Please contact support.",
-                )
-            if _trial_expired(tenant):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Trial expired. Please contact support to upgrade.",
-                )
+    # 1) Legacy DB first
+    legacy_db = SessionLocal()
+    try:
+        user = _find_user_in_db(legacy_db, normalized_username, check_email)
+        if user:
             _require_password_if_internal(user, request.password)
-            return _build_login_response(user, tenant, request.password)
-        else:
-            # Same username exists in more than one tenant: require tenant context (invite link or picker)
-            tenants_info = [
-                {"subdomain": t.subdomain, "name": t.name}
-                for t, _ in found_list
-            ]
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "multiple_tenants",
-                    "message": (
-                        "This username exists in more than one organization. "
-                        "Please sign in using the link from your invite email, or add ?tenant=SUBDOMAIN to the URL "
-                        "(e.g. ...#login?tenant=your-org-subdomain)."
-                    ),
-                    "tenants": tenants_info,
-                },
-            )
-    elif not user:
-        detail = "User not found"
-        if tenant:
-            detail = f"User not found in this organization ({tenant.subdomain}). Check username or sign in from your invite link."
+            return _build_login_response(user, None, request.password)
+    finally:
+        legacy_db.close()
+
+    # 2) Not in legacy: discover in all tenant DBs (from master)
+    logger.info("Username not in legacy DB, searching all tenants for username=%s", normalized_username[:50])
+    found_list = _find_user_in_all_tenants(master_db, normalized_username, check_email)
+    if len(found_list) == 0:
+        logger.warning(
+            "User not found in legacy DB or any tenant DB (username=%s). "
+            "Ensure tenant DBs are reachable and public.tenants have database_url set.",
+            normalized_username[:50],
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=detail
+            detail="User not found",
         )
-    else:
-        if tenant and _tenant_access_blocked(tenant):
+    if len(found_list) == 1:
+        tenant, user = found_list[0]
+        if _tenant_access_blocked(tenant):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Account suspended. Please contact support.",
             )
-        if tenant and _trial_expired(tenant):
+        if _trial_expired(tenant):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Trial expired. Please contact support to upgrade.",
             )
         _require_password_if_internal(user, request.password)
         return _build_login_response(user, tenant, request.password)
-
+    # Same username in multiple tenants
+    tenants_info = [{"subdomain": t.subdomain, "name": t.name} for t, _ in found_list]
     raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail="User not found"
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "multiple_tenants",
+            "message": (
+                "This username exists in more than one organization. "
+                "Please sign in using the link from your invite email, or add ?tenant=SUBDOMAIN to the URL."
+            ),
+            "tenants": tenants_info,
+        },
     )
+
+
+# -----------------------------------------------------------------------------
+# Logout (server-side revoke) and refresh
+# -----------------------------------------------------------------------------
+
+
+@router.post("/auth/logout", status_code=status.HTTP_200_OK)
+def auth_logout(request: Request, master_db: Session = Depends(get_master_db)):
+    """
+    Terminate session server-side: store the token's jti in the user's tenant (or legacy) DB
+    so that DB is the source of truth for its users' sessions. Call with Authorization: Bearer <access_token>.
+    """
+    auth = request.headers.get("Authorization")
+    token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
+    if not token:
+        return {"detail": "Logged out"}
+    payload = decode_internal_token(token, verify_exp=False)
+    if not payload or not payload.get(CLAIM_JTI):
+        return {"detail": "Logged out"}
+    jti = payload.get(CLAIM_JTI)
+    tenant_subdomain = (payload.get(CLAIM_TENANT_SUBDOMAIN) or "").strip()
+    exp = payload.get(CLAIM_EXP)
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None
+    # Resolve tenant so we revoke in the same DB that owns this user (tenant or legacy)
+    tenant = None
+    if tenant_subdomain and tenant_subdomain != "__default__":
+        tenant = master_db.query(Tenant).filter(Tenant.subdomain == tenant_subdomain).first()
+    if tenant and tenant.database_url:
+        with tenant_db_session(tenant) as session:
+            revoke_token_in_db(session, jti, expires_at)
+    else:
+        session = SessionLocal()
+        try:
+            revoke_token_in_db(session, jti, expires_at)
+        finally:
+            session.close()
+    return {"detail": "Logged out"}
 
 
 # -----------------------------------------------------------------------------

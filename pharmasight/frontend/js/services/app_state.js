@@ -55,11 +55,33 @@ function getCleanLoginUrl() {
  * Forces immediate redirect to login, then signs out and clears state.
  * Resets URL to a tenant-free login URL so the next user can sign in to any tenant.
  */
+/**
+ * Call backend to terminate session (revoke token server-side).
+ * Uses current access token so the backend can revoke it; safe to call even if no token.
+ */
+async function callBackendLogout() {
+    try {
+        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_access_token') : null;
+        if (!token) return;
+        const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL) ? CONFIG.API_BASE_URL : '';
+        const url = (base ? base.replace(/\/$/, '') : '') + '/api/auth/logout';
+        await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        });
+    } catch (_) {
+        // Best effort; don't block logout if backend is unreachable
+    }
+}
+
 async function globalLogout() {
     console.log('[LOGOUT] Starting logout process...');
     
     try {
-        // STEP 1: Force immediate switch to auth layout and #login (CRITICAL: before signOut)
+        // STEP 1: Revoke token on backend so session is terminated (token cannot be used again)
+        await callBackendLogout();
+        
+        // STEP 2: Force immediate switch to auth layout and #login (CRITICAL: before signOut)
         if (window.renderAuthLayout) {
             window.renderAuthLayout();
         }
@@ -71,15 +93,15 @@ async function globalLogout() {
         
         console.log('[LOGOUT] Switched to auth layout and set URL to tenant-free login:', cleanLoginUrl);
         
-        // STEP 2: Sign out from Supabase (this will trigger auth state change)
+        // STEP 3: Sign out from Supabase (this will trigger auth state change)
         if (window.AuthBootstrap && window.AuthBootstrap.signOut) {
             await AuthBootstrap.signOut();
         }
         
-        // STEP 3: Clear app state after successful sign out
+        // STEP 4: Clear app state after successful sign out
         await clearAppState();
         
-        // STEP 4: Ensure login page is loaded (redundant but safe)
+        // STEP 5: Ensure login page is loaded (redundant but safe)
         if (window.loadPage) {
             window.loadPage('login');
         }

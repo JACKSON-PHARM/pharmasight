@@ -27,7 +27,9 @@ from app.database_master import get_master_db
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.utils.auth_internal import (
+    CLAIM_JTI,
     decode_token_dual,
+    is_token_revoked_in_db,
 )
 
 logger = logging.getLogger(__name__)
@@ -349,6 +351,9 @@ def get_current_user_optional(
     factory = _session_factory_for_url(tenant.database_url)
     db = factory()
     try:
+        if is_token_revoked_in_db(db, payload.get(CLAIM_JTI)):
+            yield None
+            return
         user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
         if not user or not user.is_active:
             yield None
@@ -397,6 +402,13 @@ def get_current_user(
     factory = _session_factory_for_url(tenant.database_url)
     db = factory()
     try:
+        # Revocation is stored in the tenant/legacy DB (same DB that holds users and password_hash)
+        if is_token_revoked_in_db(db, payload.get(CLAIM_JTI)):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session ended",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
         if not user or not user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
