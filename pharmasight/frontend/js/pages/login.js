@@ -386,24 +386,35 @@ async function loadLogin() {
                 }
                 
                 // When we know the tenant (from URL or storage), send it so the backend looks in that tenant's DB.
-                // On Render, tenant DB discovery (_find_user_in_all_tenants) can fail due to network/DB config;
-                // sending the tenant when known fixes "user not found" for tenant users.
+                // On 503 (tenant DB unreachable), retry once WITHOUT tenant so backend can find user in another org.
                 let userEmail = null;
                 try {
                     const params = new URLSearchParams(window.location.search || '');
-                    const tenantForLogin = params.get('tenant') || params.get('subdomain')
+                    let tenantForLogin = params.get('tenant') || params.get('subdomain')
                         || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('pharmasight_tenant_subdomain') : null)
                         || (typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_tenant_subdomain') : null);
-                    const headers = { 'Content-Type': 'application/json' };
+                    let headers = { 'Content-Type': 'application/json' };
                     if (tenantForLogin) {
                         headers['X-Tenant-Subdomain'] = tenantForLogin;
                     }
-                    const usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
+                    let usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
                         method: 'POST',
                         headers,
                         body: JSON.stringify({ username, password })
                     });
-                    
+                    // If this org's DB is unreachable (503), retry once without tenant so backend can find user in another organization.
+                    if (usernameResponse.status === 503 && tenantForLogin) {
+                        const detail = await usernameResponse.json().catch(() => ({}));
+                        const isUnreachable = (typeof detail.detail === 'string' && detail.detail.toLowerCase().includes('unreachable')) || (detail.detail && String(detail.detail).toLowerCase().includes('unreachable'));
+                        if (isUnreachable) {
+                            headers = { 'Content-Type': 'application/json' };
+                            usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify({ username, password })
+                            });
+                        }
+                    }
                     if (usernameResponse.ok) {
                         const userData = await usernameResponse.json();
                         userEmail = userData.email;
@@ -459,6 +470,18 @@ async function loadLogin() {
                         }
                     } else {
                         const errorData = await usernameResponse.json().catch(() => ({}));
+                        const detailStr = typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || '';
+                        const is503Unreachable = usernameResponse.status === 503 && (detailStr.toLowerCase().includes('unreachable') || detailStr.toLowerCase().includes('temporarily'));
+                        if (is503Unreachable && errorDiv) {
+                            errorDiv.innerHTML = '<span>' + String(detailStr || 'Tenant database is temporarily unreachable.').replace(/</g, '&lt;') + '</span>' +
+                                '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">If you belong to a <strong>different organization</strong>, clear the URL (remove <code>?tenant=...</code>) and sign in again so we can look up your organization. Or use the link from your invite email.</p>';
+                            errorDiv.style.display = 'block';
+                            return;
+                        }
+                        if (is503Unreachable && !errorDiv) {
+                            showToast(detailStr || 'Tenant database temporarily unreachable. Try without ?tenant= in the URL.', 'error');
+                            return;
+                        }
                         // Same username in more than one tenant: show picker
                         if (usernameResponse.status === 409 && errorData.detail && typeof errorData.detail === 'object' && errorData.detail.code === 'multiple_tenants') {
                             const msg = errorData.detail.message || 'This username exists in more than one organization.';
@@ -485,12 +508,9 @@ async function loadLogin() {
                         if (!userEmail) {
                             const msg = typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'User not found';
                             if (errorDiv) {
-                                const params = new URLSearchParams(window.location.search || '');
                                 const hasTenant = params.get('tenant') || params.get('subdomain');
-                                const baseUrl = (window.location.origin || '') + (window.location.pathname || '/');
-                                const tenantLoginUrl = baseUrl + '?tenant=harte-pharmacy-ltd#login';
                                 errorDiv.innerHTML = '<span>' + String(msg).replace(/</g, '&lt;') + '</span>' +
-                                    (!hasTenant ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or <a href="' + tenantLoginUrl.replace(/"/g, '&quot;') + '" style="text-decoration:underline;">sign in with Harte Pharmacy Ltd</a>.</p>' : '');
+                                    (!hasTenant ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL (e.g. <code>?tenant=your-org-subdomain</code> then #login).</p>' : '');
                                 errorDiv.style.display = 'block';
                             } else {
                                 showToast(msg, 'error');
@@ -511,7 +531,7 @@ async function loadLogin() {
                     }
                     if (errorDiv) {
                         errorDiv.innerHTML = '<span>' + String(errorMsg).replace(/</g, '&lt;') + '</span>' +
-                            (errorMsg.toLowerCase().includes('user not found') ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL (e.g. <code>?tenant=harte-pharmacy-ltd</code> then #login).</p>' : '');
+                            (errorMsg.toLowerCase().includes('user not found') ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL then #login.</p>' : '');
                         errorDiv.style.display = 'block';
                     } else {
                         showToast(errorMsg, 'error');
