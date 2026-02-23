@@ -142,6 +142,14 @@ After deployment, verify:
 - Ensure Supabase project is active
 - Try connection string in a database client first
 
+### Issue: "Tenant database is temporarily unreachable" (503 when tenant users log in)
+**Cause**: Render’s network cannot reach Supabase’s **direct** DB host (IPv6). Tenant DB URLs stored in the master DB use the direct connection (port 5432).
+
+**Solution**: The app automatically uses Supabase’s **transaction pooler** (port 6543) for tenant DBs when running on Render (Render sets `RENDER=true`). No change to stored tenant URLs is required. If you still see 503:
+- Ensure the backend is actually running on Render (so `RENDER=true` is set).
+- Or set `USE_SUPABASE_POOLER_FOR_TENANTS=true` in the backend’s environment variables.
+- Tenant `database_url` in the master DB can stay as the direct URI (e.g. `...@db.xxx.supabase.co:5432/postgres`); the app rewrites to port 6543 for connections.
+
 ### Issue: "Port already in use"
 **Solution**:
 - Use `$PORT` variable (already in start command)

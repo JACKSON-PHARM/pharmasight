@@ -40,29 +40,57 @@ _tenant_engines: dict[str, object] = {}
 _tenant_sessions: dict[str, sessionmaker] = {}
 _pool_lock = threading.Lock()
 
+# Supabase transaction pooler port (IPv4-friendly; direct connection uses IPv6 and can be unreachable on Render).
+_SUPABASE_POOLER_PORT = "6543"
+
+
+def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
+    """
+    Resolve tenant DB URL for the current environment.
+    When USE_SUPABASE_POOLER_FOR_TENANTS is true (e.g. on Render), rewrite Supabase direct URLs
+    (db.XXX.supabase.co:5432) to use the transaction pooler (port 6543), which supports IPv4 and
+    avoids "Network is unreachable" where IPv6 is not available.
+    """
+    if not raw_url or not raw_url.strip():
+        return raw_url or ""
+    url = raw_url.strip()
+    if not getattr(settings, "USE_SUPABASE_POOLER_FOR_TENANTS", False):
+        return url
+    # Rewrite ...@db.XXX.supabase.co:5432/... to ...@db.XXX.supabase.co:6543/...
+    if ".supabase.co:5432" in url or ".supabase.co:5432/" in url:
+        url = url.replace(".supabase.co:5432", ".supabase.co:" + _SUPABASE_POOLER_PORT)
+        logger.debug("Using Supabase transaction pooler (port %s) for tenant DB (IPv4-friendly).", _SUPABASE_POOLER_PORT)
+    return url
+
 
 def _session_factory_for_url(database_url: str) -> sessionmaker:
     """Get or create session factory for a tenant database_url. Thread-safe."""
+    effective_url = resolve_tenant_database_url(database_url)
+    # Use pooler-safe options when connecting via Supabase transaction pooler (port 6543).
+    use_pooler = ":6543" in effective_url and "supabase.co" in effective_url
+    connect_args = {
+        "connect_timeout": 10,
+        "options": "-c statement_timeout=120000",
+    }
+    if use_pooler:
+        connect_args["prepare_threshold"] = None  # Transaction pooler does not support prepared statements
     with _pool_lock:
-        if database_url not in _tenant_sessions:
+        if effective_url not in _tenant_sessions:
             engine = create_engine(
-                database_url,
+                effective_url,
                 poolclass=pool.QueuePool,
                 pool_size=5,
                 max_overflow=10,
                 pool_pre_ping=True,
                 pool_recycle=3600,
-                connect_args={
-                    "connect_timeout": 10,
-                    "options": "-c statement_timeout=120000",
-                },
+                connect_args=connect_args,
                 echo=settings.DEBUG,
             )
-            _tenant_engines[database_url] = engine
-            _tenant_sessions[database_url] = sessionmaker(
+            _tenant_engines[effective_url] = engine
+            _tenant_sessions[effective_url] = sessionmaker(
                 autocommit=False, autoflush=False, bind=engine
             )
-        return _tenant_sessions[database_url]
+        return _tenant_sessions[effective_url]
 
 
 def get_tenant_from_header(

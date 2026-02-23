@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     SUPABASE_OWNER_EMAIL: str = os.getenv("SUPABASE_OWNER_EMAIL", "").strip().lower()
     # Optional: verify Supabase JWTs for dual-auth (Project Settings -> API -> JWT Secret)
     SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "").strip()
+    # Use Supabase transaction pooler (port 6543) for tenant DBs when direct connection (IPv6) is unreachable (e.g. Render).
+    # Set to true on Render; auto-enabled when RENDER=true. See Supabase: Connect → Transaction pooler.
+    USE_SUPABASE_POOLER_FOR_TENANTS: bool = (
+        os.getenv("USE_SUPABASE_POOLER_FOR_TENANTS", "").lower() in ("true", "1", "yes")
+        or os.getenv("RENDER", "").lower() == "true"
+    )
 
     # Build connection string if not provided
     @property
