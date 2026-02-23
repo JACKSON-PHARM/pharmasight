@@ -1221,7 +1221,11 @@ def list_purchase_orders(
 
 
 @router.get("/order/{order_id}", response_model=PurchaseOrderResponse)
-def get_purchase_order(order_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_purchase_order(
+    order_id: UUID,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
     """Get purchase order by ID with full item details"""
     # Load order with items and item relationships
     order = db.query(PurchaseOrder).options(
@@ -1239,7 +1243,7 @@ def get_purchase_order(order_id: UUID, db: Session = Depends(get_tenant_db)):
     # Logo URL for print (when company has tenant-assets logo)
     company = getattr(order, "company", None) or db.query(Company).filter(Company.id == order.company_id).first()
     if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
-        order.logo_url = get_signed_url(company.logo_url)
+        order.logo_url = get_signed_url(company.logo_url, tenant=tenant)
     # Load created_by user name
     created_by_user = db.query(User).filter(User.id == order.created_by).first()
     if created_by_user:
@@ -1383,14 +1387,14 @@ def approve_purchase_order(
     # Download logo, stamp, signature from tenant storage for embedding in PDF (live/Render)
     company_logo_bytes = None
     if company.logo_url and str(company.logo_url or "").startswith("tenant-assets/"):
-        company_logo_bytes = download_file(company.logo_url)
+        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
     stamp_bytes = None
     if stamp_path and str(stamp_path).startswith("tenant-assets/"):
-        stamp_bytes = download_file(stamp_path)
+        stamp_bytes = download_file(stamp_path, tenant=tenant)
     signature_bytes = None
     approver_sig_path = getattr(approver, "signature_path", None)
     if approver_sig_path and str(approver_sig_path).startswith("tenant-assets/"):
-        signature_bytes = download_file(approver_sig_path)
+        signature_bytes = download_file(approver_sig_path, tenant=tenant)
 
     pdf_bytes = build_po_pdf(
         company_name=company.name or "—",
@@ -1417,7 +1421,7 @@ def approve_purchase_order(
         signature_bytes=signature_bytes,
         approved_at=now,
     )
-    stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes)
+    stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes, tenant=tenant)
     if stored_path:
         db_order.pdf_path = stored_path
     db.commit()
@@ -1442,12 +1446,16 @@ def approve_purchase_order(
 
 
 @router.get("/order/{order_id}/pdf-url")
-def get_purchase_order_pdf_url(order_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_purchase_order_pdf_url(
+    order_id: UUID,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
     """Return signed URL for the stored PO PDF (only when approved and pdf_path set). Expires in 1 hour."""
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not order or not order.pdf_path:
         raise HTTPException(status_code=404, detail="No PDF available for this order")
-    url = get_signed_url(order.pdf_path)  # Uses 10 min expiry; never expose raw path
+    url = get_signed_url(order.pdf_path, tenant=tenant)  # Uses 10 min expiry; never expose raw path
     if not url:
         raise HTTPException(
             status_code=503,

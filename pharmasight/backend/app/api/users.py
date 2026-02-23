@@ -339,7 +339,7 @@ async def upload_user_signature(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid content-type. Allowed: image/png, image/jpeg",
         )
-    stored_path = upload_signature_to_storage(tenant.id, user_id, content, content_type)
+    stored_path = upload_signature_to_storage(tenant.id, user_id, content, content_type, tenant=tenant)
     if not stored_path:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -355,6 +355,7 @@ async def upload_user_signature(
 @router.get("/users/{user_id}/signature-preview-url")
 def get_user_signature_preview_url(
     user_id: UUID,
+    tenant: Tenant = Depends(get_tenant_or_default),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -365,7 +366,7 @@ def get_user_signature_preview_url(
     user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
     if not user or not getattr(user, "signature_path", None):
         raise HTTPException(status_code=404, detail="No signature")
-    url = get_signed_url(user.signature_path, expires_in=SIGNED_URL_EXPIRY_SECONDS)
+    url = get_signed_url(user.signature_path, expires_in=SIGNED_URL_EXPIRY_SECONDS, tenant=tenant)
     if not url:
         raise HTTPException(status_code=503, detail="Could not generate preview URL")
     return {"url": url}

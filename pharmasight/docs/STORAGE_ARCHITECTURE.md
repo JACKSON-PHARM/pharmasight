@@ -1,13 +1,23 @@
-# Supabase Storage Architecture – Single Bucket for All Tenants
+# Supabase Storage Architecture – Single or Per-Tenant Project
 
-## Bucket Rules
+## Master vs per-tenant Supabase
+
+- **Single project (default):** Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in the environment (e.g. on Render). This is the **master** Supabase project: same project that hosts the master DB (when using Supabase Postgres) and the **shared** `tenant-assets` bucket. All tenants’ assets (logos, stamps, PO PDFs) live in that one bucket under paths `tenant-assets/{tenant_id}/...`. No per-tenant key needed.
+
+- **Per-tenant project (optional):** For clients that have their **own** Supabase project, store that project’s URL and service role key on the tenant row in the **master** DB. When present, storage (upload, download, signed URL) for that tenant uses their project instead of the global env. Same bucket name `tenant-assets` is used **in that project**.  
+  - **Master DB migration:** Run `database/add_tenant_supabase_storage.sql` on the **master** database to add `supabase_storage_url` and `supabase_storage_service_role_key` to the `tenants` table.  
+  - **Security:** Prefer encrypting the service role key at rest; restrict who can read/update these columns.
+
+---
+
+## Bucket Rules (per project)
 
 | Rule | Implementation |
 |------|----------------|
 | **Bucket name** | `tenant-assets` |
 | **Visibility** | PRIVATE |
-| **Count** | One bucket only; **do NOT** create per-tenant buckets |
-| **Auth** | All operations use `SUPABASE_SERVICE_ROLE_KEY` only |
+| **Count** | One bucket per Supabase project (shared project = one bucket for all tenants; per-tenant project = one bucket in that tenant’s project) |
+| **Auth** | `SUPABASE_SERVICE_ROLE_KEY` (global) or tenant’s `supabase_storage_service_role_key` when set |
 | **Paths** | Never expose raw storage paths to the frontend; use signed URLs only |
 
 The backend:
@@ -65,11 +75,10 @@ tenant-assets/{tenant_id}/documents/purchase_orders/{po_id}.pdf
 
 ---
 
-## Why One Bucket
+## Why one bucket per project
 
-- **1, 100, or 10,000 pharmacies** → still one bucket.
-- Simple structure, no bucket proliferation.
-- Tenant isolation by path and backend checks only.
+- **Single project:** 1, 100, or 10,000 pharmacies → one bucket; isolation by path and backend checks.
+- **Per-tenant project:** Each client’s Supabase project has its own `tenant-assets` bucket; credentials live in the master DB tenant row.
 
 ---
 

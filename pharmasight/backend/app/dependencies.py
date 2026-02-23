@@ -46,6 +46,37 @@ _SUPABASE_TRANSACTION_POOLER_PORT = "6543"
 _SESSION_POOLER_PORT = "5432"
 
 
+def _supabase_project_ref_from_url(url: str) -> Optional[str]:
+    """Extract Supabase project ref from a DB URL (direct or session pooler). Returns None if not Supabase."""
+    if not url or not url.strip():
+        return None
+    try:
+        parsed = urlparse(url.strip())
+        # Session pooler: postgres.REF@aws-x-region.pooler.supabase.com
+        if parsed.username and parsed.username.startswith("postgres."):
+            return parsed.username.split(".", 1)[1]
+        # Direct: db.REF.supabase.co
+        host = parsed.hostname or ""
+        if host.startswith("db.") and host.endswith(".supabase.co"):
+            return host[3:-14]
+    except Exception:
+        pass
+    return None
+
+
+def _same_supabase_db(url_a: Optional[str], url_b: Optional[str]) -> bool:
+    """True if both URLs point to the same Supabase project (direct vs pooler treated as same)."""
+    if not url_a or not url_b:
+        return False
+    a = (url_a or "").strip()
+    b = (url_b or "").strip()
+    if a == b:
+        return True
+    ref_a = _supabase_project_ref_from_url(a)
+    ref_b = _supabase_project_ref_from_url(b)
+    return ref_a is not None and ref_a == ref_b
+
+
 def _get_pooler_host() -> Optional[str]:
     """Session pooler host from SUPABASE_POOLER_HOST or from DATABASE_URL (master). Same region = same host for tenants."""
     host = getattr(settings, "SUPABASE_POOLER_HOST", None) or ""
@@ -268,18 +299,17 @@ def _tenant_from_token_or_header(request: Request, master_db: Session, payload: 
 
 
 def _get_default_tenant(master_db: Session) -> Optional[Tenant]:
-    """Return the tenant whose database_url equals this app's DATABASE_URL, or None."""
+    """Return the tenant whose database_url equals this app's DATABASE_URL (or same Supabase project), or None."""
     default_url = settings.database_connection_string
     if not default_url:
         return None
+    default_url = default_url.strip()
     tenant = master_db.query(Tenant).filter(
-        Tenant.database_url == default_url,
         Tenant.database_url.isnot(None),
-    ).first()
-    if tenant is not None:
-        return tenant
-    for t in master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).all():
-        if (t.database_url or "").strip() == default_url.strip():
+    ).all()
+    for t in tenant:
+        u = (t.database_url or "").strip()
+        if u == default_url or _same_supabase_db(u, default_url):
             return t
     return None
 
@@ -417,16 +447,13 @@ def get_tenant_or_default(
                 "or add your default database as a tenant in the tenants table for development/demos."
             ),
         )
-    default_tenant = master_db.query(Tenant).filter(
-        Tenant.database_url == default_url,
-        Tenant.database_url.isnot(None),
-    ).first()
-    if default_tenant is None:
-        # Try normalized comparison (e.g. strip trailing slash or whitespace)
-        for t in master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).all():
-            if (t.database_url or "").strip() == default_url.strip():
-                default_tenant = t
-                break
+    default_url = default_url.strip()
+    default_tenant = None
+    for t in master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).all():
+        u = (t.database_url or "").strip()
+        if u == default_url or _same_supabase_db(u, default_url):
+            default_tenant = t
+            break
     if default_tenant is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

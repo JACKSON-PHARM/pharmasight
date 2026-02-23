@@ -11,7 +11,7 @@ from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_tenant_or_default
 from app.services.document_pdf_generator import build_sales_invoice_pdf
 from app.services.tenant_storage_service import download_file, get_signed_url
 from app.models import (
@@ -19,6 +19,7 @@ from app.models import (
     Item, InvoicePayment, UserBranchRole, UserRole
 )
 from app.models.company import Company, Branch
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.permission import Permission, RolePermission
 from app.schemas.sale import (
@@ -320,7 +321,11 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
 
 
 @router.get("/invoice/{invoice_id}/pdf")
-def get_sales_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_sales_invoice_pdf(
+    invoice_id: UUID,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
     """Generate and return sales invoice as PDF (Download PDF). On-demand only.
     Logo on right, company on left; footer: prepared by, printed by, served by, till/paybill from branch. No status."""
     from sqlalchemy.orm import selectinload
@@ -344,7 +349,7 @@ def get_sales_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)
         })
     company_logo_bytes = None
     if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
-        company_logo_bytes = download_file(company.logo_url)
+        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
     till_number = getattr(branch, "till_number", None) if branch else None
     paybill = getattr(branch, "paybill", None) if branch else None
     prepared_by = None
@@ -385,7 +390,11 @@ def get_sales_invoice_pdf(invoice_id: UUID, db: Session = Depends(get_tenant_db)
 
 
 @router.get("/invoice/{invoice_id}", response_model=SalesInvoiceResponse)
-def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_sales_invoice(
+    invoice_id: UUID,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
     """Get sales invoice by ID with full item details"""
     from sqlalchemy.orm import selectinload
     # Load invoice with items and item relationships
@@ -447,7 +456,7 @@ def get_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
         invoice.company_address = getattr(company, "address", None) or ""
         logo_path = getattr(company, "logo_url", None)
         if logo_path and str(logo_path or "").startswith("tenant-assets/"):
-            invoice.logo_url = get_signed_url(logo_path)
+            invoice.logo_url = get_signed_url(logo_path, tenant=tenant)
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     if branch:
         invoice.branch_name = branch.name

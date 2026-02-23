@@ -1,23 +1,17 @@
 """
-Single Supabase Storage bucket for all tenants.
+Supabase Storage for tenant assets (logos, stamps, signatures, PO PDFs).
 
-Bucket rules:
-- Bucket name: tenant-assets
-- Visibility: PRIVATE
-- One bucket only; do NOT create per-tenant buckets.
-- All operations use SUPABASE_SERVICE_ROLE_KEY.
-- Never expose raw storage paths to frontend; use signed URLs (5–15 min expiry).
+Two modes:
+- Single project (default): Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in env.
+  One bucket "tenant-assets"; isolation by path tenant-assets/{tenant_id}/...
+- Per-tenant project: Optional. Store supabase_storage_url and supabase_storage_service_role_key
+  on the Tenant row (master DB). When set, that tenant's storage uses their Supabase project
+  (e.g. for different clients with their own Supabase). Same bucket name "tenant-assets" per project.
 
-Folder structure (enforced):
-  tenant-assets/{tenant_id}/logo.png
-  tenant-assets/{tenant_id}/stamp.png
-  tenant-assets/{tenant_id}/users/{user_id}/signature.png
-  tenant-assets/{tenant_id}/documents/purchase_orders/{po_id}.pdf
-
-Isolation: DB tenant_id + backend permission checks; all tenants share this one bucket.
+Never expose raw storage paths to frontend; use signed URLs (5–15 min expiry).
 """
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from uuid import UUID
 from supabase import Client
 
@@ -33,14 +27,25 @@ MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2MB
 SIGNED_URL_EXPIRY_SECONDS = 600  # 10 minutes
 
 
-def _client() -> Optional[Client]:
-    """Uses SUPABASE_SERVICE_ROLE_KEY only. Never use anon key for storage."""
-    if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
+def _client(tenant: Optional[Any] = None) -> Optional[Client]:
+    """
+    Supabase client for storage. If tenant has supabase_storage_url and supabase_storage_service_role_key,
+    use that project; otherwise use global SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.
+    """
+    url = None
+    key = None
+    if tenant:
+        url = (getattr(tenant, "supabase_storage_url", None) or "").strip()
+        key = (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()
+    if not url or not key:
+        url = (settings.SUPABASE_URL or "").strip()
+        key = (settings.SUPABASE_SERVICE_ROLE_KEY or "").strip()
+    if not url or not key:
         return None
     try:
         from supabase import create_client
-        url = (settings.SUPABASE_URL or "").rstrip("/") + "/"
-        return create_client(url, settings.SUPABASE_SERVICE_ROLE_KEY)
+        url = url.rstrip("/") + "/"
+        return create_client(url, key)
     except Exception as e:
         logger.warning("Supabase storage client: %s", e)
         return None
@@ -101,17 +106,19 @@ def upload_file(
     content_type: str,
     *,
     validate_image: bool = False,
+    tenant: Optional[Any] = None,
 ) -> Optional[str]:
     """
-    Upload bytes to the single tenant-assets bucket at path {tenant_id}/{file_path}.
+    Upload bytes to tenant-assets bucket at path {tenant_id}/{file_path}.
     Returns stored path for DB only (e.g. tenant-assets/{tenant_id}/stamp.png). Do not expose to frontend.
+    If tenant has per-tenant Supabase storage credentials, uses that project; else global env.
     If validate_image=True, enforces PNG/JPG, 2MB, content-type.
     """
     if validate_image:
         ok, err = validate_image_upload(content, content_type)
         if not ok:
             return None
-    client = _client()
+    client = _client(tenant)
     if not client:
         return None
     ensure_bucket(client)
@@ -132,18 +139,22 @@ def upload_file(
         return None
 
 
-def upload_logo(tenant_id: UUID, content: bytes, content_type: str) -> Optional[str]:
+def upload_logo(
+    tenant_id: UUID, content: bytes, content_type: str, *, tenant: Optional[Any] = None
+) -> Optional[str]:
     ct = content_type or "image/png"
     if ct not in ALLOWED_IMAGE_CONTENT_TYPES:
         ct = "image/png"
-    return upload_file(tenant_id, "logo.png", content, ct, validate_image=True)
+    return upload_file(tenant_id, "logo.png", content, ct, validate_image=True, tenant=tenant)
 
 
-def upload_stamp(tenant_id: UUID, content: bytes, content_type: str) -> Optional[str]:
+def upload_stamp(
+    tenant_id: UUID, content: bytes, content_type: str, *, tenant: Optional[Any] = None
+) -> Optional[str]:
     ct = content_type or "image/png"
     if ct not in ALLOWED_IMAGE_CONTENT_TYPES:
         ct = "image/png"
-    return upload_file(tenant_id, "stamp.png", content, ct, validate_image=True)
+    return upload_file(tenant_id, "stamp.png", content, ct, validate_image=True, tenant=tenant)
 
 
 def upload_user_signature(
@@ -151,22 +162,26 @@ def upload_user_signature(
     user_id: UUID,
     content: bytes,
     content_type: str,
+    *,
+    tenant: Optional[Any] = None,
 ) -> Optional[str]:
     ct = content_type or "image/png"
     if ct not in ALLOWED_IMAGE_CONTENT_TYPES:
         ct = "image/png"
     path = f"users/{user_id}/signature.png"
-    return upload_file(tenant_id, path, content, ct, validate_image=True)
+    return upload_file(tenant_id, path, content, ct, validate_image=True, tenant=tenant)
 
 
-def upload_po_pdf(tenant_id: UUID, po_id: UUID, content: bytes) -> Optional[str]:
+def upload_po_pdf(
+    tenant_id: UUID, po_id: UUID, content: bytes, *, tenant: Optional[Any] = None
+) -> Optional[str]:
     path = f"documents/purchase_orders/{po_id}.pdf"
-    return upload_file(tenant_id, path, content, "application/pdf")
+    return upload_file(tenant_id, path, content, "application/pdf", tenant=tenant)
 
 
-def download_file(stored_path: str) -> Optional[bytes]:
-    """Download file bytes from tenant-assets by stored path (e.g. tenant-assets/xxx/stamp.png)."""
-    client = _client()
+def download_file(stored_path: str, tenant: Optional[Any] = None) -> Optional[bytes]:
+    """Download file bytes from tenant-assets by stored path. Pass tenant to use per-tenant Supabase."""
+    client = _client(tenant)
     if not client or not stored_path or not stored_path.startswith(BUCKET + "/"):
         return None
     try:
@@ -178,12 +193,16 @@ def download_file(stored_path: str) -> Optional[bytes]:
         return None
 
 
-def get_signed_url(stored_path: str, expires_in: int = SIGNED_URL_EXPIRY_SECONDS) -> Optional[str]:
+def get_signed_url(
+    stored_path: str,
+    expires_in: int = SIGNED_URL_EXPIRY_SECONDS,
+    tenant: Optional[Any] = None,
+) -> Optional[str]:
     """
     stored_path: e.g. tenant-assets/{tenant_id}/stamp.png (path stored in DB; never expose to frontend).
-    Returns a signed URL for temporary read access (e.g. 5–15 min). Use for PDF retrieval, stamp/logo preview.
+    Returns a signed URL for temporary read access. Pass tenant to use per-tenant Supabase project.
     """
-    client = _client()
+    client = _client(tenant)
     if not client:
         logger.warning(
             "get_signed_url: Supabase client not available. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."

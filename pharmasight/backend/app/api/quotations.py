@@ -10,13 +10,14 @@ from typing import List
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_tenant_or_default
 
 logger = logging.getLogger(__name__)
 from app.models import (
     Quotation, QuotationItem, SalesInvoice, SalesInvoiceItem,
     Item, InventoryLedger, Company, Branch, User,
 )
+from app.models.tenant import Tenant
 from app.schemas.sale import (
     QuotationCreate, QuotationResponse, QuotationUpdate,
     QuotationItemCreate, QuotationItemResponse,
@@ -144,7 +145,11 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
 
 
 @router.get("/{quotation_id}/pdf")
-def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_quotation_pdf(
+    quotation_id: UUID,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
     """Generate and return quotation as PDF (Download PDF). Logo right, company left; footer: prepared/printed/served."""
     from sqlalchemy.orm import selectinload
     quotation = db.query(Quotation).options(
@@ -160,7 +165,7 @@ def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
     branch_address = getattr(branch, "address", None) if branch else None
     company_logo_bytes = None
     if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
-        company_logo_bytes = download_file(company.logo_url)
+        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
     prepared_by = None
     served_by = None
     creator = db.query(User).filter(User.id == quotation.created_by).first()
@@ -212,7 +217,11 @@ def get_quotation_pdf(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.get("/{quotation_id}", response_model=QuotationResponse)
-def get_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_quotation(
+    quotation_id: UUID,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
     """Get quotation by ID with full item details, margin, and print header (company/branch/user)"""
     from sqlalchemy.orm import selectinload
     # Load quotation with items and item relationships
@@ -256,7 +265,7 @@ def get_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
         quotation.company_address = getattr(company, "address", None) or ""
         logo_path = getattr(company, "logo_url", None)
         if logo_path and str(logo_path or "").startswith("tenant-assets/"):
-            quotation.logo_url = get_signed_url(logo_path)
+            quotation.logo_url = get_signed_url(logo_path, tenant=tenant)
     branch = db.query(Branch).filter(Branch.id == quotation.branch_id).first()
     if branch:
         quotation.branch_name = branch.name

@@ -132,12 +132,14 @@ def update_company(
 
 
 # Company settings (e.g. print_config for receipts - set by admin, applies to all users)
-def _mask_document_branding_for_frontend(raw: Dict[str, Any]) -> Dict[str, Any]:
+def _mask_document_branding_for_frontend(
+    raw: Dict[str, Any], tenant: Optional[Any] = None
+) -> Dict[str, Any]:
     """Never expose raw storage paths. Replace stamp_url with short-lived signed URL."""
     out = {k: v for k, v in raw.items() if k != "stamp_url"}
     stamp_path = raw.get("stamp_url")
     if stamp_path and isinstance(stamp_path, str):
-        signed = get_signed_url(stamp_path, expires_in=SIGNED_URL_EXPIRY_SECONDS)
+        signed = get_signed_url(stamp_path, expires_in=SIGNED_URL_EXPIRY_SECONDS, tenant=tenant)
         if signed:
             out["stamp_preview_url"] = signed
     return out
@@ -147,7 +149,8 @@ def _mask_document_branding_for_frontend(raw: Dict[str, Any]) -> Dict[str, Any]:
 def get_company_settings(
     company_id: UUID,
     key: Optional[str] = Query(None, description="Setting key, e.g. 'print_config'. Omit to get all."),
-    db: Session = Depends(get_tenant_db)
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
 ) -> Dict[str, Any]:
     """Get company-level settings. Raw storage paths are never returned; use signed URLs for preview."""
     company = db.query(Company).filter(Company.id == company_id).first()
@@ -165,7 +168,7 @@ def get_company_settings(
             try:
                 val = json.loads(r.setting_value or "{}")
                 if r.setting_key == "document_branding" and isinstance(val, dict):
-                    val = _mask_document_branding_for_frontend(val)
+                    val = _mask_document_branding_for_frontend(val, tenant)
                 return {"key": r.setting_key, "value": val}
             except json.JSONDecodeError:
                 return {"key": r.setting_key, "value": r.setting_value}
@@ -178,7 +181,7 @@ def get_company_settings(
             try:
                 val = json.loads(r.setting_value or "{}")
                 if r.setting_key == "document_branding" and isinstance(val, dict):
-                    val = _mask_document_branding_for_frontend(val)
+                    val = _mask_document_branding_for_frontend(val, tenant)
                 out[r.setting_key] = val
             except json.JSONDecodeError:
                 out[r.setting_key] = r.setting_value
@@ -271,7 +274,7 @@ async def upload_company_stamp(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid content-type. Allowed: image/png, image/jpeg",
         )
-    stored_path = upload_stamp(tenant.id, content, content_type)
+    stored_path = upload_stamp(tenant.id, content, content_type, tenant=tenant)
     if not stored_path:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -299,7 +302,7 @@ async def upload_company_stamp(
         ))
     db.commit()
     # Never expose raw path to frontend; return signed preview URL only
-    out_branding = _mask_document_branding_for_frontend(branding)
+    out_branding = _mask_document_branding_for_frontend(branding, tenant)
     return {"document_branding": out_branding}
 
 
@@ -333,7 +336,7 @@ async def upload_company_logo(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File too large. Maximum size is 2MB",
         )
-    stored_path = upload_logo(tenant.id, file_content, content_type)
+    stored_path = upload_logo(tenant.id, file_content, content_type, tenant=tenant)
     if stored_path:
         company.logo_url = stored_path
         db.commit()
