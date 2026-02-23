@@ -26,14 +26,16 @@ Use this with your **local `.env`** so nothing is missed on Render.
 | **SUPABASE_DB_PORT** | No | Usually `5432` |
 | **SUPABASE_DB_USER** | No | Usually `postgres` |
 | **ADMIN_PASSWORD** | Yes | From your `.env` or set a new password for admin panel |
-| **CORS_ORIGINS** | No | Use `*` on Render, or your frontend URL |
+| **CORS_ORIGINS** | No | Include your Render frontend URL so the browser allows API calls, e.g. `https://pharmasight.onrender.com` (or `*` for development). Comma-separated if multiple. |
 | **SMTP_HOST** | For email | From your `.env` if you send invite emails (e.g. `smtp.gmail.com`) |
 | **SMTP_USER** | For email | From your `.env` |
 | **SMTP_PASSWORD** | For email | From your `.env` |
 | **SMTP_PORT** | No | Usually `587` |
 | **EMAIL_FROM** | No | e.g. `PharmaSight <noreply@yourdomain.com>` |
-| **APP_PUBLIC_URL** | No | Optional; if unset, invite links use your Render URL |
-| **MASTER_DATABASE_URL** | No | Only if you use a different DB for tenant registry |
+| **APP_PUBLIC_URL** | No | Optional; if unset, invite links use your Render URL. Set to `https://pharmasight.onrender.com` (or your Render URL). |
+| **USE_SUPABASE_POOLER_FOR_TENANTS** | **Yes (Render)** | Set to `true` so tenant DBs use Supabase session pooler (IPv4-friendly). Required for tenant login; avoids "User not found" when tenant DBs use direct URLs. When your DATABASE_URL already uses the pooler (e.g. aws-1-eu-west-1.pooler.supabase.com), the app derives the pooler host for tenant DBs automatically. |
+| **SUPABASE_POOLER_HOST** | No | Only if DATABASE_URL is a direct URL; set to your session pooler host (e.g. `aws-1-eu-west-1.pooler.supabase.com`). If DATABASE_URL uses pooler.supabase.com, this is derived automatically. |
+| **MASTER_DATABASE_URL** | No | Only if you use a different DB for tenant registry. Otherwise leave unset (app uses DATABASE_URL). |
 | **SUPABASE_OWNER_EMAIL** | No | Optional; Supabase account owner email |
 
 ---
@@ -60,6 +62,7 @@ SMTP_USER
 SMTP_PASSWORD
 EMAIL_FROM
 APP_PUBLIC_URL
+USE_SUPABASE_POOLER_FOR_TENANTS
 ```
 
 After adding each key in Render, paste the corresponding value from your local `.env` file.

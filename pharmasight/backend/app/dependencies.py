@@ -1,14 +1,15 @@
 """
 Tenant resolution and DB dependencies for database-per-tenant architecture.
 
-Authority: DATABASE_PER_TENANT_IMPLEMENTATION_PLAN.md and architecture context.
-- Master DB: tenant management only. Never users, companies, branches, items.
-- Tenant DB: one per tenant; full app schema. Data isolated per tenant.
-- Legacy/default DB: current DATABASE_URL. No tenant header → use this.
+Master DB: tenant management only. Never users, companies, branches, items.
+Tenant DB: one per tenant; full app schema. Data isolated per tenant.
+Legacy/default DB: current DATABASE_URL. No tenant header → use this.
 
 Auth: get_current_user_optional / get_current_user accept internal JWT or (when
 SUPABASE_JWT_SECRET set) Supabase JWT. Tenant from token or X-Tenant-* header.
 """
+from urllib.parse import urlparse, quote
+
 import logging
 import threading
 from contextlib import contextmanager
@@ -40,34 +41,71 @@ _tenant_engines: dict[str, object] = {}
 _tenant_sessions: dict[str, sessionmaker] = {}
 _pool_lock = threading.Lock()
 
-# Supabase transaction pooler port (IPv4-friendly; direct connection uses IPv6 and can be unreachable on Render).
-_SUPABASE_POOLER_PORT = "6543"
+# Supabase transaction pooler port; session pooler uses 5432 on pooler.supabase.com host.
+_SUPABASE_TRANSACTION_POOLER_PORT = "6543"
+
+
+def _get_pooler_host() -> Optional[str]:
+    """Get session pooler host: from SUPABASE_POOLER_HOST or from DATABASE_URL if it uses pooler."""
+    host = getattr(settings, "SUPABASE_POOLER_HOST", None) or ""
+    if host:
+        return host.strip()
+    master_url = getattr(settings, "database_connection_string", "") or ""
+    if "pooler.supabase.com" in str(master_url):
+        try:
+            parsed = urlparse(master_url)
+            if parsed.hostname and "pooler.supabase.com" in parsed.hostname:
+                return parsed.hostname
+        except Exception:
+            pass
+    return None
 
 
 def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
     """
     Resolve tenant DB URL for the current environment.
     When USE_SUPABASE_POOLER_FOR_TENANTS is true (e.g. on Render), rewrite Supabase direct URLs
-    (db.XXX.supabase.co:5432) to use the transaction pooler (port 6543), which supports IPv4 and
-    avoids "Network is unreachable" where IPv6 is not available.
+    (db.XXX.supabase.co:5432) to use the session pooler (IPv4 proxied) when possible, else
+    transaction pooler (port 6543). Avoids "Network is unreachable" where IPv6 is not available.
     """
     if not raw_url or not raw_url.strip():
         return raw_url or ""
     url = raw_url.strip()
     if not getattr(settings, "USE_SUPABASE_POOLER_FOR_TENANTS", False):
         return url
-    # Rewrite ...@db.XXX.supabase.co:5432/... to ...@db.XXX.supabase.co:6543/...
+    if "db." not in url or ".supabase.co" not in url or ":5432" not in url:
+        return url
+    pooler_host = _get_pooler_host()
+    if pooler_host:
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname or ""
+            if hostname.startswith("db.") and hostname.endswith(".supabase.co"):
+                project_ref = hostname[3:-14]
+                password = parsed.password or ""
+                dbname = (parsed.path or "/postgres").lstrip("/") or "postgres"
+                new_user = f"postgres.{project_ref}"
+                safe_pass = quote(password, safe="") if password else ""
+                netloc = f"{new_user}:{safe_pass}@{pooler_host}:5432"
+                new_url = f"{parsed.scheme or 'postgresql'}://{netloc}/{dbname}"
+                logger.debug("Using Supabase session pooler (%s) for tenant DB (IPv4-friendly).", pooler_host)
+                return new_url
+        except Exception as e:
+            logger.warning("Could not rewrite to session pooler, falling back to transaction pooler: %s", e)
     if ".supabase.co:5432" in url or ".supabase.co:5432/" in url:
-        url = url.replace(".supabase.co:5432", ".supabase.co:" + _SUPABASE_POOLER_PORT)
-        logger.debug("Using Supabase transaction pooler (port %s) for tenant DB (IPv4-friendly).", _SUPABASE_POOLER_PORT)
+        url = url.replace(".supabase.co:5432", ".supabase.co:" + _SUPABASE_TRANSACTION_POOLER_PORT)
+        logger.debug("Using Supabase transaction pooler (port %s) for tenant DB.", _SUPABASE_TRANSACTION_POOLER_PORT)
     return url
 
 
 def _session_factory_for_url(database_url: str) -> sessionmaker:
     """Get or create session factory for a tenant database_url. Thread-safe."""
     effective_url = resolve_tenant_database_url(database_url)
-    # Use pooler-safe options when connecting via Supabase transaction pooler (port 6543).
-    use_pooler = ":6543" in effective_url and "supabase.co" in effective_url
+    # Use pooler-safe options when connecting via Supabase pooler (session or transaction).
+    use_pooler = (
+        ":6543" in effective_url
+        or "pooler.supabase.com" in effective_url
+    )
     connect_args = {
         "connect_timeout": 10,
         "options": "-c statement_timeout=120000",
