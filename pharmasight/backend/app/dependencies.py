@@ -85,7 +85,8 @@ def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
                 password = parsed.password or ""
                 dbname = (parsed.path or "/postgres").lstrip("/") or "postgres"
                 new_user = f"postgres.{project_ref}"
-                safe_pass = quote(password, safe="") if password else ""
+                # Encode only URL-unsafe chars; keep . - _ ~ so passwords like 33742377.jack work
+                safe_pass = quote(password, safe=".-_~") if password else ""
                 netloc = f"{new_user}:{safe_pass}@{pooler_host}:5432"
                 new_url = f"{parsed.scheme or 'postgresql'}://{netloc}/{dbname}"
                 logger.debug("Using Supabase session pooler (%s) for tenant DB (IPv4-friendly).", pooler_host)

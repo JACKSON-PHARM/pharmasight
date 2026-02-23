@@ -151,6 +151,10 @@ def _find_user_in_all_tenants(
         Tenant.database_url.isnot(None),
         ~Tenant.status.in_(["cancelled", "suspended"]),
     ).limit(MAX_TENANTS_TO_SEARCH).all()
+    subdomains = [t.subdomain for t in tenants]
+    logger.info("Tenant discovery: %d tenant(s) with database_url and active status (subdomains: %s)", len(tenants), subdomains)
+    if not tenants:
+        logger.warning("No tenants with database_url set and status not cancelled/suspended. Check public.tenants: set database_url and status for Harte (and other tenant rows).")
     found: List[Tuple[Optional[Tenant], User]] = []
     for tenant in tenants:
         try:
@@ -158,7 +162,12 @@ def _find_user_in_all_tenants(
                 user = _find_user_in_db(db, normalized_username, check_email)
                 if user:
                     found.append((tenant, user))
-        except Exception:
+        except Exception as e:
+            err_str = str(e).lower()
+            if "unreachable" in err_str or "connection" in err_str or "503" in err_str:
+                logger.warning("Tenant %s DB unreachable or connection failed: %s", tenant.subdomain, e)
+            else:
+                logger.debug("Tenant %s DB error: %s", tenant.subdomain, e)
             continue
     if found:
         return found
