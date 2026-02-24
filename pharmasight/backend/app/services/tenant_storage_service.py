@@ -262,13 +262,20 @@ def get_signed_url(
         result = client.storage.from_(BUCKET).create_signed_url(object_path, expires_in)
         url = None
         if isinstance(result, dict):
-            url = result.get("signedUrl") or result.get("signed_url") or result.get("url")
+            url = (
+                result.get("signedURL")
+                or result.get("signedUrl")
+                or result.get("signed_url")
+                or result.get("url")
+            )
             if not url and result:
                 logger.warning("get_signed_url: dict result has no signedUrl/signed_url; keys=%s", list(result.keys()))
         elif hasattr(result, "signed_url"):
             url = result.signed_url
         elif hasattr(result, "signedUrl"):
             url = result.signedUrl
+        elif hasattr(result, "signedURL"):
+            url = result.signedURL
         elif hasattr(result, "url"):
             url = result.url
         if not url:
