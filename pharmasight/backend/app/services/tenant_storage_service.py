@@ -70,20 +70,16 @@ def _client(tenant: Optional[Any] = None) -> Optional[Client]:
     """
     tenant_url = (getattr(tenant, "supabase_storage_url", None) or "").strip() if tenant else ""
     tenant_key = (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip() if tenant else ""
-
+    # Python client requires JWT (eyJ...). If tenant row has sb_secret_/sb_publishable_, fall back to env.
+    if tenant_key and (tenant_key.startswith("sb_secret_") or tenant_key.startswith("sb_publishable_")):
+        logger.warning(
+            "Supabase storage: tenant key is sb_secret_/sb_publishable_; using env SUPABASE_SERVICE_ROLE_KEY instead."
+        )
+        tenant_key = ""
     url = tenant_url or (settings.SUPABASE_URL or "").strip()
     key = tenant_key or (settings.SUPABASE_SERVICE_ROLE_KEY or "").strip()
     if not url or not key:
         return None
-    # The Supabase Python client sends the key as Authorization: Bearer <key>. The API rejects
-    # non-JWT Bearer tokens, so sb_secret_... keys cause "Invalid API key". Use the JWT service_role
-    # key (starts with eyJ...) from Project Settings → API → Legacy API Keys → service_role.
-    if key.startswith("sb_secret_") or key.startswith("sb_publishable_"):
-        logger.warning(
-            "Supabase storage: key looks like sb_secret_/sb_publishable_; the Python client requires "
-            "the JWT service_role key (eyJ...). Get it from Supabase Dashboard → Project Settings → "
-            "API → Legacy API Keys → service_role. Storage may fail with 'Invalid API key'."
-        )
     try:
         from supabase import create_client
         url = url.rstrip("/") + "/"
