@@ -142,27 +142,20 @@ function renderPurchaseOrdersShell() {
             </div>
             
             <div class="card-body" style="padding: 1.5rem;">
-                <!-- Date Filter Bar -->
+                <!-- Date Filter Bar: default today; user selects range and clicks Apply -->
                 <div style="margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: 1rem; background: #f8f9fa; border-radius: 0.5rem;">
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
                         <label style="font-weight: 500; min-width: 50px;">From:</label>
-                        <input type="date" 
-                               class="form-input" 
-                               id="filterDateFrom" 
-                               placeholder="All dates"
-                               onchange="if(window.applyDateFilter) window.applyDateFilter()"
-                               style="width: 150px;">
+                        <input type="date" class="form-input" id="filterDateFrom" value="${today}" style="width: 150px;">
                     </div>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
                         <label style="font-weight: 500; min-width: 30px;">To:</label>
-                        <input type="date" 
-                               class="form-input" 
-                               id="filterDateTo" 
-                               placeholder="All dates"
-                               onchange="if(window.applyDateFilter) window.applyDateFilter()"
-                               style="width: 150px;">
+                        <input type="date" class="form-input" id="filterDateTo" value="${today}" style="width: 150px;">
                     </div>
-                    <button class="btn btn-outline" onclick="if(window.clearDateFilter) window.clearDateFilter()">
+                    <button type="button" class="btn btn-primary" onclick="if(window.applyDateFilter) window.applyDateFilter()">
+                        <i class="fas fa-check"></i> Apply
+                    </button>
+                    <button type="button" class="btn btn-outline" onclick="if(window.clearDateFilter) window.clearDateFilter()">
                         <i class="fas fa-times"></i> Clear
                     </button>
                 </div>
@@ -722,11 +715,12 @@ async function loadPurchaseDocuments(documentType = 'order') {
             return;
         }
         
-        // Get filter values (default to all dates if not set - don't restrict to today)
+        // Get filter values (for orders, default to today when empty so we don't list all orders)
         const dateFromEl = document.getElementById('filterDateFrom');
         const dateToEl = document.getElementById('filterDateTo');
-        const dateFrom = dateFromEl?.value || null; // Don't default to today - show all orders
-        const dateTo = dateToEl?.value || null;
+        const today = new Date().toISOString().split('T')[0];
+        const dateFrom = dateFromEl?.value?.trim() || (documentType === 'order' ? today : null);
+        const dateTo = dateToEl?.value?.trim() || (documentType === 'order' ? today : null);
         const supplierId = document.getElementById('filterSupplier')?.value || null;
         const status = document.getElementById('filterStatus')?.value || null;
         

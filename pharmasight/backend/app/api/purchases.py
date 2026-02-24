@@ -1206,11 +1206,11 @@ def list_purchase_orders(
     if supplier_id:
         query = query.filter(PurchaseOrder.supplier_id == supplier_id)
     
-    if date_from:
-        query = query.filter(PurchaseOrder.order_date >= date_from)
-    
-    if date_to:
-        query = query.filter(PurchaseOrder.order_date <= date_to)
+    # Default to today when no date range given so we don't return all orders
+    today_default = date.today()
+    use_from = date_from if date_from is not None else today_default
+    use_to = date_to if date_to is not None else today_default
+    query = query.filter(PurchaseOrder.order_date >= use_from, PurchaseOrder.order_date <= use_to)
     
     if status:
         query = query.filter(PurchaseOrder.status == status)
