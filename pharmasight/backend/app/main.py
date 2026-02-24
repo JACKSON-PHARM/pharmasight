@@ -135,6 +135,9 @@ def run_tenant_migrations():
                     print("  [Migrations] Default DB: already at latest version.")
                     print("  [Migrations] (If you don't see app tables in Supabase, check you're in the project above: Dashboard -> Table Editor -> public schema)")
                     logger.info("Default/master DB already up to date (no new migrations applied).")
+                # Ensure master-only tenants table has supabase_storage_* columns (before we query Tenant)
+                from app.services.migration_service import ensure_master_tenant_storage_columns
+                ensure_master_tenant_storage_columns(default_url)
             except Exception as e:
                 print(f"  [Migrations] Default DB: FAILED - {e}")
                 logger.error(
@@ -144,27 +147,34 @@ def run_tenant_migrations():
                 )
 
         print("  [Migrations] Tenant DBs...")
-        svc = MigrationService()
-        tenants_with_db = svc.get_all_tenants_with_db()
-        subdomains = [t.subdomain for t in tenants_with_db]
-        print(f"  [Migrations] Found {len(tenants_with_db)} tenant(s) with database_url: {subdomains or '(none)'}")
-        if not tenants_with_db:
-            print("  [Migrations] Tip: In master DB (public.tenants), ensure each row has database_url set (e.g. session pooler URL).")
-        out = svc.run_migrations_all_tenant_dbs()
-        if out["applied"]:
-            for tid, versions in out["applied"].items():
-                print(f"  [Migrations] Tenant {tid}: applied {len(versions)} migration(s)")
-            logger.info("Startup migrations applied on tenant DBs: %s", out["applied"])
-        elif tenants_with_db:
-            print("  [Migrations] All tenant DBs already at latest version.")
-        else:
-            print("  [Migrations] No tenant DBs to migrate (or already up to date).")
-        if out["errors"]:
-            for tid, err in out["errors"].items():
-                print(f"  [Migrations] Tenant {tid}: ERROR - {err}")
+        try:
+            svc = MigrationService()
+            tenants_with_db = svc.get_all_tenants_with_db()
+            subdomains = [t.subdomain for t in tenants_with_db]
+            print(f"  [Migrations] Found {len(tenants_with_db)} tenant(s) with database_url: {subdomains or '(none)'}")
+            if not tenants_with_db:
+                print("  [Migrations] Tip: In master DB (public.tenants), ensure each row has database_url set (e.g. session pooler URL).")
+            out = svc.run_migrations_all_tenant_dbs()
+            if out["applied"]:
+                for tid, versions in out["applied"].items():
+                    print(f"  [Migrations] Tenant {tid}: applied {len(versions)} migration(s)")
+                logger.info("Startup migrations applied on tenant DBs: %s", out["applied"])
+            elif tenants_with_db:
+                print("  [Migrations] All tenant DBs already at latest version.")
+            else:
+                print("  [Migrations] No tenant DBs to migrate (or already up to date).")
+            if out["errors"]:
+                for tid, err in out["errors"].items():
+                    print(f"  [Migrations] Tenant {tid}: ERROR - {err}")
+                logger.warning(
+                    "Startup migration errors on tenant DBs: %s (To skip a deleted tenant, run: python scripts/mark_tenant_cancelled.py <tenant_id_or_name>)",
+                    out["errors"],
+                )
+        except Exception as e:
+            print(f"  [Migrations] Tenant DBs: SKIP - {e}")
             logger.warning(
-                "Startup migration errors on tenant DBs: %s (To skip a deleted tenant, run: python scripts/mark_tenant_cancelled.py <tenant_id_or_name>)",
-                out["errors"],
+                "Could not run tenant DB migrations (master DB unreachable?). App will start; API may fail until DB is reachable. Error: %s",
+                e,
             )
 
         print("  MIGRATIONS: Complete.")
@@ -173,6 +183,7 @@ def run_tenant_migrations():
     except Exception as e:
         print(f"  [Migrations] FATAL: {e}")
         logger.exception("Startup migrations failed: %s", e)
+        # Do not re-raise: allow app to start so health/docs work; API will fail until DB is reachable
 
 
 # Import and include routers

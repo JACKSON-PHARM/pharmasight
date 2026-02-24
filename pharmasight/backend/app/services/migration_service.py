@@ -175,6 +175,40 @@ def run_migrations_for_url(database_url: str) -> List[str]:
     return applied_this_run
 
 
+def ensure_master_tenant_storage_columns(database_url: str) -> bool:
+    """
+    Ensure the tenants table (master DB only) has supabase_storage_url and supabase_storage_service_role_key.
+    Run this on the default/master DB URL before querying Tenant. Idempotent (ADD COLUMN IF NOT EXISTS).
+    Returns True if run (and no error), False if skipped (e.g. no tenants table).
+    """
+    try:
+        conn = psycopg2.connect(database_url)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'tenants'
+            )
+        """)
+        if not cur.fetchone()[0]:
+            cur.close()
+            conn.close()
+            return False
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cur.execute("""
+            ALTER TABLE tenants
+                ADD COLUMN IF NOT EXISTS supabase_storage_url TEXT,
+                ADD COLUMN IF NOT EXISTS supabase_storage_service_role_key TEXT
+        """)
+        cur.close()
+        conn.close()
+        logger.info("Master DB: ensured tenants.supabase_storage_* columns exist")
+        return True
+    except Exception as e:
+        logger.warning("ensure_master_tenant_storage_columns failed: %s", e)
+        raise
+
+
 class MigrationService:
     """Service for applying migrations to all tenant databases."""
 
