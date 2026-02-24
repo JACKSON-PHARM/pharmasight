@@ -1,6 +1,10 @@
 """
 Supabase Storage for tenant assets (logos, stamps, signatures, PO PDFs).
 
+Single bucket for all tenants: one bucket "tenant-assets" with paths tenant-assets/{tenant_id}/...
+so there is no mix-up: each tenant's files live under their tenant_id. When generating signed URLs
+or downloading, we verify the path's tenant_id matches the request tenant and refuse otherwise.
+
 Two modes:
 - Single project (default): Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in env.
   One bucket "tenant-assets"; isolation by path tenant-assets/{tenant_id}/...
@@ -25,6 +29,32 @@ ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg"}
 MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2MB
 # Signed URL expiry: 5–15 min (10 min default). Never expose raw paths to frontend.
 SIGNED_URL_EXPIRY_SECONDS = 600  # 10 minutes
+
+
+def _tenant_id_from_stored_path(stored_path: str) -> Optional[str]:
+    """
+    Extract tenant_id (first path segment) from stored_path.
+    Path format: tenant-assets/{tenant_id}/...
+    Returns None if path is invalid or not tenant-scoped.
+    """
+    if not stored_path or not stored_path.startswith(BUCKET + "/"):
+        return None
+    rest = stored_path[len(BUCKET) + 1 :].strip()
+    if not rest:
+        return None
+    parts = rest.split("/")
+    return parts[0] if parts else None
+
+
+def _path_belongs_to_tenant(stored_path: str, tenant: Any) -> bool:
+    """Return True only if stored_path is under tenant.id (prevents cross-tenant access)."""
+    path_tenant_id = _tenant_id_from_stored_path(stored_path)
+    if not path_tenant_id:
+        return False
+    try:
+        return str(getattr(tenant, "id", None)) == path_tenant_id
+    except Exception:
+        return False
 
 
 def _client(tenant: Optional[Any] = None) -> Optional[Client]:
@@ -196,6 +226,10 @@ def download_file(stored_path: str, tenant: Optional[Any] = None) -> Optional[by
     client = _client(tenant)
     if not client or not stored_path or not stored_path.startswith(BUCKET + "/"):
         return None
+    # Single bucket: ensure path belongs to this tenant so we never return another tenant's file.
+    if tenant and not _path_belongs_to_tenant(stored_path, tenant):
+        logger.warning("download_file: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
+        return None
     try:
         object_path = stored_path[len(BUCKET) + 1:]
         data = client.storage.from_(BUCKET).download(object_path)
@@ -222,6 +256,10 @@ def get_signed_url(
         return None
     if not stored_path or not stored_path.startswith(BUCKET + "/"):
         logger.warning("get_signed_url: invalid stored_path (expected %s/...): %s", BUCKET, stored_path[:80] if stored_path else "")
+        return None
+    # Single bucket: ensure path belongs to this tenant so we never expose another tenant's document.
+    if tenant and not _path_belongs_to_tenant(stored_path, tenant):
+        logger.warning("get_signed_url: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
         return None
     try:
         object_path = stored_path[len(BUCKET) + 1:]
