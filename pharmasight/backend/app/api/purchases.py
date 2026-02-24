@@ -20,7 +20,9 @@ from app.services.item_units_helper import get_unit_multiplier_from_item
 from app.schemas.purchase import (
     GRNCreate, GRNResponse,
     SupplierInvoiceCreate, SupplierInvoiceResponse,
-    PurchaseOrderCreate, PurchaseOrderResponse
+    SupplierInvoiceItemCreate, SupplierInvoiceItemUpdate,
+    PurchaseOrderCreate, PurchaseOrderResponse,
+    PurchaseOrderItemCreate
 )
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
@@ -582,6 +584,183 @@ def get_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db))
         # batch_data is already stored in the database and will be included in response
     
     return invoice
+
+
+def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierInvoiceItemCreate):
+    """Build SupplierInvoiceItem and return (invoice_item, line_total_exclusive, line_vat)."""
+    item = db.query(Item).filter(Item.id == item_data.item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+    multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
+    if multiplier is None:
+        raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item.name}")
+    # Batch + expiry only required at batch time; optional when adding line
+    if getattr(item, "track_expiry", False) and item_data.batches and len(item_data.batches) > 0:
+        _require_batch_and_expiry_for_track_expiry_item(
+            item.name or str(item_data.item_id), item_data.batches, from_dict=False
+        )
+    line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
+    vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
+    line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
+    line_total_inclusive = line_total_exclusive + line_vat
+    batch_data_json = None
+    if item_data.batches and len(item_data.batches) > 0:
+        batch_data_json = json.dumps([{
+            "batch_number": b.batch_number or "",
+            "expiry_date": b.expiry_date.isoformat() if b.expiry_date else None,
+            "quantity": float(b.quantity),
+            "unit_cost": float(b.unit_cost)
+        } for b in item_data.batches])
+    invoice_item = SupplierInvoiceItem(
+        purchase_invoice_id=invoice_id,
+        item_id=item_data.item_id,
+        unit_name=item_data.unit_name,
+        quantity=item_data.quantity,
+        unit_cost_exclusive=item_data.unit_cost_exclusive,
+        vat_rate=vat_rate_pct,
+        vat_amount=line_vat,
+        line_total_exclusive=line_total_exclusive,
+        line_total_inclusive=line_total_inclusive,
+        batch_data=batch_data_json
+    )
+    return invoice_item, line_total_exclusive, line_vat
+
+
+@router.post("/invoice/{invoice_id}/items", response_model=SupplierInvoiceResponse)
+def add_supplier_invoice_item(
+    invoice_id: UUID,
+    item_data: SupplierInvoiceItemCreate,
+    db: Session = Depends(get_tenant_db),
+):
+    """Add one line to an existing DRAFT supplier invoice. Rejects duplicate item_id."""
+    invoice = (
+        db.query(SupplierInvoice)
+        .options(selectinload(SupplierInvoice.items))
+        .filter(SupplierInvoice.id == invoice_id)
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot add items to invoice with status {invoice.status}. Only DRAFT invoices can be edited."
+        )
+    for line in invoice.items:
+        if line.item_id == item_data.item_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Item already exists on this invoice. Edit the existing line or remove it first."
+            )
+    inv_item, line_excl, line_vat = _supplier_invoice_item_to_totals(db, invoice_id, item_data)
+    db.add(inv_item)
+    db.flush()
+    invoice.total_exclusive += line_excl
+    invoice.vat_amount += line_vat
+    invoice.total_inclusive = invoice.total_exclusive + invoice.vat_amount
+    invoice.balance = invoice.total_inclusive - (invoice.amount_paid or Decimal("0"))
+    db.commit()
+    db.refresh(invoice)
+    return get_supplier_invoice(invoice_id, db)
+
+
+@router.delete("/invoice/{invoice_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_supplier_invoice_item(
+    invoice_id: UUID,
+    item_id: UUID,
+    db: Session = Depends(get_tenant_db),
+):
+    """Remove one line from a DRAFT supplier invoice."""
+    invoice = (
+        db.query(SupplierInvoice)
+        .options(selectinload(SupplierInvoice.items))
+        .filter(SupplierInvoice.id == invoice_id)
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot remove items from invoice with status {invoice.status}. Only DRAFT invoices can be edited."
+        )
+    line = next((i for i in invoice.items if i.item_id == item_id), None)
+    if not line:
+        raise HTTPException(status_code=404, detail="Item not found on this invoice")
+    invoice.total_exclusive -= line.line_total_exclusive
+    invoice.vat_amount -= line.vat_amount
+    invoice.total_inclusive -= line.line_total_inclusive
+    invoice.balance = invoice.total_inclusive - (invoice.amount_paid or Decimal("0"))
+    db.delete(line)
+    db.commit()
+    return None
+
+
+@router.patch("/invoice/{invoice_id}/items/{item_id}", response_model=SupplierInvoiceResponse)
+def update_supplier_invoice_item(
+    invoice_id: UUID,
+    item_id: UUID,
+    payload: SupplierInvoiceItemUpdate,
+    db: Session = Depends(get_tenant_db),
+):
+    """Update one line on a DRAFT supplier invoice (qty, unit, cost, batch_data)."""
+    invoice = (
+        db.query(SupplierInvoice)
+        .options(selectinload(SupplierInvoice.items))
+        .filter(SupplierInvoice.id == invoice_id)
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot edit items on invoice with status {invoice.status}. Only DRAFT invoices can be edited."
+        )
+    line = next((i for i in invoice.items if i.item_id == item_id), None)
+    if not line:
+        raise HTTPException(status_code=404, detail="Item not found on this invoice")
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    if payload.quantity is not None:
+        line.quantity = payload.quantity
+    if payload.unit_name is not None:
+        line.unit_name = payload.unit_name
+    if payload.unit_cost_exclusive is not None:
+        line.unit_cost_exclusive = payload.unit_cost_exclusive
+    if payload.vat_rate is not None:
+        line.vat_rate = Decimal(str(vat_rate_to_percent(payload.vat_rate)))
+    if payload.batch_data is not None:
+        line.batch_data = payload.batch_data if str(payload.batch_data).strip() else None
+    elif payload.batches is not None and len(payload.batches) > 0:
+        if getattr(item, "track_expiry", False):
+            _require_batch_and_expiry_for_track_expiry_item(
+                item.name or str(item_id), payload.batches, from_dict=False
+            )
+        line.batch_data = json.dumps([{
+            "batch_number": b.batch_number or "",
+            "expiry_date": b.expiry_date.isoformat() if getattr(b, "expiry_date", None) else None,
+            "quantity": float(b.quantity),
+            "unit_cost": float(b.unit_cost)
+        } for b in payload.batches])
+
+    line_total_exclusive = (line.unit_cost_exclusive or Decimal("0")) * (line.quantity or Decimal("0"))
+    line_vat = line_total_exclusive * (line.vat_rate or Decimal("0")) / Decimal("100")
+    line.line_total_exclusive = line_total_exclusive
+    line.vat_amount = line_vat
+    line.line_total_inclusive = line_total_exclusive + line_vat
+
+    total_exclusive = sum(l.line_total_exclusive for l in invoice.items)
+    total_vat = sum(l.vat_amount for l in invoice.items)
+    invoice.total_exclusive = total_exclusive
+    invoice.vat_amount = total_vat
+    invoice.total_inclusive = total_exclusive + total_vat
+    invoice.balance = invoice.total_inclusive - (invoice.amount_paid or Decimal("0"))
+    db.commit()
+    db.refresh(invoice)
+    return get_supplier_invoice(invoice_id, db)
 
 
 @router.put("/invoice/{invoice_id}", response_model=SupplierInvoiceResponse)
@@ -1287,6 +1466,115 @@ def get_purchase_order(
         if approver:
             order.approved_by_name = approver.full_name or approver.email
     return order
+
+
+@router.post("/order/{order_id}/items", response_model=PurchaseOrderResponse)
+def add_purchase_order_item(
+    order_id: UUID,
+    item_data: PurchaseOrderItemCreate,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
+    """Add one line to an existing PENDING purchase order. Rejects duplicate item_id."""
+    order = (
+        db.query(PurchaseOrder)
+        .options(selectinload(PurchaseOrder.items))
+        .filter(PurchaseOrder.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    if order.status != "PENDING":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot add items to order with status {order.status}. Only PENDING orders can be edited."
+        )
+    for line in order.items:
+        if line.item_id == item_data.item_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Item already on this order. Edit the existing line or remove it first."
+            )
+    total_item_price = Decimal(str(item_data.unit_price)) * item_data.quantity
+    order_item = PurchaseOrderItem(
+        purchase_order_id=order_id,
+        item_id=item_data.item_id,
+        unit_name=item_data.unit_name,
+        quantity=item_data.quantity,
+        unit_price=item_data.unit_price,
+        total_price=total_item_price
+    )
+    db.add(order_item)
+    db.flush()
+    order.total_amount = (order.total_amount or Decimal("0")) + total_item_price
+    entry_date = order.order_date if hasattr(order.order_date, 'date') else order.order_date
+    if hasattr(entry_date, 'date'):
+        entry_date = entry_date.date()
+    existing = (
+        db.query(DailyOrderBook)
+        .filter(
+            DailyOrderBook.branch_id == order.branch_id,
+            DailyOrderBook.item_id == item_data.item_id,
+            DailyOrderBook.entry_date == entry_date,
+            DailyOrderBook.status.in_(["PENDING", "ORDERED"]),
+        )
+        .first()
+    )
+    if existing:
+        existing.status = "ORDERED"
+        existing.purchase_order_id = order.id
+        existing.source_reference_type = "purchase_order"
+        existing.source_reference_id = order.id
+        existing.quantity_needed = (existing.quantity_needed or 0) + item_data.quantity
+        existing.supplier_id = order.supplier_id
+        existing.unit_name = item_data.unit_name
+    else:
+        ob_entry = DailyOrderBook(
+            company_id=order.company_id,
+            branch_id=order.branch_id,
+            item_id=item_data.item_id,
+            entry_date=entry_date,
+            supplier_id=order.supplier_id,
+            quantity_needed=float(item_data.quantity),
+            unit_name=item_data.unit_name,
+            status="ORDERED",
+            purchase_order_id=order.id,
+            source_reference_type="purchase_order",
+            source_reference_id=order.id,
+            created_by=order.created_by,
+        )
+        db.add(ob_entry)
+    db.commit()
+    return get_purchase_order(order_id, tenant, db)
+
+
+@router.delete("/order/{order_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_purchase_order_item(
+    order_id: UUID,
+    item_id: UUID,
+    db: Session = Depends(get_tenant_db),
+):
+    """Remove one line from a PENDING purchase order."""
+    order = (
+        db.query(PurchaseOrder)
+        .options(selectinload(PurchaseOrder.items))
+        .filter(PurchaseOrder.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    if order.status != "PENDING":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot remove items from order with status {order.status}. Only PENDING orders can be edited."
+        )
+    line = next((i for i in order.items if i.item_id == item_id), None)
+    if not line:
+        raise HTTPException(status_code=404, detail="Item not found on this order")
+    order.total_amount = (order.total_amount or Decimal("0")) - line.total_price
+    db.delete(line)
+    db.commit()
+    return None
 
 
 @router.put("/order/{order_id}", response_model=PurchaseOrderResponse)

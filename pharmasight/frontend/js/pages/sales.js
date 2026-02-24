@@ -7,6 +7,9 @@ let salesInvoices = [];
 let salesDocuments = [];
 let currentQuotation = null; // For quotation edit mode
 let quotationItems = []; // For quotation items
+let quotationSyncedItemIds = new Set();
+/** Cache item_id -> { item_name, item_code } so committed rows show correct name/code when API omits them */
+let quotationItemDisplayCache = {};
 let salesDraftCreateTimeout = null; // Debounce draft creation so quantity (e.g. 10 tablets) is captured
 
 // Initialize sales page
@@ -385,6 +388,9 @@ function getQuotationStatusBadge(status) {
 }
 
 function createNewSalesQuotation() {
+    currentQuotation = null;
+    quotationItems = [];
+    quotationSyncedItemIds = new Set();
     loadSalesSubPage('create-quotation');
 }
 
@@ -645,7 +651,7 @@ async function renderCreateSalesInvoicePage() {
         <button type="button" class="btn btn-secondary" onclick="loadSalesSubPage('invoices')">
             <i class="fas fa-arrow-left"></i> Back to Invoices
         </button>
-        <span class="text-muted" style="margin-left: 0.5rem; font-size: 0.9rem;">Add items below — first item creates the draft invoice automatically.</span>
+        <span class="text-muted" style="margin-left: 0.5rem; font-size: 0.9rem;">Search in the row above, click Add item. First add creates the draft; click an item to view details.</span>
     `;
     
     page.innerHTML = `
@@ -696,9 +702,6 @@ async function renderCreateSalesInvoicePage() {
                                     <option value="WHOLESALE" ${invoiceData?.sales_type === 'WHOLESALE' ? 'selected' : ''}>Wholesale (Pharmacies)</option>
                                     <option value="SUPPLIER" ${invoiceData?.sales_type === 'SUPPLIER' ? 'selected' : ''}>Supplier</option>
                                 </select>
-                                <small style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem; display: block;">
-                                    <i class="fas fa-info-circle"></i> Units and prices follow mode: Retail = retail units, Wholesale = wholesale units, Supplier = supplier units (or wholesale if not set)
-                                </small>
                             </div>
                             <div class="form-group" style="margin: 0;">
                                 <label class="form-label" style="font-weight: 600;">Payment Mode *</label>
@@ -896,6 +899,80 @@ async function createSalesDraftWithFirstItem(firstItem) {
     return invoice;
 }
 
+/** Add-row flow: user clicked "Add item" in the search row. First add creates draft; subsequent adds append line. */
+async function onSalesInvoiceAddItem(item) {
+    const draftId = currentInvoice && currentInvoice.id;
+    try {
+        if (!draftId) {
+            showToast('Creating invoice...', 'info');
+            const invoice = await createSalesDraftWithFirstItem(item);
+            currentInvoice = { id: invoice.id, mode: 'edit', invoiceData: invoice };
+            salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
+            documentItems = (invoice.items || []).map(i => ({
+                item_id: i.item_id,
+                item_name: i.item_name,
+                item_sku: i.item_code,
+                item_code: i.item_code,
+                unit_name: i.unit_name,
+                quantity: i.quantity,
+                unit_price: i.unit_price_exclusive,
+                discount_percent: i.discount_percent || 0,
+                tax_percent: i.vat_rate || 0,
+                total: i.line_total_inclusive
+            }));
+            lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(invoice.items);
+            if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
+                salesInvoiceItemsTable.setItems(documentItems);
+            }
+            showToast('Draft invoice created. Add more items or click Batch when ready.', 'success');
+            updateSalesInvoiceSummary();
+            return;
+        }
+        const updated = await API.sales.addInvoiceItem(draftId, mapTableItemToApiItem(item));
+        salesInvoiceSyncedItemIds.add(item.item_id);
+        documentItems = (updated.items || []).map(i => ({
+            item_id: i.item_id,
+            item_name: i.item_name,
+            item_sku: i.item_code,
+            item_code: i.item_code,
+            unit_name: i.unit_name,
+            quantity: i.quantity,
+            unit_price: i.unit_price_exclusive,
+            discount_percent: i.discount_percent || 0,
+            tax_percent: i.vat_rate || 0,
+            total: i.line_total_inclusive
+        }));
+        lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(updated.items);
+        if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
+            salesInvoiceItemsTable.setItems(documentItems);
+        }
+        updateSalesInvoiceSummary();
+    } catch (err) {
+        const msg = (err && err.message) || String(err);
+        if (msg.indexOf('already exists') !== -1) {
+            showToast('Item already on this invoice. Remove the line or choose a different item.', 'warning');
+        } else {
+            showToast(msg, 'error');
+        }
+    }
+}
+
+let salesInvoiceEditSyncTimeout = null;
+let lastSalesInvoiceItemsSync = {}; // item_id -> { quantity, unit_name, unit_price, discount_percent }
+
+function mapInvoiceItemsToSync(items) {
+    const out = {};
+    (items || []).forEach(i => {
+        out[i.item_id] = {
+            quantity: i.quantity,
+            unit_name: i.unit_name,
+            unit_price: i.unit_price,
+            discount_percent: i.discount_percent || 0
+        };
+    });
+    return out;
+}
+
 async function onSalesInvoiceItemsChange(validItems) {
     documentItems = validItems.map(item => ({
         item_id: item.item_id,
@@ -912,78 +989,87 @@ async function onSalesInvoiceItemsChange(validItems) {
     updateSalesInvoiceSummary();
 
     const draftId = currentInvoice && currentInvoice.id;
-    if (!draftId && validItems.length >= 1 && !salesInvoiceCreatingDraft) {
-        if (salesDraftCreateTimeout) clearTimeout(salesDraftCreateTimeout);
-        salesDraftCreateTimeout = setTimeout(async () => {
-            salesDraftCreateTimeout = null;
-            if (currentInvoice && currentInvoice.id) return;
-            salesInvoiceCreatingDraft = true;
-            try {
-                showToast('Creating invoice...', 'info');
-                const invoice = await createSalesDraftWithFirstItem(validItems[0]);
-                salesInvoiceCreatingDraft = false;
-                currentInvoice = { id: invoice.id, mode: 'edit', invoiceData: invoice };
-                salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
-                documentItems = (invoice.items || []).map(i => ({
-                    item_id: i.item_id,
-                    item_name: i.item_name,
-                    item_sku: i.item_code,
-                    item_code: i.item_code,
-                    unit_name: i.unit_name,
-                    quantity: i.quantity,
-                    unit_price: i.unit_price_exclusive,
-                    discount_percent: i.discount_percent || 0,
-                    tax_percent: i.vat_rate || 0,
-                    total: i.line_total_inclusive
-                }));
-                showToast('Draft invoice created. Add more items or click Batch when ready.', 'success');
-                renderCreateSalesInvoicePage();
-            } catch (e) {
-                salesInvoiceCreatingDraft = false;
-                showToast(e.message || 'Failed to create draft invoice', 'error');
-            }
-        }, 1500);
+    if (!draftId) return;
+    const validItemIds = new Set(validItems.filter(i => i.item_id).map(i => i.item_id));
+    const toRemove = [...salesInvoiceSyncedItemIds].filter(id => !validItemIds.has(id));
+    for (const itemId of toRemove) {
+        try {
+            await API.sales.deleteInvoiceItem(draftId, itemId);
+            salesInvoiceSyncedItemIds.delete(itemId);
+            delete lastSalesInvoiceItemsSync[itemId];
+        } catch (err) {
+            showToast((err && err.message) || 'Failed to remove item from invoice', 'error');
+        }
+    }
+    if (toRemove.length > 0) {
+        const updated = await API.sales.getInvoice(draftId);
+        documentItems = (updated.items || []).map(i => ({
+            item_id: i.item_id,
+            item_name: i.item_name,
+            item_sku: i.item_code,
+            item_code: i.item_code,
+            unit_name: i.unit_name,
+            quantity: i.quantity,
+            unit_price: i.unit_price_exclusive,
+            discount_percent: i.discount_percent || 0,
+            tax_percent: i.vat_rate || 0,
+            total: i.line_total_inclusive
+        }));
+        lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(updated.items);
+        if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
+            salesInvoiceItemsTable.setItems(documentItems);
+        }
+        updateSalesInvoiceSummary();
         return;
     }
-    if (draftId) {
-        const validItemIds = new Set(validItems.filter(i => i.item_id).map(i => i.item_id));
-        // Remove from server any line that was deleted in the UI
-        const toRemove = [...salesInvoiceSyncedItemIds].filter(id => !validItemIds.has(id));
-        for (const itemId of toRemove) {
-            try {
-                await API.sales.deleteInvoiceItem(draftId, itemId);
-                salesInvoiceSyncedItemIds.delete(itemId);
-            } catch (err) {
-                const msg = (err && err.message) || String(err);
-                showToast(msg || 'Failed to remove item from invoice', 'error');
-            }
-        }
-        // Add new items that are not yet synced
-        if (validItems.length > 0) {
-            const newItems = validItems.filter(i => i.item_id && !salesInvoiceSyncedItemIds.has(i.item_id));
-            for (const item of newItems) {
-                if (salesInvoiceAddItemInFlight.has(item.item_id)) continue;
-                salesInvoiceAddItemInFlight.add(item.item_id);
+    // Debounce: sync line edits (qty, price, etc.) to backend
+    if (salesInvoiceEditSyncTimeout) clearTimeout(salesInvoiceEditSyncTimeout);
+    salesInvoiceEditSyncTimeout = setTimeout(async () => {
+        salesInvoiceEditSyncTimeout = null;
+        let changed = false;
+        for (const it of validItems) {
+            if (!it.item_id || !salesInvoiceSyncedItemIds.has(it.item_id)) continue;
+            const prev = lastSalesInvoiceItemsSync[it.item_id];
+            const q = parseFloat(it.quantity) || 1;
+            const p = parseFloat(it.unit_price) || 0;
+            const d = parseFloat(it.discount_percent) || 0;
+            const u = (it.unit_name || '').trim();
+            if (!prev || prev.quantity !== q || prev.unit_name !== u || Math.abs((prev.unit_price || 0) - p) > 0.001 || Math.abs((prev.discount_percent || 0) - d) > 0.001) {
                 try {
-                    await API.sales.addInvoiceItem(draftId, mapTableItemToApiItem(item));
-                    salesInvoiceSyncedItemIds.add(item.item_id);
+                    await API.sales.updateInvoiceItem(draftId, it.item_id, {
+                        quantity: q,
+                        unit_name: u,
+                        unit_price_exclusive: p,
+                        discount_percent: d
+                    });
+                    lastSalesInvoiceItemsSync[it.item_id] = { quantity: q, unit_name: u, unit_price: p, discount_percent: d };
+                    changed = true;
                 } catch (err) {
-                    const msg = (err && err.message) || String(err);
-                    if (msg.indexOf('already exists') !== -1) {
-                        showToast('Item already exists in this invoice. Edit the existing line.', 'warning');
-                        if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.highlightRowByItemId === 'function') {
-                            salesInvoiceItemsTable.highlightRowByItemId(item.item_id);
-                        }
-                    } else {
-                        showToast(msg, 'error');
-                    }
-                    salesInvoiceSyncedItemIds.delete(item.item_id);
-                } finally {
-                    salesInvoiceAddItemInFlight.delete(item.item_id);
+                    showToast((err && err.message) || 'Failed to update line', 'error');
                 }
             }
         }
-    }
+        if (changed) {
+            const updated = await API.sales.getInvoice(draftId);
+            documentItems = (updated.items || []).map(i => ({
+                item_id: i.item_id,
+                item_name: i.item_name,
+                item_sku: i.item_code,
+                item_code: i.item_code,
+                unit_name: i.unit_name,
+                quantity: i.quantity,
+                unit_price: i.unit_price_exclusive,
+                discount_percent: i.discount_percent || 0,
+                tax_percent: i.vat_rate || 0,
+                total: i.line_total_inclusive
+            }));
+            lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(updated.items);
+            if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
+                salesInvoiceItemsTable.setItems(documentItems);
+            }
+            updateSalesInvoiceSummary();
+        }
+    }, 800);
 }
 
 function initializeSalesInvoiceItemsTable() {
@@ -1007,15 +1093,17 @@ function initializeSalesInvoiceItemsTable() {
             is_empty: false
         }))
         : [];
+    if (documentItems.length > 0) lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(documentItems);
     
     salesInvoiceItemsTable = new window.TransactionItemsTable({
         mountEl: container,
         mode: 'sale',
         items: items,
         priceType: 'sale_price',
+        useAddRow: true,
+        onAddItem: onSalesInvoiceAddItem,
         onItemsChange: onSalesInvoiceItemsChange,
         onTotalChange: (total) => {
-            console.log('Sales invoice total changed:', total);
             updateSalesInvoiceSummary();
         },
         onItemCreate: (query, rowIndex, callback) => {
@@ -1190,9 +1278,32 @@ async function renderCreateSalesQuotationPage() {
     const quotationStatus = quotationData?.status || 'draft';
     const canEdit = quotationStatus === 'draft';
 
-    // Always reset quotation items when rendering this page so we never show stale or duplicated rows
-    quotationItems = [];
-    
+    if (isEditMode && quotationData && quotationData.items && quotationData.items.length > 0) {
+        const seen = new Set();
+        quotationItems = quotationData.items.filter(item => {
+            const key = `${item.item_id || ''}|${item.unit_name || ''}|${item.quantity}|${item.unit_price_exclusive || 0}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        }).map(item => ({
+            item_id: item.item_id,
+            item_name: item.item_name || item.item?.name || '',
+            item_sku: item.item_code || item.item?.sku || '',
+            item_code: item.item_code || item.item?.sku || '',
+            unit_name: item.unit_name,
+            quantity: item.quantity,
+            unit_price: item.unit_price_exclusive || 0,
+            purchase_price: item.unit_cost_base != null ? parseFloat(item.unit_cost_base) : null,
+            discount_percent: item.discount_percent || 0,
+            total: item.line_total_inclusive || 0,
+            is_empty: false
+        }));
+        quotationSyncedItemIds = new Set(quotationItems.map(i => i.item_id));
+    } else {
+        quotationItems = [];
+        quotationSyncedItemIds = new Set();
+    }
+
     const today = new Date().toISOString().split('T')[0];
     const validUntil = new Date();
     validUntil.setDate(validUntil.getDate() + 30); // Default 30 days validity
@@ -1330,49 +1441,8 @@ async function renderCreateSalesQuotationPage() {
         </div>
     `;
     
-    // Initialize TransactionItemsTable component for quotations (mode: 'quotation' - no stock validation)
+    // Initialize TransactionItemsTable component for quotations (add row + committed lines only)
     initializeSalesQuotationItemsTable();
-    
-    // If in edit mode, populate items after table is initialized (single run, dedupe to avoid duplicate rows)
-    if (isEditMode && quotationData && quotationData.items && quotationData.items.length > 0) {
-        const seen = new Set();
-        const deduped = quotationData.items.filter(item => {
-            const key = `${item.item_id || ''}|${item.unit_name || ''}|${item.quantity}|${item.unit_price_exclusive || 0}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-        quotationItems = deduped.map(item => ({
-            item_id: item.item_id,
-            item_name: item.item_name || item.item?.name || '',
-            item_sku: item.item_code || item.item?.sku || '',
-            item_code: item.item_code || item.item?.sku || '',
-            unit_name: item.unit_name,
-            quantity: item.quantity,
-            unit_price: item.unit_price_exclusive || 0,
-            purchase_price: item.unit_cost_base != null ? parseFloat(item.unit_cost_base) : null,
-            discount_percent: item.discount_percent || 0,
-            total: item.line_total_inclusive || 0,
-            is_empty: false
-        }));
-        const runPopulate = () => {
-            if (!salesQuotationItemsTable) return;
-            salesQuotationItemsTable.items = salesQuotationItemsTable.normalizeItems(quotationItems.slice());
-            const last = salesQuotationItemsTable.items[salesQuotationItemsTable.items.length - 1];
-            const hasEmptyRow = last && !last.item_id && !last.item_name;
-            if (!hasEmptyRow) {
-                salesQuotationItemsTable.items.push(salesQuotationItemsTable.createEmptyItem());
-            }
-            salesQuotationItemsTable.render();
-            salesQuotationItemsTable.attachEventListeners();
-            updateSalesQuotationSummary();
-        };
-        if (salesQuotationItemsTable) {
-            runPopulate();
-        } else {
-            setTimeout(runPopulate, 150);
-        }
-    }
     
     // Set form submit handler for edit mode
     if (isEditMode && quotationId) {
@@ -1388,6 +1458,118 @@ async function renderCreateSalesQuotationPage() {
     }
 }
 
+function mapQuotationResponseItems(quotation) {
+    const items = quotation && quotation.items ? quotation.items : [];
+    const cache = quotationItemDisplayCache || {};
+    return items.map(i => {
+        const idKey = i.item_id != null ? String(i.item_id) : '';
+        let name = (i.item_name && i.item_name !== '=' && i.item_name.trim() ? i.item_name : (i.item && i.item.name ? i.item.name : (i.item_code && i.item_code !== '=' ? i.item_code : ''))) || '';
+        let code = (i.item_code && i.item_code !== '=' && i.item_code !== '—' && String(i.item_code).trim() ? i.item_code : '') || '';
+        if (!name && cache[idKey] && cache[idKey].item_name) name = cache[idKey].item_name;
+        if (!code && cache[idKey] && cache[idKey].item_code) code = cache[idKey].item_code;
+        if (name || code) {
+            if (!quotationItemDisplayCache[idKey]) quotationItemDisplayCache[idKey] = {};
+            if (name) quotationItemDisplayCache[idKey].item_name = name;
+            if (code) quotationItemDisplayCache[idKey].item_code = code;
+        }
+        return {
+            item_id: i.item_id,
+            item_name: name || (cache[idKey] && cache[idKey].item_name) || '',
+            item_sku: code || (cache[idKey] && cache[idKey].item_code) || '',
+            item_code: code || (cache[idKey] && cache[idKey].item_code) || '',
+            unit_name: i.unit_name,
+            quantity: i.quantity,
+            unit_price: i.unit_price_exclusive != null ? parseFloat(i.unit_price_exclusive) : 0,
+            discount_percent: i.discount_percent != null ? parseFloat(i.discount_percent) : 0,
+            total: i.line_total_inclusive != null ? parseFloat(i.line_total_inclusive) : 0,
+            is_empty: false
+        };
+    });
+}
+
+function mapTableItemToQuotationItem(item) {
+    return {
+        item_id: item.item_id,
+        unit_name: item.unit_name || 'unit',
+        quantity: parseFloat(item.quantity) || 1,
+        unit_price_exclusive: parseFloat(item.unit_price) || 0,
+        discount_percent: parseFloat(item.discount_percent) || 0
+    };
+}
+
+async function onQuotationAddItem(item) {
+    const quotationId = currentQuotation && currentQuotation.id;
+    try {
+        if (!quotationId) {
+            const form = document.getElementById('salesQuotationForm');
+            if (!form) {
+                showToast('Form not found', 'error');
+                return;
+            }
+            const fd = new FormData(form);
+            const quotationData = {
+                company_id: CONFIG.COMPANY_ID,
+                branch_id: CONFIG.BRANCH_ID,
+                quotation_date: fd.get('quotation_date') || new Date().toISOString().split('T')[0],
+                customer_name: fd.get('customer_name') || null,
+                customer_pin: fd.get('customer_pin') || null,
+                reference: fd.get('reference') || null,
+                notes: fd.get('notes') || null,
+                status: 'draft',
+                valid_until: fd.get('valid_until') || null,
+                discount_amount: 0,
+                items: [mapTableItemToQuotationItem(item)],
+                created_by: CONFIG.USER_ID
+            };
+            if (item.item_id != null) {
+                const idKey = String(item.item_id);
+                if (!quotationItemDisplayCache[idKey]) quotationItemDisplayCache[idKey] = {};
+                if (item.item_name) quotationItemDisplayCache[idKey].item_name = item.item_name;
+                if (item.item_code) quotationItemDisplayCache[idKey].item_code = item.item_code;
+            }
+            const quotation = await API.quotations.create(quotationData);
+            currentQuotation = { id: quotation.id, mode: 'edit', quotationData: quotation };
+            quotationSyncedItemIds = new Set((quotation.items || []).map(i => i.item_id));
+            quotationItems = mapQuotationResponseItems(quotation);
+            if (salesQuotationItemsTable && typeof salesQuotationItemsTable.setItems === 'function') {
+                salesQuotationItemsTable.setItems(quotationItems);
+            }
+            updateSalesQuotationSummary();
+            const formEl = document.getElementById('salesQuotationForm');
+            if (formEl) {
+                formEl.onsubmit = (e) => { e.preventDefault(); updateSalesQuotation(e, quotation.id); };
+            }
+            const submitBtn = formEl && formEl.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.innerHTML = '<i class="fas fa-save"></i> Update Quotation';
+            }
+            showToast('Quotation created. Add more items or update when ready.', 'success');
+            return;
+        }
+        if (item.item_id != null) {
+            const idKey = String(item.item_id);
+            if (!quotationItemDisplayCache[idKey]) quotationItemDisplayCache[idKey] = {};
+            if (item.item_name) quotationItemDisplayCache[idKey].item_name = item.item_name;
+            if (item.item_code) quotationItemDisplayCache[idKey].item_code = item.item_code;
+        }
+        const quotation = await API.quotations.addItem(quotationId, mapTableItemToQuotationItem(item));
+        quotationSyncedItemIds.add(item.item_id);
+        quotationItems = mapQuotationResponseItems(quotation);
+        currentQuotation.quotationData = quotation;
+        if (salesQuotationItemsTable && typeof salesQuotationItemsTable.setItems === 'function') {
+            salesQuotationItemsTable.setItems(quotationItems);
+        }
+        updateSalesQuotationSummary();
+    } catch (err) {
+        const msg = (err && err.message) || String(err);
+        if (msg.indexOf('already on this quotation') !== -1) {
+            showToast('Item already on this quotation. Remove the line or choose a different item.', 'warning');
+        } else {
+            showToast(msg, 'error');
+        }
+    }
+}
+
 // Initialize TransactionItemsTable for Sales Quotation
 let salesQuotationItemsTable = null;
 
@@ -1398,12 +1580,49 @@ function initializeSalesQuotationItemsTable() {
         return;
     }
     
+    const items = quotationItems.length > 0 ? quotationItems.slice() : [];
+    
     salesQuotationItemsTable = new TransactionItemsTable({
         mountEl: container,
-        mode: 'quotation', // Quotations don't affect stock, so no stock validation
-        items: quotationItems.length > 0 ? quotationItems : [],
+        mode: 'quotation',
+        items: items,
+        useAddRow: true,
+        onAddItem: onQuotationAddItem,
+        onUpdateItem: async (idx, itemData) => {
+            const quotationId = currentQuotation && currentQuotation.id;
+            if (!quotationId) return;
+            const allItems = salesQuotationItemsTable && typeof salesQuotationItemsTable.getItems === 'function' ? salesQuotationItemsTable.getItems() : [];
+            const form = document.getElementById('salesQuotationForm');
+            const fd = form ? new FormData(form) : null;
+            try {
+                const payload = {
+                    customer_name: fd ? fd.get('customer_name') || null : null,
+                    customer_pin: fd ? fd.get('customer_pin') || null : null,
+                    reference: fd ? fd.get('reference') || null : null,
+                    notes: fd ? fd.get('notes') || null : null,
+                    status: 'draft',
+                    valid_until: fd ? fd.get('valid_until') || null : null,
+                    discount_amount: 0,
+                    items: allItems.map(item => ({
+                        item_id: item.item_id,
+                        unit_name: item.unit_name,
+                        quantity: item.quantity,
+                        unit_price_exclusive: item.unit_price,
+                        discount_percent: item.discount_percent || 0
+                    }))
+                };
+                const quotation = await API.quotations.update(quotationId, payload);
+                quotationItems = mapQuotationResponseItems(quotation);
+                currentQuotation.quotationData = quotation;
+                if (salesQuotationItemsTable && typeof salesQuotationItemsTable.setItems === 'function') {
+                    salesQuotationItemsTable.setItems(quotationItems);
+                }
+                updateSalesQuotationSummary();
+            } catch (err) {
+                showToast((err && err.message) || 'Failed to update line', 'error');
+            }
+        },
         onItemsChange: (validItems) => {
-            // Update quotationItems
             quotationItems = validItems.map(item => ({
                 item_id: item.item_id,
                 item_name: item.item_name,
@@ -1415,38 +1634,40 @@ function initializeSalesQuotationItemsTable() {
                 discount_percent: item.discount_percent || 0,
                 total: item.total
             }));
-            
             updateSalesQuotationSummary();
-            
-            // Auto-save when items change (if in edit mode and quotation is draft)
-            if (currentQuotation && currentQuotation.id && currentQuotation.quotationData?.status === 'draft') {
-                // Debounce auto-save to avoid too many requests
-                clearTimeout(window.autoSaveQuotationTimeout);
-                window.autoSaveQuotationTimeout = setTimeout(() => {
-                    autoSaveQuotation();
-                }, 2000); // Auto-save 2 seconds after last change
-            }
+            const quotationId = currentQuotation && currentQuotation.id;
+            if (!quotationId) return;
+            const validItemIds = new Set(validItems.filter(i => i.item_id).map(i => i.item_id));
+            const toRemove = [...quotationSyncedItemIds].filter(id => !validItemIds.has(id));
+            if (toRemove.length === 0) return;
+            (async () => {
+                for (const itemId of toRemove) {
+                    try {
+                        await API.quotations.deleteItem(quotationId, itemId);
+                        quotationSyncedItemIds.delete(itemId);
+                    } catch (err) {
+                        showToast((err && err.message) || 'Failed to remove item', 'error');
+                    }
+                }
+                const quotation = await API.quotations.get(quotationId);
+                quotationItems = mapQuotationResponseItems(quotation);
+                currentQuotation.quotationData = quotation;
+                if (salesQuotationItemsTable && typeof salesQuotationItemsTable.setItems === 'function') {
+                    salesQuotationItemsTable.setItems(quotationItems);
+                }
+                updateSalesQuotationSummary();
+            })();
         },
-        onTotalChange: () => {
-            updateSalesQuotationSummary();
-        },
+        onTotalChange: () => updateSalesQuotationSummary(),
         onItemCreate: (query, rowIndex, callback) => {
-            // Store callback for when item is created
             window._transactionItemCreateCallback = callback;
             window._transactionItemCreateRowIndex = rowIndex;
-            // Pre-fill item name if provided
-            if (query) {
-                window._transactionItemCreateName = query;
-            }
-            // Use the existing item creation modal from items page
+            if (query) window._transactionItemCreateName = query;
             if (typeof showAddItemModal === 'function') {
                 showAddItemModal();
-                // Pre-fill the name field if query is provided
                 setTimeout(() => {
                     const nameInput = document.querySelector('#itemForm input[name="name"]');
-                    if (nameInput && query) {
-                        nameInput.value = query;
-                    }
+                    if (nameInput && query) nameInput.value = query;
                 }, 100);
             } else {
                 showToast(`To create item "${query}", please go to Items page`, 'info');

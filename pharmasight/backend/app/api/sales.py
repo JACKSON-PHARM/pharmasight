@@ -24,7 +24,7 @@ from app.models.user import User
 from app.models.permission import Permission, RolePermission
 from app.schemas.sale import (
     SalesInvoiceCreate, SalesInvoiceResponse,
-    SalesInvoiceItemCreate, SalesInvoiceUpdate,
+    SalesInvoiceItemCreate, SalesInvoiceItemUpdate, SalesInvoiceUpdate,
     BatchSalesInvoiceRequest,
     InvoicePaymentCreate, InvoicePaymentResponse
 )
@@ -642,6 +642,92 @@ def delete_sales_invoice_item(
     db.delete(line)
     db.commit()
     return None
+
+
+@router.patch("/invoice/{invoice_id}/items/{item_id}", response_model=SalesInvoiceResponse)
+def update_sales_invoice_item(
+    invoice_id: UUID,
+    item_id: UUID,
+    payload: SalesInvoiceItemUpdate,
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Update one line item on a DRAFT invoice (quantity, unit, price, discount).
+    Recalculates line and invoice totals. Only DRAFT invoices can be edited.
+    """
+    from sqlalchemy.orm import selectinload
+
+    invoice = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items))
+        .filter(SalesInvoice.id == invoice_id)
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != "DRAFT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot edit items on invoice with status {invoice.status}. Only DRAFT invoices can be edited.",
+        )
+    line = next((i for i in invoice.items if i.item_id == item_id), None)
+    if not line:
+        raise HTTPException(status_code=404, detail="Item not found on this invoice")
+
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # Apply updates (only non-None fields)
+    if payload.quantity is not None:
+        line.quantity = payload.quantity
+    if payload.unit_name is not None:
+        line.unit_name = payload.unit_name
+    if payload.unit_price_exclusive is not None:
+        line.unit_price_exclusive = payload.unit_price_exclusive
+    if payload.discount_percent is not None:
+        line.discount_percent = payload.discount_percent
+    if payload.discount_amount is not None:
+        line.discount_amount = payload.discount_amount
+
+    # Stock check when quantity or unit changed
+    qty = float(line.quantity)
+    unit = line.unit_name or ""
+    is_available, available, required = InventoryService.check_stock_availability(
+        db, item_id, invoice.branch_id, qty, unit
+    )
+    if not is_available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient stock for {item.name}. Available: {available}, Required: {required}"
+        )
+
+    # Recalculate line totals
+    item_vat_rate = line.vat_rate
+    line_total_exclusive = (line.unit_price_exclusive or Decimal("0")) * (line.quantity or Decimal("0"))
+    disc = line.discount_amount or (line_total_exclusive * (line.discount_percent or 0) / Decimal("100"))
+    line_total_exclusive -= disc
+    line_vat = line_total_exclusive * item_vat_rate / Decimal("100")
+    line_total_inclusive = line_total_exclusive + line_vat
+    line.line_total_exclusive = line_total_exclusive
+    line.vat_amount = line_vat
+    line.line_total_inclusive = line_total_inclusive
+
+    # Recalculate invoice totals from all lines
+    total_exclusive = sum(l.line_total_exclusive for l in invoice.items)
+    total_vat = sum(l.vat_amount for l in invoice.items)
+    total_inclusive = total_exclusive + total_vat
+    invoice.total_exclusive = total_exclusive
+    invoice.vat_amount = total_vat
+    invoice.total_inclusive = total_inclusive
+    if total_exclusive > 0:
+        invoice.vat_rate = total_vat / total_exclusive * Decimal("100")
+    else:
+        invoice.vat_rate = Decimal("0")
+
+    db.commit()
+    db.refresh(invoice)
+    return get_sales_invoice(invoice_id, db)
 
 
 @router.get("/branch/{branch_id}/today-summary", response_model=dict)

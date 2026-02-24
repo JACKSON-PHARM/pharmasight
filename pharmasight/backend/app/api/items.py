@@ -36,6 +36,7 @@ from app.services.canonical_pricing import CanonicalPricingService
 from app.services.inventory_service import InventoryService, _unit_for_display
 from app.services.excel_import_service import ExcelImportService
 from app.services.snapshot_service import SnapshotService
+from app.services.order_book_service import OrderBookService
 from app.utils.vat import vat_rate_to_percent
 from pydantic import BaseModel, Field
 
@@ -321,7 +322,8 @@ def search_items(
     sale_price_map = {}
     last_supply_date_map = {}
     last_unit_cost_ledger_map = {}
-    
+    cheapest_supplier_map = {}
+
     t_pricing_start = time.perf_counter()
     last_purchases = []  # For purchase_order context when branch_id set
     if include_pricing:
@@ -368,6 +370,18 @@ def search_items(
                             last_supplier_map[r.id] = default_suppliers.get(r.default_supplier_id, '')
             t_after_supplier = time.perf_counter()
             logger.info(f"[search] supplier_lookup: {(t_after_supplier - t_after_purchase) * 1000:.2f} ms")
+
+            # For purchase_order context, get cheapest supplier per item (lowest unit cost)
+            if context == 'purchase_order':
+                cheapest_supplier_ids = OrderBookService.get_cheapest_supplier_ids_batch(db, item_ids, company_id)
+                cheapest_ids = {sid for sid in cheapest_supplier_ids.values() if sid is not None}
+                if cheapest_ids:
+                    cheapest_suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(cheapest_ids)).all()}
+                    cheapest_supplier_map.update({
+                        iid: cheapest_suppliers.get(sid, '')
+                        for iid, sid in cheapest_supplier_ids.items()
+                        if sid is not None
+                    })
 
         # Get last order dates from item_branch_search_snapshot (fast; available for all contexts when branch_id set)
         if branch_id:
@@ -474,6 +488,7 @@ def search_items(
         if context == 'purchase_order':
             item_data["last_supply_date"] = last_supply_date_map.get(item.id, None)
             item_data["last_unit_cost"] = last_unit_cost_val if last_unit_cost_val is not None else purchase_price_val
+            item_data["cheapest_supplier"] = cheapest_supplier_map.get(item.id, "")
 
         result.append(item_data)
 

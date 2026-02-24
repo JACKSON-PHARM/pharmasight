@@ -315,6 +315,8 @@ const API = {
             api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
         addInvoiceItem: (invoiceId, item) =>
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/items`, item),
+        updateInvoiceItem: (invoiceId, itemId, payload) =>
+            api.patch(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/items/${itemId}`, payload),
         deleteInvoiceItem: (invoiceId, itemId) =>
             api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/items/${itemId}`),
         deleteInvoice: (invoiceId) => 
@@ -375,6 +377,8 @@ const API = {
         create: (data) => api.post('/api/quotations', data),
         get: (quotationId) => api.get(`/api/quotations/${quotationId}`),
         listByBranch: (branchId) => api.get(`/api/quotations/branch/${branchId}`),
+        addItem: (quotationId, item) => api.post(`/api/quotations/${quotationId}/items`, item),
+        deleteItem: (quotationId, itemId) => api.delete(`/api/quotations/${quotationId}/items/${itemId}`),
         update: (quotationId, data) => api.put(`/api/quotations/${quotationId}`, data),
         delete: (quotationId) => api.delete(`/api/quotations/${quotationId}`),
         /** Download quotation as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
@@ -464,6 +468,12 @@ const API = {
         createInvoice: (data) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice`, data),
         getInvoice: (invoiceId) => 
             api.get(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`),
+        addInvoiceItem: (invoiceId, item) =>
+            api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/items`, item),
+        updateInvoiceItem: (invoiceId, itemId, payload) =>
+            api.patch(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/items/${itemId}`, payload),
+        deleteInvoiceItem: (invoiceId, itemId) =>
+            api.delete(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/items/${itemId}`),
         updateInvoice: (invoiceId, data) => 
             api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`, data),
         deleteInvoice: (invoiceId) => 
@@ -523,6 +533,8 @@ const API = {
             return api.get(`${CONFIG.API_ENDPOINTS.purchases}/order?${queryString.toString()}`);
         },
         getOrder: (orderId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
+        addOrderItem: (orderId, item) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}/items`, item),
+        deleteOrderItem: (orderId, itemId) => api.delete(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}/items/${itemId}`),
         updateOrder: (orderId, data) => api.put(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`, data),
         deleteOrder: (orderId) => api.delete(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
         approveOrder: (orderId) => api.patch(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}/approve`, null),

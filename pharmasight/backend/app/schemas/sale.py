@@ -23,6 +23,15 @@ class SalesInvoiceItemCreate(SalesInvoiceItemBase):
     pass
 
 
+class SalesInvoiceItemUpdate(BaseModel):
+    """Update one sales invoice line (qty, unit, price, discount). Edits are persisted immediately."""
+    quantity: Optional[Decimal] = Field(None, gt=0)
+    unit_name: Optional[str] = None
+    unit_price_exclusive: Optional[Decimal] = Field(None, ge=0)
+    discount_percent: Optional[Decimal] = Field(None, ge=0, le=100)
+    discount_amount: Optional[Decimal] = Field(None, ge=0)
+
+
 class BatchSalesInvoiceRequest(BaseModel):
     """Optional body for batch endpoint: sync invoice lines from frontend before batching."""
     items: Optional[List[SalesInvoiceItemCreate]] = Field(

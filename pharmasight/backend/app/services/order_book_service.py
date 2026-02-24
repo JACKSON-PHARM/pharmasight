@@ -3,7 +3,7 @@ Order Book Service - Automatic order book management
 """
 import logging
 import math
-from typing import Optional, List
+from typing import Optional, List, Dict
 from uuid import UUID
 from decimal import Decimal
 from datetime import datetime, timedelta, date
@@ -339,7 +339,79 @@ class OrderBookService:
         if best_supplier_id is not None:
             return best_supplier_id
         return getattr(item, "default_supplier_id", None)
-    
+
+    @staticmethod
+    def get_cheapest_supplier_ids_batch(
+        db: Session,
+        item_ids: List[UUID],
+        company_id: UUID
+    ) -> Dict[UUID, Optional[UUID]]:
+        """
+        For each item, return the supplier_id with the lowest unit cost (per wholesale).
+        Uses latest invoice line per (item, supplier). Falls back to item.default_supplier_id.
+        Returns dict item_id -> supplier_id (or None).
+        """
+        from app.models.purchase import SupplierInvoice, SupplierInvoiceItem
+
+        if not item_ids:
+            return {}
+        items = {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
+        rows = (
+            db.query(
+                SupplierInvoiceItem.item_id,
+                SupplierInvoice.supplier_id,
+                SupplierInvoiceItem.unit_cost_exclusive,
+                SupplierInvoiceItem.unit_name,
+                SupplierInvoice.invoice_date,
+            )
+            .join(SupplierInvoice, SupplierInvoice.id == SupplierInvoiceItem.purchase_invoice_id)
+            .filter(
+                and_(
+                    SupplierInvoiceItem.item_id.in_(item_ids),
+                    SupplierInvoice.company_id == company_id,
+                    SupplierInvoice.status == "BATCHED"
+                )
+            )
+            .order_by(SupplierInvoice.invoice_date.desc())
+            .all()
+        )
+        # Per (item_id, supplier_id) keep only most recent
+        by_item_supplier = {}
+        for r in rows:
+            key = (r.item_id, r.supplier_id)
+            if key not in by_item_supplier:
+                by_item_supplier[key] = (r.unit_cost_exclusive, r.unit_name)
+        result = {}
+        for item_id in item_ids:
+            item = items.get(item_id)
+            if not item:
+                result[item_id] = None
+                continue
+            by_supplier = {
+                sup_id: by_item_supplier[(item_id, sup_id)]
+                for (iid, sup_id) in by_item_supplier
+                if iid == item_id
+            }
+            if not by_supplier:
+                result[item_id] = getattr(item, "default_supplier_id", None)
+                continue
+            pack_size = max(1, int(item.pack_size or 1))
+            best_supplier_id = None
+            best_cost = None
+            for sup_id, (unit_cost, unit_name) in by_supplier.items():
+                try:
+                    mult = get_unit_multiplier_from_item(item, unit_name or "")
+                    if mult is None or float(mult) <= 0:
+                        continue
+                    cost_per_wholesale = float(unit_cost) / float(mult) * pack_size
+                except (ValueError, TypeError, ZeroDivisionError):
+                    continue
+                if best_cost is None or cost_per_wholesale < best_cost:
+                    best_cost = cost_per_wholesale
+                    best_supplier_id = sup_id
+            result[item_id] = best_supplier_id if best_supplier_id is not None else getattr(item, "default_supplier_id", None)
+        return result
+
     @staticmethod
     def process_sale_for_order_book(
         db: Session,

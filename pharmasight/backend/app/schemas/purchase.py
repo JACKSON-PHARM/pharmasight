@@ -88,6 +88,16 @@ class SupplierInvoiceItemCreate(SupplierInvoiceItemBase):
     pass
 
 
+class SupplierInvoiceItemUpdate(BaseModel):
+    """Update one supplier invoice line (qty, unit, cost, batch_data)."""
+    quantity: Optional[Decimal] = Field(None, gt=0)
+    unit_name: Optional[str] = None
+    unit_cost_exclusive: Optional[Decimal] = Field(None, ge=0)
+    vat_rate: Optional[Decimal] = Field(None, ge=0, le=100)
+    batches: Optional[List[BatchDistribution]] = None
+    batch_data: Optional[str] = Field(None, description="JSON string of batch distribution (alternative to batches)")
+
+
 class SupplierInvoiceItemResponse(SupplierInvoiceItemBase):
     """Supplier invoice item response"""
     id: UUID

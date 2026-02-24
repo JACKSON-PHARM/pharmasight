@@ -55,9 +55,15 @@
         this.onItemsChange = options.onItemsChange || null;
         this.onTotalChange = options.onTotalChange || null;
         this.onItemCreate = options.onItemCreate || null; // Callback for creating new items
+        this.useAddRow = options.useAddRow === true; // Single search row above table + Add button; table rows are committed only
+        this.onAddItem = options.onAddItem || null; // (item) => {} when user clicks Add in add row; parent creates doc or adds line
+        this.onUpdateItem = options.onUpdateItem || null; // (rowIndex, itemData) => {} when user updates an existing line from add row
         
         // Internal state
         this.items = this.normalizeItems(this.itemsSource);
+        this.addRowItem = null; // When useAddRow: current selection in the add row (one item or empty)
+        this.editingRowIndex = null; // When useAddRow: index of line being edited in add row; Add button then overwrites this line
+        this.addRowLoading = false; // When true, Add item button shows spinner and is disabled
         this.searchTimeout = null;
         this.searchAbortController = null;
         this.activeSearchRow = null;
@@ -68,14 +74,14 @@
         this._searchId = 0; // Incremented per search; used to ignore stale responses
         this._searchDebounceMs = 250; // Debounce so requests fire only after user pauses typing
         
-        // Always ensure there's at least one empty row for adding new items
-        // Check if the last item is empty, if not, add one
-        const hasEmptyRow = this.items.length > 0 && 
-            (!this.items[this.items.length - 1].item_id && 
-             !this.items[this.items.length - 1].item_name);
-        
-        if (this.items.length === 0 || !hasEmptyRow) {
-            this.items.push(this.createEmptyItem());
+        // When useAddRow: items = committed lines only (no empty row). Otherwise: ensure one empty row.
+        if (!this.useAddRow) {
+            const hasEmptyRow = this.items.length > 0 && 
+                (!this.items[this.items.length - 1].item_id && 
+                 !this.items[this.items.length - 1].item_name);
+            if (this.items.length === 0 || !hasEmptyRow) {
+                this.items.push(this.createEmptyItem());
+            }
         }
         
         // Render
@@ -100,20 +106,23 @@
      * Auto-focus on the first row's ITEM input field
      */
     TransactionItemsTable.prototype.autoFocusFirstItemField = function() {
-        // Use setTimeout to ensure DOM is fully rendered
         setTimeout(() => {
-            // Find the first row's ITEM search input (first column)
+            if (this.useAddRow) {
+                const addInput = document.getElementById(`${this.instanceId}_item_add`);
+                if (addInput) {
+                    addInput.focus();
+                    if (addInput.value) addInput.setSelectionRange(addInput.value.length, addInput.value.length);
+                }
+                return;
+            }
             const firstItemInput = document.querySelector(
                 `#${this.instanceId}_tbody tr[data-item-index="0"] .item-search-input`
             );
             if (firstItemInput) {
                 firstItemInput.focus();
-                // Place cursor at end if there's any text
-                if (firstItemInput.value) {
-                    firstItemInput.setSelectionRange(firstItemInput.value.length, firstItemInput.value.length);
-                }
+                if (firstItemInput.value) firstItemInput.setSelectionRange(firstItemInput.value.length, firstItemInput.value.length);
             }
-        }, 200); // Increased delay to ensure DOM is ready
+        }, 200);
     };
     
     /**
@@ -157,6 +166,18 @@
         };
     };
     
+    /**
+     * Display name for an item: prefer item_name/name; never show "=" as name; fallback to item_code or "—".
+     */
+    TransactionItemsTable.prototype.getItemDisplayName = function(item) {
+        const name = (item && (item.item_name || item.name || (item.item && item.item.name))) || '';
+        const trimmed = (typeof name === 'string' ? name : '').trim();
+        if (trimmed && trimmed !== '=') return trimmed;
+        const code = (item && (item.item_code || item.item_sku)) || '';
+        const out = (typeof code === 'string' && code.trim() && code !== '=') ? code.trim() : '—';
+        return (out === '=' ? '—' : out);
+    };
+
     /**
      * Normalize items array
      */
@@ -233,34 +254,89 @@
         const formatCurrency = this.getFormatCurrency();
         const formatNumber = this.getFormatNumber();
         const escapeHtml = this.getEscapeHtml();
+        const isAddRowMode = this.useAddRow;
+        const addItem = this.addRowItem;
+        
+        const thStyle = 'padding: 0.3rem 0.4rem; text-align: left; font-weight: 600; font-size: 0.75rem;';
+        const thStyleRight = 'padding: 0.3rem 0.4rem; text-align: right; font-weight: 600; font-size: 0.75rem;';
+        const thStyleCenter = 'padding: 0.3rem 0.4rem; text-align: center; font-weight: 600; font-size: 0.75rem;';
+        const headerRow = `
+                        <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
+                           <th style="${thStyle} width: 40%; min-width: 200px;">ITEM</th>
+                           <th style="${thStyle} width: 12%;">ITEM CODE</th>
+                            <th style="${thStyleCenter} width: 5%;">QTY</th>
+                            <th style="${thStyle} width: 7%; min-width: 50px;">UNIT</th>
+                            <th style="${thStyleRight} width: 9%;" title="Price per unit excluding VAT.">PRICE/UNIT (excl. VAT)</th>
+                            ${(this.mode === 'sale' || this.mode === 'quotation') ? `<th style="${thStyleRight} width: 6%;">MARGIN%</th>` : ''}
+                            <th style="${thStyleRight} width: 6%;">DISCOUNT%</th>
+                            <th style="${thStyleRight} width: 6%;">VAT</th>
+                            <th style="${thStyleRight} width: 10%;">NETT</th>
+                            <th style="${thStyleRight} width: 10%;">TOTAL</th>
+                            <th style="${thStyleCenter} width: 4%;">ACTIONS</th>
+                        </tr>`;
         
         let html = `
            <div class="transaction-items-table-container" data-instance-id="${this.instanceId}" style="position: relative;">
-               <table style="width: 100%; border-collapse: collapse; background: white;">
-                    <thead>
-                        <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
-                           <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 40%; min-width: 250px;">ITEM</th>
-                           <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 12%;">ITEM CODE</th>
-                            <th style="padding: 0.75rem; text-align: center; font-weight: 600; width: 5%;">QTY</th>
-                            <th style="padding: 0.75rem; text-align: left; font-weight: 600; width: 7%; min-width: 60px;">UNIT</th>
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 9%;" title="Price per unit excluding VAT. VAT is shown in the VAT column.">PRICE/UNIT (excl. VAT)</th>
-                            ${(this.mode === 'sale' || this.mode === 'quotation') ? '<th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">MARGIN%</th>' : ''}
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">DISCOUNT%</th>
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 6%;">VAT</th>
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 10%;">NETT</th>
-                            <th style="padding: 0.75rem; text-align: right; font-weight: 600; width: 10%;">TOTAL</th>
-                            <th style="padding: 0.75rem; text-align: center; font-weight: 600; width: 4%;">ACTIONS</th>
-                        </tr>
-                    </thead>
+        `;
+        
+        // When useAddRow: add row in a SEPARATE section above the items table (not inside the table)
+        if (isAddRowMode) {
+            const isSearching = this.activeSearchRow === 'add';
+            const ar = addItem || this.createEmptyItem();
+            const btnDisabled = !this.canEdit || !ar.item_id || this.addRowLoading;
+            html += `
+            <div id="${this.instanceId}_add_row_section" class="add-row-section" style="margin-bottom: 0.75rem; padding: 0.35rem 0.6rem; background: #e8f4fd; border: 1px solid var(--border-color, #b6d4fe); border-radius: 0.5rem;">
+                <style>.add-row-section input[type="number"]::-webkit-outer-spin-button,.add-row-section input[type="number"]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.add-row-section input[type="number"]{-moz-appearance:textfield}</style>
+                <table class="add-row-table" style="width: 100%; border-collapse: collapse; background: transparent; font-size: 0.8rem;">
+                    <thead>${headerRow}</thead>
+                    <tbody id="${this.instanceId}_add_row_tbody">
+                <tr data-item-index="add" class="add-row-tr">
+                    <td style="padding: 0.2rem 0.35rem; position: relative;">
+                        <input type="text" class="form-input item-search-input add-row-search ${ar.item_id ? 'item-selected' : ''}"
+                               id="${this.instanceId}_item_add" value="${escapeHtml(ar.item_name || '')}"
+                               placeholder="Search item..."
+                               autocomplete="off" data-row="add" data-item-id="${ar.item_id || ''}"
+                               style="width: 100%; box-sizing: border-box; border: ${isSearching ? '2px solid var(--primary-color, #007bff)' : '1px solid var(--border-color, #dee2e6)'}; padding: 0.35rem 0.5rem; font-size: 0.8rem;"
+                               ${!this.canEdit ? 'disabled' : ''}>
+                    </td>
+                    <td style="padding: 0.2rem 0.35rem;"><input type="text" class="form-input add-row-code" value="${escapeHtml(ar.item_code || ar.item_sku || '')}" readonly style="width: 100%; padding: 0.35rem 0.5rem; font-size: 0.8rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="add"></td>
+                    <td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-qty qty-input" value="${ar.quantity || 1}" step="0.01" min="0.01" data-row="add" data-field="quantity" style="width: 100%; text-align: center; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
+                    <td style="padding: 0.2rem 0.35rem;">${ar.item_id && (ar.available_units && ar.available_units.length) ? (() => {
+                        const units = ar.available_units;
+                        const opts = units.map(u => `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${u.multiplier_to_base || 1}" ${(ar.unit_name || '') === (u.unit_name || '') ? 'selected' : ''}>${escapeHtml(u.unit_name || '')}</option>`).join('');
+                        return `<select class="form-input add-row-unit unit-select" data-row="add" data-field="unit_name" style="width: 100%; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}>${opts}</select>`;
+                    })() : `<input type="text" class="form-input add-row-unit unit-display" value="${escapeHtml(ar.unit_name || '')}" readonly style="width: 100%; padding: 0.35rem 0.5rem; font-size: 0.8rem; background: #f8f9fa;" data-row="add">`}</td>
+                    <td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-price price-input" value="${this.roundMoney(ar.unit_price || 0).toFixed(2)}" step="0.01" min="0" data-row="add" data-field="unit_price" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
+                    ${(this.mode === 'sale' || this.mode === 'quotation') ? `<td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-margin margin-input" value="${(this.calculateMargin(ar) || 0).toFixed(1)}" step="0.1" data-row="add" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem; font-weight: 500; color: ${(this.calculateMargin(ar) || 0) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};" ${!this.canEdit ? 'disabled' : ''}></td>` : ''}
+                    <td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-discount discount-input" value="${this.roundMoney(ar.discount_percent || 0)}" step="0.01" min="0" max="100" data-row="add" data-field="discount_percent" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
+                    <td style="padding: 0.2rem 0.35rem; text-align: right; font-size: 0.8rem;"><span class="add-row-vat">${(ar.tax_percent || 0).toFixed(1)}% / ${formatCurrency(this.calculateVATAmount(ar))}</span></td>
+                    <td style="padding: 0.2rem 0.35rem; text-align: right; font-weight: 600;"><input type="number" class="form-input add-row-nett nett-input" data-row="add" data-field="nett" value="${this.roundMoney(this.calculateNett(ar) || 0).toFixed(2)}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'readonly' : ''} title="Editable: change and blur to recalc from nett"></td>
+                    <td style="padding: 0.2rem 0.35rem; text-align: right; font-weight: 600;"><input type="number" class="form-input add-row-total total-input add-row-total-input" data-row="add" data-field="total" value="${this.roundMoney(ar.total || 0).toFixed(2)}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'readonly' : ''} title="Editable: enter total to reverse-calculate unit price"></td>
+                    <td style="padding: 0.2rem 0.35rem; text-align: center;">
+                        ${this.editingRowIndex !== null ? `<span class="add-row-editing-hint" style="font-size: 0.65rem; color: var(--text-secondary); display: block; margin-bottom: 0.15rem;">Editing line ${this.editingRowIndex + 1}</span>` : ''}
+                        <button type="button" class="btn btn-primary btn-sm add-item-btn" data-row="add" title="${this.editingRowIndex !== null ? 'Save changes to this line' : 'Add item to document'}" ${btnDisabled ? 'disabled' : ''} style="padding: 0.35rem 0.6rem; font-size: 0.8rem;">${this.addRowLoading ? '<i class="fas fa-spinner fa-spin"></i> Adding...' : `<i class="fas ${this.editingRowIndex !== null ? 'fa-check' : 'fa-plus'}"></i> ${this.editingRowIndex !== null ? 'Update line' : 'Add item'}`}</button>
+                    </td>
+                </tr>
+                    </tbody>
+                </table>
+            </div>
+            `;
+        }
+        
+        html += `
+               <table class="transaction-items-table" style="width: 100%; border-collapse: collapse; background: white;">
+                    <thead>${headerRow}</thead>
                     <tbody id="${this.instanceId}_tbody">
         `;
         
-        // Render item rows
+        // Render item rows (when useAddRow: only committed items, read-only; else normal editable rows)
         this.items.forEach((item, index) => {
+            if (isAddRowMode && (item.is_empty || !item.item_id)) return;
             const isSearching = this.activeSearchRow === index;
-            html += `
-                <tr data-item-index="${index}" data-row-id="${this.instanceId}_row_${index}">
-                    <td style="padding: 0.25rem; position: relative; min-width: 250px;">
+            // When useAddRow, data rows show item name as clickable (view details); no search input per row
+            const firstCell = isAddRowMode
+                ? `<td style="padding: 0.25rem; min-width: 250px;"><span class="item-name-clickable" data-row="${index}" data-item-id="${item.item_id || ''}" role="button" tabindex="0" style="cursor: pointer; text-decoration: underline; color: var(--primary-color, #007bff); font-weight: 500;">${escapeHtml(this.getItemDisplayName(item))}</span></td>`
+                : `<td style="padding: 0.25rem; position: relative; min-width: 250px;">
                         <input type="text" 
                                class="form-input item-search-input ${item.item_id ? 'item-selected' : ''}" 
                                id="${this.instanceId}_item_${index}"
@@ -271,54 +347,59 @@
                                data-item-id="${item.item_id || ''}"
                                style="width: 100%; box-sizing: border-box; border: ${isSearching ? '2px solid var(--primary-color, #007bff)' : '1px solid var(--border-color, #dee2e6)'}; padding: 0.6rem; font-size: 0.9rem; min-width: 250px;"
                                ${!this.canEdit ? 'disabled' : ''}>
+                    </td>`;
+            const qtyVal = (item.quantity != null && !isNaN(Number(item.quantity)) ? Number(item.quantity) : 1);
+            const priceVal = (item.unit_price != null && !isNaN(Number(item.unit_price)) ? this.roundMoney(Number(item.unit_price)) : 0).toFixed(2);
+            const totalVal = (item.total != null && !isNaN(Number(item.total)) ? this.roundMoney(Number(item.total)) : 0).toFixed(2);
+            const marginVal = (this.calculateMargin(item) || 0).toFixed(1);
+            const discountVal = this.roundMoney(item.discount_percent);
+            const readOnlyCells = isAddRowMode ? `
+                    <td style="padding: 0.25rem;"><span class="item-code-display" data-row="${index}">${escapeHtml(item.item_code || item.item_sku || '')}</span></td>
+                    <td style="padding: 0.25rem; text-align: center;">
+                        <span class="qty-display" data-row="${index}">${qtyVal}</span>
+                        ${this.mode === 'sale' && (item.stock_display || typeof item.available_stock === 'number') ? (() => {
+                            if (item.stock_display) {
+                                const stockNum = typeof item.available_stock === 'number' ? item.available_stock : 0;
+                                let color = 'var(--success-color, #16a34a)';
+                                if (stockNum <= 0) color = 'var(--danger-color, #dc2626)';
+                                else if (stockNum > 0 && stockNum < 5) color = 'var(--warning-color, #d97706)';
+                                return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; color: ${color}; display: block;">Stock: ${escapeHtml(item.stock_display)}</span>`;
+                            }
+                            const stock = this.getAvailableInSelectedUnit(item);
+                            if (stock == null) return '';
+                            let color = stock <= 0 ? 'var(--danger-color, #dc2626)' : (stock < 5 ? 'var(--warning-color, #d97706)' : 'var(--success-color, #16a34a)');
+                            return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; color: ${color}; display: block;">Available: ${this.getFormatNumber()(stock)}</span>`;
+                        })() : ''}
                     </td>
+                    <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>
+                    <td style="padding: 0.25rem; text-align: right;"><span class="price-display" data-row="${index}">${priceVal}</span></td>
+                    ${(this.mode === 'sale' || this.mode === 'quotation') ? `<td style="padding: 0.25rem; text-align: right;"><span class="margin-display" data-row="${index}" style="font-weight: 500; color: ${this.calculateMargin(item) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};">${marginVal}</span></td>` : ''}
+                    <td style="padding: 0.25rem; text-align: right;"><span class="discount-display" data-row="${index}">${discountVal}</span></td>
+                    <td style="padding: 0.25rem; text-align: right;">
+                        <span class="vat-percent-display" data-row="${index}" style="font-size: 0.75rem; color: var(--text-secondary, #666);">${(item.tax_percent || 0).toFixed(1)}%</span>
+                        <span class="vat-amount-display" data-row="${index}" style="font-weight: 500;">${formatCurrency(this.calculateVATAmount(item))}</span>
+                    </td>
+                    <td style="padding: 0.25rem; text-align: right; font-weight: 600;"><span class="item-nett" data-row="${index}">${formatCurrency(this.calculateNett(item))}</span></td>
+                    <td style="padding: 0.25rem; text-align: right; font-weight: 600;"><span class="total-display" data-row="${index}">${totalVal}</span></td>
+            ` : `
                     <td style="padding: 0.25rem;">
-                        <input type="text" 
-                               class="form-input" 
-                               value="${item.item_code || item.item_sku || ''}" 
-                               placeholder="Code"
-                               readonly
-                               style="width: 100%; padding: 0.5rem; box-sizing: border-box; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);"
-                               data-row="${index}"
-                               data-field="item_code">
+                        <input type="text" class="form-input" value="${escapeHtml(item.item_code || item.item_sku || '')}" placeholder="Code" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="item_code">
                     </td>
                     <td style="padding: 0.25rem;">
                         <div style="display: flex; flex-direction: column; gap: 0.15rem;">
-                            <input type="number" 
-                                   class="form-input input-direct qty-input" 
-                                   value="${item.quantity || 1}" 
-                                   step="0.01" 
-                                   min="0.01"
-                                   style="width: 100%; box-sizing: border-box; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
-                                   data-row="${index}"
-                                   data-field="quantity"
-                                   ${!this.canEdit ? 'disabled' : ''}>
+                            <input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="0.01" min="0.01" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${!this.canEdit ? 'disabled' : ''}>
                             ${this.mode === 'sale' && (item.stock_display || typeof item.available_stock === 'number') ? (() => {
-                                // Use stock_display (3-tier format) if available, otherwise fallback to available_stock
                                 if (item.stock_display) {
                                     const stockNum = typeof item.available_stock === 'number' ? item.available_stock : 0;
                                     let color = 'var(--success-color, #16a34a)';
-                                    if (stockNum <= 0) {
-                                        color = 'var(--danger-color, #dc2626)';
-                                    } else if (stockNum > 0 && stockNum < 5) {
-                                        color = 'var(--warning-color, #d97706)';
-                                    }
-                                    return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; font-weight: 500; color: ${color}; display: block; margin-top: 0.25rem;">
-                                        Stock: ${escapeHtml(item.stock_display)}
-                                    </span>`;
+                                    if (stockNum <= 0) color = 'var(--danger-color, #dc2626)';
+                                    else if (stockNum > 0 && stockNum < 5) color = 'var(--warning-color, #d97706)';
+                                    return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; font-weight: 500; color: ${color}; display: block;">Stock: ${escapeHtml(item.stock_display)}</span>`;
                                 }
-                                // Fallback to old format if stock_display not available
                                 const stock = this.getAvailableInSelectedUnit(item);
                                 if (stock == null) return '';
-                                let color = 'var(--success-color, #16a34a)';
-                                if (stock <= 0) {
-                                    color = 'var(--danger-color, #dc2626)';
-                                } else if (stock > 0 && stock < 5) {
-                                    color = 'var(--warning-color, #d97706)';
-                                }
-                                return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; font-weight: 500; color: ${color}; display: block; margin-top: 0.25rem;">
-                                    Available: ${this.getFormatNumber()(stock)}
-                                </span>`;
+                                let color = stock <= 0 ? 'var(--danger-color, #dc2626)' : (stock < 5 ? 'var(--warning-color, #d97706)' : 'var(--success-color, #16a34a)');
+                                return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; font-weight: 500; color: ${color}; display: block;">Available: ${this.getFormatNumber()(stock)}</span>`;
                             })() : ''}
                         </div>
                     </td>
@@ -327,65 +408,35 @@
                             const units = item.available_units;
                             let opts = units.map(u => `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${escapeHtml(String(u.multiplier_to_base || 1))}" ${(item.unit_name || '') === (u.unit_name || '') ? 'selected' : ''}>${escapeHtml(u.unit_name || '')}</option>`).join('');
                             if (!opts) opts = `<option value="${escapeHtml(item.unit_name || '')}">${escapeHtml(item.unit_name || '')}</option>`;
-                            return `<select class="form-input unit-select" data-row="${index}" data-field="unit_name" style="width: 100%; box-sizing: border-box; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" ${!this.canEdit ? 'disabled' : ''}>${opts}</select>`;
-                        })() : `<input type="text" class="form-input unit-display" value="${escapeHtml(item.unit_name || '')}" placeholder="Unit" readonly style="width: 100%; box-sizing: border-box; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="unit_name">`}
+                            return `<select class="form-input unit-select" data-row="${index}" data-field="unit_name" style="width: 100%; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" ${!this.canEdit ? 'disabled' : ''}>${opts}</select>`;
+                        })() : `<input type="text" class="form-input unit-display" value="${escapeHtml(item.unit_name || '')}" placeholder="Unit" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="unit_name">`}
                     </td>
                     <td style="padding: 0.25rem;">
-                        <input type="number" 
-                               class="form-input input-direct price-input" 
-                               value="${this.roundMoney(item.unit_price).toFixed(2)}" 
-                               step="0.01" 
-                               min="0"
-                               style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
-                               data-row="${index}"
-                               data-field="unit_price"
-                               ${!this.canEdit ? 'disabled' : ''}>
+                        <input type="number" class="form-input input-direct price-input" value="${priceVal}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="unit_price" ${!this.canEdit ? 'disabled' : ''}>
                     </td>
                     ${(this.mode === 'sale' || this.mode === 'quotation') ? `
                     <td style="padding: 0.25rem; text-align: right;">
-                        <input type="number" 
-                               class="form-input input-direct margin-input" 
-                               value="${(this.calculateMargin(item) || 0).toFixed(1)}" 
-                               step="0.1" 
-                               data-row="${index}"
-                               style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 500; color: ${this.calculateMargin(item) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};"
-                               title="Edit margin % — net and total will recalculate"
-                               ${!this.canEdit ? 'disabled' : ''}>
+                        <input type="number" class="form-input input-direct margin-input" value="${marginVal}" step="0.1" data-row="${index}" style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 500; color: ${this.calculateMargin(item) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};" ${!this.canEdit ? 'disabled' : ''}>
                     </td>
                     ` : ''}
                     <td style="padding: 0.25rem;">
-                        <input type="number" 
-                               class="form-input input-direct discount-input" 
-                               value="${this.roundMoney(item.discount_percent)}" 
-                               step="0.01" 
-                               min="0"
-                               max="100"
-                               style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);"
-                               data-row="${index}"
-                               data-field="discount_percent"
-                               ${!this.canEdit ? 'disabled' : ''}>
+                        <input type="number" class="form-input input-direct discount-input" value="${discountVal}" step="0.01" min="0" max="100" style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="discount_percent" ${!this.canEdit ? 'disabled' : ''}>
                     </td>
                     <td style="padding: 0.25rem; text-align: right;">
                         <div style="display: flex; flex-direction: column; gap: 0.1rem;">
-                            <span class="vat-percent-display" data-row="${index}" style="font-size: 0.75rem; color: var(--text-secondary, #666);">
-                                ${(item.tax_percent || 0).toFixed(1)}%
-                            </span>
-                            <span class="vat-amount-display" data-row="${index}" style="font-weight: 500;">
-                                ${formatCurrency(this.calculateVATAmount(item))}
-                            </span>
+                            <span class="vat-percent-display" data-row="${index}" style="font-size: 0.75rem; color: var(--text-secondary, #666);">${(item.tax_percent || 0).toFixed(1)}%</span>
+                            <span class="vat-amount-display" data-row="${index}" style="font-weight: 500;">${formatCurrency(this.calculateVATAmount(item))}</span>
                         </div>
                     </td>
+                    <td style="padding: 0.25rem; text-align: right; font-weight: 600;"><span class="item-nett" data-row="${index}">${formatCurrency(this.calculateNett(item))}</span></td>
                     <td style="padding: 0.25rem; text-align: right; font-weight: 600;">
-                        <span class="item-nett" data-row="${index}">${formatCurrency(this.calculateNett(item))}</span>
+                        <input type="number" class="form-input input-direct total-input" data-row="${index}" data-field="total" value="${totalVal}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 600;" ${!this.canEdit ? 'readonly' : ''} title="Editable: enter total to reverse-calculate unit price">
                     </td>
-                    <td style="padding: 0.25rem; text-align: right; font-weight: 600;">
-                        <input type="number" class="form-input input-direct total-input" data-row="${index}" data-field="total"
-                               value="${this.roundMoney(item.total).toFixed(2)}"
-                               step="0.01" min="0"
-                               style="width: 100%; box-sizing: border-box; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 600;"
-                               ${!this.canEdit ? 'readonly' : ''}
-                               title="Editable: enter total to reverse-calculate unit price">
-                    </td>
+            `;
+            html += `
+                <tr data-item-index="${index}" data-row-id="${this.instanceId}_row_${index}" class="${isAddRowMode ? 'committed-row' : ''}" ${isAddRowMode ? 'title="Double-click to load into search row for editing"' : ''}>
+                    ${firstCell}
+                    ${readOnlyCells}
                     <td style="padding: 0.25rem; text-align: center;">
                         <div style="display: flex; gap: 0.25rem; justify-content: center; align-items: center;">
                             ${this.mode === 'purchase' && item.item_id ? `
@@ -442,149 +493,216 @@
      * Attach event listeners
      */
     TransactionItemsTable.prototype.attachEventListeners = function() {
+        const container = this.mountEl.querySelector(`[data-instance-id="${this.instanceId}"]`);
         const tbody = document.getElementById(`${this.instanceId}_tbody`);
-        if (!tbody) return;
+        if (!container) return;
+        
+        // Event delegation: use container so both add-row section and main table tbody are covered
+        const el = container;
+        
+        // Double-click committed row to load into search row for editing (useAddRow only)
+        if (this.useAddRow && tbody) {
+            tbody.addEventListener('dblclick', (e) => {
+                const tr = e.target.closest('tr[data-item-index]');
+                if (!tr || tr.dataset.itemIndex === 'add') return;
+                const rowIndex = parseInt(tr.dataset.itemIndex, 10);
+                if (isNaN(rowIndex) || rowIndex < 0 || rowIndex >= this.items.length) return;
+                const item = this.items[rowIndex];
+                if (!item || !item.item_id) return;
+                this.addRowItem = {
+                    item_id: item.item_id,
+                    item_name: item.item_name,
+                    item_sku: item.item_sku,
+                    item_code: item.item_code || item.item_sku,
+                    unit_name: item.unit_name,
+                    quantity: item.quantity,
+                    unit_price: item.unit_price,
+                    discount_percent: item.discount_percent,
+                    tax_percent: item.tax_percent,
+                    total: item.total,
+                    available_units: item.available_units,
+                    purchase_price: item.purchase_price
+                };
+                this.editingRowIndex = rowIndex;
+                this.render();
+                this.attachEventListeners();
+            });
+        }
         
         // Item search input handlers
-        tbody.addEventListener('input', (e) => {
+        el.addEventListener('input', (e) => {
             if (e.target.classList.contains('item-search-input')) {
-                const row = parseInt(e.target.dataset.row);
-                const item = this.items[row];
-                // If row had a selected item and user is typing, clear selection and run search
+                const row = e.target.dataset.row;
+                const rowNum = row === 'add' ? 'add' : parseInt(row, 10);
+                if (rowNum === 'add') {
+                    if (this.addRowItem && this.addRowItem.item_id) {
+                        this.addRowItem = null;
+                        e.target.dataset.itemId = '';
+                        e.target.classList.remove('item-selected');
+                    }
+                    this.handleItemSearch(e.target.value, 'add');
+                    return;
+                }
+                const item = this.items[rowNum];
                 if (item && item.item_id) {
-                    this.clearRowSelection(row);
+                    this.clearRowSelection(rowNum);
                     e.target.dataset.itemId = '';
                     e.target.classList.remove('item-selected');
                 }
-                this.handleItemSearch(e.target.value, row);
+                this.handleItemSearch(e.target.value, rowNum);
             }
         });
         
         // When focusing item field with a selected item, show details dropdown (not search)
-        tbody.addEventListener('focus', (e) => {
+        el.addEventListener('focus', (e) => {
             if (e.target.classList.contains('item-search-input')) {
-                const row = parseInt(e.target.dataset.row);
-                const item = this.items[row];
+                const row = e.target.dataset.row;
+                if (row === 'add') {
+                    if (this.addRowItem && this.addRowItem.item_id) {
+                        e.preventDefault();
+                        this.showSelectedItemDropdown('add');
+                    }
+                    return;
+                }
+                const item = this.items[parseInt(row, 10)];
                 if (item && item.item_id) {
                     e.preventDefault();
-                    this.showSelectedItemDropdown(row);
+                    this.showSelectedItemDropdown(parseInt(row, 10));
                     return;
                 }
             }
         }, true);
         
-        tbody.addEventListener('click', (e) => {
+        el.addEventListener('click', (e) => {
+            if (e.target.classList.contains('add-item-btn')) {
+                this.handleAddRowAddClick();
+                return;
+            }
+            if (e.target.classList.contains('item-name-clickable')) {
+                const row = parseInt(e.target.dataset.row, 10);
+                if (this.items[row] && this.items[row].item_id) this.showSelectedItemDropdown(row);
+                return;
+            }
             if (e.target.classList.contains('item-search-input')) {
-                const row = parseInt(e.target.dataset.row);
-                const item = this.items[row];
-                if (item && item.item_id) {
-                    this.showSelectedItemDropdown(row);
+                const row = e.target.dataset.row;
+                if (row === 'add') {
+                    if (this.addRowItem && this.addRowItem.item_id) this.showSelectedItemDropdown('add');
+                    return;
                 }
+                const item = this.items[parseInt(row, 10)];
+                if (item && item.item_id) this.showSelectedItemDropdown(parseInt(row, 10));
             }
         });
         
-        tbody.addEventListener('keydown', (e) => {
+        el.addEventListener('keydown', (e) => {
             if (e.target.classList.contains('item-search-input')) {
                 if (e.key === 'Escape') {
                     this.closeSelectedItemDropdown();
                     this.closeSuggestions();
                 }
-                this.handleItemSearchKeydown(e, parseInt(e.target.dataset.row));
+                const row = e.target.dataset.row;
+                this.handleItemSearchKeydown(e, row === 'add' ? 'add' : parseInt(row, 10));
             } else if (e.target.classList.contains('qty-input') || 
                        e.target.classList.contains('price-input') || 
                        e.target.classList.contains('discount-input')) {
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    this.handleFieldChange(parseInt(e.target.dataset.row), e.target.dataset.field, e.target.value);
-                    // Move to next field or add new row
-                    this.moveToNextField(e.target);
+                    const row = e.target.dataset.row;
+                    if (row === 'add') {
+                        this.updateAddRowFromDom();
+                    } else {
+                        this.handleFieldChange(parseInt(row, 10), e.target.dataset.field, e.target.value);
+                        this.moveToNextField(e.target);
+                    }
                 }
             } else if (e.target.classList.contains('total-input')) {
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    this.handleTotalChange(parseInt(e.target.dataset.row), e.target.value);
+                    const row = e.target.dataset.row;
+                    if (row !== 'add') this.handleTotalChange(parseInt(row, 10), e.target.value);
                 }
             }
         });
         
         // Quantity, price, discount, unit change handlers (on blur/enter/change)
-        tbody.addEventListener('change', (e) => {
+        el.addEventListener('change', (e) => {
+            const row = e.target.dataset.row;
+            if (row === 'add') {
+                this.updateAddRowFromDom();
+                return;
+            }
+            const rowNum = parseInt(row, 10);
             if (e.target.classList.contains('qty-input') || 
                 e.target.classList.contains('price-input') || 
                 e.target.classList.contains('discount-input')) {
-                const row = parseInt(e.target.dataset.row);
                 const field = e.target.dataset.field;
-                this.handleFieldChange(row, field, e.target.value);
+                this.handleFieldChange(rowNum, field, e.target.value);
             }
             if (e.target.classList.contains('unit-select')) {
-                const row = parseInt(e.target.dataset.row);
                 const opt = e.target.options[e.target.selectedIndex];
                 const unitName = e.target.value;
                 const multiplier = opt ? parseFloat(opt.dataset.multiplier) || 1 : 1;
-                this.handleUnitChange(row, unitName, multiplier);
+                this.handleUnitChange(rowNum, unitName, multiplier);
             }
             if (e.target.classList.contains('total-input')) {
-                const row = parseInt(e.target.dataset.row);
-                this.handleTotalChange(row, e.target.value);
+                this.handleTotalChange(rowNum, e.target.value);
             }
             if (e.target.classList.contains('margin-input')) {
-                const row = parseInt(e.target.dataset.row);
-                this.handleMarginChange(row, e.target.value);
+                this.handleMarginChange(rowNum, e.target.value);
             }
         });
         
         // Real-time input handlers (debounced) for live calculation
-        tbody.addEventListener('input', (e) => {
+        el.addEventListener('input', (e) => {
+            const row = e.target.dataset.row;
+            if (row === 'add') {
+                if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || 
+                    e.target.classList.contains('discount-input') || e.target.classList.contains('margin-input') ||
+                    e.target.classList.contains('total-input') || e.target.classList.contains('nett-input')) {
+                    if (this.inputDebounceTimeout) clearTimeout(this.inputDebounceTimeout);
+                    this.inputDebounceTimeout = setTimeout(() => this.updateAddRowFromDom(), 550);
+                }
+                return;
+            }
+            const rowNum = parseInt(row, 10);
             if (e.target.classList.contains('qty-input') || 
                 e.target.classList.contains('price-input') || 
                 e.target.classList.contains('discount-input')) {
-                const row = parseInt(e.target.dataset.row);
                 const field = e.target.dataset.field;
-                
-                // Clear previous timeout
-                if (this.inputDebounceTimeout) {
-                    clearTimeout(this.inputDebounceTimeout);
-                }
-                
-                // Debounce input for 150ms for smooth real-time calculation
+                if (this.inputDebounceTimeout) clearTimeout(this.inputDebounceTimeout);
                 this.inputDebounceTimeout = setTimeout(() => {
-                    this.handleFieldChange(row, field, e.target.value);
+                    this.handleFieldChange(rowNum, field, e.target.value);
                 }, 150);
             }
             if (e.target.classList.contains('total-input')) {
-                const row = parseInt(e.target.dataset.row);
                 if (this.totalInputDebounce) clearTimeout(this.totalInputDebounce);
-                this.totalInputDebounce = setTimeout(() => {
-                    this.handleTotalChange(row, e.target.value);
-                }, 300);
+                this.totalInputDebounce = setTimeout(() => this.handleTotalChange(rowNum, e.target.value), 300);
             }
             if (e.target.classList.contains('margin-input')) {
-                const row = parseInt(e.target.dataset.row);
                 if (this.marginInputDebounce) clearTimeout(this.marginInputDebounce);
-                this.marginInputDebounce = setTimeout(() => {
-                    this.handleMarginChange(row, e.target.value);
-                }, 300);
+                this.marginInputDebounce = setTimeout(() => this.handleMarginChange(rowNum, e.target.value), 300);
             }
         });
         
         // Prevent mouse wheel from changing price/total/margin/discount (direct type-in only)
-        tbody.addEventListener('wheel', (e) => {
+        el.addEventListener('wheel', (e) => {
             if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || e.target.classList.contains('total-input') ||
                 e.target.classList.contains('margin-input') || e.target.classList.contains('discount-input')) {
                 e.preventDefault();
             }
         }, { passive: false });
         
-        // Remove item button
-        tbody.addEventListener('click', (e) => {
+        // Remove item button (and manage batches)
+        el.addEventListener('click', (e) => {
             if (e.target.closest('.remove-item-btn')) {
-                const row = parseInt(e.target.closest('.remove-item-btn').dataset.row);
-                this.removeItem(row);
+                const row = e.target.closest('.remove-item-btn').dataset.row;
+                if (row === 'add') return;
+                this.removeItem(parseInt(row, 10));
             }
             // Manage batches button
             if (e.target.closest('.manage-batches-btn')) {
                 const btn = e.target.closest('.manage-batches-btn');
-                const rowIndex = parseInt(btn.dataset.row);
+                const rowIndex = parseInt(btn.dataset.row, 10);
                 const item = this.items[rowIndex];
                 if (item && item.item_id) {
                     this.openBatchDistributionModal(rowIndex, item);
@@ -836,6 +954,7 @@
                 const vatRate = this.vatRateToPercent(suggestion.vat_rate ?? suggestion.vatRate ?? 0);
                 const vatCode = suggestion.vat_category || suggestion.vat_code || '';
                 const lastSupplier = suggestion.last_supplier || '';
+                const cheapestSupplier = suggestion.cheapest_supplier || suggestion.last_supplier || '';
                 const baseUnit = suggestion.base_unit || '';
                 
                 // Purchase Order specific fields
@@ -931,9 +1050,9 @@
                                     <div style="font-size: 0.75rem;">${formatDate(lastSupplyDate)}</div>
                                 </div>
                                 <div style="text-align: center;">
-                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.1rem;">LAST SUPPLIER</div>
-                                    <div style="font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(lastSupplier)}">
-                                        ${lastSupplier ? escapeHtml(lastSupplier) : '—'}
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.1rem;">CHEAPEST SUPPLIER</div>
+                                    <div style="font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(cheapestSupplier)}">
+                                        ${cheapestSupplier ? escapeHtml(cheapestSupplier) : '—'}
                                     </div>
                                 </div>
                                 <div style="text-align: right;">
@@ -1036,19 +1155,22 @@
      */
     TransactionItemsTable.prototype.handleSelectItem = function(suggestionEl, rowIndex) {
         const selectedItemId = suggestionEl.dataset.itemId;
-        // In sale/quotation: prevent duplicate item in same document; direct user to edit existing line
-        if (this.mode === 'sale' || this.mode === 'quotation') {
+        const isAddRow = rowIndex === 'add';
+        // Prevent duplicate item in same document
+        if (this.mode === 'sale' || this.mode === 'quotation' || isAddRow) {
             for (let i = 0; i < this.items.length; i++) {
-                if (i !== rowIndex && this.items[i].item_id === selectedItemId) {
+                if (this.items[i].item_id === selectedItemId) {
                     this.closeSuggestions();
                     if (typeof showToast === 'function') {
-                        showToast('Item already in this invoice. Edit the existing line or remove it first.', 'warning');
+                        showToast('Item already in this document. Edit the existing line or remove it first.', 'warning');
                     }
-                    const rowEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${i}"]`);
-                    if (rowEl) {
-                        rowEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                        rowEl.classList.add('highlight-row-duplicate');
-                        setTimeout(function() { rowEl.classList.remove('highlight-row-duplicate'); }, 2500);
+                    if (!isAddRow) {
+                        const rowEl = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${i}"]`);
+                        if (rowEl) {
+                            rowEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            rowEl.classList.add('highlight-row-duplicate');
+                            setTimeout(function() { rowEl.classList.remove('highlight-row-duplicate'); }, 2500);
+                        }
                     }
                     return;
                 }
@@ -1072,7 +1194,7 @@
                 return up;
             })(),
             purchase_price: parseFloat(suggestionEl.dataset.purchasePrice) || 0, // Store cost for margin
-            quantity: this.items[rowIndex].quantity || 1,
+            quantity: (isAddRow ? (this.addRowItem && this.addRowItem.quantity) : this.items[rowIndex].quantity) || 1,
             discount_percent: 0,
             tax_percent: this.vatRateToPercent(suggestionEl.dataset.vatRate),
             available_stock: typeof suggestionEl.dataset.stock !== 'undefined'
@@ -1084,34 +1206,41 @@
             unit_multiplier: 1
         };
         
-        // Update item
+        if (isAddRow) {
+            this.addRowItem = item;
+            this.recalculateAddRow();
+            this.closeSuggestions();
+            this.render();
+            this.attachEventListeners();
+            this.loadUnitsForRow('add');
+            setTimeout(() => {
+                const qtyInput = this.mountEl.querySelector('.add-row-qty');
+                if (qtyInput) qtyInput.focus();
+            }, 100);
+            return;
+        }
+        
+        // Update item in table
         this.items[rowIndex] = item;
         this.recalculateRow(rowIndex);
         this.closeSuggestions();
         this.render();
         this.attachEventListeners();
-        
-        // Fetch full item to get available units for unit dropdown
         this.loadUnitsForRow(rowIndex);
-        
-        // Focus on quantity field
         setTimeout(() => {
             const qtyInput = document.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] .qty-input`);
             if (qtyInput) qtyInput.focus();
         }, 100);
         
-        // Always ensure there's an empty row at the end for adding new items
-        // Check if the last item is empty, if not, add one
-        const lastItem = this.items[this.items.length - 1];
-        const hasEmptyRow = lastItem && 
-            (!lastItem.item_id && !lastItem.item_name);
-        
-        if (!hasEmptyRow) {
-            this.items.push(this.createEmptyItem());
-            this.render();
-            this.attachEventListeners();
+        if (!this.useAddRow) {
+            const lastItem = this.items[this.items.length - 1];
+            const hasEmptyRow = lastItem && (!lastItem.item_id && !lastItem.item_name);
+            if (!hasEmptyRow) {
+                this.items.push(this.createEmptyItem());
+                this.render();
+                this.attachEventListeners();
+            }
         }
-        
         this.notifyChange();
     };
     
@@ -1278,6 +1407,28 @@
     };
     
     /**
+     * Reverse-calculate unit_price from desired total (for add row total input).
+     * total = nett + vat, nett = total / (1 + tax/100), unit_price = nett / (qty * (1 - discount/100)).
+     */
+    TransactionItemsTable.prototype.reverseCalcUnitPriceFromTotal = function(item, total) {
+        const qty = (item.quantity || 0) || 1;
+        const taxPct = (item.tax_percent || 0) / 100;
+        const discountPct = (item.discount_percent || 0) / 100;
+        const nett = total / (1 + taxPct);
+        const denom = qty * (1 - discountPct / 100);
+        if (denom <= 0) return 0;
+        return this.roundMoney(nett / denom);
+    };
+    
+    TransactionItemsTable.prototype.reverseCalcUnitPriceFromNett = function(item, nett) {
+        const qty = (item.quantity || 0) || 1;
+        const discountPct = (item.discount_percent || 0) / 100;
+        const denom = qty * (1 - discountPct / 100);
+        if (denom <= 0) return 0;
+        return this.roundMoney(nett / denom);
+    };
+    
+    /**
      * Calculate summary totals (Net, VAT, Total)
      */
     TransactionItemsTable.prototype.calculateSummary = function() {
@@ -1389,17 +1540,192 @@
         if (rowIndex < 0 || rowIndex >= this.items.length) return;
         this.items.splice(rowIndex, 1);
         
-        // Always ensure there's at least one empty row for adding new items
-        const hasEmptyRow = this.items.length > 0 && 
-            this.items.some(item => !item.item_id && !item.item_name);
-        
-        if (this.items.length === 0 || !hasEmptyRow) {
-            this.items.push(this.createEmptyItem());
+        if (!this.useAddRow) {
+            const hasEmptyRow = this.items.length > 0 && 
+                this.items.some(item => !item.item_id && !item.item_name);
+            if (this.items.length === 0 || !hasEmptyRow) {
+                this.items.push(this.createEmptyItem());
+            }
         }
         
         this.render();
         this.attachEventListeners();
         this.notifyChange();
+    };
+    
+    /**
+     * Recalculate add row totals (when useAddRow)
+     */
+    TransactionItemsTable.prototype.recalculateAddRow = function() {
+        if (!this.addRowItem) return;
+        const item = this.addRowItem;
+        const round = (n) => Math.round(parseFloat(n) * 100) / 100;
+        const subtotal = (item.quantity || 0) * (item.unit_price || 0);
+        const discount = round(subtotal * ((item.discount_percent || 0) / 100));
+        const afterDiscount = round(subtotal - discount);
+        const tax = round(afterDiscount * ((item.tax_percent || 0) / 100));
+        item.total = round(afterDiscount + tax);
+        item.nett = afterDiscount;
+        item.vat_amount = tax;
+    };
+
+    /**
+     * Update only the add row's computed fields (nett, total, margin, VAT) in the DOM
+     * so we don't re-render and wipe the price/qty inputs while the user is typing.
+     */
+    TransactionItemsTable.prototype.updateAddRowComputedFieldsOnly = function() {
+        if (!this.addRowItem || !this.mountEl) return;
+        const ar = this.addRowItem;
+        const fmt = this.getFormatCurrency();
+        const nettEl = this.mountEl.querySelector('.add-row-nett');
+        const totalEl = this.mountEl.querySelector('.add-row-total-input');
+        const marginEl = this.mountEl.querySelector('.add-row-margin');
+        const vatEl = this.mountEl.querySelector('.add-row-vat');
+        if (nettEl) nettEl.value = this.roundMoney(this.calculateNett(ar) || 0).toFixed(2);
+        if (totalEl) totalEl.value = this.roundMoney(ar.total || 0).toFixed(2);
+        if (marginEl) {
+            const margin = this.calculateMargin(ar) || 0;
+            marginEl.value = margin.toFixed(1);
+            marginEl.style.color = margin >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)';
+        }
+        if (vatEl) vatEl.textContent = (ar.tax_percent || 0).toFixed(1) + '% / ' + fmt(this.calculateVATAmount(ar));
+    };
+    
+    /**
+     * Read add row inputs and update addRowItem; then update only computed fields in DOM
+     * (no full render) so price/qty inputs are not recreated while the user is typing.
+     */
+    TransactionItemsTable.prototype.updateAddRowFromDom = function() {
+        if (!this.addRowItem || !this.addRowItem.item_id) return;
+        const qtyEl = this.mountEl.querySelector('.add-row-qty');
+        const priceEl = this.mountEl.querySelector('.add-row-price');
+        const discountEl = this.mountEl.querySelector('.add-row-discount');
+        const marginEl = this.mountEl.querySelector('.add-row-margin');
+        const totalEl = this.mountEl.querySelector('.add-row-total-input');
+        const unitSelect = this.mountEl.querySelector('.add-row-unit');
+        const active = typeof document !== 'undefined' ? document.activeElement : null;
+        if (qtyEl) this.addRowItem.quantity = parseFloat(qtyEl.value) || 1;
+        if (discountEl) this.addRowItem.discount_percent = this.roundMoney(parseFloat(discountEl.value) || 0);
+        if (unitSelect && unitSelect.tagName === 'SELECT') {
+            this.addRowItem.unit_name = unitSelect.value || '';
+            const opt = unitSelect.options[unitSelect.selectedIndex];
+            if (opt) this.addRowItem.unit_multiplier = parseFloat(opt.dataset.multiplier) || 1;
+        }
+        const nettEl = this.mountEl.querySelector('.add-row-nett');
+        if (totalEl && (active === totalEl) && totalEl.value !== '' && !isNaN(parseFloat(totalEl.value))) {
+            const total = parseFloat(totalEl.value);
+            if (total >= 0) this.addRowItem.unit_price = this.reverseCalcUnitPriceFromTotal(this.addRowItem, total);
+        } else if (nettEl && (active === nettEl) && nettEl.value !== '' && !isNaN(parseFloat(nettEl.value))) {
+            const nett = parseFloat(nettEl.value);
+            if (nett >= 0) this.addRowItem.unit_price = this.reverseCalcUnitPriceFromNett(this.addRowItem, nett);
+        } else if (priceEl) {
+            this.addRowItem.unit_price = this.roundMoney(parseFloat(priceEl.value) || 0);
+        }
+        if (marginEl && (this.mode === 'sale' || this.mode === 'quotation') && active === marginEl) {
+            const margin = parseFloat(marginEl.value);
+            if (!isNaN(margin) && this.addRowItem.purchase_price != null) {
+                const costPerUnit = (this.addRowItem.purchase_price || 0) * (this.addRowItem.unit_multiplier || 1);
+                if (costPerUnit > 0) this.addRowItem.unit_price = this.roundMoney(costPerUnit * (1 + margin / 100));
+            }
+        }
+        this.recalculateAddRow();
+        this.updateAddRowComputedFieldsOnly();
+    };
+    
+    /**
+     * Get add row data for API (create/add line). Returns null if nothing to add.
+     */
+    TransactionItemsTable.prototype.getAddRowData = function() {
+        if (!this.addRowItem || !this.addRowItem.item_id) return null;
+        this.updateAddRowFromDom();
+        return {
+            item_id: this.addRowItem.item_id,
+            item_name: this.addRowItem.item_name,
+            item_code: this.addRowItem.item_code || this.addRowItem.item_sku,
+            unit_name: this.addRowItem.unit_name || '',
+            quantity: this.addRowItem.quantity || 1,
+            unit_price: this.addRowItem.unit_price || 0,
+            discount_percent: this.addRowItem.discount_percent || 0,
+            tax_percent: this.addRowItem.tax_percent || 0,
+            total: this.addRowItem.total || 0
+        };
+    };
+    
+    /**
+     * Handle Add item button click (useAddRow mode). If editing a line, updates that line and calls onUpdateItem; otherwise calls onAddItem.
+     * Shows loading state and disables button until the operation completes.
+     */
+    TransactionItemsTable.prototype.handleAddRowAddClick = function() {
+        if (this.addRowLoading) return;
+        const data = this.getAddRowData();
+        if (!data || !data.item_id) {
+            if (typeof showToast === 'function') showToast('Select an item first', 'warning');
+            return;
+        }
+        if (this.editingRowIndex !== null) {
+            const idx = this.editingRowIndex;
+            const updated = Object.assign({}, this.items[idx], {
+                item_id: data.item_id,
+                item_name: data.item_name,
+                item_code: data.item_code,
+                unit_name: data.unit_name,
+                quantity: data.quantity,
+                unit_price: data.unit_price,
+                discount_percent: data.discount_percent,
+                tax_percent: data.tax_percent,
+                total: this.roundMoney((this.calculateNett(data) || 0) + (this.calculateVATAmount(data) || 0))
+            });
+            this.items[idx] = this.normalizeItems([updated])[0];
+            this.editingRowIndex = null;
+            this.addRowItem = null;
+            this.render();
+            this.attachEventListeners();
+            if (this.onUpdateItem) {
+                const p = this.onUpdateItem(idx, this.items[idx]);
+                if (p && typeof p.then === 'function') {
+                    this.addRowLoading = true;
+                    this.render();
+                    this.attachEventListeners();
+                    p.finally(() => {
+                        this.addRowLoading = false;
+                        this.render();
+                        this.attachEventListeners();
+                    });
+                }
+            }
+            this.notifyChange();
+            if (typeof showToast === 'function') showToast('Line updated', 'success');
+            return;
+        }
+        const existingIds = this.items.filter(i => i.item_id).map(i => i.item_id);
+        if (existingIds.indexOf(data.item_id) !== -1) {
+            if (typeof showToast === 'function') showToast('Item already in this document. Remove the existing line or choose a different item.', 'warning');
+            return;
+        }
+        if (this.onAddItem) {
+            this.addRowLoading = true;
+            this.render();
+            this.attachEventListeners();
+            const p = Promise.resolve(this.onAddItem(data));
+            p.finally(() => {
+                this.addRowLoading = false;
+                this.render();
+                this.attachEventListeners();
+            });
+        }
+    };
+    
+    /**
+     * Set items (e.g. after parent creates doc or adds line). Re-renders table.
+     */
+    TransactionItemsTable.prototype.setItems = function(items) {
+        this.items = this.normalizeItems(Array.isArray(items) ? items : []);
+        this.editingRowIndex = null;
+        this.addRowItem = null;
+        this.render();
+        this.attachEventListeners();
+        if (this.onItemsChange) this.onItemsChange(this.getItems());
+        if (this.onTotalChange) this.onTotalChange(this.calculateTotal());
     };
     
     /**
@@ -1415,6 +1741,13 @@
      * Clear row selection (for "Search for different item") – keep quantity 1, clear item and unit
      */
     TransactionItemsTable.prototype.clearRowSelection = function(rowIndex) {
+        if (rowIndex === 'add') {
+            this.addRowItem = null;
+            this.closeSelectedItemDropdown();
+            this.render();
+            this.attachEventListeners();
+            return;
+        }
         if (rowIndex < 0 || rowIndex >= this.items.length) return;
         const prev = this.items[rowIndex];
         this.items[rowIndex] = this.createEmptyItem();
@@ -1432,6 +1765,7 @@
     
     /**
      * Show dropdown for already-selected item. In sale mode shows Batch & Expiry (FEFO) instead of margin/VAT.
+     * When useAddRow and rowIndex is a data row, positions dropdown using the row's first cell (no input).
      */
     TransactionItemsTable.prototype.showSelectedItemDropdown = function(rowIndex) {
         const item = this.items[rowIndex];
@@ -1449,11 +1783,14 @@
             container.appendChild(dropdown);
         }
         
-        const input = document.getElementById(`${this.instanceId}_item_${rowIndex}`);
-        if (!input) return;
+        let anchor = document.getElementById(`${this.instanceId}_item_${rowIndex}`);
+        if (!anchor && this.useAddRow && typeof rowIndex === 'number') {
+            anchor = this.mountEl.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${rowIndex}"] td:first-child`);
+        }
+        if (!anchor) return;
         const containerRect = container.getBoundingClientRect();
-        const inputRect = input.getBoundingClientRect();
-        const relativeTop = inputRect.bottom - containerRect.top + 2;
+        const anchorRect = anchor.getBoundingClientRect();
+        const relativeTop = anchorRect.bottom - containerRect.top + 2;
         dropdown.style.cssText = `
             display: block; position: absolute; top: ${relativeTop}px; left: 0; width: 100%;
             background: white; border: 1px solid var(--border-color, #dee2e6); border-radius: 0.25rem;
@@ -1474,6 +1811,12 @@
                 </div>
                 <div id="${this.instanceId}_selected_batches_${rowIndex}" style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-secondary, #666);">Loading batch/expiry…</div>
             </div>
+            ${this.useAddRow ? `
+            <div class="suggestion-item selected-item-action" data-action="load-to-edit" data-row="${rowIndex}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center; border-bottom: 1px solid var(--border-color, #dee2e6); background: #e8f4fd;" onmouseover="this.style.background='#d0e8ff'" onmouseout="this.style.background='#e8f4fd'">
+                <i class="fas fa-edit" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
+                <span><strong>Load to edit</strong> — edit in the row above, then click Update line</span>
+            </div>
+            ` : ''}
             <div class="suggestion-item selected-item-action" data-action="search-different" data-row="${rowIndex}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center; border-bottom: 1px solid var(--border-color, #dee2e6);" onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='white'">
                 <i class="fas fa-search" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
                 <span>Search for different item</span>
@@ -1536,9 +1879,30 @@
             el.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const action = el.dataset.action;
-                const r = parseInt(el.dataset.row);
+                const r = el.dataset.row === 'add' ? 'add' : parseInt(el.dataset.row, 10);
                 this.closeSelectedItemDropdown();
-                if (action === 'search-different') {
+                if (action === 'load-to-edit') {
+                    const src = this.items[r];
+                    if (src && src.item_id) {
+                        this.addRowItem = {
+                            item_id: src.item_id,
+                            item_name: src.item_name,
+                            item_sku: src.item_sku,
+                            item_code: src.item_code || src.item_sku,
+                            unit_name: src.unit_name,
+                            quantity: src.quantity,
+                            unit_price: src.unit_price,
+                            discount_percent: src.discount_percent,
+                            tax_percent: src.tax_percent,
+                            total: src.total,
+                            available_units: src.available_units,
+                            purchase_price: src.purchase_price
+                        };
+                        this.editingRowIndex = r;
+                        this.render();
+                        this.attachEventListeners();
+                    }
+                } else if (action === 'search-different') {
                     this.clearRowSelection(r);
                 } else if (action === 'view-details' && el.dataset.itemId) {
                     const itemId = el.dataset.itemId;
@@ -1600,7 +1964,7 @@
      * Always shows wholesale, retail, supplier when item has 3-tier columns; default selection is wholesale.
      */
     TransactionItemsTable.prototype.loadUnitsForRow = async function(rowIndex) {
-        const item = this.items[rowIndex];
+        const item = rowIndex === 'add' ? this.addRowItem : this.items[rowIndex];
         if (!item || !item.item_id) return;
         const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
         if (!api || !api.items || !api.items.get) return;
@@ -1608,30 +1972,38 @@
         const branchId = config && config.BRANCH_ID ? config.BRANCH_ID : null;
         try {
             const full = await api.items.get(item.item_id, branchId);
-            // Prefer API units if we have more than one; otherwise build from 3-tier columns so user can always choose
             let units = full.units && full.units.length > 1 ? full.units : this.buildUnitsFrom3Tier(full);
             item.available_units = units;
-            // Cost per base (wholesale) unit for margin calculation
             if (typeof full.default_cost === 'number' && full.default_cost >= 0) {
                 item.purchase_price = full.default_cost;
             }
-            // Stock from API so row shows correct stock (avoids N/A when branch has stock)
             if (full.stock_display != null) item.stock_display = full.stock_display;
             if (typeof full.current_stock === 'number') item.available_stock = full.current_stock;
-            // Default to wholesale (first unit) so user can change to retail/supplier if they want
             const wholesaleUnit = (units[0] && units[0].unit_name) || full.wholesale_unit || full.base_unit || 'piece';
             const currentUnit = item.unit_name || wholesaleUnit;
             const currentU = units.find(u => (u.unit_name || '') === currentUnit);
             item.unit_name = currentU ? currentUnit : wholesaleUnit;
             item.unit_multiplier = currentU ? (parseFloat(currentU.multiplier_to_base) || 1) : 1;
-            this.recalculateRow(rowIndex);
-            this.updateRowUnitSelect(rowIndex);
-            this.updateRowDisplay(rowIndex);
+            if (rowIndex === 'add') {
+                this.recalculateAddRow();
+                this.render();
+                this.attachEventListeners();
+            } else if (!this.useAddRow) {
+                this.recalculateRow(rowIndex);
+                this.updateRowUnitSelect(rowIndex);
+                this.updateRowDisplay(rowIndex);
+            }
+            // When useAddRow, committed rows are read-only; we only set item.available_units for when user loads row to edit
         } catch (err) {
             console.warn('TransactionItemsTable: could not load units for item', item.item_id, err);
             item.available_units = [{ unit_name: item.unit_name || 'unit', multiplier_to_base: 1 }];
             item.unit_multiplier = 1;
-            this.updateRowUnitSelect(rowIndex);
+            if (rowIndex === 'add') {
+                this.render();
+                this.attachEventListeners();
+            } else if (!this.useAddRow) {
+                this.updateRowUnitSelect(rowIndex);
+            }
         }
     };
     

@@ -9,6 +9,8 @@ let purchaseDocuments = [];
 let currentDocument = null;
 let documentItems = [];
 let allSuppliers = [];
+let supplierInvoiceSyncedItemIds = new Set();
+let poSyncedItemIds = new Set();
 
 // Initialize purchases page
 async function loadPurchases() {
@@ -958,6 +960,7 @@ async function renderCreatePurchaseOrderPage() {
     if (!isEditMode) {
         currentDocument = { type: 'order', items: [] };
         documentItems = [];
+        poSyncedItemIds = new Set();
     }
     
     const today = new Date().toISOString().split('T')[0];
@@ -1082,10 +1085,11 @@ async function renderCreatePurchaseOrderPage() {
                         </div>
                     </div>
                     
-                    <!-- Transaction Items Table (Vyapar-style, table-driven) -->
+                    <!-- Transaction Items Table (add row + committed lines) -->
                     <div class="card" style="margin-bottom: 1rem;">
                         <div class="card-header" style="padding: 0.75rem 1rem;">
                             <h4 style="margin: 0; font-size: 1rem;">Items</h4>
+                            <p style="font-size: 0.75rem; color: var(--text-secondary); margin: 0.25rem 0 0 0;">Search in the row below, then click <strong>Add item</strong> to add a line. Click an item name to view details.</p>
                         </div>
                         <div class="card-body" id="transactionItemsContainer" style="padding: 0.5rem;">
                             <!-- TransactionItemsTable component will render here -->
@@ -1175,9 +1179,10 @@ async function renderCreateSupplierInvoicePage() {
                 batches: batches
             };
         });
+        supplierInvoiceSyncedItemIds = new Set((invoiceData.items || []).map(i => i.item_id));
     } else if (!isEditMode) {
-        // Initialize empty items array for new invoice
         documentItems = [];
+        supplierInvoiceSyncedItemIds = new Set();
     }
     
     const today = invoiceData ? invoiceData.invoice_date : new Date().toISOString().split('T')[0];
@@ -1295,12 +1300,12 @@ async function renderCreateSupplierInvoicePage() {
                         </div>
                     </div>
                     
-                    <!-- Transaction Items Table (Vyapar-style, table-driven) -->
+                    <!-- Transaction Items Table (add row + committed lines) -->
                     <div class="card" style="margin-bottom: 1rem;">
                         <div class="card-header" style="padding: 0.75rem 1rem;">
                             <h4 style="margin: 0; font-size: 1rem;">Items Received</h4>
                             <p style="font-size: 0.75rem; color: var(--text-secondary); margin: 0.25rem 0 0 0;">
-                                Use "Manage Batches" button to distribute items across multiple batches
+                                Search in the row below, then click <strong>Add item</strong> to add a line. Use &quot;Manage Batches&quot; to distribute items across batches.
                             </p>
                         </div>
                         <div class="card-body" id="transactionItemsContainerInvoice" style="padding: 0.5rem;">
@@ -1331,6 +1336,104 @@ async function renderCreateSupplierInvoicePage() {
     }
 }
 
+function mapTableItemToSupplierInvoiceItem(item) {
+    const itemData = {
+        item_id: item.item_id,
+        unit_name: item.unit_name || 'unit',
+        quantity: parseFloat(item.quantity) || 1,
+        unit_cost_exclusive: parseFloat(item.unit_price) || 0,
+        vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
+    };
+    if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
+        itemData.batches = item.batches.map(b => ({
+            batch_number: b.batch_number || '',
+            expiry_date: b.expiry_date || null,
+            quantity: parseFloat(b.quantity) || 0,
+            unit_cost: parseFloat(b.unit_cost) || 0
+        }));
+    }
+    return itemData;
+}
+
+async function onSupplierInvoiceAddItem(item) {
+    const invoiceId = currentDocument && currentDocument.invoiceId;
+    try {
+        if (!invoiceId) {
+            const form = document.getElementById('purchaseInvoiceForm');
+            if (!form) {
+                showToast('Form not found', 'error');
+                return;
+            }
+            const fd = new FormData(form);
+            const supplierId = fd.get('supplier_id');
+            if (!supplierId) {
+                showToast('Select a supplier first', 'warning');
+                return;
+            }
+            const payload = {
+                company_id: CONFIG.COMPANY_ID,
+                branch_id: CONFIG.BRANCH_ID,
+                supplier_id: supplierId,
+                invoice_date: fd.get('document_date') || new Date().toISOString().split('T')[0],
+                supplier_invoice_number: fd.get('supplier_invoice_number') || null,
+                reference: fd.get('reference') || null,
+                status: 'DRAFT',
+                payment_status: 'UNPAID',
+                amount_paid: 0,
+                created_by: CONFIG.USER_ID,
+                items: [mapTableItemToSupplierInvoiceItem(item)]
+            };
+            const invoice = await API.purchases.createInvoice(payload);
+            currentDocument.invoiceId = invoice.id;
+            currentDocument.mode = 'edit';
+            currentDocument.invoiceData = invoice;
+            currentDocument.invoiceNumber = invoice.invoice_number;
+            supplierInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
+            documentItems = (invoice.items || []).map(i => ({
+                item_id: i.item_id,
+                item_name: i.item_name || i.item_code,
+                item_sku: i.item_code,
+                item_code: i.item_code,
+                unit_name: i.unit_name,
+                quantity: i.quantity,
+                unit_price: i.unit_cost_exclusive,
+                tax_percent: i.vat_rate,
+                total: i.line_total_inclusive,
+                batches: i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null
+            }));
+            if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
+                transactionItemsTable.setItems(documentItems);
+            }
+            showToast('Draft invoice created. Add more items or use Manage Batches, then Batch to add stock.', 'success');
+            return;
+        }
+        const updated = await API.purchases.addInvoiceItem(invoiceId, mapTableItemToSupplierInvoiceItem(item));
+        supplierInvoiceSyncedItemIds.add(item.item_id);
+        documentItems = (updated.items || []).map(i => ({
+            item_id: i.item_id,
+            item_name: i.item_name || i.item_code,
+            item_sku: i.item_code,
+            item_code: i.item_code,
+            unit_name: i.unit_name,
+            quantity: i.quantity,
+            unit_price: i.unit_cost_exclusive,
+            tax_percent: i.vat_rate,
+            total: i.line_total_inclusive,
+            batches: i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null
+        }));
+        if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
+            transactionItemsTable.setItems(documentItems);
+        }
+    } catch (err) {
+        const msg = (err && err.message) || String(err);
+        if (msg.indexOf('already exists') !== -1) {
+            showToast('Item already on this invoice. Remove the line or choose a different item.', 'warning');
+        } else {
+            showToast(msg, 'error');
+        }
+    }
+}
+
 // Initialize TransactionItemsTable component for Invoice
 function initializeTransactionItemsTableForInvoice() {
     const container = document.getElementById('transactionItemsContainerInvoice');
@@ -1339,7 +1442,6 @@ function initializeTransactionItemsTableForInvoice() {
         return;
     }
     
-    // Convert existing documentItems to component format
     const items = documentItems.length > 0 
         ? documentItems.map(item => ({
             id: item.item_id,
@@ -1355,14 +1457,14 @@ function initializeTransactionItemsTableForInvoice() {
         }))
         : [];
     
-    // Create component instance with new API
     transactionItemsTable = new window.TransactionItemsTable({
         mountEl: container,
         mode: 'purchase',
         items: items,
         priceType: 'purchase_price',
+        useAddRow: true,
+        onAddItem: onSupplierInvoiceAddItem,
         onItemsChange: (validItems) => {
-            // Update documentItems
             documentItems = validItems.map(item => ({
                 item_id: item.item_id,
                 item_name: item.item_name,
@@ -1375,35 +1477,48 @@ function initializeTransactionItemsTableForInvoice() {
                 total: item.total,
                 batches: item.batches || []
             }));
-            
-            // Auto-save when items change (if in edit mode and invoice is DRAFT)
-            if (currentDocument && currentDocument.mode === 'edit' && currentDocument.invoiceId) {
-                const invoiceData = currentDocument.invoiceData;
-                if (invoiceData && invoiceData.status === 'DRAFT' && validItems.length > 0) {
-                    // Debounce auto-save to avoid too many requests
-                    clearTimeout(window.autoSaveTimeout);
-                    window.autoSaveTimeout = setTimeout(() => {
-                        autoSaveInvoice();
-                    }, 2000); // Auto-save 2 seconds after last change
+            const invoiceId = currentDocument && currentDocument.invoiceId;
+            if (!invoiceId) return;
+            const validItemIds = new Set(validItems.filter(i => i.item_id).map(i => i.item_id));
+            const toRemove = [...supplierInvoiceSyncedItemIds].filter(id => !validItemIds.has(id));
+            if (toRemove.length === 0) return;
+            (async () => {
+                for (const itemId of toRemove) {
+                    try {
+                        await API.purchases.deleteInvoiceItem(invoiceId, itemId);
+                        supplierInvoiceSyncedItemIds.delete(itemId);
+                    } catch (err) {
+                        showToast((err && err.message) || 'Failed to remove item', 'error');
+                    }
                 }
-            }
+                const updated = await API.purchases.getInvoice(invoiceId);
+                documentItems = (updated.items || []).map(i => ({
+                    item_id: i.item_id,
+                    item_name: i.item_name || i.item_code,
+                    item_sku: i.item_code,
+                    item_code: i.item_code,
+                    unit_name: i.unit_name,
+                    quantity: i.quantity,
+                    unit_price: i.unit_cost_exclusive,
+                    tax_percent: i.vat_rate,
+                    total: i.line_total_inclusive,
+                    batches: i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null
+                }));
+                if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
+                    transactionItemsTable.setItems(documentItems);
+                }
+            })();
         },
-        onTotalChange: (total) => {
-            console.log('Total changed:', total);
-        },
+        onTotalChange: () => {},
         onItemCreate: (query, rowIndex, callback) => {
             window._transactionItemCreateCallback = callback;
             window._transactionItemCreateRowIndex = rowIndex;
-            if (query) {
-                window._transactionItemCreateName = query;
-            }
+            if (query) window._transactionItemCreateName = query;
             if (typeof showAddItemModal === 'function') {
                 showAddItemModal();
                 setTimeout(() => {
                     const nameInput = document.querySelector('#itemForm input[name="name"]');
-                    if (nameInput && query) {
-                        nameInput.value = query;
-                    }
+                    if (nameInput && query) nameInput.value = query;
                 }, 100);
             } else {
                 showToast(`To create item "${query}", please go to Items page`, 'info');
@@ -1411,8 +1526,90 @@ function initializeTransactionItemsTableForInvoice() {
         }
     });
     
-    // Expose to window for component callbacks
     window[`transactionTable_transactionItemsContainerInvoice`] = transactionItemsTable;
+}
+
+function mapTableItemToOrderItem(item) {
+    return {
+        item_id: item.item_id,
+        unit_name: item.unit_name || 'unit',
+        quantity: parseFloat(item.quantity) || 1,
+        unit_price: parseFloat(item.unit_price) || 0
+    };
+}
+
+async function onPurchaseOrderAddItem(item) {
+    const orderId = currentDocument && currentDocument.id;
+    try {
+        if (!orderId) {
+            const form = document.getElementById('purchaseDocumentForm');
+            if (!form) {
+                showToast('Form not found', 'error');
+                return;
+            }
+            const fd = new FormData(form);
+            const supplierId = fd.get('supplier_id');
+            if (!supplierId) {
+                showToast('Select a supplier first', 'warning');
+                return;
+            }
+            const payload = {
+                company_id: CONFIG.COMPANY_ID,
+                branch_id: CONFIG.BRANCH_ID,
+                supplier_id: supplierId,
+                order_date: fd.get('document_date') || new Date().toISOString().split('T')[0],
+                reference: fd.get('reference') || null,
+                notes: fd.get('notes') || null,
+                status: 'PENDING',
+                created_by: CONFIG.USER_ID,
+                items: [mapTableItemToOrderItem(item)]
+            };
+            const order = await API.purchases.createOrder(payload);
+            currentDocument.id = order.id;
+            currentDocument.order_number = order.order_number;
+            currentDocument.status = order.status;
+            poSyncedItemIds = new Set((order.items || []).map(i => i.item_id));
+            documentItems = (order.items || []).map(i => ({
+                item_id: i.item_id,
+                item_name: i.item_name || i.item_code,
+                item_sku: i.item_code,
+                item_code: i.item_code,
+                unit_name: i.unit_name,
+                quantity: i.quantity,
+                unit_price: i.unit_price,
+                total: i.total_price,
+                is_empty: false
+            }));
+            if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
+                transactionItemsTable.setItems(documentItems);
+            }
+            showToast('Purchase order created. Add more items or save when ready.', 'success');
+            return;
+        }
+        const updated = await API.purchases.addOrderItem(orderId, mapTableItemToOrderItem(item));
+        poSyncedItemIds.add(item.item_id);
+        documentItems = (updated.items || []).map(i => ({
+            item_id: i.item_id,
+            item_name: i.item_name || i.item_code,
+            item_sku: i.item_code,
+            item_code: i.item_code,
+            unit_name: i.unit_name,
+            quantity: i.quantity,
+            unit_price: i.unit_price,
+            total: i.total_price,
+            is_empty: false
+        }));
+        if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
+            transactionItemsTable.setItems(documentItems);
+        }
+    } catch (err) {
+        const msg = (err && err.message) || String(err);
+        if (msg.indexOf('already exists') !== -1) {
+            showToast('Item already on this order. Remove the line or choose a different item.', 'warning');
+        } else {
+            showToast(msg, 'error');
+        }
+    }
 }
 
 // Initialize TransactionItemsTable component
@@ -1425,7 +1622,6 @@ function initializeTransactionItemsTable(canEdit = true) {
         return;
     }
     
-    // Convert existing documentItems to component format
     const items = documentItems.length > 0 
         ? documentItems.map(item => ({
             id: item.item_id,
@@ -1440,17 +1636,16 @@ function initializeTransactionItemsTable(canEdit = true) {
         }))
         : [];
     
-    // Create component instance with new API
-    // Set context to 'purchase_order' for Purchase Order specific fields
     transactionItemsTable = new window.TransactionItemsTable({
         mountEl: container,
         mode: 'purchase',
-        context: 'purchase_order', // Enable PO-specific fields (last order date, last supply date, etc.)
+        context: 'purchase_order',
         items: items,
         priceType: 'purchase_price',
-        canEdit: canEdit, // Pass edit permission to component
+        canEdit: canEdit,
+        useAddRow: true,
+        onAddItem: onPurchaseOrderAddItem,
         onItemsChange: (validItems) => {
-            // Update documentItems
             documentItems = validItems.map(item => ({
                 item_id: item.item_id,
                 item_name: item.item_name,
@@ -1462,37 +1657,47 @@ function initializeTransactionItemsTable(canEdit = true) {
                 discount_percent: item.discount_percent || 0,
                 total: item.total
             }));
-            
-            // Auto-save when items change (if in edit mode and order is PENDING)
-            if (currentDocument && currentDocument.id && currentDocument.status === 'PENDING') {
-                // Debounce auto-save to avoid too many requests
-                clearTimeout(window.autoSaveOrderTimeout);
-                window.autoSaveOrderTimeout = setTimeout(() => {
-                    autoSavePurchaseOrder();
-                }, 2000); // Auto-save 2 seconds after last change
-            }
+            const orderId = currentDocument && currentDocument.id;
+            if (!orderId) return;
+            const validItemIds = new Set(validItems.filter(i => i.item_id).map(i => i.item_id));
+            const toRemove = [...poSyncedItemIds].filter(id => !validItemIds.has(id));
+            if (toRemove.length === 0) return;
+            (async () => {
+                for (const itemId of toRemove) {
+                    try {
+                        await API.purchases.deleteOrderItem(orderId, itemId);
+                        poSyncedItemIds.delete(itemId);
+                    } catch (err) {
+                        showToast((err && err.message) || 'Failed to remove item', 'error');
+                    }
+                }
+                const updated = await API.purchases.getOrder(orderId);
+                documentItems = (updated.items || []).map(i => ({
+                    item_id: i.item_id,
+                    item_name: i.item_name || i.item_code,
+                    item_sku: i.item_code,
+                    item_code: i.item_code,
+                    unit_name: i.unit_name,
+                    quantity: i.quantity,
+                    unit_price: i.unit_price,
+                    total: i.total_price,
+                    is_empty: false
+                }));
+                if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
+                    transactionItemsTable.setItems(documentItems);
+                }
+            })();
         },
-        onTotalChange: (total) => {
-            // Update total display (if needed elsewhere)
-            console.log('Total changed:', total);
-        },
+        onTotalChange: () => {},
         onItemCreate: (query, rowIndex, callback) => {
-            // Store callback for when item is created
             window._transactionItemCreateCallback = callback;
             window._transactionItemCreateRowIndex = rowIndex;
-            // Pre-fill item name if provided
-            if (query) {
-                window._transactionItemCreateName = query;
-            }
-            // Use the existing item creation modal from items page
+            if (query) window._transactionItemCreateName = query;
             if (typeof showAddItemModal === 'function') {
                 showAddItemModal();
-                // Pre-fill the name field if query is provided
                 setTimeout(() => {
                     const nameInput = document.querySelector('#itemForm input[name="name"]');
-                    if (nameInput && query) {
-                        nameInput.value = query;
-                    }
+                    if (nameInput && query) nameInput.value = query;
                 }, 100);
             } else {
                 showToast(`To create item "${query}", please go to Items page`, 'info');
@@ -2080,6 +2285,7 @@ async function editPurchaseDocument(docId, docType) {
             total: item.total_price,
             is_empty: false
         }));
+        poSyncedItemIds = new Set((order.items || []).map(i => i.item_id));
         
         // Load the create page with existing data (will be pre-filled by the form initialization)
         await renderCreatePurchaseOrderPage();

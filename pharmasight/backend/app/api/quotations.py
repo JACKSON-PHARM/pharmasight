@@ -388,6 +388,106 @@ def update_quotation(quotation_id: UUID, quotation: QuotationUpdate, db: Session
     return db_quotation
 
 
+@router.post("/{quotation_id}/items", response_model=QuotationResponse)
+def add_quotation_item(
+    quotation_id: UUID,
+    item_data: QuotationItemCreate,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
+    """Add one line to an existing draft quotation. Rejects duplicate item_id."""
+    from sqlalchemy.orm import selectinload
+    quotation = (
+        db.query(Quotation)
+        .options(selectinload(Quotation.items))
+        .filter(Quotation.id == quotation_id)
+        .first()
+    )
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    if quotation.status != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot add items to quotation with status '{quotation.status}'. Only 'draft' quotations can be edited."
+        )
+    for line in quotation.items:
+        if line.item_id == item_data.item_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Item already on this quotation. Edit the existing line or remove it first."
+            )
+    item = db.query(Item).filter(Item.id == item_data.item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+    vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate))) if item.vat_rate is not None else Decimal("16.00")
+    quantity = Decimal(str(item_data.quantity))
+    unit_price = Decimal(str(item_data.unit_price_exclusive or 0))
+    line_subtotal = quantity * unit_price
+    discount_percent = Decimal(str(item_data.discount_percent or 0))
+    discount_amount = line_subtotal * (discount_percent / Decimal("100"))
+    line_total_exclusive = line_subtotal - discount_amount
+    line_vat = line_total_exclusive * (vat_rate / Decimal("100"))
+    line_total_inclusive = line_total_exclusive + line_vat
+    quotation_item = QuotationItem(
+        quotation_id=quotation_id,
+        item_id=item_data.item_id,
+        unit_name=item_data.unit_name,
+        quantity=quantity,
+        unit_price_exclusive=unit_price,
+        discount_percent=discount_percent,
+        discount_amount=discount_amount,
+        vat_rate=vat_rate,
+        vat_amount=line_vat,
+        line_total_exclusive=line_total_exclusive,
+        line_total_inclusive=line_total_inclusive
+    )
+    db.add(quotation_item)
+    db.flush()
+    quotation.total_exclusive = (quotation.total_exclusive or Decimal("0")) + line_total_exclusive
+    quotation.vat_amount = (quotation.vat_amount or Decimal("0")) + line_vat
+    quotation.total_inclusive = (quotation.total_inclusive or Decimal("0")) + line_total_inclusive
+    if quotation.total_exclusive and quotation.total_exclusive > 0:
+        quotation.vat_rate = quotation.vat_amount / quotation.total_exclusive * Decimal("100")
+    db.commit()
+    return get_quotation(quotation_id, tenant, db)
+
+
+@router.delete("/{quotation_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_quotation_item(
+    quotation_id: UUID,
+    item_id: UUID,
+    db: Session = Depends(get_tenant_db),
+):
+    """Remove one line from a draft quotation."""
+    from sqlalchemy.orm import selectinload
+    quotation = (
+        db.query(Quotation)
+        .options(selectinload(Quotation.items))
+        .filter(Quotation.id == quotation_id)
+        .first()
+    )
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    if quotation.status != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot remove items from quotation with status '{quotation.status}'. Only 'draft' quotations can be edited."
+        )
+    line = next((i for i in quotation.items if i.item_id == item_id), None)
+    if not line:
+        raise HTTPException(status_code=404, detail="Item not found on this quotation")
+    quotation.total_exclusive -= line.line_total_exclusive
+    quotation.vat_amount -= line.vat_amount
+    quotation.total_inclusive -= line.line_total_inclusive
+    if quotation.total_exclusive and quotation.total_exclusive > 0:
+        quotation.vat_rate = quotation.vat_amount / quotation.total_exclusive * Decimal("100")
+    else:
+        quotation.vat_rate = Decimal("0")
+    db.delete(line)
+    db.commit()
+    return None
+
+
 @router.delete("/{quotation_id}", status_code=status.HTTP_200_OK)
 def delete_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
     """Delete quotation (only if status is 'draft')"""
