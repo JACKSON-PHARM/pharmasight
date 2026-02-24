@@ -29,17 +29,20 @@ SIGNED_URL_EXPIRY_SECONDS = 600  # 10 minutes
 
 def _client(tenant: Optional[Any] = None) -> Optional[Client]:
     """
-    Supabase client for storage. If tenant has supabase_storage_url and supabase_storage_service_role_key,
-    use that project; otherwise use global SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.
+    Supabase client for storage.
+
+    Per-tenant override is optional and may be partial:
+    - If tenant.supabase_storage_url is set, it overrides the URL; otherwise falls back to env SUPABASE_URL.
+    - If tenant.supabase_storage_service_role_key is set, it overrides the key; otherwise falls back to env SUPABASE_SERVICE_ROLE_KEY.
+
+    This allows a deployment to keep a single app-wide SUPABASE_URL while setting keys per tenant, but also
+    supports fully per-tenant Supabase projects when both fields are provided.
     """
-    url = None
-    key = None
-    if tenant:
-        url = (getattr(tenant, "supabase_storage_url", None) or "").strip()
-        key = (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()
-    if not url or not key:
-        url = (settings.SUPABASE_URL or "").strip()
-        key = (settings.SUPABASE_SERVICE_ROLE_KEY or "").strip()
+    tenant_url = (getattr(tenant, "supabase_storage_url", None) or "").strip() if tenant else ""
+    tenant_key = (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip() if tenant else ""
+
+    url = tenant_url or (settings.SUPABASE_URL or "").strip()
+    key = tenant_key or (settings.SUPABASE_SERVICE_ROLE_KEY or "").strip()
     if not url or not key:
         return None
     try:

@@ -62,10 +62,18 @@ WHERE id = 'tenant-uuid-here'
 
 ### 3. Behaviour
 
-- If a tenant row has **both** `supabase_storage_url` and `supabase_storage_service_role_key` set, the app uses **that** project for storage and signed URLs (e.g. PO PDF URL).
-- If either is NULL, the app uses the **global** env vars (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` on Render).
+The app builds the Supabase client **per field** from tenant row, then env:
 
-So: the **service key is stored on the tenant row in the master DB**, not in the tenant DB. It’s used the same way as `database_url` (also on the tenant row in the master DB): the app reads the tenant from the master DB and then uses that tenant’s `database_url` for DB and, when set, `supabase_storage_url` + `supabase_storage_service_role_key` for storage.
+- **URL:** tenant `supabase_storage_url` if set, else **Render env** `SUPABASE_URL`.
+- **Key:** tenant `supabase_storage_service_role_key` if set, else **Render env** `SUPABASE_SERVICE_ROLE_KEY`.
+
+So you can:
+
+- Set **both** URL and key on the tenant → that tenant uses its own Supabase project for storage.
+- Set **only the key** on the tenant and leave URL blank → that tenant uses **Render’s** `SUPABASE_URL` with the tenant’s key (same project for all, key stored per tenant).
+- Set **neither** → use only Render env (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`).
+
+**On Render you must set `SUPABASE_URL`** (and optionally `SUPABASE_SERVICE_ROLE_KEY` as fallback). If you use per-tenant keys only (URL null), the app still needs `SUPABASE_URL` so it can create signed URLs with the tenant key.
 
 ---
 
