@@ -1123,23 +1123,44 @@ def create_purchase_order(order: PurchaseOrderCreate, db: Session = Depends(get_
             db, order.company_id, order.branch_id, item.item_id, db_order.order_date
         )
 
-    # Add each PO line to the order book as ORDERED so auto-ordering and manual add skip them
+    # Add each PO line to the order book as ORDERED (one row per branch/item/entry_date)
+    entry_date = db_order.order_date if isinstance(db_order.order_date, date) else db_order.order_date.date()
     for item in order_items:
-        ob_entry = DailyOrderBook(
-            company_id=order.company_id,
-            branch_id=order.branch_id,
-            item_id=item.item_id,
-            supplier_id=db_order.supplier_id,
-            quantity_needed=item.quantity,
-            unit_name=item.unit_name,
-            reason="DIRECT_PO",
-            source_reference_type="purchase_order",
-            source_reference_id=db_order.id,
-            status="ORDERED",
-            purchase_order_id=db_order.id,
-            created_by=order.created_by,
+        existing = (
+            db.query(DailyOrderBook)
+            .filter(
+                DailyOrderBook.branch_id == order.branch_id,
+                DailyOrderBook.item_id == item.item_id,
+                DailyOrderBook.entry_date == entry_date,
+                DailyOrderBook.status.in_(["PENDING", "ORDERED"]),
+            )
+            .first()
         )
-        db.add(ob_entry)
+        if existing:
+            existing.status = "ORDERED"
+            existing.purchase_order_id = db_order.id
+            existing.source_reference_type = "purchase_order"
+            existing.source_reference_id = db_order.id
+            existing.quantity_needed = (existing.quantity_needed or 0) + item.quantity
+            existing.supplier_id = db_order.supplier_id
+            existing.unit_name = item.unit_name
+        else:
+            ob_entry = DailyOrderBook(
+                company_id=order.company_id,
+                branch_id=order.branch_id,
+                item_id=item.item_id,
+                entry_date=entry_date,
+                supplier_id=db_order.supplier_id,
+                quantity_needed=item.quantity,
+                unit_name=item.unit_name,
+                reason="DIRECT_PO",
+                source_reference_type="purchase_order",
+                source_reference_id=db_order.id,
+                status="ORDERED",
+                purchase_order_id=db_order.id,
+                created_by=order.created_by,
+            )
+            db.add(ob_entry)
 
     db.commit()
     db.refresh(db_order)
