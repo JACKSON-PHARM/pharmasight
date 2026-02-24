@@ -27,8 +27,8 @@ STAMP_MAX_HEIGHT_MM = 32
 SIGNATURE_MAX_WIDTH_MM = 38
 SIGNATURE_MAX_HEIGHT_MM = 16
 
-# Stamp opacity (faded but clearly visible); signature is 1.0 (solid)
-STAMP_OPACITY = 0.65
+# Stamp and signature: full opacity so they are clearly visible in the PDF
+STAMP_OPACITY = 1.0
 
 
 def _escape(s: str) -> str:
@@ -115,7 +115,7 @@ class StampAndSignatureFlowable(Flowable):
         gap = 8 * mm
         x_stamp = 2 * mm
 
-        # 1) Draw stamp (faded) on the left
+        # 1) Draw stamp on the left (full opacity for clear visibility)
         if self.stamp_bytes and self._stamp_w > 0 and self._stamp_h > 0:
             canvas.saveState()
             canvas.setFillAlpha(STAMP_OPACITY)
