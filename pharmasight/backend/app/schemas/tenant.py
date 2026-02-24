@@ -1,10 +1,14 @@
 """
 Pydantic schemas for tenant management
 """
-from pydantic import BaseModel, EmailStr, Field, validator
+import re
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
+
+# Allow dev@localhost, admin@localhost, etc. for local development
+_DEV_EMAIL_RE = re.compile(r"^[^@]+@(localhost|127\.0\.0\.1)$", re.IGNORECASE)
 
 
 class TenantBase(BaseModel):
@@ -23,7 +27,22 @@ class TenantCreate(TenantBase):
 class TenantUpdate(BaseModel):
     """Schema for updating a tenant"""
     name: Optional[str] = None
-    admin_email: Optional[EmailStr] = None
+    admin_email: Optional[str] = Field(None, description="Admin email; accepts standard emails and dev@localhost for local dev")
+
+    @field_validator("admin_email")
+    @classmethod
+    def validate_admin_email(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return None
+        s = v.strip()
+        # Allow dev@localhost, admin@127.0.0.1, etc. for local development
+        if _DEV_EMAIL_RE.match(s):
+            return s
+        # Standard email: local@domain.tld (domain has a dot)
+        if "@" in s and "." in s.split("@", 1)[1]:
+            return s
+        raise ValueError("value is not a valid email address: The part after the @-sign is not valid. It should have a period.")
+
     admin_full_name: Optional[str] = Field(None, max_length=255, description="Admin full name for username generation")
     phone: Optional[str] = Field(None, max_length=50)
     custom_domain: Optional[str] = None

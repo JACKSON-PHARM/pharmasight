@@ -709,7 +709,15 @@ async function showTenantDetailModal(tenant) {
             }
         } catch (error) {
             console.error('Error updating tenant:', error);
-            const errorMsg = error.message || 'Unknown error';
+            let errorMsg = 'Unknown error';
+            const detail = error?.data?.detail ?? error?.response?.data?.detail;
+            if (detail) {
+                errorMsg = Array.isArray(detail)
+                    ? detail.map((d) => (d && typeof d.msg === 'string' ? d.msg : JSON.stringify(d))).join('; ')
+                    : (typeof detail === 'string' ? detail : JSON.stringify(detail));
+            } else if (error?.message && String(error.message) !== '[object Object]') {
+                errorMsg = error.message;
+            }
             if (window.showNotification) {
                 window.showNotification('Error updating tenant: ' + errorMsg, 'error');
             } else {

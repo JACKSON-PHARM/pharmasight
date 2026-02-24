@@ -77,7 +77,14 @@ class APIClient {
             }
 
             if (!response.ok) {
-                const errorMsg = data.detail || data.message || JSON.stringify(data) || `HTTP error! status: ${response.status}`;
+                let errorMsg = data.message || `HTTP error! status: ${response.status}`;
+                if (data.detail != null) {
+                    errorMsg = Array.isArray(data.detail)
+                        ? data.detail.map((d) => (d && typeof d.msg === 'string' ? d.msg : JSON.stringify(d))).join('; ')
+                        : (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+                } else if (!data.message) {
+                    errorMsg = JSON.stringify(data) || errorMsg;
+                }
                 const error = new Error(errorMsg);
                 error.status = response.status;
                 error.data = data;
