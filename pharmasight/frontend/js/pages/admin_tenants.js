@@ -630,7 +630,7 @@ async function showTenantDetailModal(tenant) {
                     <div class="form-group" style="margin-bottom: 0;">
                         <label><strong>Service role key:</strong></label>
                         <input type="password" name="supabase_storage_service_role_key" placeholder="${tenant.supabase_storage_configured ? '•••••••• (leave blank to keep existing)' : 'eyJ... (from Supabase → Settings → API)'}" autocomplete="off" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace;">
-                        <small style="color: #666;">Supabase → Project Settings → API → service_role secret. Not shown after save.</small>
+                        <small style="color: #666;">Use the <strong>JWT</strong> service_role key (starts with eyJ...) from API → <strong>Legacy API Keys</strong> → service_role. Do not use the sb_secret_ key—it causes "Invalid API key". Not shown after save.</small>
                     </div>
                 </div>
                 <div id="tenant-initialize-section" style="margin-top: 24px; padding: 16px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e0e0e0;">

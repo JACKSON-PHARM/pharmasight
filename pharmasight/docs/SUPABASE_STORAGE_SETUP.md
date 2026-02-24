@@ -10,7 +10,7 @@ Use the **same** Supabase project for the master DB and for storage. No tenant t
 
 1. **On Render (backend service)** set:
    - `SUPABASE_URL` = your Supabase project URL (e.g. `https://xxxx.supabase.co`)
-   - `SUPABASE_SERVICE_ROLE_KEY` = that project’s **service role** key (Project Settings → API → `service_role` secret)
+   - `SUPABASE_SERVICE_ROLE_KEY` = that project’s **JWT** service role key: **Legacy** key from Project Settings → API → **Legacy API Keys** → `service_role` (the long key starting with `eyJ...`). Do **not** use the new “Secret key” (`sb_secret_...`) here—the Python client sends the key as `Authorization: Bearer <key>`, and Supabase rejects non-JWT Bearer tokens, which causes “Invalid API key”.
 
 2. **Redeploy** the backend.
 
@@ -46,7 +46,8 @@ PATCH the tenant and send the storage URL and service role key (e.g. from your a
 
 - `PATCH /api/admin/tenants/{tenant_id}`
 - Body (JSON):  
-  `{ "supabase_storage_url": "https://that-tenant-project.supabase.co", "supabase_storage_service_role_key": "eyJ..." }`
+  `{ "supabase_storage_url": "https://that-tenant-project.supabase.co", "supabase_storage_service_role_key": "eyJ..." }`  
+  Use the **JWT** `service_role` key (starts with `eyJ...`) from **Legacy API Keys**, not the `sb_secret_...` key.
 
 **B) SQL on master DB**
 
@@ -55,7 +56,7 @@ PATCH the tenant and send the storage URL and service role key (e.g. from your a
 UPDATE tenants
 SET
   supabase_storage_url = 'https://TENANT_PROJECT_REF.supabase.co',
-  supabase_storage_service_role_key = 'eyJ...'  -- service_role key from that project
+  supabase_storage_service_role_key = 'eyJ...'  -- JWT service_role from that project (Legacy API Keys), not sb_secret_
 WHERE id = 'tenant-uuid-here'
    OR subdomain = 'your-tenant-subdomain';
 ```
@@ -85,3 +86,18 @@ So you can:
 | Different Supabase per client (key per tenant) | Master DB: run migration, then set `supabase_storage_url` and `supabase_storage_service_role_key` on the **tenants** row (via PATCH or SQL). |
 
 The **tenant DB** (per-client database) is only for app data (companies, orders, invoices). Supabase storage keys belong in **app env** (Option A) or in the **tenants** table in the **master** DB (Option B), not in the tenant DB.
+
+---
+
+## Troubleshooting: "Invalid API key" or "Supabase storage client: Invalid API key"
+
+If Render logs show **Invalid API key** when generating PDF URLs, you are almost certainly using a **Secret key** (`sb_secret_...`) instead of the **JWT** `service_role` key.
+
+- The backend uses the Supabase **Python** client, which sends the key as `Authorization: Bearer <key>`. Supabase accepts only a **JWT** in that header, so `sb_secret_...` is rejected.
+- **Fix:** Use the **Legacy** `service_role` key (long string starting with `eyJ...`):
+  1. In [Supabase Dashboard](https://supabase.com/dashboard) open your project.
+  2. Go to **Project Settings** → **API**.
+  3. Open the **Legacy API Keys** section (or the tab that shows `anon` and `service_role`).
+  4. Copy the **service_role** value (JWT starting with `eyJ...`).
+  5. Set that as `SUPABASE_SERVICE_ROLE_KEY` on Render, and/or in the tenant’s “Service role key” in Admin (per-tenant storage).
+- Do **not** use the newer “Secret key” (`sb_secret_...`) from the same page for storage with this app.
