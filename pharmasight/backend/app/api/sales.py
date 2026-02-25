@@ -439,15 +439,43 @@ def get_sales_invoice(
                 )
             except Exception:
                 invoice_item.unit_cost_base = None
-        # Batch/expiry for receipt print (from ledger when batched)
-        if getattr(invoice_item, 'batch_id', None):
-            ledger = db.query(InventoryLedger).filter(InventoryLedger.id == invoice_item.batch_id).first()
-            if ledger:
-                invoice_item.batch_number = ledger.batch_number
-                invoice_item.expiry_date = ledger.expiry_date.isoformat() if getattr(ledger, 'expiry_date', None) else None
+        # Batch/expiry for receipt/PDF (from ledger when batched); build full batch_allocations for multi-batch FEFO
+        sale_ledgers = db.query(InventoryLedger).filter(
+            InventoryLedger.reference_type == "sales_invoice",
+            InventoryLedger.reference_id == invoice.id,
+            InventoryLedger.item_id == invoice_item.item_id,
+            InventoryLedger.transaction_type == "SALE",
+            InventoryLedger.quantity_delta < 0,
+        ).order_by(InventoryLedger.created_at.asc()).all()
+        if sale_ledgers:
+            invoice_item.batch_allocations = [
+                {
+                    "batch_number": getattr(led, "batch_number", None),
+                    "expiry_date": led.expiry_date.isoformat() if getattr(led, "expiry_date", None) else None,
+                    "quantity": abs(float(led.quantity_delta)),
+                }
+                for led in sale_ledgers
+            ]
+            first_ledger = sale_ledgers[0]
+            invoice_item.batch_number = getattr(first_ledger, "batch_number", None)
+            invoice_item.expiry_date = (
+                first_ledger.expiry_date.isoformat() if getattr(first_ledger, "expiry_date", None) else None
+            )
         else:
-            invoice_item.batch_number = None
-            invoice_item.expiry_date = None
+            invoice_item.batch_allocations = None
+            if getattr(invoice_item, "batch_id", None):
+                ledger = db.query(InventoryLedger).filter(InventoryLedger.id == invoice_item.batch_id).first()
+                if ledger:
+                    invoice_item.batch_number = ledger.batch_number
+                    invoice_item.expiry_date = (
+                        ledger.expiry_date.isoformat() if getattr(ledger, "expiry_date", None) else None
+                    )
+                else:
+                    invoice_item.batch_number = None
+                    invoice_item.expiry_date = None
+            else:
+                invoice_item.batch_number = None
+                invoice_item.expiry_date = None
 
     # Print letterhead: company, branch, user, logo URL for print (like quotation)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()

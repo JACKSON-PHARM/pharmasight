@@ -940,7 +940,10 @@ async function onSalesInvoiceAddItem(item) {
             unit_price: i.unit_price_exclusive,
             discount_percent: i.discount_percent || 0,
             tax_percent: i.vat_rate || 0,
-            total: i.line_total_inclusive
+            total: i.line_total_inclusive,
+            batch_allocations: i.batch_allocations || null,
+            batch_number: i.batch_number || null,
+            expiry_date: i.expiry_date || null
         }));
         lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(updated.items);
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
@@ -1013,7 +1016,10 @@ async function onSalesInvoiceItemsChange(validItems) {
             unit_price: i.unit_price_exclusive,
             discount_percent: i.discount_percent || 0,
             tax_percent: i.vat_rate || 0,
-            total: i.line_total_inclusive
+            total: i.line_total_inclusive,
+            batch_allocations: i.batch_allocations || null,
+            batch_number: i.batch_number || null,
+            expiry_date: i.expiry_date || null
         }));
         lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(updated.items);
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
@@ -1061,7 +1067,10 @@ async function onSalesInvoiceItemsChange(validItems) {
                 unit_price: i.unit_price_exclusive,
                 discount_percent: i.discount_percent || 0,
                 tax_percent: i.vat_rate || 0,
-                total: i.line_total_inclusive
+                total: i.line_total_inclusive,
+                batch_allocations: i.batch_allocations || null,
+                batch_number: i.batch_number || null,
+                expiry_date: i.expiry_date || null
             }));
             lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(updated.items);
             if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
@@ -1090,6 +1099,9 @@ function initializeSalesInvoiceItemsTable() {
             quantity: item.quantity,
             unit_price: item.unit_price,
             total: item.total,
+            batch_allocations: item.batch_allocations || null,
+            batch_number: item.batch_number || null,
+            expiry_date: item.expiry_date || null,
             is_empty: false
         }))
         : [];
@@ -1916,7 +1928,7 @@ async function viewSalesInvoice(invoiceId) {
                 invoiceData: invoice  // Store invoice data to populate form
             };
             
-            // Convert invoice items to documentItems format
+            // Convert invoice items to documentItems format (include batch_allocations for receipt/table display)
             documentItems = invoice.items ? invoice.items.map(item => ({
                 item_id: item.item_id,
                 item_name: item.item_name || item.item?.name || '',
@@ -1928,6 +1940,9 @@ async function viewSalesInvoice(invoiceId) {
                 discount_percent: parseFloat(item.discount_percent) || 0,
                 discount_amount: parseFloat(item.discount_amount) || 0,
                 total: parseFloat(item.line_total_inclusive) || 0,
+                batch_allocations: item.batch_allocations || null,
+                batch_number: item.batch_number || null,
+                expiry_date: item.expiry_date || null,
                 is_empty: false
             })) : [];
             
@@ -2851,12 +2866,12 @@ function buildBatchExpiryLine(item, showBatch, showExp) {
             return [b, e].filter(Boolean).join(' ') + q;
         }).filter(Boolean);
         if (lines.length === 0) return '';
-        return '<div class="item-sub">' + lines.join('</div><div class="item-sub">') + '</div>';
+        return '<div class="item-sub batch-faint">' + lines.join('</div><div class="item-sub batch-faint">') + '</div>';
     }
     const b = showBatch && (item.batch_number != null && item.batch_number !== '') ? `Batch: ${escapeHtml(String(item.batch_number))}` : '';
     const e = showExp && item.expiry_date ? `Exp: ${formatExpiryForPrint(item.expiry_date)}` : '';
     const line = [b, e].filter(Boolean).join(' ');
-    return line ? '<div class="item-sub">' + line + '</div>' : '';
+    return line ? '<div class="item-sub batch-faint">' + line + '</div>' : '';
 }
 
 function generateInvoicePrintHTML(invoice, printType) {
@@ -2953,6 +2968,7 @@ function generateInvoicePrintHTML(invoice, printType) {
            table { margin: 2mm 0; table-layout: fixed; width: 100%; }
            th, td { padding: ${cellPadMm}; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
            .item-sub { font-size: 8pt; color: #555; border-bottom: 1px dotted #ccc; margin-top: 1mm; padding-bottom: 1mm; }
+           .batch-faint { font-size: 7pt; color: #999; opacity: 0.9; }
            .total { font-size: 10pt; }
            .no-print { display: none !important; }
            .print-content-wrap { margin-top: 0 !important; max-width: ${contentWidthMm}mm; }`
@@ -2963,6 +2979,7 @@ function generateInvoicePrintHTML(invoice, printType) {
            .company-name { font-size: 1.25em; font-weight: bold; margin-bottom: 4px; }
            .company-details { font-size: 0.9em; color: #333; line-height: 1.4; }
            .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
+           .batch-faint { font-size: 0.75em; color: #999; opacity: 0.9; }
            th, td { padding: 8px; }
            .no-print { display: none !important; }
            .print-content-wrap { margin-top: 0 !important; }`;
@@ -3134,8 +3151,8 @@ function generateQuotationPrintHTML(quotation, printType) {
     const showItemCode = isThermal ? false : getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
     const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
-    const showBatch = getPrintOpt('PRINT_ITEM_BATCH', false);
-    const showExp = getPrintOpt('PRINT_ITEM_EXP', false);
+    const showBatch = getPrintOpt('PRINT_ITEM_BATCH', true);
+    const showExp = getPrintOpt('PRINT_ITEM_EXP', true);
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
 
     const quotationDate = new Date(quotation.quotation_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
@@ -3215,12 +3232,14 @@ function generateQuotationPrintHTML(quotation, printType) {
            table { margin: 2mm 0; table-layout: fixed; width: 100%; }
            th, td { padding: ${cellPadMmQ}; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
            .item-sub { font-size: 8pt; color: #555; border-bottom: 1px dotted #ccc; margin-top: 1mm; padding-bottom: 1mm; }
+           .batch-faint { font-size: 7pt; color: #999; opacity: 0.9; }
            .total { font-size: 10pt; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
            .header { text-align: ${headerAlign}; }
            .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
+           .batch-faint { font-size: 0.75em; color: #999; opacity: 0.9; }
            th, td { padding: 8px; }`;
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';

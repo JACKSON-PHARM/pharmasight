@@ -40,6 +40,13 @@ class BatchSalesInvoiceRequest(BaseModel):
     )
 
 
+class BatchAllocationDisplay(BaseModel):
+    """One batch allocation for display on receipt/PDF (FEFO deduction)."""
+    batch_number: Optional[str] = None
+    expiry_date: Optional[str] = None  # ISO date
+    quantity: Optional[float] = None
+
+
 class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     """Sales invoice item response"""
     id: UUID
@@ -54,8 +61,9 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     item_name: Optional[str] = None
     item_code: Optional[str] = None
     unit_display_short: Optional[str] = None  # P/W/S for display/print only
-    batch_number: Optional[str] = None  # From ledger when batched, for receipt print
+    batch_number: Optional[str] = None  # From ledger when batched, for receipt print (first allocation)
     expiry_date: Optional[str] = None  # ISO date from ledger when batched, for receipt print
+    batch_allocations: Optional[List[BatchAllocationDisplay]] = None  # All batches used (FEFO) for receipt/PDF
     created_at: datetime
 
     class Config:

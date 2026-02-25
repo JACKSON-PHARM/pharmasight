@@ -200,6 +200,9 @@
                 total: item.total || 0,
                 available_stock: typeof item.available_stock === 'number' ? item.available_stock : null,
                 batches: Array.isArray(item.batches) ? item.batches : (item.batch_data ? (() => { try { return JSON.parse(item.batch_data); } catch (e) { return []; } })() : []),
+                batch_allocations: Array.isArray(item.batch_allocations) ? item.batch_allocations : null,
+                batch_number: item.batch_number != null && item.batch_number !== '' ? item.batch_number : null,
+                expiry_date: item.expiry_date != null && item.expiry_date !== '' ? item.expiry_date : null,
                 is_empty: false
             };
             // Calculate nett and vat_amount for normalized items
@@ -316,8 +319,8 @@
                     <td style="padding: 0.2rem 0.35rem; text-align: right; font-weight: 600;"><input type="number" class="form-input add-row-total total-input add-row-total-input" data-row="add" data-field="total" value="${this.roundMoney(ar.total || 0).toFixed(2)}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'readonly' : ''} title="Editable: enter total to reverse-calculate unit price"></td>
                     <td style="padding: 0.2rem 0.35rem; text-align: center;">
                         <div style="display: flex; gap: 0.25rem; justify-content: center; align-items: center; flex-wrap: wrap;">
-                            ${ar.item_id && (this.mode === 'purchase' || this.mode === 'sale' || this.mode === 'quotation') ? `
-                                <button type="button" class="btn btn-outline btn-sm add-row-manage-batches-btn" data-row="add" title="${this.mode === 'purchase' ? 'Manage Batches & Expiry (required for supplier invoices)' : 'Manage Batches & Expiry (optional)'}" style="padding: 0.35rem 0.5rem; font-size: 0.75rem;">
+                            ${ar.item_id && this.mode === 'purchase' ? `
+                                <button type="button" class="btn btn-outline btn-sm add-row-manage-batches-btn" data-row="add" title="Manage Batches & Expiry (required for supplier invoices)" style="padding: 0.35rem 0.5rem; font-size: 0.75rem;">
                                     <i class="fas fa-boxes"></i> Batches
                                 </button>
                             ` : ''}
@@ -343,8 +346,18 @@
             if (isAddRowMode && (item.is_empty || !item.item_id)) return;
             const isSearching = this.activeSearchRow === index;
             // When useAddRow, data rows show item name as clickable (view details); no search input per row
+            const batchSubLine = (this.mode === 'sale' || this.mode === 'quotation') && (item.batch_allocations?.length || item.batch_number) ? (() => {
+                const allocs = item.batch_allocations && item.batch_allocations.length ? item.batch_allocations : (item.batch_number ? [{ batch_number: item.batch_number, expiry_date: item.expiry_date, quantity: item.quantity }] : []);
+                const parts = allocs.map(a => {
+                    const b = (a.batch_number != null && a.batch_number !== '') ? `Batch: ${escapeHtml(String(a.batch_number))}` : '';
+                    const e = (a.expiry_date != null && a.expiry_date !== '') ? `Exp: ${escapeHtml(String(a.expiry_date).slice(0, 10))}` : '';
+                    const q = (a.quantity != null) ? ` (${Number(a.quantity)})` : '';
+                    return [b, e].filter(Boolean).join(' ') + q;
+                }).filter(Boolean);
+                return parts.length ? '<div class="item-batch-faint" style="font-size: 0.7rem; color: var(--text-secondary, #888); margin-top: 0.15rem;">' + parts.join(' · ') + '</div>' : '';
+            })() : '';
             const firstCell = isAddRowMode
-                ? `<td style="padding: 0.25rem; min-width: 250px;"><span class="item-name-clickable" data-row="${index}" data-item-id="${item.item_id || ''}" role="button" tabindex="0" style="cursor: pointer; text-decoration: underline; color: var(--primary-color, #007bff); font-weight: 500;">${escapeHtml(this.getItemDisplayName(item))}</span></td>`
+                ? `<td style="padding: 0.25rem; min-width: 250px;"><span class="item-name-clickable" data-row="${index}" data-item-id="${item.item_id || ''}" role="button" tabindex="0" style="cursor: pointer; text-decoration: underline; color: var(--primary-color, #007bff); font-weight: 500;">${escapeHtml(this.getItemDisplayName(item))}</span>${batchSubLine}</td>`
                 : `<td style="padding: 0.25rem; position: relative; min-width: 250px;">
                         <input type="text" 
                                class="form-input item-search-input ${item.item_id ? 'item-selected' : ''}" 
