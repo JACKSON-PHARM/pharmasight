@@ -1604,12 +1604,20 @@
         const totalEl = this.mountEl.querySelector('.add-row-total-input');
         const unitSelect = this.mountEl.querySelector('.add-row-unit');
         const active = typeof document !== 'undefined' ? document.activeElement : null;
+        let didRecalcUnitPriceFromUnitChange = false;
         if (qtyEl) this.addRowItem.quantity = parseFloat(qtyEl.value) || 1;
         if (discountEl) this.addRowItem.discount_percent = this.roundMoney(parseFloat(discountEl.value) || 0);
         if (unitSelect && unitSelect.tagName === 'SELECT') {
-            this.addRowItem.unit_name = unitSelect.value || '';
             const opt = unitSelect.options[unitSelect.selectedIndex];
-            if (opt) this.addRowItem.unit_multiplier = parseFloat(opt.dataset.multiplier) || 1;
+            const newMult = opt ? parseFloat(opt.dataset.multiplier) || 1 : 1;
+            const oldMult = this.addRowItem.unit_multiplier || 1;
+            this.addRowItem.unit_name = unitSelect.value || '';
+            this.addRowItem.unit_multiplier = newMult;
+            if (oldMult > 0 && newMult > 0 && Math.abs(oldMult - newMult) > 1e-9) {
+                const basePrice = (this.addRowItem.unit_price || 0) / oldMult;
+                this.addRowItem.unit_price = this.roundMoney(basePrice * newMult);
+                didRecalcUnitPriceFromUnitChange = true;
+            }
         }
         const nettEl = this.mountEl.querySelector('.add-row-nett');
         if (totalEl && (active === totalEl) && totalEl.value !== '' && !isNaN(parseFloat(totalEl.value))) {
@@ -1618,7 +1626,7 @@
         } else if (nettEl && (active === nettEl) && nettEl.value !== '' && !isNaN(parseFloat(nettEl.value))) {
             const nett = parseFloat(nettEl.value);
             if (nett >= 0) this.addRowItem.unit_price = this.reverseCalcUnitPriceFromNett(this.addRowItem, nett);
-        } else if (priceEl) {
+        } else if (!didRecalcUnitPriceFromUnitChange && priceEl) {
             this.addRowItem.unit_price = this.roundMoney(parseFloat(priceEl.value) || 0);
         }
         if (marginEl && (this.mode === 'sale' || this.mode === 'quotation') && active === marginEl) {
@@ -1629,6 +1637,7 @@
             }
         }
         this.recalculateAddRow();
+        if (didRecalcUnitPriceFromUnitChange && priceEl) priceEl.value = this.roundMoney(this.addRowItem.unit_price || 0).toFixed(2);
         this.updateAddRowComputedFieldsOnly();
     };
     
@@ -1768,7 +1777,7 @@
      * When useAddRow and rowIndex is a data row, positions dropdown using the row's first cell (no input).
      */
     TransactionItemsTable.prototype.showSelectedItemDropdown = function(rowIndex) {
-        const item = this.items[rowIndex];
+        const item = (rowIndex === 'add' ? this.addRowItem : this.items[rowIndex]);
         if (!item || !item.item_id) return;
         
         this.closeSuggestions();
@@ -1811,7 +1820,7 @@
                 </div>
                 <div id="${this.instanceId}_selected_batches_${rowIndex}" style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-secondary, #666);">Loading batch/expiry…</div>
             </div>
-            ${this.useAddRow ? `
+            ${this.useAddRow && rowIndex !== 'add' ? `
             <div class="suggestion-item selected-item-action" data-action="load-to-edit" data-row="${rowIndex}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center; border-bottom: 1px solid var(--border-color, #dee2e6); background: #e8f4fd;" onmouseover="this.style.background='#d0e8ff'" onmouseout="this.style.background='#e8f4fd'">
                 <i class="fas fa-edit" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
                 <span><strong>Load to edit</strong> — edit in the row above, then click Update line</span>
@@ -1868,7 +1877,10 @@
             }
         } else if (batchPlaceholder) {
             const sellingPrice = formatCurrency(item.unit_price || 0);
-            const costPrice = (item.purchase_price != null && item.purchase_price !== '') ? formatCurrency(item.purchase_price) : null;
+            const costPerBase = (item.purchase_price != null && item.purchase_price !== '') ? parseFloat(item.purchase_price) : null;
+            const mult = (item.unit_multiplier != null && !isNaN(parseFloat(item.unit_multiplier))) ? parseFloat(item.unit_multiplier) : 1;
+            const costPerSelectedUnit = costPerBase != null ? costPerBase * mult : null;
+            const costPrice = costPerSelectedUnit != null ? formatCurrency(costPerSelectedUnit) : null;
             const margin = (this.mode === 'quotation') ? this.formatMargin(this.calculateMargin(item)) : null;
             const vat = (item.tax_percent || 0).toFixed(1) + '%';
             const priceLine = costPrice ? `Selling: ${sellingPrice} &nbsp;|&nbsp; Cost: ${costPrice} &nbsp;|&nbsp; Margin: ${margin} &nbsp;|&nbsp; VAT: ${vat}` : `Price: ${sellingPrice} &nbsp;|&nbsp; VAT: ${vat}`;
@@ -1980,9 +1992,34 @@
             if (full.stock_display != null) item.stock_display = full.stock_display;
             if (typeof full.current_stock === 'number') item.available_stock = full.current_stock;
             const wholesaleUnit = (units[0] && units[0].unit_name) || full.wholesale_unit || full.base_unit || 'piece';
-            const currentUnit = item.unit_name || wholesaleUnit;
-            const currentU = units.find(u => (u.unit_name || '') === currentUnit);
-            item.unit_name = currentU ? currentUnit : wholesaleUnit;
+            let currentUnit = item.unit_name || wholesaleUnit;
+            let currentU = units.find(u => (u.unit_name || '') === currentUnit);
+            // In sale/quotation add row: adapt unit and price to current sales type (retail/wholesale)
+            if (rowIndex === 'add' && (this.mode === 'sale' || this.mode === 'quotation') && api.items.getRecommendedPrice) {
+                const salesTypeEl = typeof document !== 'undefined' ? document.getElementById('salesTypeSelect') : null;
+                const salesType = (salesTypeEl && salesTypeEl.value) ? salesTypeEl.value : 'RETAIL';
+                const tier = salesType.toLowerCase();
+                let unitForTier = wholesaleUnit;
+                if (salesType === 'WHOLESALE') unitForTier = full.wholesale_unit || full.base_unit || 'piece';
+                else if (salesType === 'RETAIL') unitForTier = full.retail_unit || full.base_unit || 'piece';
+                else if (salesType === 'SUPPLIER') {
+                    const wups = Math.max(0.0001, parseFloat(full.wholesale_units_per_supplier) || 1);
+                    unitForTier = (wups > 1 && full.supplier_unit) ? full.supplier_unit : (full.wholesale_unit || full.base_unit || 'piece');
+                }
+                const matchUnit = units.find(u => (u.unit_name || '').toLowerCase() === (unitForTier || '').toLowerCase());
+                unitForTier = (matchUnit && matchUnit.unit_name) ? matchUnit.unit_name : unitForTier;
+                try {
+                    const priceInfo = await api.items.getRecommendedPrice(item.item_id, branchId, config.COMPANY_ID, unitForTier, tier);
+                    if (priceInfo && typeof priceInfo.recommended_unit_price === 'number') {
+                        item.unit_price = this.roundMoney(priceInfo.recommended_unit_price);
+                        currentUnit = unitForTier;
+                        currentU = units.find(u => (u.unit_name || '') === currentUnit);
+                    }
+                } catch (err) {
+                    console.warn('TransactionItemsTable: could not get recommended price for tier', tier, err);
+                }
+            }
+            item.unit_name = currentU ? currentUnit : (currentUnit || wholesaleUnit);
             item.unit_multiplier = currentU ? (parseFloat(currentU.multiplier_to_base) || 1) : 1;
             if (rowIndex === 'add') {
                 this.recalculateAddRow();
@@ -2049,12 +2086,16 @@
     /**
      * Refresh cost, units and stock for all filled rows (e.g. after sales type / 3-tier unit change).
      * Re-fetches each item so unit list and cost are correct for current tier.
+     * Also refreshes the add row (search row) when useAddRow so unit/price adapt to retail vs wholesale.
      */
     TransactionItemsTable.prototype.refreshPrices = async function() {
         for (let i = 0; i < this.items.length; i++) {
             if (this.items[i].item_id) {
                 await this.loadUnitsForRow(i);
             }
+        }
+        if (this.useAddRow && this.addRowItem && this.addRowItem.item_id) {
+            await this.loadUnitsForRow('add');
         }
     };
     
