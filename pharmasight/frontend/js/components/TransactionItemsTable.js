@@ -1637,7 +1637,7 @@
             }
         }
         this.recalculateAddRow();
-        if (didRecalcUnitPriceFromUnitChange && priceEl) priceEl.value = this.roundMoney(this.addRowItem.unit_price || 0).toFixed(2);
+        if (priceEl) priceEl.value = this.roundMoney(this.addRowItem.unit_price || 0).toFixed(2);
         this.updateAddRowComputedFieldsOnly();
     };
     
