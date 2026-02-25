@@ -39,6 +39,16 @@ const CONFIG = {
     PRINT_THEME: 'theme1',
     // Thermal page width in mm: 58 (2"), 68 (3"), 80, 88 (4")
     PRINT_PAGE_WIDTH_MM: 80,
+    // Thermal font sizes (pt): header text and table/items
+    PRINT_THERMAL_HEADER_FONT_PT: 9,
+    PRINT_THERMAL_ITEM_FONT_PT: 8,
+    // A4 print: logo size preset (small | medium | large | xlarge) when custom size not set
+    PRINT_LOGO_SIZE_A4: 'medium',
+    // A4 print: custom logo dimensions and position (px); used by preview and print when set
+    PRINT_LOGO_WIDTH_A4: 100,
+    PRINT_LOGO_HEIGHT_A4: 50,
+    PRINT_LOGO_OFFSET_X_A4: 0,
+    PRINT_LOGO_OFFSET_Y_A4: 0,
     // Header: what to print
     PRINT_HEADER_COMPANY: true,
     PRINT_HEADER_ADDRESS: true,
@@ -103,6 +113,13 @@ function buildPrintConfigForApi() {
         PRINT_AUTO_CUT: bool('PRINT_AUTO_CUT'),
         PRINT_THEME: CONFIG.PRINT_THEME || 'theme1',
         PRINT_PAGE_WIDTH_MM: Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80)),
+        PRINT_THERMAL_HEADER_FONT_PT: Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9)),
+        PRINT_THERMAL_ITEM_FONT_PT: Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8)),
+        PRINT_LOGO_SIZE_A4: (CONFIG.PRINT_LOGO_SIZE_A4 === 'small' || CONFIG.PRINT_LOGO_SIZE_A4 === 'large' || CONFIG.PRINT_LOGO_SIZE_A4 === 'xlarge') ? CONFIG.PRINT_LOGO_SIZE_A4 : 'medium',
+        PRINT_LOGO_WIDTH_A4: Math.min(300, Math.max(20, parseInt(CONFIG.PRINT_LOGO_WIDTH_A4, 10) || 100)),
+        PRINT_LOGO_HEIGHT_A4: Math.min(150, Math.max(15, parseInt(CONFIG.PRINT_LOGO_HEIGHT_A4, 10) || 50)),
+        PRINT_LOGO_OFFSET_X_A4: parseInt(CONFIG.PRINT_LOGO_OFFSET_X_A4, 10) || 0,
+        PRINT_LOGO_OFFSET_Y_A4: parseInt(CONFIG.PRINT_LOGO_OFFSET_Y_A4, 10) || 0,
         PRINT_HEADER_COMPANY: bool('PRINT_HEADER_COMPANY'),
         PRINT_HEADER_ADDRESS: bool('PRINT_HEADER_ADDRESS'),
         PRINT_HEADER_EMAIL: bool('PRINT_HEADER_EMAIL'),
@@ -133,7 +150,12 @@ async function loadCompanyPrintSettings() {
         const v = res?.value;
         if (v && typeof v === 'object') {
             Object.keys(v).forEach(k => {
-                if (k in CONFIG && v[k] !== undefined) CONFIG[k] = v[k];
+                if (k in CONFIG && v[k] !== undefined) {
+                    const val = v[k];
+                    if (typeof CONFIG[k] === 'boolean') CONFIG[k] = val === true || val === 'true';
+                    else if (typeof CONFIG[k] === 'number') CONFIG[k] = typeof val === 'number' ? val : parseInt(val, 10) || CONFIG[k];
+                    else CONFIG[k] = val;
+                }
             });
             if (typeof saveConfig === 'function') saveConfig();
         }
@@ -168,6 +190,13 @@ function saveConfig() {
         PRINT_AUTO_CUT: printBool('PRINT_AUTO_CUT'),
         PRINT_THEME: CONFIG.PRINT_THEME || 'theme1',
         PRINT_PAGE_WIDTH_MM: Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80)),
+        PRINT_THERMAL_HEADER_FONT_PT: Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9)),
+        PRINT_THERMAL_ITEM_FONT_PT: Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8)),
+        PRINT_LOGO_SIZE_A4: (CONFIG.PRINT_LOGO_SIZE_A4 === 'small' || CONFIG.PRINT_LOGO_SIZE_A4 === 'large' || CONFIG.PRINT_LOGO_SIZE_A4 === 'xlarge') ? CONFIG.PRINT_LOGO_SIZE_A4 : 'medium',
+        PRINT_LOGO_WIDTH_A4: Math.min(300, Math.max(20, parseInt(CONFIG.PRINT_LOGO_WIDTH_A4, 10) || 100)),
+        PRINT_LOGO_HEIGHT_A4: Math.min(150, Math.max(15, parseInt(CONFIG.PRINT_LOGO_HEIGHT_A4, 10) || 50)),
+        PRINT_LOGO_OFFSET_X_A4: parseInt(CONFIG.PRINT_LOGO_OFFSET_X_A4, 10) || 0,
+        PRINT_LOGO_OFFSET_Y_A4: parseInt(CONFIG.PRINT_LOGO_OFFSET_Y_A4, 10) || 0,
         PRINT_HEADER_COMPANY: printBool('PRINT_HEADER_COMPANY'),
         PRINT_HEADER_ADDRESS: printBool('PRINT_HEADER_ADDRESS'),
         PRINT_HEADER_EMAIL: printBool('PRINT_HEADER_EMAIL'),

@@ -182,6 +182,7 @@ const API = {
     company: {
         list: () => api.get('/api/companies'),
         get: (companyId) => api.get(`/api/companies/${companyId}`),
+        getLogoUrl: (companyId) => api.get(`/api/companies/${companyId}/logo-url`),
         create: (data) => api.post('/api/companies', data),
         update: (companyId, data) => api.put(`/api/companies/${companyId}`, data),
         getSettings: (companyId, key = null) =>

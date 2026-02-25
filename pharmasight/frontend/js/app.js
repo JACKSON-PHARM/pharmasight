@@ -1058,7 +1058,6 @@ window.subNavItems = {
         { page: 'reports-custom', label: 'Custom Reports', icon: 'fa-file-alt' }
     ],
     settings: [
-        { page: 'settings', subPage: 'general', label: 'General Settings', icon: 'fa-cog' },
         { page: 'settings', subPage: 'company', label: 'Company', icon: 'fa-building' },
         { page: 'settings', subPage: 'branches', label: 'Branches', icon: 'fa-code-branch' },
         { page: 'settings', subPage: 'users', label: 'Users & Roles', icon: 'fa-users' },

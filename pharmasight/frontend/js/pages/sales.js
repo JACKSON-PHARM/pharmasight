@@ -2887,9 +2887,11 @@ function generateInvoicePrintHTML(invoice, printType) {
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
     const showItemCode = isThermal ? false : getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
-    const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
-    const showBatch = getPrintOpt('PRINT_ITEM_BATCH', true); // Default to true for invoices
-    const showExp = getPrintOpt('PRINT_ITEM_EXP', true); // Default to true for invoices
+    const showVat = isThermal ? true : getPrintOpt('PRINT_SHOW_VAT', false); // Thermal: always show VAT
+    const showBatch = !isThermal && getPrintOpt('PRINT_ITEM_BATCH', true); // Batch/expiry only on A4, not thermal
+    const showExp = !isThermal && getPrintOpt('PRINT_ITEM_EXP', true);
+    const thermalHeaderFontPt = Math.min(12, Math.max(6, parseInt(getPrintOpt('PRINT_THERMAL_HEADER_FONT_PT', 9), 10) || 9));
+    const thermalItemFontPt = Math.min(10, Math.max(5, parseInt(getPrintOpt('PRINT_THERMAL_ITEM_FONT_PT', 8), 10) || 8));
 
     const colCount = showVat ? 6 : 5;
 
@@ -2957,19 +2959,26 @@ function generateInvoicePrintHTML(invoice, printType) {
     const pageStyle = isThermal
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
-           body { font-size: 10pt; max-width: ${contentWidthMm}mm; width: ${contentWidthMm}mm; padding: ${bodyPadMm}; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
-           .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: ${headerAlign}; border-bottom: 1px solid #000; }
-           .header .company-name { font-size: 10pt; font-weight: bold; line-height: 1.2; }
-           .header .company-details, .header p { margin: 0 !important; font-size: 9pt; line-height: 1.25; word-wrap: break-word; overflow-wrap: break-word; }
-           .invoice-info { margin: 2mm 0; font-size: 9pt; line-height: 1.3; }
+           body { font-size: ${thermalHeaderFontPt}pt; max-width: ${contentWidthMm}mm; width: ${contentWidthMm}mm; padding: ${bodyPadMm}; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
+           .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: ${headerAlign}; border-bottom: 1px solid #000; font-size: ${thermalHeaderFontPt}pt; }
+           .header .company-name { font-size: ${thermalHeaderFontPt}pt; font-weight: bold; line-height: 1.2; }
+           .header .company-details, .header p { margin: 0 !important; font-size: ${thermalHeaderFontPt - 1}pt; line-height: 1.25; word-wrap: break-word; overflow-wrap: break-word; }
+           .invoice-info { margin: 2mm 0; font-size: ${thermalHeaderFontPt - 1}pt; line-height: 1.3; }
            .invoice-info p { margin: 0.5mm 0; }
-           .footer { margin-top: 2mm; padding-top: 2mm; font-size: 8pt; border-top: 1px solid #ccc; }
+           .footer { margin-top: 2mm; padding-top: 2mm; font-size: ${thermalItemFontPt}pt; border-top: 1px solid #ccc; }
            .footer p { margin: 0.5mm 0; }
-           table { margin: 2mm 0; table-layout: fixed; width: 100%; }
-           th, td { padding: ${cellPadMm}; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
-           .item-sub { font-size: 8pt; color: #555; border-bottom: 1px dotted #ccc; margin-top: 1mm; padding-bottom: 1mm; }
-           .batch-faint { font-size: 7pt; color: #999; opacity: 0.9; }
-           .total { font-size: 10pt; }
+           .footer .powered-by { font-size: 6pt; color: #bbb; margin-top: 3mm; font-weight: normal; }
+           table { margin: 2mm 0; table-layout: fixed; width: 100%; font-size: ${thermalItemFontPt}pt; }
+           table.thermal-receipt th, table.thermal-receipt td { padding: 1mm 0.5mm; font-size: ${thermalItemFontPt}pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; white-space: normal; }
+           table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 42%; min-width: 0; }
+           table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 10%; }
+           table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 14%; }
+           table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 8%; }
+           table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 12%; }
+           table.thermal-receipt th:nth-child(6), table.thermal-receipt td:nth-child(6) { width: 14%; }
+           .item-sub { font-size: 7pt; color: #555; }
+           .batch-faint { font-size: 6pt; color: #999; opacity: 0.9; }
+           .total { font-size: ${thermalItemFontPt + 1}pt; }
            .no-print { display: none !important; }
            .print-content-wrap { margin-top: 0 !important; max-width: ${contentWidthMm}mm; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
@@ -2988,15 +2997,25 @@ function generateInvoicePrintHTML(invoice, printType) {
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
     const layoutLabel = isThermal ? `Thermal (${pageWidthMm}mm)` : 'Regular (A4)';
     const logoUrl = (invoice.logo_url && typeof invoice.logo_url === 'string' && (invoice.logo_url.startsWith('http://') || invoice.logo_url.startsWith('https://'))) ? invoice.logo_url : '';
-    const logoImg = logoUrl ? `<img src="${logoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="max-height: 34px; max-width: 70px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
+    const logoSizeA4 = getPrintOpt('PRINT_LOGO_SIZE_A4', 'medium');
+    const logoDims = { small: [34, 70], medium: [50, 100], large: [70, 140], xlarge: [90, 180] }[logoSizeA4] || [50, 100];
+    const rawLogoW = getPrintOpt('PRINT_LOGO_WIDTH_A4', null);
+    const rawLogoH = getPrintOpt('PRINT_LOGO_HEIGHT_A4', null);
+    const logoW = (rawLogoW != null && parseInt(rawLogoW, 10) > 0) ? Math.min(300, Math.max(20, parseInt(rawLogoW, 10))) : Math.max(logoDims[1], 120);
+    const logoH = (rawLogoH != null && parseInt(rawLogoH, 10) > 0) ? Math.min(150, Math.max(15, parseInt(rawLogoH, 10))) : Math.max(logoDims[0], 60);
+    const logoOx = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_X_A4', 0), 10) || 0;
+    const logoOy = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_Y_A4', 0), 10) || 0;
+    const logoImg = logoUrl ? `<img src="${logoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${logoW}px; height: ${logoH}px; max-width: ${logoW}px; max-height: ${logoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
+    const logoWrapStyle = !isThermal && logoImg ? `flex-shrink: 0; position: relative; right: ${logoOx}px; top: ${logoOy}px;` : '';
+    const companyBlockStyle = 'flex: 1; min-width: 0; text-align: right; margin-left: auto;';
     const headerBlock = `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
-        <div style="flex: 1; min-width: 0;">
+        ${!isThermal && logoImg ? `<div class="print-header-logo-wrap" style="${logoWrapStyle}">${logoImg}</div>` : ''}
+        <div style="${companyBlockStyle}">
             ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
             ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
             ${branchLine}
             <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
         </div>
-        ${logoImg ? `<div class="print-header-logo-wrap" style="flex-shrink: 0;">${logoImg}</div>` : ''}
     </div>`;
 
     return `
@@ -3014,6 +3033,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         th { background: #f0f0f0; font-weight: bold; }
         .total { font-weight: bold; font-size: 14px; border-top: 2px solid #000; padding-top: 5px; }
         .footer { text-align: center; font-size: 10px; border-top: 1px solid #ddd; padding-top: 10px; }
+        .footer .powered-by { font-size: 6pt; color: #bbb; margin-top: 3mm; font-weight: normal; opacity: 0.85; }
     </style>
 </head>
 <body>
@@ -3036,7 +3056,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         ${invoice.customer_phone ? `<p><strong>Phone:</strong> ${escapeHtml(invoice.customer_phone)}</p>` : ''}
     </div>
 
-    <table>
+    <table${isThermal ? ' class="thermal-receipt"' : ''}>
         <thead>
             <tr>
                 <th>Item</th>
@@ -3062,6 +3082,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
         ${createdByUser ? `<p><strong>Served by:</strong> ${escapeHtml(createdByUser)}</p>` : ''}
         <p>Generated: ${generatedTime}</p>
+        <p class="powered-by">powered by pharmaSight solutions</p>
     </div>
     ${autoCutSpacer}
     </div>
@@ -3150,10 +3171,12 @@ function generateQuotationPrintHTML(quotation, printType) {
     const showPhone = getPrintOpt('PRINT_HEADER_PHONE', true);
     const showItemCode = isThermal ? false : getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
-    const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
-    const showBatch = getPrintOpt('PRINT_ITEM_BATCH', true);
-    const showExp = getPrintOpt('PRINT_ITEM_EXP', true);
+    const showVat = isThermal ? true : getPrintOpt('PRINT_SHOW_VAT', false);
+    const showBatch = !isThermal && getPrintOpt('PRINT_ITEM_BATCH', true); // Batch/expiry only on A4
+    const showExp = !isThermal && getPrintOpt('PRINT_ITEM_EXP', true);
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
+    const thermalHeaderFontPt = Math.min(12, Math.max(6, parseInt(getPrintOpt('PRINT_THERMAL_HEADER_FONT_PT', 9), 10) || 9));
+    const thermalItemFontPt = Math.min(10, Math.max(5, parseInt(getPrintOpt('PRINT_THERMAL_ITEM_FONT_PT', 8), 10) || 8));
 
     const quotationDate = new Date(quotation.quotation_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     const validUntil = quotation.valid_until ? new Date(quotation.valid_until).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A';
@@ -3222,18 +3245,25 @@ function generateQuotationPrintHTML(quotation, printType) {
     const pageStyle = isThermal
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
-           body { font-size: 10pt; max-width: ${contentWidthMmQ}mm; width: ${contentWidthMmQ}mm; padding: ${bodyPadMmQ}; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
-           .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: ${headerAlign}; border-bottom: 1px solid #000; }
-           .header .company-name { font-size: 10pt; font-weight: bold; line-height: 1.2; }
-           .header .company-details, .header p { margin: 0 !important; font-size: 9pt; line-height: 1.25; word-wrap: break-word; overflow-wrap: break-word; }
-           .quotation-info { margin: 2mm 0; font-size: 9pt; line-height: 1.3; }
+           body { font-size: ${thermalHeaderFontPt}pt; max-width: ${contentWidthMmQ}mm; width: ${contentWidthMmQ}mm; padding: ${bodyPadMmQ}; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
+           .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: ${headerAlign}; border-bottom: 1px solid #000; font-size: ${thermalHeaderFontPt}pt; }
+           .header .company-name { font-size: ${thermalHeaderFontPt}pt; font-weight: bold; line-height: 1.2; }
+           .header .company-details, .header p { margin: 0 !important; font-size: ${thermalHeaderFontPt - 1}pt; line-height: 1.25; word-wrap: break-word; overflow-wrap: break-word; }
+           .quotation-info { margin: 2mm 0; font-size: ${thermalHeaderFontPt - 1}pt; line-height: 1.3; }
            .quotation-info p { margin: 0.5mm 0; }
-           .footer { margin-top: 2mm; padding-top: 2mm; font-size: 8pt; border-top: 1px solid #ccc; }
-           table { margin: 2mm 0; table-layout: fixed; width: 100%; }
-           th, td { padding: ${cellPadMmQ}; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
-           .item-sub { font-size: 8pt; color: #555; border-bottom: 1px dotted #ccc; margin-top: 1mm; padding-bottom: 1mm; }
-           .batch-faint { font-size: 7pt; color: #999; opacity: 0.9; }
-           .total { font-size: 10pt; }`
+           .footer { margin-top: 2mm; padding-top: 2mm; font-size: ${thermalItemFontPt}pt; border-top: 1px solid #ccc; }
+           .footer .powered-by { font-size: 6pt; color: #bbb; margin-top: 3mm; font-weight: normal; }
+           table { margin: 2mm 0; table-layout: fixed; width: 100%; font-size: ${thermalItemFontPt}pt; }
+           table.thermal-receipt th, table.thermal-receipt td { padding: 1mm 0.5mm; font-size: ${thermalItemFontPt}pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; white-space: normal; }
+           table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 42%; min-width: 0; }
+           table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 10%; }
+           table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 14%; }
+           table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 8%; }
+           table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 12%; }
+           table.thermal-receipt th:nth-child(6), table.thermal-receipt td:nth-child(6) { width: 14%; }
+           .item-sub { font-size: 7pt; color: #555; }
+           .batch-faint { font-size: 6pt; color: #999; opacity: 0.9; }
+           .total { font-size: ${thermalItemFontPt + 1}pt; }`
         : `@page { size: A4; margin: ${noMargin ? '0.5cm' : '1cm'}; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${noMargin ? '10px' : '20px'}; margin: 0 auto; }
@@ -3244,16 +3274,26 @@ function generateQuotationPrintHTML(quotation, printType) {
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
     const quotationLogoUrl = (quotation.logo_url && typeof quotation.logo_url === 'string' && (quotation.logo_url.startsWith('http://') || quotation.logo_url.startsWith('https://'))) ? quotation.logo_url : '';
-    const quotationLogoImg = quotationLogoUrl ? `<img src="${quotationLogoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="max-height: 34px; max-width: 70px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
+    const quotationLogoSizeA4 = getPrintOpt('PRINT_LOGO_SIZE_A4', 'medium');
+    const quotationLogoDims = { small: [34, 70], medium: [50, 100], large: [70, 140], xlarge: [90, 180] }[quotationLogoSizeA4] || [50, 100];
+    const qRawW = getPrintOpt('PRINT_LOGO_WIDTH_A4', null);
+    const qRawH = getPrintOpt('PRINT_LOGO_HEIGHT_A4', null);
+    const quotationLogoW = (qRawW != null && parseInt(qRawW, 10) > 0) ? Math.min(300, Math.max(20, parseInt(qRawW, 10))) : Math.max(quotationLogoDims[1], 120);
+    const quotationLogoH = (qRawH != null && parseInt(qRawH, 10) > 0) ? Math.min(150, Math.max(15, parseInt(qRawH, 10))) : Math.max(quotationLogoDims[0], 60);
+    const quotationLogoOx = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_X_A4', 0), 10) || 0;
+    const quotationLogoOy = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_Y_A4', 0), 10) || 0;
+    const quotationLogoImg = quotationLogoUrl ? `<img src="${quotationLogoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${quotationLogoW}px; height: ${quotationLogoH}px; max-width: ${quotationLogoW}px; max-height: ${quotationLogoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
+    const quotationLogoWrapStyle = !isThermal && quotationLogoImg ? `flex-shrink: 0; position: relative; right: ${quotationLogoOx}px; top: ${quotationLogoOy}px;` : '';
+    const quotationCompanyBlockStyle = 'flex: 1; min-width: 0; text-align: right; margin-left: auto;';
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
     const headerBlock = `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
-        <div style="flex: 1; min-width: 0;">
+        ${!isThermal && quotationLogoImg ? `<div class="print-header-logo-wrap" style="${quotationLogoWrapStyle}">${quotationLogoImg}</div>` : ''}
+        <div style="${quotationCompanyBlockStyle}">
             ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
             ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
             ${branchLine}
             <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
         </div>
-        ${quotationLogoImg ? `<div class="print-header-logo-wrap" style="flex-shrink: 0;">${quotationLogoImg}</div>` : ''}
     </div>`;
 
     return `
@@ -3273,6 +3313,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         th { background: #f0f0f0; font-weight: bold; }
         .total { font-weight: bold; border-top: 2px solid #000; padding-top: 8px; }
         .footer { text-align: center; font-size: 0.85em; border-top: 1px solid #ddd; color: #555; }
+        .footer .powered-by { font-size: 6pt; color: #bbb; margin-top: 3mm; font-weight: normal; opacity: 0.85; }
     </style>
 </head>
 <body>
@@ -3283,7 +3324,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         ${quotation.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(quotation.customer_name)}</p>` : ''}
     </div>
 
-    <table>
+    <table${isThermal ? ' class="thermal-receipt"' : ''}>
         <thead>
             <tr>
                 <th>Item</th>
@@ -3309,6 +3350,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
         ${createdByUser ? `<p><strong>Served by:</strong> ${escapeHtml(createdByUser)}</p>` : ''}
         <p>Generated: ${generatedTime}</p>
+        <p class="powered-by">powered by pharmaSight solutions</p>
     </div>
     ${autoCutSpacer}
 </body>

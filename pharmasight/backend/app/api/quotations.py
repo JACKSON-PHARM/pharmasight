@@ -258,14 +258,17 @@ def get_quotation(
                         (price - cost_per_sale_unit) / price * Decimal("100")
                     )
     
-    # Print header: company, branch, user, logo URL for print
+    # Print header: company, branch, user, logo URL for print (all documents)
     company = db.query(Company).filter(Company.id == quotation.company_id).first()
     if company:
         quotation.company_name = company.name
         quotation.company_address = getattr(company, "address", None) or ""
         logo_path = getattr(company, "logo_url", None)
-        if logo_path and str(logo_path or "").startswith("tenant-assets/"):
-            quotation.logo_url = get_signed_url(logo_path, tenant=tenant)
+        if logo_path and str(logo_path).strip():
+            if str(logo_path).startswith("tenant-assets/"):
+                quotation.logo_url = get_signed_url(logo_path, tenant=tenant)
+            elif str(logo_path).startswith("http://") or str(logo_path).startswith("https://"):
+                quotation.logo_url = str(logo_path).strip()
     branch = db.query(Branch).filter(Branch.id == quotation.branch_id).first()
     if branch:
         quotation.branch_name = branch.name

@@ -2,7 +2,7 @@
 
 console.log('[SETTINGS.JS] Script loading...');
 
-let currentSettingsSubPage = 'general'; // 'general', 'company', 'branches', 'users', 'transaction'
+let currentSettingsSubPage = 'company'; // 'company', 'branches', 'users', 'transaction', 'print', 'documentBranding' (or 'general' via URL for API/IDs)
 
 // Initialize settings page
 async function loadSettings(subPage = null) {
@@ -44,7 +44,7 @@ async function loadSettingsSubPage(subPage) {
     console.log('[SETTINGS] Entering switch for subPage:', subPage);
     switch(subPage) {
         case 'general':
-            console.log('[SETTINGS] Case: general');
+            // General Settings hidden from nav; still reachable via #settings-general for API URL / IDs
             await renderGeneralSettingsPage();
             break;
         case 'company':
@@ -73,8 +73,8 @@ async function loadSettingsSubPage(subPage) {
             await renderDocumentBrandingPage();
             break;
         default:
-            console.log('[SETTINGS] Case: default (general)');
-            await renderGeneralSettingsPage();
+            console.log('[SETTINGS] Case: default (company)');
+            await renderCompanyProfilePage();
     }
     console.log('[SETTINGS] Switch completed for subPage:', subPage);
     
@@ -113,9 +113,10 @@ async function renderGeneralSettingsPage() {
                     <div class="form-group">
                         <label class="form-label">API Base URL</label>
                         <input type="text" class="form-input" name="api_base_url" 
-                               value="${CONFIG.API_BASE_URL}" required>
+                               value="${CONFIG.API_BASE_URL || ''}" 
+                               placeholder="https://your-backend.onrender.com">
                         <small style="color: var(--text-secondary);">
-                            Backend API server URL
+                            Use your real backend URL in production (e.g. https://your-api.onrender.com). Leave empty if the app is served from the same origin as the API.
                         </small>
                     </div>
                     
@@ -152,12 +153,6 @@ async function renderGeneralSettingsPage() {
                                 Your user UUID (for audit trail)
                             </small>
                         </div>
-                        <div class="form-group">
-                            <label class="form-label">VAT Rate (%)</label>
-                            <input type="number" class="form-input" name="vat_rate" 
-                                   value="${CONFIG.VAT_RATE}" 
-                                   step="0.01" min="0" max="100">
-                        </div>
                     </div>
                     
                     <div style="margin-top: 2rem;">
@@ -179,14 +174,14 @@ function saveGeneralSettings(event) {
     const form = event.target;
     const formData = new FormData(form);
     
-    CONFIG.API_BASE_URL = formData.get('api_base_url');
+    CONFIG.API_BASE_URL = (formData.get('api_base_url') || '').trim() || null;
     CONFIG.COMPANY_ID = formData.get('company_id') || null;
     CONFIG.BRANCH_ID = formData.get('branch_id') || null;
     CONFIG.USER_ID = formData.get('user_id') || null;
-    CONFIG.VAT_RATE = parseFloat(formData.get('vat_rate') || 16.00);
+    // VAT is per-item; CONFIG.VAT_RATE kept as code default only (not from this form)
     
-    // Update API client base URL
-    api.baseURL = CONFIG.API_BASE_URL;
+    // Update API client base URL (use empty string for same-origin when CONFIG.API_BASE_URL is null)
+    api.baseURL = CONFIG.API_BASE_URL || '';
     
     saveConfig();
     
@@ -203,12 +198,10 @@ function saveGeneralSettings(event) {
 }
 
 function resetGeneralSettings() {
-    CONFIG.API_BASE_URL = 'http://localhost:8000';
+    CONFIG.API_BASE_URL = (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') ? '' : 'http://localhost:8000';
     CONFIG.COMPANY_ID = null;
     CONFIG.BRANCH_ID = null;
     CONFIG.USER_ID = null;
-    CONFIG.VAT_RATE = 16.00;
-    
     saveConfig();
     renderGeneralSettingsPage();
     showToast('Settings reset to defaults', 'info');
@@ -302,8 +295,8 @@ async function renderCompanyProfilePage() {
                     </div>
                     <div class="form-group">
                         <label class="form-label">Logo URL (optional fallback)</label>
-                        <input type="url" class="form-input" name="logo_url" 
-                               value="${(companyData?.logo_url && !String(companyData.logo_url).startsWith('tenant-assets/')) ? companyData.logo_url : ''}"
+                        <input type="text" class="form-input" name="logo_url" 
+                               value="${(companyData?.logo_url && (companyData.logo_url.startsWith('http://') || companyData.logo_url.startsWith('https://'))) ? companyData.logo_url : ''}"
                                placeholder="https://example.com/logo.png">
                         <small style="color: var(--text-secondary);">
                             Or paste a URL to your logo if you don't upload a file
@@ -344,7 +337,8 @@ async function renderCompanyProfilePage() {
                 if (typeof showToast === 'function') showToast('Logo uploaded', 'success');
                 const updated = await API.company.get(CONFIG.COMPANY_ID);
                 const urlInput = document.querySelector('#companyProfileForm input[name="logo_url"]');
-                if (urlInput && updated && updated.logo_url) urlInput.value = updated.logo_url;
+                if (urlInput && updated && updated.logo_url && (updated.logo_url.startsWith('http://') || updated.logo_url.startsWith('https://'))) urlInput.value = updated.logo_url;
+                else if (urlInput) urlInput.value = '';
             } catch (err) {
                 if (logoStatus) logoStatus.textContent = 'Upload failed';
                 if (typeof showToast === 'function') showToast(err.message || 'Logo upload failed', 'error');
@@ -531,7 +525,7 @@ async function createBranch(event) {
     const formData = new FormData(form);
     
     if (!CONFIG.COMPANY_ID) {
-        showToast('Please set Company ID in General Settings first', 'error');
+        showToast('Please set your company in Settings → Company first', 'error');
         return;
     }
     
@@ -2113,6 +2107,13 @@ function getPrintConfigFromForm(form) {
         print_auto_cut: bool('print_auto_cut'),
         print_theme: fd.get('print_theme') || 'theme1',
         print_page_width_mm: Math.min(88, Math.max(58, parseInt(fd.get('print_page_width_mm'), 10) || 80)),
+        print_thermal_header_font_pt: Math.min(12, Math.max(6, parseInt(fd.get('print_thermal_header_font_pt'), 10) || 9)),
+        print_thermal_item_font_pt: Math.min(10, Math.max(5, parseInt(fd.get('print_thermal_item_font_pt'), 10) || 8)),
+        print_logo_size_a4: (() => { const v = fd.get('print_logo_size_a4'); return (v === 'small' || v === 'medium' || v === 'large' || v === 'xlarge') ? v : 'medium'; })(),
+        print_logo_width_a4: Math.min(300, Math.max(20, parseInt(fd.get('print_logo_width_a4'), 10) || 100)),
+        print_logo_height_a4: Math.min(150, Math.max(15, parseInt(fd.get('print_logo_height_a4'), 10) || 50)),
+        print_logo_offset_x_a4: parseInt(fd.get('print_logo_offset_x_a4'), 10) || 0,
+        print_logo_offset_y_a4: parseInt(fd.get('print_logo_offset_y_a4'), 10) || 0,
         print_header_company: bool('print_header_company'),
         print_header_address: bool('print_header_address'),
         print_header_email: bool('print_header_email'),
@@ -2143,6 +2144,14 @@ function applyPrintConfigToCONFIG(opts) {
     CONFIG.PRINT_AUTO_CUT = !!opts.print_auto_cut;
     CONFIG.PRINT_THEME = opts.print_theme || 'theme1';
     CONFIG.PRINT_PAGE_WIDTH_MM = Math.min(88, Math.max(58, parseInt(opts.print_page_width_mm, 10) || 80));
+    CONFIG.PRINT_THERMAL_HEADER_FONT_PT = Math.min(12, Math.max(6, parseInt(opts.print_thermal_header_font_pt, 10) || 9));
+    CONFIG.PRINT_THERMAL_ITEM_FONT_PT = Math.min(10, Math.max(5, parseInt(opts.print_thermal_item_font_pt, 10) || 8));
+    const logoSizeA4 = (opts.print_logo_size_a4 === 'small' || opts.print_logo_size_a4 === 'large' || opts.print_logo_size_a4 === 'xlarge') ? opts.print_logo_size_a4 : 'medium';
+    CONFIG.PRINT_LOGO_SIZE_A4 = logoSizeA4;
+    CONFIG.PRINT_LOGO_WIDTH_A4 = Math.min(300, Math.max(20, parseInt(opts.print_logo_width_a4, 10) || 100));
+    CONFIG.PRINT_LOGO_HEIGHT_A4 = Math.min(150, Math.max(15, parseInt(opts.print_logo_height_a4, 10) || 50));
+    CONFIG.PRINT_LOGO_OFFSET_X_A4 = parseInt(opts.print_logo_offset_x_a4, 10) || 0;
+    CONFIG.PRINT_LOGO_OFFSET_Y_A4 = parseInt(opts.print_logo_offset_y_a4, 10) || 0;
     CONFIG.PRINT_HEADER_COMPANY = opts.print_header_company !== false;
     CONFIG.PRINT_HEADER_ADDRESS = opts.print_header_address !== false;
     CONFIG.PRINT_HEADER_EMAIL = opts.print_header_email !== false;
@@ -2192,13 +2201,37 @@ function buildPrintPreviewHTML() {
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: 12px; max-width: 210mm; padding: ${bodyPadMm}; margin: 0 auto; }
            th, td { padding: 8px; }
-           .header { text-align: ${headerAlign}; }`;
-    const headerHtml = showCompany || showAddress
-        ? `<div class="header">
+           .header { text-align: ${headerAlign}; }
+           .header-inner { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+           .header-logo-wrap { flex-shrink: 0; position: relative; }
+           .header-company-block { flex: 1; min-width: 0; text-align: right; margin-left: auto; }
+           .header-logo-placeholder { display: flex; align-items: center; justify-content: center; font-size: 10px; color: #666; background: #e8e8e8; border: 1px dashed #ccc; box-sizing: border-box; object-fit: contain; }`;
+    const logoW = Math.min(300, Math.max(20, (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_WIDTH_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_WIDTH_A4, 10) : 120));
+    const logoH = Math.min(150, Math.max(15, (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_HEIGHT_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_HEIGHT_A4, 10) : 60));
+    const logoOffsetX = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_OFFSET_X_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_OFFSET_X_A4, 10) : 0;
+    const logoOffsetY = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_OFFSET_Y_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_OFFSET_Y_A4, 10) : 0;
+    const logoWrapStyle = `right: ${logoOffsetX}px; top: ${logoOffsetY}px;`;
+    const logoBoxStyle = `width: ${logoW}px; height: ${logoH}px;`;
+    const logoUrl = (typeof window !== 'undefined' && window.__printPreviewLogoUrl && typeof window.__printPreviewLogoUrl === 'string' && (window.__printPreviewLogoUrl.startsWith('http://') || window.__printPreviewLogoUrl.startsWith('https://'))) ? String(window.__printPreviewLogoUrl).replace(/"/g, '&quot;') : '';
+    const logoEl = logoUrl
+        ? `<img src="${logoUrl}" alt="Logo" style="${logoBoxStyle} object-fit: contain; display: block;" onerror="this.style.display='none'" />`
+        : `<div class="header-logo-placeholder" style="${logoBoxStyle}">Logo</div>`;
+    const headerHtml = isThermal
+        ? (showCompany || showAddress
+            ? `<div class="header">
         ${showCompany ? '<div class="company-name">PharmaSight</div>' : ''}
         ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@pharmasight.com</div>' : ''}
         <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
-    </div>` : '<div class="header"><p style="margin: 0;">Sales Quotation</p></div>';
+    </div>` : '<div class="header"><p style="margin: 0;">Sales Quotation</p></div>')
+        : (showCompany || showAddress
+            ? `<div class="header"><div class="header-inner">
+        <div class="header-logo-wrap" style="${logoWrapStyle}">${logoEl}</div>
+        <div class="header-company-block">
+        ${showCompany ? '<div class="company-name">PharmaSight</div>' : ''}
+        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@pharmasight.com</div>' : ''}
+        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
+        </div>
+    </div></div>` : '<div class="header"><div class="header-inner"><div class="header-logo-wrap" style="' + logoWrapStyle + '">' + logoEl + '</div><div class="header-company-block"><p style="margin: 0;">Sales Invoice</p></div></div></div>');
     const qtyCol = showUnit ? '<th style="text-align: right;">Qty</th>' : '<th style="text-align: right;">Qty</th>';
     const vatCol = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const rows = [
@@ -2240,14 +2273,129 @@ function buildPrintPreviewHTML() {
 </body></html>`;
 }
 
+/** Build A4 preview body HTML for interactive div (logo has id for resize handle) */
+function buildA4PreviewInnerHTML() {
+    const showCompany = CONFIG.PRINT_HEADER_COMPANY !== false;
+    const showAddress = CONFIG.PRINT_HEADER_ADDRESS !== false;
+    const showVat = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_SHOW_VAT) === true;
+    const showUnit = CONFIG.PRINT_ITEM_UNIT !== false;
+    const msg = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
+    const logoW = Math.min(300, Math.max(20, (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_WIDTH_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_WIDTH_A4, 10) : 120));
+    const logoH = Math.min(150, Math.max(15, (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_HEIGHT_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_HEIGHT_A4, 10) : 60));
+    const logoOffsetX = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_OFFSET_X_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_OFFSET_X_A4, 10) : 0;
+    const logoOffsetY = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_OFFSET_Y_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_OFFSET_Y_A4, 10) : 0;
+    const logoWrapStyle = 'right: ' + logoOffsetX + 'px; top: ' + logoOffsetY + 'px;';
+    const logoBoxStyle = 'width: ' + logoW + 'px; height: ' + logoH + 'px;';
+    const logoUrl = (typeof window !== 'undefined' && window.__printPreviewLogoUrl && typeof window.__printPreviewLogoUrl === 'string' && (window.__printPreviewLogoUrl.startsWith('http://') || window.__printPreviewLogoUrl.startsWith('https://'))) ? String(window.__printPreviewLogoUrl).replace(/"/g, '&quot;') : '';
+    const logoEl = logoUrl
+        ? '<img id="previewLogoImg" src="' + logoUrl + '" alt="Logo" style="' + logoBoxStyle + ' object-fit: contain; display: block;" onerror="this.style.display=\'none\'" />'
+        : '<div id="previewLogoImg" class="header-logo-placeholder" style="' + logoBoxStyle + '">Logo</div>';
+    const headerHtml = `<div class="header"><div class="header-inner">
+        <div id="previewLogoWrap" class="header-logo-wrap" style="${logoWrapStyle}">${logoEl}</div>
+        <div class="header-company-block">
+        ${showCompany ? '<div class="company-name">PharmaSight</div>' : ''}
+        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@pharmasight.com</div>' : ''}
+        <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
+        </div>
+    </div></div>`;
+    const vatCol = showVat ? '<th style="text-align: right;">VAT</th>' : '';
+    const rows = [
+        { name: 'DOLOPAR CAP', qty: '10 P', price: '85.00', vat: '—', total: '850.00' },
+        { name: 'FEVEROL TABS', qty: '20 P', price: '50.00', vat: '—', total: '1,000.00' },
+        { name: 'KLOFENAC GEL', qty: '25 P', price: '2.00', vat: '—', total: '50.00' },
+    ];
+    const rowHtml = rows.map(r => {
+        const vatCell = showVat ? '<td style="text-align: right;">' + r.vat + '</td>' : '';
+        return '<tr><td>' + r.name + '</td><td style="text-align: right;">' + (showUnit ? r.qty : r.qty.split(' ')[0]) + '</td><td style="text-align: right;">Ksh ' + r.price + '</td>' + vatCell + '<td style="text-align: right;">Ksh ' + r.total + '</td></tr>';
+    }).join('');
+    const colspan = showVat ? 4 : 3;
+    return `<style>.print-preview-a4 .header{ border-bottom: 2px solid #000; }
+.print-preview-a4 .header-inner{ display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.print-preview-a4 .header-logo-wrap{ flex-shrink: 0; position: relative; }
+.print-preview-a4 .header-company-block{ flex: 1; min-width: 0; text-align: right; margin-left: auto; }
+.print-preview-a4 .header-logo-placeholder{ display: flex; align-items: center; justify-content: center; font-size: 10px; color: #666; background: #e8e8e8; border: 1px dashed #ccc; box-sizing: border-box; }
+.print-preview-a4 .company-name{ font-size: 1.25em; font-weight: bold; margin-bottom: 4px; }
+.print-preview-a4 .company-details{ font-size: 0.9em; color: #333; line-height: 1.4; }
+.print-preview-a4 table{ width: 100%; border-collapse: collapse; margin: 8px 0; }
+.print-preview-a4 th, .print-preview-a4 td{ border-bottom: 1px solid #ddd; padding: 4px; font-size: 12px; }
+.print-preview-a4 th{ background: #f0f0f0; font-weight: bold; }
+.print-preview-a4 .total{ font-weight: bold; border-top: 2px solid #000; padding-top: 6px; }
+.print-preview-a4 .footer{ text-align: center; font-size: 0.85em; border-top: 1px solid #ddd; color: #555; }
+.print-preview-a4 #previewLogoWrap{ cursor: default; }
+.print-preview-a4 .logo-resize-handle{ position: absolute; right: -4px; bottom: -4px; width: 14px; height: 14px; background: #0066cc; border: 1px solid #fff; border-radius: 2px; cursor: nwse-resize; z-index: 2; }
+</style>
+<div class="print-preview-a4" style="font-family: Arial,sans-serif; font-size: 12px; padding: 12px; max-width: 100%; box-sizing: border-box;">
+${headerHtml}
+<div class="quotation-info" style="margin: 6px 0;">
+<p><strong>Quotation #:</strong> QT-001 &nbsp; <strong>Date:</strong> ${new Date().toLocaleDateString()} &nbsp; <strong>Valid Until:</strong> ${new Date(Date.now() + 7*86400000).toLocaleDateString()}</p>
+<p><strong>Customer:</strong> Sample Customer</p>
+</div>
+<table>
+<thead><tr><th>Item</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Price</th>${vatCol}<th style="text-align: right;">Total</th></tr></thead>
+<tbody>${rowHtml}</tbody>
+<tfoot><tr><td colspan="${colspan}" class="total">Total:</td><td class="total" style="text-align: right;">Ksh 1,900.00</td></tr></tfoot>
+</table>
+<div class="footer">
+${msg ? '<p>' + (typeof escapeHtml === 'function' ? escapeHtml(msg) : String(msg).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')) + '</p>' : ''}
+<p>Generated: ${new Date().toLocaleString()}</p>
+</div>
+</div>`;
+}
+
 function refreshPrintPreview() {
     const form = document.getElementById('printSettingsForm');
     const opts = form ? getPrintConfigFromForm(form) : null;
     if (opts) applyPrintConfigToCONFIG(opts);
     const iframe = document.getElementById('printPreviewFrame');
-    if (iframe) {
-        const html = buildPrintPreviewHTML();
-        iframe.srcdoc = html;
+    const a4Preview = document.getElementById('printPreviewA4');
+    const isA4 = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) === 'normal';
+    if (isA4 && a4Preview) {
+        if (iframe) iframe.style.display = 'none';
+        a4Preview.style.display = 'block';
+        a4Preview.innerHTML = buildA4PreviewInnerHTML();
+        const wrap = document.getElementById('previewLogoWrap');
+        const logoEl = document.getElementById('previewLogoImg');
+        if (wrap && logoEl) {
+            const handle = document.createElement('div');
+            handle.className = 'logo-resize-handle';
+            handle.title = 'Drag to resize logo';
+            wrap.style.position = 'relative';
+            wrap.appendChild(handle);
+            let startX, startY, startW, startH;
+            handle.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                startX = e.clientX;
+                startY = e.clientY;
+                startW = Math.max(20, Math.min(300, parseInt(CONFIG.PRINT_LOGO_WIDTH_A4, 10) || 100));
+                startH = Math.max(15, Math.min(150, parseInt(CONFIG.PRINT_LOGO_HEIGHT_A4, 10) || 50));
+                const onMove = function(e2) {
+                    const dw = e2.clientX - startX;
+                    const dh = e2.clientY - startY;
+                    const newW = Math.max(20, Math.min(300, startW + dw));
+                    const newH = Math.max(15, Math.min(150, startH + dh));
+                    logoEl.style.width = newW + 'px';
+                    logoEl.style.height = newH + 'px';
+                    CONFIG.PRINT_LOGO_WIDTH_A4 = Math.round(newW);
+                    CONFIG.PRINT_LOGO_HEIGHT_A4 = Math.round(newH);
+                    const wInput = document.querySelector('input[name="print_logo_width_a4"]');
+                    const hInput = document.querySelector('input[name="print_logo_height_a4"]');
+                    if (wInput) wInput.value = Math.round(newW);
+                    if (hInput) hInput.value = Math.round(newH);
+                };
+                const onUp = function() {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                };
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
+        }
+    } else {
+        if (a4Preview) a4Preview.style.display = 'none';
+        if (iframe) {
+            iframe.style.display = 'block';
+            iframe.srcdoc = buildPrintPreviewHTML();
+        }
     }
 }
 
@@ -2259,6 +2407,18 @@ async function renderPrintSettingsPage() {
     if (typeof loadCompanyPrintSettings === 'function') {
         await loadCompanyPrintSettings();
     }
+    // Load viewable company logo URL for A4 preview (signed or absolute URL from backend)
+    try {
+        if (CONFIG.COMPANY_ID && typeof window.API !== 'undefined' && window.API.company && typeof window.API.company.getLogoUrl === 'function') {
+            const res = await window.API.company.getLogoUrl(CONFIG.COMPANY_ID);
+            const url = res && res.url && typeof res.url === 'string' ? res.url.trim() : '';
+            window.__printPreviewLogoUrl = (url.startsWith('http://') || url.startsWith('https://')) ? url : '';
+        } else {
+            window.__printPreviewLogoUrl = '';
+        }
+    } catch (_) {
+        window.__printPreviewLogoUrl = '';
+    }
 
     const printType = CONFIG.PRINT_TYPE || 'normal';
     const transactionMessage = CONFIG.TRANSACTION_MESSAGE || '';
@@ -2267,8 +2427,16 @@ async function renderPrintSettingsPage() {
     const autoCut = CONFIG.PRINT_AUTO_CUT === true;
     const theme = CONFIG.PRINT_THEME || 'theme1';
     const pageWidthMm = Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80));
+    const thermalHeaderFontPt = Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9));
+    const thermalItemFontPt = Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8));
+    const logoSizeA4 = (CONFIG.PRINT_LOGO_SIZE_A4 === 'small' || CONFIG.PRINT_LOGO_SIZE_A4 === 'large' || CONFIG.PRINT_LOGO_SIZE_A4 === 'xlarge') ? CONFIG.PRINT_LOGO_SIZE_A4 : 'medium';
+    const logoWidthA4 = Math.min(300, Math.max(20, parseInt(CONFIG.PRINT_LOGO_WIDTH_A4, 10) || 100));
+    const logoHeightA4 = Math.min(150, Math.max(15, parseInt(CONFIG.PRINT_LOGO_HEIGHT_A4, 10) || 50));
+    const logoOffsetXA4 = parseInt(CONFIG.PRINT_LOGO_OFFSET_X_A4, 10) || 0;
+    const logoOffsetYA4 = parseInt(CONFIG.PRINT_LOGO_OFFSET_Y_A4, 10) || 0;
     const cb = (key) => CONFIG[key] === true ? 'checked' : '';
     const thermalActive = printType === 'thermal';
+    const a4Active = printType === 'normal';
 
     page.innerHTML = `
         <div class="card" style="max-width: none;">
@@ -2307,6 +2475,16 @@ async function renderPrintSettingsPage() {
                                 </select>
                                 <small style="color: var(--text-secondary);">Receipt width. Print height auto-adjusts to content (no wasted margin).</small>
                             </div>
+                            <div class="form-group">
+                                <label class="form-label">Thermal header font size (pt)</label>
+                                <input type="number" class="form-input" name="print_thermal_header_font_pt" min="6" max="12" value="${thermalHeaderFontPt}" style="max-width: 5rem;">
+                                <small style="color: var(--text-secondary);">Company name and header text. 6–12 pt.</small>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Thermal item/table font size (pt)</label>
+                                <input type="number" class="form-input" name="print_thermal_item_font_pt" min="5" max="10" value="${thermalItemFontPt}" style="max-width: 5rem;">
+                                <small style="color: var(--text-secondary);">Table rows and numbers. 5–10 pt. Smaller = more room for item names.</small>
+                            </div>
                         </div>
 
                         <div class="form-group">
@@ -2329,6 +2507,16 @@ async function renderPrintSettingsPage() {
 
                         <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Company / Header</h4>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.5rem;">Choose what appears at the top of receipts.</p>
+                        <div id="a4LogoOptions" style="display: ${a4Active ? 'block' : 'none'};">
+                            <div class="form-group">
+                                <p style="margin: 0; color: var(--text-secondary); font-size: 0.875rem;">Drag the <strong>blue corner</strong> on the logo in the preview to resize it (like cropping). Your company logo appears in the preview when you have one set.</p>
+                            </div>
+                            <input type="hidden" name="print_logo_size_a4" value="${logoSizeA4}">
+                            <input type="number" class="form-input" name="print_logo_width_a4" min="20" max="300" value="${logoWidthA4}" style="position: absolute; left: -9999px;" tabindex="-1" aria-hidden="true">
+                            <input type="number" class="form-input" name="print_logo_height_a4" min="15" max="150" value="${logoHeightA4}" style="position: absolute; left: -9999px;" tabindex="-1" aria-hidden="true">
+                            <input type="number" name="print_logo_offset_x_a4" value="${logoOffsetXA4}" style="position: absolute; left: -9999px;" tabindex="-1" aria-hidden="true">
+                            <input type="number" name="print_logo_offset_y_a4" value="${logoOffsetYA4}" style="position: absolute; left: -9999px;" tabindex="-1" aria-hidden="true">
+                        </div>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_header_company" ${cb('PRINT_HEADER_COMPANY')}> Company name</label></div>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_header_address" ${cb('PRINT_HEADER_ADDRESS')}> Address</label></div>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_header_email" ${cb('PRINT_HEADER_EMAIL')}> Email</label></div>
@@ -2366,7 +2554,10 @@ async function renderPrintSettingsPage() {
                 </div>
                 <div style="flex: 0 0 320px; position: sticky; top: 1rem;">
                     <label class="form-label" style="margin-bottom: 0.5rem;">Preview — how your receipt will look</label>
-                    <iframe id="printPreviewFrame" title="Print preview" style="width: 100%; min-height: 420px; border: 1px solid var(--border-color, #dee2e6); border-radius: 0.25rem; background: #fff;"></iframe>
+                    <div id="printPreviewContainer" style="width: 100%; min-height: 420px; border: 1px solid var(--border-color, #dee2e6); border-radius: 0.25rem; background: #fff; overflow: auto;">
+                        <iframe id="printPreviewFrame" title="Print preview" style="width: 100%; min-height: 420px; border: none;"></iframe>
+                        <div id="printPreviewA4" style="display: none; min-height: 420px;"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2374,9 +2565,9 @@ async function renderPrintSettingsPage() {
 
     const form = document.getElementById('printSettingsForm');
     if (form) {
-        form.onsubmit = function(e) {
+        form.onsubmit = async function(e) {
             e.preventDefault();
-            savePrintSettingsFromForm(form);
+            await savePrintSettingsFromForm(form);
         };
         form.addEventListener('change', refreshPrintPreview);
         form.addEventListener('input', function() {
@@ -2394,6 +2585,8 @@ async function renderPrintSettingsPage() {
                 btn.classList.toggle('btn-outline', btn.dataset.printType !== type);
             });
             document.getElementById('thermalOptions').style.display = type === 'thermal' ? 'block' : 'none';
+            const a4Opts = document.getElementById('a4LogoOptions');
+            if (a4Opts) a4Opts.style.display = type === 'normal' ? 'block' : 'none';
             refreshPrintPreview();
         }
     };
@@ -2401,7 +2594,7 @@ async function renderPrintSettingsPage() {
     refreshPrintPreview();
 }
 
-function savePrintSettingsFromForm(form) {
+async function savePrintSettingsFromForm(form) {
     if (!form) return;
     const opts = getPrintConfigFromForm(form);
     CONFIG.PRINT_TYPE = opts.print_type || 'normal';
@@ -2411,6 +2604,14 @@ function savePrintSettingsFromForm(form) {
     CONFIG.PRINT_AUTO_CUT = !!opts.print_auto_cut;
     CONFIG.PRINT_THEME = opts.print_theme || 'theme1';
     CONFIG.PRINT_PAGE_WIDTH_MM = Math.min(88, Math.max(58, parseInt(opts.print_page_width_mm, 10) || 80));
+    CONFIG.PRINT_THERMAL_HEADER_FONT_PT = Math.min(12, Math.max(6, parseInt(opts.print_thermal_header_font_pt, 10) || 9));
+    CONFIG.PRINT_THERMAL_ITEM_FONT_PT = Math.min(10, Math.max(5, parseInt(opts.print_thermal_item_font_pt, 10) || 8));
+    const logoSizeA4 = (opts.print_logo_size_a4 === 'small' || opts.print_logo_size_a4 === 'large' || opts.print_logo_size_a4 === 'xlarge') ? opts.print_logo_size_a4 : 'medium';
+    CONFIG.PRINT_LOGO_SIZE_A4 = logoSizeA4;
+    CONFIG.PRINT_LOGO_WIDTH_A4 = Math.min(300, Math.max(20, parseInt(opts.print_logo_width_a4, 10) || 100));
+    CONFIG.PRINT_LOGO_HEIGHT_A4 = Math.min(150, Math.max(15, parseInt(opts.print_logo_height_a4, 10) || 50));
+    CONFIG.PRINT_LOGO_OFFSET_X_A4 = parseInt(opts.print_logo_offset_x_a4, 10) || 0;
+    CONFIG.PRINT_LOGO_OFFSET_Y_A4 = parseInt(opts.print_logo_offset_y_a4, 10) || 0;
     CONFIG.PRINT_HEADER_COMPANY = opts.print_header_company !== false;
     CONFIG.PRINT_HEADER_ADDRESS = opts.print_header_address !== false;
     CONFIG.PRINT_HEADER_EMAIL = opts.print_header_email !== false;
@@ -2433,12 +2634,12 @@ function savePrintSettingsFromForm(form) {
         if (typeof saveConfig === 'function') saveConfig();
         // Persist to company-level settings so all users get admin-configured layout
         if (typeof saveCompanyPrintSettings === 'function') {
-            saveCompanyPrintSettings().catch(() => {});
+            await saveCompanyPrintSettings();
         }
         if (typeof showToast === 'function') showToast('Print settings saved', 'success');
     } catch (err) {
         console.error('Save print settings error:', err);
-        if (typeof showToast === 'function') showToast('Failed to save print settings', 'error');
+        if (typeof showToast === 'function') showToast('Failed to save print settings. You may need settings.edit permission.', 'error');
     }
 }
 
@@ -2468,7 +2669,7 @@ async function renderDocumentBrandingPage() {
     if (!page) return;
     const cid = typeof CONFIG !== 'undefined' ? CONFIG.COMPANY_ID : null;
     if (!cid || !window.API || !window.API.company) {
-        page.innerHTML = '<div class="card"><div class="card-body"><p>Set Company in General Settings first.</p></div></div>';
+        page.innerHTML = '<div class="card"><div class="card-body"><p>Set your company in Settings → Company first.</p></div></div>';
         return;
     }
     let branding = { ...DOCUMENT_BRANDING_DEFAULTS };

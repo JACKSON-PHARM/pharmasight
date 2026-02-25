@@ -477,14 +477,17 @@ def get_sales_invoice(
                 invoice_item.batch_number = None
                 invoice_item.expiry_date = None
 
-    # Print letterhead: company, branch, user, logo URL for print (like quotation)
+    # Print letterhead: company, branch, user, logo URL for print (all documents)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     if company:
         invoice.company_name = company.name
         invoice.company_address = getattr(company, "address", None) or ""
         logo_path = getattr(company, "logo_url", None)
-        if logo_path and str(logo_path or "").startswith("tenant-assets/"):
-            invoice.logo_url = get_signed_url(logo_path, tenant=tenant)
+        if logo_path and str(logo_path).strip():
+            if str(logo_path).startswith("tenant-assets/"):
+                invoice.logo_url = get_signed_url(logo_path, tenant=tenant)
+            elif str(logo_path).startswith("http://") or str(logo_path).startswith("https://"):
+                invoice.logo_url = str(logo_path).strip()
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     if branch:
         invoice.branch_name = branch.name

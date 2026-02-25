@@ -2,7 +2,7 @@
 Company and Branch API routes
 """
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -106,6 +106,31 @@ def get_company(company_id: UUID, db: Session = Depends(get_tenant_db)):
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     return company
+
+
+@router.get("/companies/{company_id}/logo-url")
+def get_company_logo_url(
+    company_id: UUID,
+    request: Request,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    db: Session = Depends(get_tenant_db),
+):
+    """Return a viewable URL for the company logo (signed for tenant-assets, or absolute for /uploads)."""
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company or not getattr(company, "logo_url", None) or not str(company.logo_url).strip():
+        raise HTTPException(status_code=404, detail="Company or logo not found")
+    logo_path = str(company.logo_url).strip()
+    if logo_path.startswith("tenant-assets/"):
+        url = get_signed_url(logo_path, tenant=tenant)
+        if not url:
+            raise HTTPException(status_code=404, detail="Logo URL not available")
+        return {"url": url}
+    if logo_path.startswith("/"):
+        base = str(request.base_url).rstrip("/")
+        return {"url": f"{base}{logo_path}"}
+    if logo_path.startswith("http://") or logo_path.startswith("https://"):
+        return {"url": logo_path}
+    raise HTTPException(status_code=404, detail="Logo URL not available")
 
 
 @router.put("/companies/{company_id}", response_model=CompanyResponse)
