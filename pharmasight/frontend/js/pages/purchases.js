@@ -1490,6 +1490,7 @@ function initializeTransactionItemsTableForInvoice() {
             unit_name: item.unit_name,
             quantity: item.quantity,
             unit_price: item.unit_price,
+            tax_percent: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0,
             total: item.total,
             batches: item.batches || [],
             is_empty: false
