@@ -58,6 +58,7 @@
         this.useAddRow = options.useAddRow === true; // Single search row above table + Add button; table rows are committed only
         this.onAddItem = options.onAddItem || null; // (item) => {} when user clicks Add in add row; parent creates doc or adds line
         this.onUpdateItem = options.onUpdateItem || null; // (rowIndex, itemData) => {} when user updates an existing line from add row
+        this.onBatchSaved = options.onBatchSaved || null; // (itemId, batches) => Promise when user saves batch distribution for a committed row (e.g. supplier invoice)
         
         // Internal state
         this.items = this.normalizeItems(this.itemsSource);
@@ -191,13 +192,14 @@
                 item_code: item.item_code || item.code || '',
                 unit_name: item.unit_name || item.unit || '',
                 quantity: item.quantity || 1,
-                unit_price: item.unit_price || item.price || 0,
+                unit_price: item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : (item.price || 0),
                 purchase_price: item.purchase_price || 0, // Cost per base (wholesale) unit
                 unit_cost_used: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null, // Cost per sale unit when from API (reload)
                 discount_percent: item.discount_percent || 0,
                 tax_percent: this.vatRateToPercent(item.tax_percent ?? item.vat_rate ?? 0),
                 total: item.total || 0,
                 available_stock: typeof item.available_stock === 'number' ? item.available_stock : null,
+                batches: Array.isArray(item.batches) ? item.batches : (item.batch_data ? (() => { try { return JSON.parse(item.batch_data); } catch (e) { return []; } })() : []),
                 is_empty: false
             };
             // Calculate nett and vat_amount for normalized items
@@ -313,8 +315,15 @@
                     <td style="padding: 0.2rem 0.35rem; text-align: right; font-weight: 600;"><input type="number" class="form-input add-row-nett nett-input" data-row="add" data-field="nett" value="${this.roundMoney(this.calculateNett(ar) || 0).toFixed(2)}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'readonly' : ''} title="Editable: change and blur to recalc from nett"></td>
                     <td style="padding: 0.2rem 0.35rem; text-align: right; font-weight: 600;"><input type="number" class="form-input add-row-total total-input add-row-total-input" data-row="add" data-field="total" value="${this.roundMoney(ar.total || 0).toFixed(2)}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'readonly' : ''} title="Editable: enter total to reverse-calculate unit price"></td>
                     <td style="padding: 0.2rem 0.35rem; text-align: center;">
-                        ${this.editingRowIndex !== null ? `<span class="add-row-editing-hint" style="font-size: 0.65rem; color: var(--text-secondary); display: block; margin-bottom: 0.15rem;">Editing line ${this.editingRowIndex + 1}</span>` : ''}
-                        <button type="button" class="btn btn-primary btn-sm add-item-btn" data-row="add" title="${this.editingRowIndex !== null ? 'Save changes to this line' : 'Add item to document'}" ${btnDisabled ? 'disabled' : ''} style="padding: 0.35rem 0.6rem; font-size: 0.8rem;">${this.addRowLoading ? '<i class="fas fa-spinner fa-spin"></i> Adding...' : `<i class="fas ${this.editingRowIndex !== null ? 'fa-check' : 'fa-plus'}"></i> ${this.editingRowIndex !== null ? 'Update line' : 'Add item'}`}</button>
+                        <div style="display: flex; gap: 0.25rem; justify-content: center; align-items: center; flex-wrap: wrap;">
+                            ${ar.item_id && (this.mode === 'purchase' || this.mode === 'sale' || this.mode === 'quotation') ? `
+                                <button type="button" class="btn btn-outline btn-sm add-row-manage-batches-btn" data-row="add" title="${this.mode === 'purchase' ? 'Manage Batches & Expiry (required for supplier invoices)' : 'Manage Batches & Expiry (optional)'}" style="padding: 0.35rem 0.5rem; font-size: 0.75rem;">
+                                    <i class="fas fa-boxes"></i> Batches
+                                </button>
+                            ` : ''}
+                            ${this.editingRowIndex !== null ? `<span class="add-row-editing-hint" style="font-size: 0.65rem; color: var(--text-secondary); display: block; margin-bottom: 0.15rem;">Editing line ${this.editingRowIndex + 1}</span>` : ''}
+                            <button type="button" class="btn btn-primary btn-sm add-item-btn" data-row="add" title="${this.editingRowIndex !== null ? 'Save changes to this line' : 'Add item to document'}" ${btnDisabled ? 'disabled' : ''} style="padding: 0.35rem 0.6rem; font-size: 0.8rem;">${this.addRowLoading ? '<i class="fas fa-spinner fa-spin"></i> Adding...' : `<i class="fas ${this.editingRowIndex !== null ? 'fa-check' : 'fa-plus'}"></i> ${this.editingRowIndex !== null ? 'Update line' : 'Add item'}`}</button>
+                        </div>
                     </td>
                 </tr>
                     </tbody>
@@ -521,7 +530,8 @@
                     tax_percent: item.tax_percent,
                     total: item.total,
                     available_units: item.available_units,
-                    purchase_price: item.purchase_price
+                    purchase_price: item.purchase_price,
+                    batches: item.batches || []
                 };
                 this.editingRowIndex = rowIndex;
                 this.render();
@@ -539,6 +549,12 @@
                         this.addRowItem = null;
                         e.target.dataset.itemId = '';
                         e.target.classList.remove('item-selected');
+                    }
+                    // User changed the item field while in "edit line" mode → switch to add-new-item mode
+                    if (this.editingRowIndex !== null) {
+                        this.editingRowIndex = null;
+                        this.render();
+                        this.attachEventListeners();
                     }
                     this.handleItemSearch(e.target.value, 'add');
                     return;
@@ -576,6 +592,14 @@
         el.addEventListener('click', (e) => {
             if (e.target.classList.contains('add-item-btn')) {
                 this.handleAddRowAddClick();
+                return;
+            }
+            if (e.target.closest('.add-row-manage-batches-btn')) {
+                if (this.addRowItem && this.addRowItem.item_id) {
+                    this.openBatchDistributionModal('add', this.addRowItem);
+                } else {
+                    if (typeof showToast === 'function') showToast('Select an item in the search row first', 'warning');
+                }
                 return;
             }
             if (e.target.classList.contains('item-name-clickable')) {
@@ -1208,6 +1232,11 @@
         
         if (isAddRow) {
             this.addRowItem = item;
+            // If we were editing a line but user selected a different item → add as new line instead
+            if (this.editingRowIndex !== null && this.items[this.editingRowIndex] &&
+                String(item.item_id) !== String(this.items[this.editingRowIndex].item_id)) {
+                this.editingRowIndex = null;
+            }
             this.recalculateAddRow();
             this.closeSuggestions();
             this.render();
@@ -1656,7 +1685,8 @@
             unit_price: this.addRowItem.unit_price || 0,
             discount_percent: this.addRowItem.discount_percent || 0,
             tax_percent: this.addRowItem.tax_percent || 0,
-            total: this.addRowItem.total || 0
+            total: this.addRowItem.total || 0,
+            batches: this.addRowItem.batches || []
         };
     };
     
@@ -1752,6 +1782,7 @@
     TransactionItemsTable.prototype.clearRowSelection = function(rowIndex) {
         if (rowIndex === 'add') {
             this.addRowItem = null;
+            this.editingRowIndex = null; // switch from "Update line" to "Add item"
             this.closeSelectedItemDropdown();
             this.render();
             this.attachEventListeners();
@@ -1908,7 +1939,8 @@
                             tax_percent: src.tax_percent,
                             total: src.total,
                             available_units: src.available_units,
-                            purchase_price: src.purchase_price
+                            purchase_price: src.purchase_price,
+                            batches: src.batches || []
                         };
                         this.editingRowIndex = r;
                         this.render();
@@ -2281,13 +2313,32 @@
                 });
                 
                 // Set callback for when batches are saved
-                window.onBatchDistributionSave = (savedItemIndex, batches) => {
-                    if (savedItemIndex === rowIndex) {
-                        // Store batches in item
-                        if (!this.items[rowIndex]) return;
-                        this.items[rowIndex].batches = batches;
-                        // Trigger change notification
-                        this.notifyChange();
+                const self = this;
+                window.onBatchDistributionSave = async (savedItemIndex, batches) => {
+                    if (savedItemIndex !== rowIndex) return;
+                    if (rowIndex === 'add') {
+                        if (self.addRowItem) self.addRowItem.batches = batches;
+                        self.notifyChange();
+                        return;
+                    }
+                    if (self.items[rowIndex]) self.items[rowIndex].batches = batches;
+                    self.notifyChange();
+                    if (typeof self.onBatchSaved === 'function') {
+                        const item = self.items[rowIndex];
+                        const itemId = item && item.item_id;
+                        if (itemId) {
+                            const payload = Array.isArray(batches) && batches.length ? batches.map(b => ({
+                                batch_number: b.batch_number || '',
+                                expiry_date: b.expiry_date || null,
+                                quantity: parseFloat(b.quantity) || 0,
+                                unit_cost: parseFloat(b.unit_cost) || 0
+                            })) : [];
+                            try {
+                                await self.onBatchSaved(itemId, payload);
+                            } catch (e) {
+                                if (typeof showToast === 'function') showToast((e && e.message) || 'Failed to save batches', 'error');
+                            }
+                        }
                     }
                 };
             } else {

@@ -361,9 +361,11 @@ def create_supplier_invoice(invoice: SupplierInvoiceCreate, db: Session = Depend
                 from_dict=False,
             )
         
-        # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%)
+        # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%); use item master VAT if request sent 0
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
+        if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
+            vat_rate_pct = Decimal(str(vat_rate_to_percent(item.vat_rate)))
         line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
         line_total_inclusive = line_total_exclusive + line_vat
         
@@ -581,6 +583,10 @@ def get_supplier_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db))
             invoice_item.item_name = invoice_item.item.name or ''
             invoice_item.item_category = invoice_item.item.category or ''
             invoice_item.base_unit = invoice_item.item.base_unit or ''
+            # If line has no VAT set (0 or None), use item master's VAT so UI shows correct rate from item settings
+            if (invoice_item.vat_rate is None or float(invoice_item.vat_rate) == 0) and getattr(invoice_item.item, "vat_rate", None) is not None:
+                pct = vat_rate_to_percent(invoice_item.item.vat_rate)
+                invoice_item.vat_rate = Decimal(str(pct))
         # batch_data is already stored in the database and will be included in response
     
     return invoice
@@ -601,6 +607,8 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
         )
     line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
     vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
+    if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
+        vat_rate_pct = Decimal(str(vat_rate_to_percent(item.vat_rate)))
     line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
     line_total_inclusive = line_total_exclusive + line_vat
     batch_data_json = None
@@ -830,9 +838,11 @@ def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCre
                 from_dict=False,
             )
         
-        # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%)
+        # Calculate line totals (VAT) — normalize vat_rate; use item master VAT if request sent 0
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
+        if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
+            vat_rate_pct = Decimal(str(vat_rate_to_percent(item.vat_rate)))
         line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
         line_total_inclusive = line_total_exclusive + line_vat
         
@@ -895,13 +905,16 @@ def update_supplier_invoice(invoice_id: UUID, invoice_update: SupplierInvoiceCre
     if created_by_user:
         db_invoice.created_by_name = created_by_user.full_name or created_by_user.email
     
-    # Enhance items with full item details
+    # Enhance items with full item details (and backfill VAT from item master when line has 0)
     for invoice_item in db_invoice.items:
         if invoice_item.item:
             invoice_item.item_code = invoice_item.item.sku or ''
             invoice_item.item_name = invoice_item.item.name or ''
             invoice_item.item_category = invoice_item.item.category or ''
             invoice_item.base_unit = invoice_item.item.base_unit or ''
+            if (invoice_item.vat_rate is None or float(invoice_item.vat_rate) == 0) and getattr(invoice_item.item, "vat_rate", None) is not None:
+                pct = vat_rate_to_percent(invoice_item.item.vat_rate)
+                invoice_item.vat_rate = Decimal(str(pct))
         # batch_data is already stored in the database and will be included in response
     
     return db_invoice

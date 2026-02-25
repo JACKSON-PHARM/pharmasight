@@ -10,7 +10,25 @@ let currentDocument = null;
 let documentItems = [];
 let allSuppliers = [];
 let supplierInvoiceSyncedItemIds = new Set();
+/** Cache item_id -> { item_name, item_code } so supplier invoice rows show correct name/code when API omits or returns "=" */
+let supplierInvoiceItemDisplayCache = {};
 let poSyncedItemIds = new Set();
+/** Same for purchase order items */
+let poItemDisplayCache = {};
+
+function getSupplierInvoiceItemDisplay(i, cache) {
+    const idKey = i.item_id != null ? String(i.item_id) : '';
+    let name = (i.item_name && i.item_name !== '=' && String(i.item_name).trim()) ? i.item_name : (i.item && i.item.name ? i.item.name : (i.item_code && i.item_code !== '=' && i.item_code !== '—') ? i.item_code : '') || '';
+    let code = (i.item_code && i.item_code !== '=' && i.item_code !== '—' && String(i.item_code).trim()) ? i.item_code : '';
+    if (!name && cache && cache[idKey] && cache[idKey].item_name) name = cache[idKey].item_name;
+    if (!code && cache && cache[idKey] && cache[idKey].item_code) code = cache[idKey].item_code;
+    if (name || code) {
+        if (!cache[idKey]) cache[idKey] = {};
+        if (name) cache[idKey].item_name = name;
+        if (code) cache[idKey].item_code = code;
+    }
+    return { item_name: name || (cache && cache[idKey] && cache[idKey].item_name) || '', item_code: code || (cache && cache[idKey] && cache[idKey].item_code) || '' };
+}
 
 // Initialize purchases page
 async function loadPurchases() {
@@ -1157,26 +1175,28 @@ async function renderCreateSupplierInvoicePage() {
     // Populate items from invoice (whether just loaded or already in currentDocument)
     if (isEditMode && invoiceData && invoiceData.items && invoiceData.items.length > 0) {
         documentItems = invoiceData.items.map(item => {
-            let batches = null;
-            if (item.batch_data) {
+            let batches = [];
+            if (item.batch_data && String(item.batch_data).trim()) {
                 try {
-                    batches = JSON.parse(item.batch_data);
+                    const parsed = JSON.parse(item.batch_data);
+                    batches = Array.isArray(parsed) ? parsed : [];
                 } catch (e) {
                     console.warn('Error parsing batch_data:', e);
                 }
             }
+            const disp = getSupplierInvoiceItemDisplay(item, supplierInvoiceItemDisplayCache);
             return {
                 item_id: item.item_id,
-                item_name: item.item_name || item.item?.name || 'Item',
-                item_sku: item.item_code || item.item?.sku || '',
-                item_code: item.item_code || item.item?.sku || '',
-                quantity: parseFloat(item.quantity),
+                item_name: disp.item_name || 'Item',
+                item_sku: disp.item_code,
+                item_code: disp.item_code,
+                quantity: parseFloat(item.quantity) || 0,
                 unit_name: item.unit_name,
-                unit_price: parseFloat(item.unit_cost_exclusive),
-                tax_percent: parseFloat(item.vat_rate),
+                unit_price: parseFloat(item.unit_cost_exclusive) || 0,
+                tax_percent: parseFloat(item.vat_rate) || 0,
                 discount_percent: 0,
-                total: parseFloat(item.line_total_inclusive),
-                batches: batches
+                total: parseFloat(item.line_total_inclusive) || 0,
+                batches
             };
         });
         supplierInvoiceSyncedItemIds = new Set((invoiceData.items || []).map(i => i.item_id));
@@ -1283,9 +1303,6 @@ async function renderCreateSupplierInvoicePage() {
                                     <input type="text" class="form-input" name="supplier_invoice_number" 
                                            value="${supplierInvoiceNumber || ''}"
                                            placeholder="Enter supplier's invoice number (optional)">
-                                    <small style="color: var(--text-secondary); font-size: 0.75rem; display: block; margin-top: 0.25rem;">
-                                        Optional: Invoice number from your supplier. System will auto-generate our document number.
-                                    </small>
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">Reference / Comments</label>
@@ -1370,6 +1387,12 @@ async function onSupplierInvoiceAddItem(item) {
                 showToast('Select a supplier first', 'warning');
                 return;
             }
+            if (item.item_id != null) {
+                const idKey = String(item.item_id);
+                if (!supplierInvoiceItemDisplayCache[idKey]) supplierInvoiceItemDisplayCache[idKey] = {};
+                if (item.item_name && item.item_name !== '=') supplierInvoiceItemDisplayCache[idKey].item_name = item.item_name;
+                if (item.item_code && item.item_code !== '=') supplierInvoiceItemDisplayCache[idKey].item_code = item.item_code;
+            }
             const payload = {
                 company_id: CONFIG.COMPANY_ID,
                 branch_id: CONFIG.BRANCH_ID,
@@ -1389,38 +1412,54 @@ async function onSupplierInvoiceAddItem(item) {
             currentDocument.invoiceData = invoice;
             currentDocument.invoiceNumber = invoice.invoice_number;
             supplierInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
-            documentItems = (invoice.items || []).map(i => ({
-                item_id: i.item_id,
-                item_name: i.item_name || i.item_code,
-                item_sku: i.item_code,
-                item_code: i.item_code,
-                unit_name: i.unit_name,
-                quantity: i.quantity,
-                unit_price: i.unit_cost_exclusive,
-                tax_percent: i.vat_rate,
-                total: i.line_total_inclusive,
-                batches: i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null
-            }));
+            documentItems = (invoice.items || []).map(i => {
+                const disp = getSupplierInvoiceItemDisplay(i, supplierInvoiceItemDisplayCache);
+                const parsed = i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null;
+                const batches = parsed || (String(i.item_id) === String(item.item_id) && item.batches && item.batches.length ? item.batches : null);
+                return {
+                    item_id: i.item_id,
+                    item_name: disp.item_name,
+                    item_sku: disp.item_code,
+                    item_code: disp.item_code,
+                    unit_name: i.unit_name,
+                    quantity: i.quantity,
+                    unit_price: i.unit_cost_exclusive,
+                    tax_percent: i.vat_rate,
+                    total: i.line_total_inclusive,
+                    batches: batches
+                };
+            });
             if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
                 transactionItemsTable.setItems(documentItems);
             }
             showToast('Draft invoice created. Add more items or use Manage Batches, then Batch to add stock.', 'success');
             return;
         }
+        if (item.item_id != null) {
+            const idKey = String(item.item_id);
+            if (!supplierInvoiceItemDisplayCache[idKey]) supplierInvoiceItemDisplayCache[idKey] = {};
+            if (item.item_name && item.item_name !== '=') supplierInvoiceItemDisplayCache[idKey].item_name = item.item_name;
+            if (item.item_code && item.item_code !== '=') supplierInvoiceItemDisplayCache[idKey].item_code = item.item_code;
+        }
         const updated = await API.purchases.addInvoiceItem(invoiceId, mapTableItemToSupplierInvoiceItem(item));
         supplierInvoiceSyncedItemIds.add(item.item_id);
-        documentItems = (updated.items || []).map(i => ({
-            item_id: i.item_id,
-            item_name: i.item_name || i.item_code,
-            item_sku: i.item_code,
-            item_code: i.item_code,
-            unit_name: i.unit_name,
-            quantity: i.quantity,
-            unit_price: i.unit_cost_exclusive,
-            tax_percent: i.vat_rate,
-            total: i.line_total_inclusive,
-            batches: i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null
-        }));
+        documentItems = (updated.items || []).map(i => {
+            const disp = getSupplierInvoiceItemDisplay(i, supplierInvoiceItemDisplayCache);
+            const parsed = i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null;
+            const batches = parsed || (String(i.item_id) === String(item.item_id) && item.batches && item.batches.length ? item.batches : null);
+            return {
+                item_id: i.item_id,
+                item_name: disp.item_name,
+                item_sku: disp.item_code,
+                item_code: disp.item_code,
+                unit_name: i.unit_name,
+                quantity: i.quantity,
+                unit_price: i.unit_cost_exclusive,
+                tax_percent: i.vat_rate,
+                total: i.line_total_inclusive,
+                batches: batches
+            };
+        });
         if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
             transactionItemsTable.setItems(documentItems);
         }
@@ -1464,6 +1503,38 @@ function initializeTransactionItemsTableForInvoice() {
         priceType: 'purchase_price',
         useAddRow: true,
         onAddItem: onSupplierInvoiceAddItem,
+        onBatchSaved: async (itemId, batches) => {
+            const invoiceId = currentDocument && currentDocument.invoiceId;
+            if (!invoiceId) return;
+            await API.purchases.updateInvoiceItem(invoiceId, itemId, { batches });
+            const updated = await API.purchases.getInvoice(invoiceId);
+            const currentByItemId = (transactionItemsTable && transactionItemsTable.items) ? transactionItemsTable.items.reduce((acc, it) => { if (it.item_id) acc[String(it.item_id)] = it; return acc; }, {}) : {};
+            documentItems = (updated.items || []).map(i => {
+                const disp = getSupplierInvoiceItemDisplay(i, supplierInvoiceItemDisplayCache);
+                const apiCost = parseFloat(i.unit_cost_exclusive);
+                const current = currentByItemId[String(i.item_id)];
+                const unit_price = (typeof apiCost === 'number' && !isNaN(apiCost) && apiCost > 0) ? apiCost : (current && (current.unit_price != null && current.unit_price !== '')) ? parseFloat(current.unit_price) : (typeof apiCost === 'number' && !isNaN(apiCost)) ? apiCost : 0;
+                let batches = [];
+                if (i.batch_data && String(i.batch_data).trim()) {
+                    try { batches = JSON.parse(i.batch_data); if (!Array.isArray(batches)) batches = []; } catch (e) { batches = current && current.batches ? current.batches : []; }
+                } else if (current && current.batches && current.batches.length) batches = current.batches;
+                return {
+                    item_id: i.item_id,
+                    item_name: disp.item_name,
+                    item_sku: disp.item_code,
+                    item_code: disp.item_code,
+                    unit_name: i.unit_name,
+                    quantity: parseFloat(i.quantity) || 0,
+                    unit_price,
+                    tax_percent: parseFloat(i.vat_rate) || 0,
+                    total: parseFloat(i.line_total_inclusive) || 0,
+                    batches
+                };
+            });
+            if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
+                transactionItemsTable.setItems(documentItems);
+            }
+        },
         onItemsChange: (validItems) => {
             documentItems = validItems.map(item => ({
                 item_id: item.item_id,
@@ -1492,18 +1563,29 @@ function initializeTransactionItemsTableForInvoice() {
                     }
                 }
                 const updated = await API.purchases.getInvoice(invoiceId);
-                documentItems = (updated.items || []).map(i => ({
-                    item_id: i.item_id,
-                    item_name: i.item_name || i.item_code,
-                    item_sku: i.item_code,
-                    item_code: i.item_code,
-                    unit_name: i.unit_name,
-                    quantity: i.quantity,
-                    unit_price: i.unit_cost_exclusive,
-                    tax_percent: i.vat_rate,
-                    total: i.line_total_inclusive,
-                    batches: i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null
-                }));
+                const currentByItemId = (transactionItemsTable && transactionItemsTable.items) ? transactionItemsTable.items.reduce((acc, it) => { if (it.item_id) acc[String(it.item_id)] = it; return acc; }, {}) : {};
+                documentItems = (updated.items || []).map(i => {
+                    const disp = getSupplierInvoiceItemDisplay(i, supplierInvoiceItemDisplayCache);
+                    const apiCost = parseFloat(i.unit_cost_exclusive);
+                    const current = currentByItemId[String(i.item_id)];
+                    const unit_price = (typeof apiCost === 'number' && !isNaN(apiCost) && apiCost > 0) ? apiCost : (current && (current.unit_price != null && current.unit_price !== '')) ? parseFloat(current.unit_price) : (typeof apiCost === 'number' && !isNaN(apiCost)) ? apiCost : 0;
+                    let batches = [];
+                    if (i.batch_data && String(i.batch_data).trim()) {
+                        try { batches = JSON.parse(i.batch_data); if (!Array.isArray(batches)) batches = []; } catch (e) { batches = current && current.batches ? current.batches : []; }
+                    } else if (current && current.batches && current.batches.length) batches = current.batches;
+                    return {
+                        item_id: i.item_id,
+                        item_name: disp.item_name,
+                        item_sku: disp.item_code,
+                        item_code: disp.item_code,
+                        unit_name: i.unit_name,
+                        quantity: parseFloat(i.quantity) || 0,
+                        unit_price,
+                        tax_percent: parseFloat(i.vat_rate) || 0,
+                        total: parseFloat(i.line_total_inclusive) || 0,
+                        batches
+                    };
+                });
                 if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
                     transactionItemsTable.setItems(documentItems);
                 }
@@ -1569,36 +1651,48 @@ async function onPurchaseOrderAddItem(item) {
             currentDocument.order_number = order.order_number;
             currentDocument.status = order.status;
             poSyncedItemIds = new Set((order.items || []).map(i => i.item_id));
-            documentItems = (order.items || []).map(i => ({
-                item_id: i.item_id,
-                item_name: i.item_name || i.item_code,
-                item_sku: i.item_code,
-                item_code: i.item_code,
-                unit_name: i.unit_name,
-                quantity: i.quantity,
-                unit_price: i.unit_price,
-                total: i.total_price,
-                is_empty: false
-            }));
+            documentItems = (order.items || []).map(i => {
+                const disp = getSupplierInvoiceItemDisplay(i, poItemDisplayCache);
+                return {
+                    item_id: i.item_id,
+                    item_name: disp.item_name,
+                    item_sku: disp.item_code,
+                    item_code: disp.item_code,
+                    unit_name: i.unit_name,
+                    quantity: i.quantity,
+                    unit_price: i.unit_price,
+                    total: i.total_price,
+                    is_empty: false
+                };
+            });
             if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
                 transactionItemsTable.setItems(documentItems);
             }
             showToast('Purchase order created. Add more items or save when ready.', 'success');
             return;
         }
+        if (item.item_id != null) {
+            const idKey = String(item.item_id);
+            if (!poItemDisplayCache[idKey]) poItemDisplayCache[idKey] = {};
+            if (item.item_name && item.item_name !== '=') poItemDisplayCache[idKey].item_name = item.item_name;
+            if (item.item_code && item.item_code !== '=') poItemDisplayCache[idKey].item_code = item.item_code;
+        }
         const updated = await API.purchases.addOrderItem(orderId, mapTableItemToOrderItem(item));
         poSyncedItemIds.add(item.item_id);
-        documentItems = (updated.items || []).map(i => ({
-            item_id: i.item_id,
-            item_name: i.item_name || i.item_code,
-            item_sku: i.item_code,
-            item_code: i.item_code,
-            unit_name: i.unit_name,
-            quantity: i.quantity,
-            unit_price: i.unit_price,
-            total: i.total_price,
-            is_empty: false
-        }));
+        documentItems = (updated.items || []).map(i => {
+            const disp = getSupplierInvoiceItemDisplay(i, poItemDisplayCache);
+            return {
+                item_id: i.item_id,
+                item_name: disp.item_name,
+                item_sku: disp.item_code,
+                item_code: disp.item_code,
+                unit_name: i.unit_name,
+                quantity: i.quantity,
+                unit_price: i.unit_price,
+                total: i.total_price,
+                is_empty: false
+            };
+        });
         if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
             transactionItemsTable.setItems(documentItems);
         }
@@ -1672,17 +1766,20 @@ function initializeTransactionItemsTable(canEdit = true) {
                     }
                 }
                 const updated = await API.purchases.getOrder(orderId);
-                documentItems = (updated.items || []).map(i => ({
-                    item_id: i.item_id,
-                    item_name: i.item_name || i.item_code,
-                    item_sku: i.item_code,
-                    item_code: i.item_code,
-                    unit_name: i.unit_name,
-                    quantity: i.quantity,
-                    unit_price: i.unit_price,
-                    total: i.total_price,
-                    is_empty: false
-                }));
+                documentItems = (updated.items || []).map(i => {
+                    const disp = getSupplierInvoiceItemDisplay(i, poItemDisplayCache);
+                    return {
+                        item_id: i.item_id,
+                        item_name: disp.item_name,
+                        item_sku: disp.item_code,
+                        item_code: disp.item_code,
+                        unit_name: i.unit_name,
+                        quantity: i.quantity,
+                        unit_price: i.unit_price,
+                        total: i.total_price,
+                        is_empty: false
+                    };
+                });
                 if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
                     transactionItemsTable.setItems(documentItems);
                 }
@@ -2273,18 +2370,21 @@ async function editPurchaseDocument(docId, docType) {
             ...order 
         };
         
-        // Map items using backend response (item_name, item_code already included)
-        documentItems = (order.items || []).map(item => ({
+        // Map items using backend response (item_name, item_code); use display cache to avoid "=" / "—"
+        documentItems = (order.items || []).map(item => {
+            const disp = getSupplierInvoiceItemDisplay(item, poItemDisplayCache);
+            return {
             item_id: item.item_id,
-            item_name: item.item_name || 'Item',
-            item_sku: item.item_code || '',
-            item_code: item.item_code || '',
+            item_name: disp.item_name || 'Item',
+            item_sku: disp.item_code,
+            item_code: disp.item_code,
             unit_name: item.unit_name,
             quantity: item.quantity,
             unit_price: item.unit_price,
             total: item.total_price,
             is_empty: false
-        }));
+            };
+        });
         poSyncedItemIds = new Set((order.items || []).map(i => i.item_id));
         
         // Load the create page with existing data (will be pre-filled by the form initialization)
