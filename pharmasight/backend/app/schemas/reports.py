@@ -28,7 +28,7 @@ class ItemMovementRow(BaseModel):
 
 
 class ItemMovementReportResponse(BaseModel):
-    """Response for GET /api/reports/item-movement."""
+    """Response for GET /api/reports/item-movement and GET /api/reports/batch-movement."""
     company_name: str
     branch_name: str
     item_name: str
@@ -42,3 +42,15 @@ class ItemMovementReportResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ItemBatchInfo(BaseModel):
+    """Single batch for GET /api/items/{item_id}/batches (dropdown)."""
+    batch_no: str
+    expiry_date: Optional[date] = None
+    current_balance: Decimal = Field(default=Decimal("0"), description="Running balance from movements")
+
+
+class ItemBatchesResponse(BaseModel):
+    """Response for GET /api/items/{item_id}/batches."""
+    batches: List[ItemBatchInfo] = Field(default_factory=list)

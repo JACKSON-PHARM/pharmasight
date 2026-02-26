@@ -1,8 +1,8 @@
 """
-Reports API — read-only. Branch-scoped item movement report.
+Reports API — read-only. Branch-scoped item movement report and batch movement report.
 """
 from datetime import date
-from typing import Tuple
+from typing import Optional, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -11,7 +11,10 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_current_user, _user_has_permission
 from app.models import Branch, User, UserBranchRole
 from app.schemas.reports import ItemMovementReportResponse
-from app.services.item_movement_report_service import build_item_movement_report
+from app.services.item_movement_report_service import (
+    build_item_movement_report,
+    build_batch_movement_report,
+)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -98,5 +101,60 @@ def get_item_movement_report(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found or does not belong to your company.")
         if err == "branch_or_company_not_found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch or company not found.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
+    return report
+
+
+@router.get("/batch-movement", response_model=ItemMovementReportResponse)
+def get_batch_movement_report(
+    item_id: UUID = Query(..., description="Item UUID"),
+    batch_no: str = Query(..., min_length=1, description="Batch number"),
+    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    branch_id: Optional[UUID] = Query(None, description="Branch ID (defaults to session branch)"),
+    auth: Tuple[User, Session, UUID] = Depends(require_reports_view_and_branch),
+):
+    """
+    Branch-scoped Batch Movement Report. Read-only.
+    Filters existing inventory_ledger by item_id, batch_no, date range, and branch.
+    Branch from session (X-Branch-ID) unless branch_id query param is provided; user must have access to that branch.
+    """
+    user, db, session_branch_id = auth
+    effective_branch_id = branch_id if branch_id is not None else session_branch_id
+    branch = db.query(Branch).filter(Branch.id == effective_branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found.")
+    has_branch_access = db.query(UserBranchRole).filter(
+        UserBranchRole.user_id == user.id,
+        UserBranchRole.branch_id == effective_branch_id,
+    ).first() is not None
+    if not has_branch_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this branch.",
+        )
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be before or equal to end_date.",
+        )
+    try:
+        report = build_batch_movement_report(
+            db,
+            company_id=branch.company_id,
+            branch_id=effective_branch_id,
+            item_id=item_id,
+            batch_no=batch_no,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except ValueError as e:
+        err = str(e)
+        if err == "item_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found or does not belong to your company.")
+        if err == "branch_or_company_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch or company not found.")
+        if err == "batch_no_required":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="batch_no is required.")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
     return report

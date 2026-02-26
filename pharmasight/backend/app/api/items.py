@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
-from app.dependencies import get_tenant_db, get_current_user
+from app.dependencies import get_tenant_db, get_current_user, _user_has_permission
 from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
@@ -38,6 +38,8 @@ from app.services.excel_import_service import ExcelImportService
 from app.services.snapshot_service import SnapshotService
 from app.services.order_book_service import OrderBookService
 from app.utils.vat import vat_rate_to_percent
+from app.schemas.reports import ItemBatchesResponse
+from app.services.item_movement_report_service import get_item_batches
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -546,6 +548,43 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "default_cost": default_cost,
         "units": [],  # Set below from _display_units_from_item
     }
+
+
+@router.get("/{item_id}/batches", response_model=ItemBatchesResponse)
+def get_item_batches_endpoint(
+    item_id: UUID,
+    branch_id: UUID = Query(..., description="Branch ID (session branch for report dropdown)"),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    List distinct batches for an item at a branch (tenant- and branch-scoped).
+    Used to populate the batch dropdown in Batch Movement Report.
+    Requires reports.view and branch access.
+    """
+    user, _ = current_user_and_db
+    if not _user_has_permission(db, user.id, "reports.view"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission reports.view required.",
+        )
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found.")
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch or branch.company_id != item.company_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found or does not belong to item company.")
+    has_branch_access = db.query(UserBranchRole).filter(
+        UserBranchRole.user_id == user.id,
+        UserBranchRole.branch_id == branch_id,
+    ).first() is not None
+    if not has_branch_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this branch.",
+        )
+    batches = get_item_batches(db, company_id=item.company_id, branch_id=branch_id, item_id=item_id)
+    return ItemBatchesResponse(batches=batches)
 
 
 @router.get("/{item_id}", response_model=ItemResponse)

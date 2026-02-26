@@ -426,6 +426,23 @@ const API = {
             }
             return api.get('/api/reports/item-movement', params, { headers });
         },
+        getBatchMovement: (itemId, batchNo, startDate, endDate, branchId) => {
+            const params = { item_id: itemId, batch_no: batchNo, start_date: startDate, end_date: endDate };
+            if (branchId) params.branch_id = branchId;
+            const headers = {};
+            if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) {
+                headers['X-Branch-ID'] = CONFIG.BRANCH_ID;
+            }
+            return api.get('/api/reports/batch-movement', params, { headers });
+        },
+        getBatchesForItem: (itemId, branchId) => {
+            const params = { branch_id: branchId };
+            const headers = {};
+            if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) {
+                headers['X-Branch-ID'] = CONFIG.BRANCH_ID;
+            }
+            return api.get(`/api/items/${itemId}/batches`, params, { headers });
+        },
     },
 
     // Quotations (sales documents that do not affect stock)

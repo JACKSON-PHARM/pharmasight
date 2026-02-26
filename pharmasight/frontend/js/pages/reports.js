@@ -67,6 +67,11 @@ function _computePresetRange(preset) {
     now.setHours(0, 0, 0, 0);
     const p = (preset || '').toLowerCase();
     if (p === 'today') return { start: now, end: now };
+    if (p === 'yesterday') {
+        const y = new Date(now);
+        y.setDate(y.getDate() - 1);
+        return { start: y, end: y };
+    }
     if (p === 'this_week') return { start: _startOfWeekMonday(now), end: _endOfWeekSunday(now) };
     if (p === 'last_week') {
         const end = new Date(_startOfWeekMonday(now));
@@ -111,6 +116,7 @@ async function loadReportsSubPage(subPage) {
         'inventory': 'Inventory Reports',
         'financial': 'Financial Reports',
         'item-movement': 'Item Movement Report',
+        'batch-tracking': 'Stock Batch Tracking Report',
         'custom': 'Custom Reports'
     };
     const title = titleMap[currentReportsSubPage] || 'Reports';
@@ -127,7 +133,11 @@ async function loadReportsSubPage(subPage) {
     `;
 
     if (currentReportsSubPage === 'item-movement') {
-        await renderItemMovementReport();
+        await renderMovementReport('item');
+        return;
+    }
+    if (currentReportsSubPage === 'batch-tracking') {
+        await renderMovementReport('batch');
         return;
     }
     if (currentReportsSubPage !== 'financial') {
@@ -268,8 +278,22 @@ function _escapeHtml(s) {
 }
 if (typeof window !== 'undefined') window.escapeHtml = window.escapeHtml || _escapeHtml;
 
-function getItemMovementReportHTML() {
+/** mode: 'item' | 'batch' — item movement vs batch movement report */
+function getMovementReportHTML(mode) {
     const thisMonth = _itemMovementReportThisMonth();
+    const isBatch = mode === 'batch';
+    const batchBlock = isBatch ? `
+                    <div class="form-group" style="min-width: 200px; margin: 0;">
+                        <label class="form-label">Batch Number</label>
+                        <select class="form-input" id="imBatchSelect">
+                            <option value="">Please select...</option>
+                        </select>
+                        <div id="imBatchSelected" style="margin-top: 4px; font-size: 0.875rem; color: var(--text-secondary);"></div>
+                    </div>
+    ` : '';
+    const placeholderText = isBatch
+        ? 'Select date range, item, and batch, then click Apply to generate the report.'
+        : 'Select date range and item, then click Apply to generate the report.';
     return `
         <div class="card" style="margin-bottom: 1rem;">
             <div class="card-header">
@@ -281,8 +305,13 @@ function getItemMovementReportHTML() {
                         <label class="form-label">Date</label>
                         <select class="form-input" id="imPreset">
                             <option value="today">Today</option>
+                            <option value="yesterday">Yesterday</option>
+                            <option value="this_week">This Week</option>
                             <option value="this_month" selected>This Month</option>
+                            <option value="last_week">Last Week</option>
                             <option value="last_month">Last Month</option>
+                            <option value="this_year">This Year</option>
+                            <option value="last_year">Last Year</option>
                             <option value="custom">Custom</option>
                         </select>
                     </div>
@@ -301,6 +330,7 @@ function getItemMovementReportHTML() {
                         <div id="imItemDropdown" class="dropdown-list" style="display:none; position:absolute; z-index:100; max-height:220px; overflow:auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 280px;"></div>
                         <div id="imItemSelected" style="margin-top: 4px; font-size: 0.875rem; color: var(--text-secondary);"></div>
                     </div>
+                    ${batchBlock}
                     <div style="margin: 0; display: flex; gap: 0.5rem;">
                         <button class="btn btn-primary" id="imApplyBtn"><i class="fas fa-check"></i> Apply</button>
                         <button class="btn btn-secondary" id="imClearBtn">Clear</button>
@@ -318,15 +348,22 @@ function getItemMovementReportHTML() {
                     <button type="button" class="btn btn-outline btn-sm" id="imCsvBtn"><i class="fas fa-file-csv"></i> Download CSV</button>
                 </div>
             </div>
-            <div id="imReportContent" class="item-movement-report-doc" style="background: #fff; padding: 20px; max-width: 210mm; margin: 0 auto; border: 1px solid #ddd; box-shadow: 0 2px 8px rgba(0,0,0,0.08); font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; line-height: 1.4; color: #222;"></div>
+            <div id="imReportContent" class="item-movement-report-doc" style="background: #fff; padding: 20px; max-width: 100%; width: 100%; margin: 0; border: 1px solid #ddd; box-shadow: 0 2px 8px rgba(0,0,0,0.08); font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; line-height: 1.4; color: #222;"></div>
         </div>
 
-        <div id="imReportPlaceholder" style="color: var(--text-secondary); padding: 1rem;">Select date range and item, then click Apply to generate the report.</div>
+        <div id="imReportPlaceholder" style="color: var(--text-secondary); padding: 1rem;">${placeholderText}</div>
     `;
 }
 
-function setupItemMovementReportHandlers(root) {
+function getItemMovementReportHTML() {
+    return getMovementReportHTML('item');
+}
+
+/** mode: 'item' | 'batch' */
+function setupMovementReportHandlers(root, mode) {
     if (!root) return;
+    const isBatch = mode === 'batch';
+    root.__movementReportMode = mode;
     const branchId = (typeof _ensureBranchSelected === 'function' ? _ensureBranchSelected() : null) || (typeof getBranchIdForStock === 'function' ? getBranchIdForStock() : null);
     const presetEl = root.querySelector('#imPreset');
     const startEl = root.querySelector('#imStart');
@@ -335,6 +372,8 @@ function setupItemMovementReportHandlers(root) {
     const itemIdEl = root.querySelector('#imItemId');
     const itemDropdownEl = root.querySelector('#imItemDropdown');
     const itemSelectedEl = root.querySelector('#imItemSelected');
+    const batchSelectEl = root.querySelector('#imBatchSelect');
+    const batchSelectedEl = root.querySelector('#imBatchSelected');
     const applyBtn = root.querySelector('#imApplyBtn');
     const clearBtn = root.querySelector('#imClearBtn');
     const summaryEl = root.querySelector('#imFiltersSummary');
@@ -348,11 +387,34 @@ function setupItemMovementReportHandlers(root) {
     }
     presetEl.addEventListener('change', () => applyPreset(presetEl.value));
 
+    async function loadBatchesForItem(itemId) {
+        if (!batchSelectEl || !branchId || !API || !API.reports || typeof API.reports.getBatchesForItem !== 'function') return;
+        batchSelectEl.innerHTML = '<option value="">Loading...</option>';
+        try {
+            const res = await API.reports.getBatchesForItem(itemId, branchId);
+            const batches = (res && res.batches) ? res.batches : [];
+            batchSelectEl.innerHTML = '<option value="">Please select...</option>' + batches.map(b => {
+                const exp = b.expiry_date ? String(b.expiry_date).slice(0, 10) : '';
+                const bal = b.current_balance != null ? Number(b.current_balance) : 0;
+                const label = exp ? `${_escapeHtml(b.batch_no)} (Exp: ${exp}, Bal: ${bal})` : _escapeHtml(b.batch_no);
+                return `<option value="${_escapeHtml(b.batch_no)}">${label}</option>`;
+            }).join('');
+            if (batchSelectedEl) batchSelectedEl.textContent = batches.length ? batches.length + ' batch(es) available' : 'No batches for this item at this branch';
+        } catch (err) {
+            batchSelectEl.innerHTML = '<option value="">Error loading batches</option>';
+            if (batchSelectedEl) batchSelectedEl.textContent = 'Failed to load batches';
+        }
+    }
+
     let searchTimeout = null;
     itemSearchEl.addEventListener('input', () => {
         itemIdEl.value = '';
         itemMovementSelectedItem = null;
         if (itemSelectedEl) itemSelectedEl.textContent = '';
+        if (batchSelectEl) {
+            batchSelectEl.innerHTML = '<option value="">Please select...</option>';
+            if (batchSelectedEl) batchSelectedEl.textContent = '';
+        }
         const q = (itemSearchEl.value || '').trim();
         if (q.length < 2) {
             itemDropdownEl.style.display = 'none';
@@ -360,6 +422,8 @@ function setupItemMovementReportHandlers(root) {
         }
         clearTimeout(searchTimeout);
         searchTimeout = setTimeout(async () => {
+            itemDropdownEl.innerHTML = '<div style="padding: 12px; text-align: center; color: var(--text-secondary);"><i class="fas fa-spinner fa-spin" style="margin-right: 6px;"></i> Searching...</div>';
+            itemDropdownEl.style.display = 'block';
             try {
                 const companyId = typeof CONFIG !== 'undefined' ? CONFIG.COMPANY_ID : null;
                 const bid = branchId || (typeof getBranchIdForStock === 'function' ? getBranchIdForStock() : null);
@@ -392,12 +456,13 @@ function setupItemMovementReportHandlers(root) {
                         </div>`;
                     }).join('');
                     itemDropdownEl.querySelectorAll('.dropdown-item').forEach(el => {
-                        el.addEventListener('click', () => {
+                        el.addEventListener('click', async () => {
                             itemMovementSelectedItem = { id: el.dataset.id, name: el.dataset.name, sku: el.dataset.sku || '' };
                             itemIdEl.value = el.dataset.id;
                             itemSearchEl.value = el.dataset.name + (el.dataset.sku ? ' (' + el.dataset.sku + ')' : '');
                             if (itemSelectedEl) itemSelectedEl.textContent = 'Selected: ' + (el.dataset.sku || el.dataset.name);
                             itemDropdownEl.style.display = 'none';
+                            if (isBatch && batchSelectEl) await loadBatchesForItem(el.dataset.id);
                         });
                     });
                 }
@@ -419,6 +484,7 @@ function setupItemMovementReportHandlers(root) {
         itemIdEl.value = '';
         itemMovementSelectedItem = null;
         if (itemSelectedEl) itemSelectedEl.textContent = '';
+        if (batchSelectEl) { batchSelectEl.innerHTML = '<option value="">Please select...</option>'; if (batchSelectedEl) batchSelectedEl.textContent = ''; }
         if (summaryEl) summaryEl.textContent = '';
         const cont = root.querySelector('#imReportContainer');
         const place = root.querySelector('#imReportPlaceholder');
@@ -427,8 +493,77 @@ function setupItemMovementReportHandlers(root) {
     });
 
     applyBtn.addEventListener('click', async () => {
-        await loadItemMovementReport();
+        await loadMovementReport();
     });
+}
+
+function setupItemMovementReportHandlers(root) {
+    setupMovementReportHandlers(root, 'item');
+}
+
+/** Shared: render movement report data (item or batch) into contentEl. options.reportTitle, options.subtitleExtra optional. */
+function renderMovementTableToElement(res, contentEl, options) {
+    if (!contentEl) return;
+    const opts = options || {};
+    const reportTitle = opts.reportTitle != null ? opts.reportTitle : 'ITEM MOVEMENT REPORT';
+    const subtitleExtra = opts.subtitleExtra != null ? opts.subtitleExtra : '';
+
+    const displayOpts = res.display_options || {};
+    const showBatch = !!displayOpts.show_batch_number;
+    const showExpiry = !!displayOpts.show_expiry_date;
+
+    const th = (t, align) => '<th style="padding: 8px 10px; border: 1px solid #333; background: #f5f5f5; text-align: ' + (align || 'left') + '; font-weight: 600;">' + t + '</th>';
+    let tableHeaders = th('Date') + th('Document type') + th('Reference') + th('Qty In', 'right') + th('Qty Out', 'right') + th('Run Bal', 'right');
+    if (showBatch) tableHeaders += th('Batch');
+    if (showExpiry) tableHeaders += th('Expiry');
+
+    const rows = Array.isArray(res.rows) ? res.rows : [];
+    const trs = rows.map(r => {
+        const dateStr = r.date ? (typeof r.date === 'string' ? r.date.slice(0, 19).replace('T', ' ') : r.date) : '';
+        const docType = (r.document_type != null && r.document_type !== undefined) ? String(r.document_type) : '';
+        const ref = (r.reference != null && r.reference !== undefined) ? String(r.reference) : '';
+        const qtyIn = (r.qty_in != null && r.qty_in !== undefined) ? Number(r.qty_in) : 0;
+        const qtyOut = (r.qty_out != null && r.qty_out !== undefined) ? Number(r.qty_out) : 0;
+        const runBal = (r.running_balance != null && r.running_balance !== undefined) ? Number(r.running_balance) : 0;
+        const batch = showBatch ? (r.batch_number != null ? String(r.batch_number) : '') : '';
+        const expiry = showExpiry ? (r.expiry_date != null ? String(r.expiry_date).slice(0, 10) : '') : '';
+        const td = (v, align) => '<td style="padding: 6px 10px; border: 1px solid #ddd;">' + (align === 'right' ? '<span style="text-align:right;display:block;">' + v + '</span>' : _escapeHtml(v)) + '</td>';
+        let row = td(dateStr) + td(docType) + td(ref) + td(String(qtyIn), 'right') + td(String(qtyOut), 'right') + td(String(runBal), 'right');
+        if (showBatch) row += td(batch);
+        if (showExpiry) row += td(expiry);
+        return '<tr>' + row + '</tr>';
+    }).join('');
+
+    const reportHtml = `
+        <div style="border-bottom: 2px solid #333; padding-bottom: 12px; margin-bottom: 12px;">
+            <div style="font-weight: 700; font-size: 16px; color: #111;">${_escapeHtml(res.company_name || '')}</div>
+            <div style="font-size: 13px; color: #444; margin-top: 4px;">${_escapeHtml(res.branch_name || '')}</div>
+        </div>
+        <div style="font-size: 18px; font-weight: 700; margin-bottom: 12px; text-align: center;">${_escapeHtml(reportTitle)}</div>
+        <div style="font-size: 12px; color: #444; margin-bottom: 8px;">from ${_escapeHtml(String(res.start_date || ''))} to ${_escapeHtml(String(res.end_date || ''))}</div>
+        <div style="font-size: 12px; margin-bottom: 12px;">Item ${_escapeHtml(res.item_sku || '')} ${_escapeHtml(res.item_name || '')}${subtitleExtra}</div>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 8px;">
+            <thead><tr>${tableHeaders}</tr></thead>
+            <tbody>${trs}</tbody>
+        </table>
+        <div style="margin-top: 12px; font-size: 12px; padding-top: 8px; border-top: 1px solid #ddd;">Opening balance: ${res.opening_balance != null ? res.opening_balance : 0} &nbsp;|&nbsp; Closing balance: ${res.closing_balance != null ? res.closing_balance : 0}</div>
+    `;
+    contentEl.innerHTML = reportHtml;
+}
+
+async function renderMovementReport(mode) {
+    const body = document.getElementById('reportsBody');
+    if (!body) return;
+
+    const branchId = _ensureBranchSelected();
+    if (!branchId) {
+        body.innerHTML = '<div class="alert alert-warning"><i class="fas fa-exclamation-triangle"></i> Select a branch first (Settings → Branches → Set as Current).</div>';
+        return;
+    }
+
+    body.innerHTML = getMovementReportHTML(mode);
+    setupMovementReportHandlers(body, mode);
+    window.__itemMovementReportRoot = body;
 }
 
 async function renderItemMovementReport() {
@@ -442,23 +577,33 @@ async function renderItemMovementReport() {
     }
 
     body.innerHTML = getItemMovementReportHTML();
-    setupItemMovementReportHandlers(body);
+    setupItemMovementReportHandlers(body, 'item');
     window.__itemMovementReportRoot = body;
 }
 
 /** Render the same Item Movement report UI into an arbitrary container (e.g. Inventory → Item Movement). */
-function renderItemMovementReportInto(container) {
+/** Render movement report (item or batch) into any container. mode: 'item' | 'batch'. Used by Reports and by Inventory → Batch Tracking. */
+function renderMovementReportInto(container, mode) {
     if (!container) return;
-    container.innerHTML = getItemMovementReportHTML();
-    setupItemMovementReportHandlers(container);
+    const reportMode = mode === 'batch' ? 'batch' : 'item';
+    container.innerHTML = getMovementReportHTML(reportMode);
+    setupMovementReportHandlers(container, reportMode);
     window.__itemMovementReportRoot = container;
+}
+
+function renderItemMovementReportInto(container) {
+    renderMovementReportInto(container, 'item');
 }
 if (typeof window !== 'undefined') {
     window.renderItemMovementReportInto = renderItemMovementReportInto;
+    window.renderMovementReportInto = renderMovementReportInto;
 }
 
-async function loadItemMovementReport() {
+async function loadMovementReport() {
     const root = window.__itemMovementReportRoot || document;
+    const mode = root.__movementReportMode || 'item';
+    const isBatch = mode === 'batch';
+
     const branchId = (typeof _ensureBranchSelected === 'function' ? _ensureBranchSelected() : null) || (typeof getBranchIdForStock === 'function' ? getBranchIdForStock() : null);
     if (!branchId) {
         if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
@@ -467,6 +612,8 @@ async function loadItemMovementReport() {
 
     const itemIdEl = root.querySelector('#imItemId');
     const itemId = itemIdEl && itemIdEl.value;
+    const batchSelectEl = root.querySelector('#imBatchSelect');
+    const batchNo = isBatch && batchSelectEl ? (batchSelectEl.value || '').trim() : null;
     const startEl = root.querySelector('#imStart');
     const endEl = root.querySelector('#imEnd');
     const summaryEl = root.querySelector('#imFiltersSummary');
@@ -476,6 +623,10 @@ async function loadItemMovementReport() {
 
     if (!itemId || !startEl || !endEl) {
         if (typeof showToast === 'function') showToast('Please select an item and date range.', 'warning');
+        return;
+    }
+    if (isBatch && !batchNo) {
+        if (typeof showToast === 'function') showToast('Please select a batch.', 'warning');
         return;
     }
 
@@ -492,69 +643,40 @@ async function loadItemMovementReport() {
 
     const start = _fmtDateInput(sd);
     const end = _fmtDateInput(ed);
-    if (summaryEl) summaryEl.textContent = 'Filters: from ' + start + ' to ' + end + ' Item ' + (itemMovementSelectedItem ? (itemMovementSelectedItem.sku || itemMovementSelectedItem.name) : itemId);
+    let summary = 'Filters: from ' + start + ' to ' + end + ' Item ' + (itemMovementSelectedItem ? (itemMovementSelectedItem.sku || itemMovementSelectedItem.name) : itemId);
+    if (isBatch && batchNo) summary += ' Batch ' + batchNo;
+    if (summaryEl) summaryEl.textContent = summary;
     if (contentEl) contentEl.innerHTML = '<div class="spinner" style="margin: 1rem auto;"></div>';
     if (containerEl) containerEl.style.display = 'block';
     if (placeholderEl) placeholderEl.style.display = 'none';
 
     try {
-        if (!API || !API.reports || typeof API.reports.getItemMovement !== 'function') {
-            throw new Error('Item Movement report API not available.');
+        if (!API || !API.reports) throw new Error('Reports API not available.');
+
+        let res;
+        if (isBatch) {
+            if (typeof API.reports.getBatchMovement !== 'function') throw new Error('Batch Movement report API not available.');
+            res = await API.reports.getBatchMovement(itemId, batchNo, start, end);
+        } else {
+            if (typeof API.reports.getItemMovement !== 'function') throw new Error('Item Movement report API not available.');
+            res = await API.reports.getItemMovement(itemId, start, end);
         }
-        const res = await API.reports.getItemMovement(itemId, start, end);
         lastItemMovementReportData = res;
 
-        const opts = res.display_options || {};
-        const showBatch = !!opts.show_batch_number;
-        const showExpiry = !!opts.show_expiry_date;
-
-        const th = (t, align) => '<th style="padding: 8px 10px; border: 1px solid #333; background: #f5f5f5; text-align: ' + (align || 'left') + '; font-weight: 600;">' + t + '</th>';
-        let tableHeaders = th('Date') + th('Document type') + th('Reference') + th('Qty In', 'right') + th('Qty Out', 'right') + th('Run Bal', 'right');
-        if (showBatch) tableHeaders += th('Batch');
-        if (showExpiry) tableHeaders += th('Expiry');
-
-        const rows = Array.isArray(res.rows) ? res.rows : [];
-        const trs = rows.map(r => {
-            const dateStr = r.date ? (typeof r.date === 'string' ? r.date.slice(0, 19).replace('T', ' ') : r.date) : '';
-            const docType = (r.document_type != null && r.document_type !== undefined) ? String(r.document_type) : '';
-            const ref = (r.reference != null && r.reference !== undefined) ? String(r.reference) : '';
-            const qtyIn = (r.qty_in != null && r.qty_in !== undefined) ? Number(r.qty_in) : 0;
-            const qtyOut = (r.qty_out != null && r.qty_out !== undefined) ? Number(r.qty_out) : 0;
-            const runBal = (r.running_balance != null && r.running_balance !== undefined) ? Number(r.running_balance) : 0;
-            const batch = showBatch ? (r.batch_number != null ? String(r.batch_number) : '') : '';
-            const expiry = showExpiry ? (r.expiry_date != null ? String(r.expiry_date).slice(0, 10) : '') : '';
-            const td = (v, align) => '<td style="padding: 6px 10px; border: 1px solid #ddd;">' + (align === 'right' ? '<span style="text-align:right;display:block;">' + v + '</span>' : _escapeHtml(v)) + '</td>';
-            let row = td(dateStr) + td(docType) + td(ref) + td(String(qtyIn), 'right') + td(String(qtyOut), 'right') + td(String(runBal), 'right');
-            if (showBatch) row += td(batch);
-            if (showExpiry) row += td(expiry);
-            return '<tr>' + row + '</tr>';
-        }).join('');
-
-        const reportHtml = `
-            <div style="border-bottom: 2px solid #333; padding-bottom: 12px; margin-bottom: 12px;">
-                <div style="font-weight: 700; font-size: 16px; color: #111;">${_escapeHtml(res.company_name || '')}</div>
-                <div style="font-size: 13px; color: #444; margin-top: 4px;">${_escapeHtml(res.branch_name || '')}</div>
-            </div>
-            <div style="font-size: 18px; font-weight: 700; margin-bottom: 12px; text-align: center;">ITEM MOVEMENT REPORT</div>
-            <div style="font-size: 12px; color: #444; margin-bottom: 8px;">from ${_escapeHtml(String(res.start_date || ''))} to ${_escapeHtml(String(res.end_date || ''))}</div>
-            <div style="font-size: 12px; margin-bottom: 12px;">Item ${_escapeHtml(res.item_sku || '')} ${_escapeHtml(res.item_name || '')}</div>
-            <table style="width: 100%; border-collapse: collapse; margin-top: 8px;">
-                <thead><tr>${tableHeaders}</tr></thead>
-                <tbody>${trs}</tbody>
-            </table>
-            <div style="margin-top: 12px; font-size: 12px; padding-top: 8px; border-top: 1px solid #ddd;">Opening balance: ${res.opening_balance != null ? res.opening_balance : 0} &nbsp;|&nbsp; Closing balance: ${res.closing_balance != null ? res.closing_balance : 0}</div>
-        `;
-        if (contentEl) contentEl.innerHTML = reportHtml;
+        const reportTitle = isBatch ? 'BATCH MOVEMENT REPORT' : 'ITEM MOVEMENT REPORT';
+        const subtitleExtra = isBatch && batchNo ? ' · Batch ' + _escapeHtml(batchNo) : '';
+        renderMovementTableToElement(res, contentEl, { reportTitle: reportTitle, subtitleExtra: subtitleExtra });
 
         const printBtn = root.querySelector('#imPrintBtn');
         const pdfBtn = root.querySelector('#imPdfBtn');
         const csvBtn = root.querySelector('#imCsvBtn');
         const printArea = root.querySelector('#imReportContent');
+        const printTitle = isBatch ? 'Batch Movement Report' : 'Item Movement Report';
         const printStyles = 'body{ font-family: "Segoe UI", Arial, sans-serif; font-size: 12px; padding: 16px; color: #222; } table { border-collapse: collapse; width: 100%; } th, td { border: 1px solid #ddd; padding: 6px 10px; } th { background: #f5f5f5; font-weight: 600; }';
         if (printBtn && printArea) {
             printBtn.onclick = () => {
                 const win = window.open('', '_blank');
-                win.document.write('<html><head><title>Item Movement Report</title><style>' + printStyles + '</style></head><body>' + printArea.innerHTML + '</body></html>');
+                win.document.write('<html><head><title>' + printTitle + '</title><style>' + printStyles + '</style></head><body>' + printArea.innerHTML + '</body></html>');
                 win.document.close();
                 win.focus();
                 setTimeout(() => { win.print(); win.close(); }, 250);
@@ -563,7 +685,7 @@ async function loadItemMovementReport() {
         if (pdfBtn && printArea) {
             pdfBtn.onclick = () => {
                 const win = window.open('', '_blank');
-                win.document.write('<html><head><title>Item Movement Report</title><style>' + printStyles + '</style></head><body>' + printArea.innerHTML + '</body></html>');
+                win.document.write('<html><head><title>' + printTitle + '</title><style>' + printStyles + '</style></head><body>' + printArea.innerHTML + '</body></html>');
                 win.document.close();
                 win.focus();
                 setTimeout(() => { win.print(); win.close(); }, 250);
@@ -573,10 +695,14 @@ async function loadItemMovementReport() {
             csvBtn.onclick = () => downloadItemMovementCSV();
         }
     } catch (err) {
-        console.error('[REPORTS] Item movement load failed:', err);
+        console.error('[REPORTS] Movement report load failed:', err);
         if (contentEl) contentEl.innerHTML = '<p style="color: var(--danger-color);">Failed to load report. ' + (err && err.message ? err.message : '') + '</p>';
-        if (typeof showToast === 'function') showToast('Failed to load Item Movement report', 'error');
+        if (typeof showToast === 'function') showToast('Failed to load report', 'error');
     }
+}
+
+async function loadItemMovementReport() {
+    return loadMovementReport();
 }
 
 function downloadItemMovementCSV() {

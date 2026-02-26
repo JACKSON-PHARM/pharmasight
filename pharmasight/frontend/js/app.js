@@ -1058,6 +1058,7 @@ window.subNavItems = {
         { page: 'reports-sales', label: 'Sales Reports', icon: 'fa-chart-line' },
         { page: 'reports-inventory', label: 'Inventory Reports', icon: 'fa-warehouse' },
         { page: 'reports-item-movement', label: 'Item Movement Report', icon: 'fa-exchange-alt' },
+        { page: 'reports-batch-tracking', label: 'Stock Batch Tracking Report', icon: 'fa-layer-group' },
         { page: 'reports-financial', label: 'Financial Reports', icon: 'fa-dollar-sign' },
         { page: 'reports-custom', label: 'Custom Reports', icon: 'fa-file-alt' }
     ],

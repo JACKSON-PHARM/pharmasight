@@ -1446,7 +1446,13 @@ async function submitAdjustStock(itemId) {
 // OTHER SUB-PAGES (Placeholders)
 // ============================================
 function renderBatchTrackingSubPage() {
-    return '<div><h2>Batch Tracking</h2><p>Batch tracking functionality coming soon...</p></div>';
+    return `
+        <div class="batch-tracking-page">
+            <h2 style="margin-bottom: 1rem;"><i class="fas fa-layer-group"></i> Batch Tracking</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">View batch movement by item and batch. Select date range, item, and batch, then click Apply. Export to CSV or PDF below the report.</p>
+            <div id="inventoryBatchTrackingContainer" class="item-movement-report-wrapper"></div>
+        </div>
+    `;
 }
 
 function renderExpiryReportSubPage() {
@@ -1508,7 +1514,18 @@ function renderCurrentStockSubPage() {
 }
 
 async function loadBatchTrackingData() {
-    // TODO
+    const container = document.getElementById('inventoryBatchTrackingContainer');
+    if (!container) return;
+    const branchId = typeof getBranchIdForStock === 'function' ? getBranchIdForStock() : null;
+    if (!branchId) {
+        container.innerHTML = '<div class="alert alert-warning"><i class="fas fa-exclamation-triangle"></i> Select a branch first (top bar or Settings → Branches → Set as Current).</div>';
+        return;
+    }
+    if (typeof window.renderMovementReportInto === 'function') {
+        window.renderMovementReportInto(container, 'batch');
+    } else {
+        container.innerHTML = '<div class="alert alert-info">Batch tracking report is loading. If this message persists, refresh the page.</div>';
+    }
 }
 
 async function loadExpiryReportData() {
