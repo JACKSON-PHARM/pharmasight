@@ -6,7 +6,7 @@ This endpoint requires admin privileges and uses Supabase Service Role Key.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from app.dependencies import get_tenant_db, get_current_user
+from app.dependencies import get_current_user
 from app.services.invite_service import InviteService
 from app.services.startup_service import StartupService
 from app.schemas.invite import (
@@ -124,10 +124,14 @@ def mark_setup_complete(
 def get_setup_status(
     user_id: UUID,
     current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
 ):
     """
     Check if user needs to complete company setup
+    
+    Uses the DB from the authenticated user's context (JWT/token), not the
+    X-Tenant-Subdomain header, so we always check the correct tenant/legacy DB.
+    This avoids redirecting default-company users to setup when the browser
+    still has another tenant in storage (e.g. after visiting a client's link).
     
     Returns:
     - needs_setup: true if user needs to complete setup
@@ -136,8 +140,9 @@ def get_setup_status(
     
     Frontend should redirect to /setup if needs_setup is true.
     """
+    _user, db = current_user_and_db
     try:
-        # Check if company exists
+        # Check if company exists in THIS user's DB (token-based), not header-based
         company_exists = StartupService.check_company_exists(db)
         
         # TODO: Check user metadata from Supabase Auth
