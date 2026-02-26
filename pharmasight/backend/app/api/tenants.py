@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from app.database_master import get_master_db
-from app.dependencies import tenant_db_session, get_current_user
+from app.dependencies import tenant_db_session, get_current_admin
 from app.models.tenant import Tenant, TenantInvite, SubscriptionPlan, TenantSubscription, TenantModule
 from app.schemas.tenant import (
     TenantCreate, TenantResponse, TenantUpdate, TenantListResponse,
@@ -42,7 +42,7 @@ def list_tenants(
     limit: int = Query(100, ge=1, le=1000),
     status_filter: Optional[str] = Query(None, alias="status"),
     search: Optional[str] = Query(None),
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """List all tenants with pagination and filtering. By default excludes deleted (cancelled) tenants."""
@@ -96,7 +96,7 @@ def _tenant_to_response(tenant: Tenant) -> TenantResponse:
 @router.get("/tenants/{tenant_id}", response_model=TenantResponse)
 def get_tenant(
     tenant_id: UUID,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """Get tenant by ID"""
@@ -112,7 +112,7 @@ def get_tenant(
 @router.post("/tenants", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
 def create_tenant(
     tenant_data: TenantCreate,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """Create a new tenant (manual creation)"""
@@ -156,7 +156,7 @@ def create_tenant(
 def update_tenant(
     tenant_id: UUID,
     tenant_data: TenantUpdate,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """Update tenant information"""
@@ -181,7 +181,7 @@ def update_tenant(
 @router.get("/tenants/{tenant_id}/initialize-status")
 def get_initialize_status(
     tenant_id: UUID,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """
@@ -217,7 +217,7 @@ def get_initialize_status(
 def initialize_tenant(
     tenant_id: UUID,
     body: TenantInitializeRequest,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """
@@ -258,7 +258,7 @@ def initialize_tenant(
 @router.delete("/tenants/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_tenant(
     tenant_id: UUID,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """Delete a tenant (soft delete by setting status to cancelled)"""
@@ -286,7 +286,7 @@ def create_invite(
     background_tasks: BackgroundTasks,
     tenant_id: UUID,
     invite_data: TenantInviteCreate,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """Create an invite token for tenant setup. Enabled only when tenant is provisioned."""
@@ -397,7 +397,7 @@ def create_invite(
 @router.get("/tenants/{tenant_id}/invites", response_model=List[TenantInviteResponse])
 def list_invites(
     tenant_id: UUID,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """List all invites for a tenant"""
@@ -409,7 +409,7 @@ def list_invites(
 
 
 @router.get("/smtp-status")
-def get_smtp_status(current_user_and_db: tuple = Depends(get_current_user)):
+def get_smtp_status(_admin: None = Depends(get_current_admin)):
     """Check SMTP configuration status (for admin debugging)"""
     is_configured = EmailService.is_configured()
     status_info = {
@@ -441,7 +441,7 @@ def get_smtp_status(current_user_and_db: tuple = Depends(get_current_user)):
 
 @router.get("/plans", response_model=List[SubscriptionPlanResponse])
 def list_plans(
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """List all subscription plans"""
@@ -459,7 +459,7 @@ def list_plans(
 @router.get("/tenants/{tenant_id}/subscription", response_model=TenantSubscriptionResponse)
 def get_subscription(
     tenant_id: UUID,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """Get tenant's current subscription"""
@@ -483,7 +483,7 @@ def get_subscription(
 @router.get("/tenants/{tenant_id}/modules", response_model=List[TenantModuleResponse])
 def list_modules(
     tenant_id: UUID,
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
     """List all modules for a tenant"""

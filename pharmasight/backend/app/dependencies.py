@@ -430,6 +430,29 @@ def get_current_user(
         db.close()
 
 
+def get_current_admin(request: Request):
+    """
+    Require valid admin Bearer token (from admin login). Use for /api/admin/* routes (except auth/login).
+    Yields None; used only to enforce authentication.
+    """
+    auth = request.headers.get("Authorization")
+    token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    from app.services.admin_token_store import is_valid_admin_token
+    if not is_valid_admin_token(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    yield None
+
+
 def get_tenant_required(
     request: Request,
     db: Session = Depends(get_master_db),

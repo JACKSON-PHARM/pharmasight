@@ -49,17 +49,26 @@ class APIClient {
             }
         } catch (_) {}
 
-        // Internal auth: send Bearer token when we have one (skip for login, refresh, admin).
+        // Internal auth: send Bearer token when we have one.
+        // Admin routes (except login): use admin_token. Other app routes: use pharmasight_access_token. Skip for auth endpoints.
         const isAuthEndpoint = endpoint.indexOf('/api/auth/username-login') !== -1 ||
             endpoint.indexOf('/api/auth/refresh') !== -1 ||
             endpoint.indexOf('/api/auth/request-reset') !== -1 ||
-            endpoint.indexOf('/api/auth/reset-password') !== -1 ||
-            endpoint.indexOf('/api/admin/') === 0;
+            endpoint.indexOf('/api/auth/reset-password') !== -1;
+        const isAdminRoute = endpoint.indexOf('/api/admin/') === 0;
+        const isAdminLogin = endpoint.indexOf('/api/admin/auth/login') !== -1;
         try {
-            if (!isAuthEndpoint && typeof localStorage !== 'undefined') {
-                const accessToken = localStorage.getItem('pharmasight_access_token');
-                if (accessToken) {
-                    config.headers['Authorization'] = 'Bearer ' + accessToken;
+            if (typeof localStorage !== 'undefined') {
+                if (isAdminRoute && !isAdminLogin) {
+                    const adminToken = localStorage.getItem('admin_token');
+                    if (adminToken) {
+                        config.headers['Authorization'] = 'Bearer ' + adminToken;
+                    }
+                } else if (!isAuthEndpoint) {
+                    const accessToken = localStorage.getItem('pharmasight_access_token');
+                    if (accessToken) {
+                        config.headers['Authorization'] = 'Bearer ' + accessToken;
+                    }
                 }
             }
         } catch (_) {}

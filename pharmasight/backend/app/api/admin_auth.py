@@ -5,7 +5,9 @@ Handles admin login separately from regular user authentication
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, EmailStr
 from app.services.admin_auth_service import AdminAuthService
+from app.services.admin_token_store import add_admin_token
 import os
+import secrets
 
 router = APIRouter()
 
@@ -39,10 +41,10 @@ def admin_login(request: AdminLoginRequest):
             detail="Invalid admin credentials"
         )
     
-    # Generate simple admin token (in production, use JWT)
-    import secrets
+    # Generate admin token and register it for verification on /api/admin/* routes
     admin_token = secrets.token_urlsafe(32)
-    
+    add_admin_token(admin_token)
+
     return AdminLoginResponse(
         success=True,
         is_admin=True,
