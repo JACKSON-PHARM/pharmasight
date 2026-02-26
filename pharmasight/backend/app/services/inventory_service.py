@@ -240,6 +240,92 @@ class InventoryService:
         return allocations
 
     @staticmethod
+    def allocate_stock_fefo_with_lock(
+        db: Session,
+        item_id: UUID,
+        branch_id: UUID,
+        quantity_needed_base: float,
+        exclude_expired: bool = True,
+    ) -> List[Dict]:
+        """
+        FEFO allocation with row-level lock (FOR UPDATE) for branch transfer.
+        Call within a transaction.
+
+        Ledger aggregation (mandatory for correctness):
+        - Available stock per batch = SUM(quantity_delta) over ALL ledger rows for that batch
+          (positive = in, negative = out; returns/reversals are positive, sales/transfers negative).
+        - We lock ALL ledger rows for (item_id, branch_id) with non-expired batches, then
+          aggregate SUM(quantity_delta) GROUP BY (batch_number, expiry_date, unit_cost)
+          HAVING SUM(quantity_delta) > 0. Allocation uses this true available balance only.
+        - Expired batches: exclude_expired=True → only rows where expiry_date IS NULL OR expiry_date >= today.
+        - FEFO sort: expiry_date ASC NULLS LAST (null expiry sorts last; earliest expiry first).
+
+        Returns list of { batch_number, expiry_date, quantity, unit_cost } in FEFO order.
+        """
+        from collections import defaultdict
+        from datetime import date as date_type
+
+        q = db.query(InventoryLedger).filter(
+            and_(
+                InventoryLedger.item_id == item_id,
+                InventoryLedger.branch_id == branch_id,
+            )
+        )
+        if exclude_expired:
+            today = date_type.today()
+            q = q.filter(
+                or_(
+                    InventoryLedger.expiry_date.is_(None),
+                    InventoryLedger.expiry_date >= today,
+                )
+            )
+        rows = (
+            q.order_by(
+                InventoryLedger.expiry_date.asc().nulls_last(),
+                InventoryLedger.batch_number.asc().nulls_last(),
+            )
+            .with_for_update()
+            .all()
+        )
+        # Aggregate: SUM(quantity_delta) per (batch_number, expiry_date, unit_cost); HAVING sum > 0
+        batch_totals = defaultdict(lambda: {"quantity": 0.0, "unit_cost": None})
+        for r in rows:
+            key = (r.batch_number, r.expiry_date, float(r.unit_cost))
+            batch_totals[key]["quantity"] += float(r.quantity_delta)
+            batch_totals[key]["unit_cost"] = float(r.unit_cost)
+        # FEFO order: same as row order (expiry ASC NULLS LAST); only batches with positive balance
+        seen = set()
+        ordered_keys = []
+        for r in rows:
+            key = (r.batch_number, r.expiry_date, float(r.unit_cost))
+            if key not in seen:
+                seen.add(key)
+                if batch_totals[key]["quantity"] > 0:
+                    ordered_keys.append(key)
+        allocations = []
+        remaining = float(quantity_needed_base)
+        for key in ordered_keys:
+            if remaining <= 0:
+                break
+            qty = batch_totals[key]["quantity"]
+            if qty <= 0:
+                continue
+            take = min(remaining, qty)
+            allocations.append({
+                "batch_number": key[0],
+                "expiry_date": key[1],
+                "quantity": take,
+                "unit_cost": batch_totals[key]["unit_cost"],
+            })
+            remaining -= take
+        if remaining > 0:
+            raise ValueError(
+                f"Insufficient stock. Needed {quantity_needed_base} base units, "
+                f"only {quantity_needed_base - remaining} available (expired excluded)."
+            )
+        return allocations
+
+    @staticmethod
     def convert_to_base_units(
         db: Session,
         item_id: UUID,

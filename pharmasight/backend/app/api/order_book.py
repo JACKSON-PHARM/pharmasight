@@ -11,7 +11,7 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timedelta
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_current_user
 from app.models import (
     DailyOrderBook, OrderBookHistory,
     Item, Supplier, PurchaseOrder, PurchaseOrderItem,
@@ -110,6 +110,7 @@ def _serialize_order_book_entry(entry, _get_stock, days_in_book_90: Optional[int
         "days_in_order_book_90": days_in_book_90,
         "status": entry.status or "PENDING",
         "purchase_order_id": _uuid(entry.purchase_order_id),
+        "branch_order_id": _uuid(getattr(entry, "branch_order_id", None)),
         "created_by": _uuid(entry.created_by),
         "created_at": _dt(entry.created_at),
         "updated_at": _dt(entry.updated_at),
@@ -130,7 +131,8 @@ def list_order_book_entries(
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for entry_date filter"),
     include_ordered: Optional[bool] = Query(False, description="If true, include ORDERED entries (for showing converted)"),
     supplier_id: Optional[UUID] = Query(None, description="Filter by supplier: show only items from this supplier"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     List order book entries for a branch, optionally filtered by date and supplier.
@@ -232,6 +234,7 @@ def get_order_book_today_summary(
     branch_id: UUID = Query(..., description="Branch ID"),
     company_id: UUID = Query(..., description="Company ID"),
     limit: int = Query(10, ge=0, le=200, description="Max entries to include (0 = none)"),
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -297,7 +300,8 @@ def create_order_book_entry(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the entry"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Create a new order book entry.
@@ -428,7 +432,8 @@ def bulk_create_order_book_entries(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the entries"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Bulk create order book entries from selected items.
@@ -548,7 +553,8 @@ def bulk_create_order_book_entries(
 def update_order_book_entry(
     entry_id: UUID,
     entry_update: OrderBookEntryUpdate,
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Update an order book entry
@@ -619,7 +625,11 @@ def update_order_book_entry(
 
 
 @router.delete("/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_order_book_entry(entry_id: UUID, db: Session = Depends(get_tenant_db)):
+def delete_order_book_entry(
+    entry_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Delete (cancel) an order book entry
     
@@ -666,7 +676,8 @@ def delete_order_book_entry(entry_id: UUID, db: Session = Depends(get_tenant_db)
 @router.post("/auto-generate", response_model=dict)
 def auto_generate_order_book_entries(
     request: AutoGenerateRequest,
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Auto-generate order book entries based on stock thresholds
@@ -695,7 +706,8 @@ def create_purchase_order_from_book(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the purchase order"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Create a purchase order from selected order book entries
@@ -837,7 +849,8 @@ def get_order_book_history(
     branch_id: UUID = Query(..., description="Branch ID"),
     company_id: UUID = Query(..., description="Company ID"),
     limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Get order book history (ordered or cancelled entries)

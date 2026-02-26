@@ -19,6 +19,7 @@ const CONFIG = {
         companies: '/api/companies',
         branches: '/api/branches',
         suppliers: '/api/suppliers',
+        branchInventory: '/api/branch-inventory',
     },
     // Default values (should be set from settings or user selection)
     COMPANY_ID: null,
@@ -35,8 +36,8 @@ const CONFIG = {
     PRINT_COPIES: 1,
     // Auto-cut receipts: add extra feed so thermal printer cuts at end of content
     PRINT_AUTO_CUT: false,
-    // Thermal receipt theme: 'theme1' | 'theme2' | 'theme3' | 'theme4' (layout/style)
-    PRINT_THEME: 'theme1',
+    // Thermal receipt theme: 'theme1' | 'theme2' | 'theme3' | 'theme4' (layout/style). theme2 = centered header (default for thermal).
+    PRINT_THEME: 'theme2',
     // Thermal page width in mm: 58 (2"), 68 (3"), 80, 88 (4")
     PRINT_PAGE_WIDTH_MM: 80,
     // Thermal font sizes (pt): header text and table/items
@@ -111,7 +112,7 @@ function buildPrintConfigForApi() {
         PRINT_REMOVE_MARGIN: bool('PRINT_REMOVE_MARGIN'),
         PRINT_COPIES: Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1),
         PRINT_AUTO_CUT: bool('PRINT_AUTO_CUT'),
-        PRINT_THEME: CONFIG.PRINT_THEME || 'theme1',
+        PRINT_THEME: CONFIG.PRINT_THEME || 'theme2',
         PRINT_PAGE_WIDTH_MM: Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80)),
         PRINT_THERMAL_HEADER_FONT_PT: Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9)),
         PRINT_THERMAL_ITEM_FONT_PT: Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8)),
@@ -188,7 +189,7 @@ function saveConfig() {
         PRINT_REMOVE_MARGIN: printBool('PRINT_REMOVE_MARGIN'),
         PRINT_COPIES: Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1),
         PRINT_AUTO_CUT: printBool('PRINT_AUTO_CUT'),
-        PRINT_THEME: CONFIG.PRINT_THEME || 'theme1',
+        PRINT_THEME: CONFIG.PRINT_THEME || 'theme2',
         PRINT_PAGE_WIDTH_MM: Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80)),
         PRINT_THERMAL_HEADER_FONT_PT: Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9)),
         PRINT_THERMAL_ITEM_FONT_PT: Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8)),

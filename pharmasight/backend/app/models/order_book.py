@@ -35,6 +35,7 @@ class DailyOrderBook(Base):
     priority = Column(Integer, default=5)  # 1-10, higher = more urgent
     status = Column(String(50), default="PENDING")  # PENDING, ORDERED, CANCELLED
     purchase_order_id = Column(UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=True)
+    branch_order_id = Column(UUID(as_uuid=True), ForeignKey("branch_orders.id", ondelete="SET NULL"), nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -45,6 +46,7 @@ class DailyOrderBook(Base):
     item = relationship("Item")
     supplier = relationship("Supplier")
     purchase_order = relationship("PurchaseOrder")
+    branch_order = relationship("BranchOrder", foreign_keys=[branch_order_id])
     creator = relationship("User", foreign_keys=[created_by])
 
     __table_args__ = (

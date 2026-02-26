@@ -90,6 +90,22 @@ class BranchResponse(BranchBase):
         from_attributes = True
 
 
+class BranchSettingResponse(BaseModel):
+    """Branch settings response (branch inventory controls)."""
+    branch_id: UUID
+    allow_manual_transfer: bool = True
+    allow_manual_receipt: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class BranchSettingUpdate(BaseModel):
+    """Update branch settings."""
+    allow_manual_transfer: Optional[bool] = None
+    allow_manual_receipt: Optional[bool] = None
+
+
 class SupplierBase(BaseModel):
     """Supplier base schema"""
     company_id: UUID

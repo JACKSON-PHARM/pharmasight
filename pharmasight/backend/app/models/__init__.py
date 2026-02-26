@@ -4,7 +4,7 @@ Database models for PharmaSight
 from app.database import Base
 
 # Import all models
-from .company import Company, Branch
+from .company import Company, Branch, BranchSetting
 from .user import User, UserRole, UserBranchRole
 from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier
 from .inventory import InventoryLedger
@@ -20,11 +20,20 @@ from .stock_take import StockTakeSession, StockTakeCount, StockTakeCounterLock, 
 from .order_book import DailyOrderBook, OrderBookHistory
 from .import_job import ImportJob
 from .permission import Permission, RolePermission
+from .branch_inventory import (
+    BranchOrder,
+    BranchOrderLine,
+    BranchTransfer,
+    BranchTransferLine,
+    BranchReceipt,
+    BranchReceiptLine,
+)
 
 __all__ = [
     "Base",
     "Company",
     "Branch",
+    "BranchSetting",
     "User",
     "UserRole",
     "UserBranchRole",
@@ -64,4 +73,10 @@ __all__ = [
     "ImportJob",
     "Permission",
     "RolePermission",
+    "BranchOrder",
+    "BranchOrderLine",
+    "BranchTransfer",
+    "BranchTransferLine",
+    "BranchReceipt",
+    "BranchReceiptLine",
 ]

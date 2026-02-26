@@ -45,6 +45,10 @@ class User(Base):
     password_hash = Column(String(255), nullable=True)
     password_updated_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
+    # Admin-created users: must change password on first login
+    must_change_password = Column(Boolean, default=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
     # Document compliance (user-level; signature NOT at company level)
     signature_path = Column(Text, nullable=True)  # tenant-assets/{tenant_id}/users/{user_id}/signature.png
     ppb_number = Column(String(100), nullable=True)  # Pharmacists and Poisons Board number

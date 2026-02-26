@@ -11,7 +11,7 @@ from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
-from app.dependencies import get_tenant_db, get_tenant_or_default
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user
 from app.services.document_pdf_generator import build_sales_invoice_pdf
 from app.services.tenant_storage_service import download_file, get_signed_url
 from app.models import (
@@ -113,7 +113,11 @@ def _user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID)
 
 
 @router.post("/invoice", response_model=SalesInvoiceResponse, status_code=status.HTTP_201_CREATED)
-def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_tenant_db)):
+def create_sales_invoice(
+    invoice: SalesInvoiceCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Create a sales invoice as DRAFT
     
@@ -323,6 +327,7 @@ def create_sales_invoice(invoice: SalesInvoiceCreate, db: Session = Depends(get_
 @router.get("/invoice/{invoice_id}/pdf")
 def get_sales_invoice_pdf(
     invoice_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
@@ -392,6 +397,7 @@ def get_sales_invoice_pdf(
 @router.get("/invoice/{invoice_id}", response_model=SalesInvoiceResponse)
 def get_sales_invoice(
     invoice_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
@@ -504,6 +510,7 @@ def get_sales_invoice(
 def add_sales_invoice_item(
     invoice_id: UUID,
     item_data: SalesInvoiceItemCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -640,6 +647,7 @@ def add_sales_invoice_item(
 def delete_sales_invoice_item(
     invoice_id: UUID,
     item_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -680,6 +688,7 @@ def update_sales_invoice_item(
     invoice_id: UUID,
     item_id: UUID,
     payload: SalesInvoiceItemUpdate,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -765,6 +774,7 @@ def update_sales_invoice_item(
 def get_branch_today_summary(
     branch_id: UUID,
     user_id: Optional[UUID] = Query(None, description="Filter by user (batched_by) for per-user sales today"),
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """Get total sales for today for the branch. If user_id is provided, only sales batched by that user today."""
@@ -930,6 +940,7 @@ def get_branch_gross_profit(
     start_date: Optional[date] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
     end_date: Optional[date] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
     include_breakdown: bool = Query(False, description="If true, include per-day breakdown for the date range"),
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -1020,7 +1031,11 @@ def get_branch_gross_profit(
 
 
 @router.get("/branch/{branch_id}/invoices", response_model=List[SalesInvoiceResponse])
-def get_branch_invoices(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_branch_invoices(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get all invoices for a branch"""
     from sqlalchemy.orm import selectinload
     try:
@@ -1082,7 +1097,8 @@ def get_branch_invoices(branch_id: UUID, db: Session = Depends(get_tenant_db)):
 def update_sales_invoice(
     invoice_id: UUID,
     invoice_update: SalesInvoiceUpdate,
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Update sales invoice (only if status is DRAFT)
@@ -1150,6 +1166,7 @@ def batch_sales_invoice(
     invoice_id: UUID,
     batched_by: UUID,
     body: Optional[BatchSalesInvoiceRequest] = None,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -1347,7 +1364,11 @@ def batch_sales_invoice(
 
 
 @router.delete("/invoice/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
+def delete_sales_invoice(
+    invoice_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Delete sales invoice (only if status is DRAFT)
     
@@ -1376,7 +1397,8 @@ def delete_sales_invoice(invoice_id: UUID, db: Session = Depends(get_tenant_db))
 def add_invoice_payment(
     invoice_id: UUID,
     payment: InvoicePaymentCreate,
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Add a split payment to a sales invoice.
@@ -1444,7 +1466,11 @@ def add_invoice_payment(
 
 
 @router.get("/invoice/{invoice_id}/payments", response_model=List[InvoicePaymentResponse])
-def get_invoice_payments(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_invoice_payments(
+    invoice_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get all payments for a sales invoice"""
     payments = db.query(InvoicePayment).filter(
         InvoicePayment.invoice_id == invoice_id
@@ -1453,7 +1479,11 @@ def get_invoice_payments(invoice_id: UUID, db: Session = Depends(get_tenant_db))
 
 
 @router.delete("/invoice/payments/{payment_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_invoice_payment(payment_id: UUID, db: Session = Depends(get_tenant_db)):
+def delete_invoice_payment(
+    payment_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Delete a payment from an invoice
     
@@ -1494,7 +1524,11 @@ def delete_invoice_payment(payment_id: UUID, db: Session = Depends(get_tenant_db
 # =====================================================
 
 @router.post("/invoice/{invoice_id}/convert-to-quotation", response_model=dict, status_code=status.HTTP_201_CREATED)
-def convert_sales_invoice_to_quotation(invoice_id: UUID, db: Session = Depends(get_tenant_db)):
+def convert_sales_invoice_to_quotation(
+    invoice_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Convert a DRAFT sales invoice to a quotation
     

@@ -18,7 +18,7 @@ import hashlib
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from app.dependencies import get_tenant_db, get_tenant_from_header, _session_factory_for_url
+from app.dependencies import get_tenant_db, get_tenant_from_header, get_current_user, _session_factory_for_url
 from app.services.excel_import_service import ExcelImportService, EXPECTED_EXCEL_FIELDS
 from app.services.clear_for_reimport_service import run_clear as run_clear_for_reimport
 from app.models import ImportJob
@@ -127,7 +127,7 @@ def process_import_job(
 
 
 @router.get("/expected-fields")
-def get_expected_fields():
+def get_expected_fields(current_user_and_db: tuple = Depends(get_current_user)):
     """
     Return list of system fields that can be mapped from Excel columns (Vyper-style).
     Frontend uses this to build the "Map your columns" dropdown.
@@ -144,6 +144,7 @@ async def import_excel(
     force_mode: Optional[str] = Form(None),
     column_mapping: Optional[str] = Form(None),
     sync: Optional[str] = Form("0"),
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
     tenant=Depends(get_tenant_from_header),
 ):
@@ -291,6 +292,7 @@ async def import_excel(
 @router.get("/import/{job_id}/progress")
 def get_import_progress(
     job_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
     tenant=Depends(get_tenant_from_header),
 ):
@@ -356,7 +358,11 @@ def get_import_progress(
 
 
 @router.get("/mode/{company_id}")
-def get_import_mode(company_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_import_mode(
+    company_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Get the current import mode for a company.
     If the database is unreachable (e.g. timeout to Supabase), returns a safe default
@@ -403,6 +409,7 @@ class ClearForReimportBody(BaseModel):
 @router.post("/clear-for-reimport")
 def clear_for_reimport(
     body: ClearForReimportBody = Body(...),
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """

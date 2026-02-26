@@ -89,8 +89,11 @@ class APIClient {
                 error.status = response.status;
                 error.data = data;
                 console.error('API Error Response:', { url, status: response.status, data });
-                // Invalid or expired token: full session cleanup (tenant, user, tokens) and redirect to login
+                // Invalid or expired token: show clear message, then full session cleanup and redirect to login
                 if (response.status === 401) {
+                    if (typeof window.showToast === 'function') {
+                        window.showToast('Session expired. Please log in again.', 'warning');
+                    }
                     if (typeof window.globalLogout === 'function') {
                         window.globalLogout();
                     }
@@ -207,6 +210,8 @@ const API = {
         create: (data) => api.post('/api/branches', data),
         update: (branchId, data) => api.put(`/api/branches/${branchId}`, data),
         setAsHq: (branchId) => api.post(`/api/branches/${branchId}/set-hq`, null),
+        getSettings: (branchId) => api.get(`/api/branches/${branchId}/settings`),
+        updateSettings: (branchId, data) => api.patch(`/api/branches/${branchId}/settings`, data),
     },
 
     // Items
@@ -302,6 +307,44 @@ const API = {
             }),
     },
 
+    // Branch Inventory (branch orders, transfers, receipts)
+    branchInventory: {
+        base: () => (CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'),
+        getOrders: (params = {}) => {
+            const q = new URLSearchParams();
+            if (params.ordering_branch_id) q.set('ordering_branch_id', params.ordering_branch_id);
+            if (params.supplying_branch_id) q.set('supplying_branch_id', params.supplying_branch_id);
+            if (params.status) q.set('status', params.status);
+            return api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/orders?${q.toString()}`);
+        },
+        getOrder: (orderId) => api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/orders/${orderId}`),
+        createOrder: (data) => api.post(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/orders`, data),
+        updateOrder: (orderId, data) => api.patch(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/orders/${orderId}`, data),
+        batchOrder: (orderId) => api.post(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/orders/${orderId}/batch`),
+        getPendingOrdersForSupply: (supplyingBranchId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/orders/pending-supply?supplying_branch_id=${supplyingBranchId}`),
+        getTransfers: (params = {}) => {
+            const q = new URLSearchParams();
+            if (params.supplying_branch_id) q.set('supplying_branch_id', params.supplying_branch_id);
+            if (params.receiving_branch_id) q.set('receiving_branch_id', params.receiving_branch_id);
+            if (params.status) q.set('status', params.status);
+            return api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/transfers?${q.toString()}`);
+        },
+        getTransfer: (transferId) => api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/transfers/${transferId}`),
+        createTransfer: (data) => api.post(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/transfers`, data),
+        completeTransfer: (transferId) => api.post(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/transfers/${transferId}/complete`),
+        getReceipts: (params = {}) => {
+            const q = new URLSearchParams();
+            if (params.receiving_branch_id) q.set('receiving_branch_id', params.receiving_branch_id);
+            if (params.status) q.set('status', params.status);
+            return api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/receipts?${q.toString()}`);
+        },
+        getPendingReceipts: (receivingBranchId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/receipts/pending?receiving_branch_id=${receivingBranchId}`),
+        getReceipt: (receiptId) => api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/receipts/${receiptId}`),
+        receiveReceipt: (receiptId) => api.post(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/receipts/${receiptId}/receive`),
+    },
+
     // Sales
     sales: {
         createInvoice: (data) => api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice`, data),
@@ -370,6 +413,18 @@ const API = {
                 a.click();
                 URL.revokeObjectURL(blobUrl);
             }
+        },
+    },
+
+    // Reports (branch from session via X-Branch-ID)
+    reports: {
+        getItemMovement: (itemId, startDate, endDate) => {
+            const params = { item_id: itemId, start_date: startDate, end_date: endDate };
+            const headers = {};
+            if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) {
+                headers['X-Branch-ID'] = CONFIG.BRANCH_ID;
+            }
+            return api.get('/api/reports/item-movement', params, { headers });
         },
     },
 

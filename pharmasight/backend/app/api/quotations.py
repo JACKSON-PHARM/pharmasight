@@ -10,7 +10,7 @@ from typing import List
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime
-from app.dependencies import get_tenant_db, get_tenant_or_default
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user
 
 logger = logging.getLogger(__name__)
 from app.models import (
@@ -42,7 +42,11 @@ router = APIRouter()
 
 
 @router.post("", response_model=QuotationResponse, status_code=status.HTTP_201_CREATED)
-def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenant_db)):
+def create_quotation(
+    quotation: QuotationCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Create a quotation (does NOT affect inventory)
     """
@@ -147,6 +151,7 @@ def create_quotation(quotation: QuotationCreate, db: Session = Depends(get_tenan
 @router.get("/{quotation_id}/pdf")
 def get_quotation_pdf(
     quotation_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
@@ -219,6 +224,7 @@ def get_quotation_pdf(
 @router.get("/{quotation_id}", response_model=QuotationResponse)
 def get_quotation(
     quotation_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
@@ -282,7 +288,11 @@ def get_quotation(
 
 
 @router.get("/branch/{branch_id}", response_model=List[QuotationResponse])
-def get_branch_quotations(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_branch_quotations(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get all quotations for a branch"""
     from sqlalchemy.orm import selectinload
     quotations = db.query(Quotation).options(
@@ -294,7 +304,12 @@ def get_branch_quotations(branch_id: UUID, db: Session = Depends(get_tenant_db))
 
 
 @router.put("/{quotation_id}", response_model=QuotationResponse)
-def update_quotation(quotation_id: UUID, quotation: QuotationUpdate, db: Session = Depends(get_tenant_db)):
+def update_quotation(
+    quotation_id: UUID,
+    quotation: QuotationUpdate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Update quotation (only if status is 'draft')"""
     db_quotation = db.query(Quotation).filter(Quotation.id == quotation_id).first()
     if not db_quotation:
@@ -395,6 +410,7 @@ def update_quotation(quotation_id: UUID, quotation: QuotationUpdate, db: Session
 def add_quotation_item(
     quotation_id: UUID,
     item_data: QuotationItemCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
@@ -452,13 +468,14 @@ def add_quotation_item(
     if quotation.total_exclusive and quotation.total_exclusive > 0:
         quotation.vat_rate = quotation.vat_amount / quotation.total_exclusive * Decimal("100")
     db.commit()
-    return get_quotation(quotation_id, tenant, db)
+    return get_quotation(quotation_id, current_user_and_db, tenant, db)
 
 
 @router.delete("/{quotation_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_quotation_item(
     quotation_id: UUID,
     item_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """Remove one line from a draft quotation."""
@@ -492,7 +509,11 @@ def delete_quotation_item(
 
 
 @router.delete("/{quotation_id}", status_code=status.HTTP_200_OK)
-def delete_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
+def delete_quotation(
+    quotation_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Delete quotation (only if status is 'draft')"""
     db_quotation = db.query(Quotation).filter(Quotation.id == quotation_id).first()
     if not db_quotation:
@@ -519,7 +540,8 @@ def delete_quotation(quotation_id: UUID, db: Session = Depends(get_tenant_db)):
 def convert_quotation_to_invoice(
     quotation_id: UUID,
     convert_request: QuotationConvertRequest,
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Convert quotation to sales invoice.

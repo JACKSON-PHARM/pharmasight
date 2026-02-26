@@ -30,14 +30,27 @@ function getClient() {
 }
 
 /**
- * Get current authenticated user
+ * Get current authenticated user.
+ * When using internal auth (username login), we have no Supabase session; return a minimal user from storage
+ * so callers get id/email without triggering Supabase and "Auth session missing" errors.
  */
 async function getCurrentUser() {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            const token = localStorage.getItem('pharmasight_access_token');
+            const userId = localStorage.getItem('pharmasight_user_id');
+            const email = localStorage.getItem('pharmasight_user_email') || '';
+            if (token && userId) {
+                return { id: userId, email: email };
+            }
+        }
+    } catch (_) { /* ignore */ }
+
     const supabaseClient = getClient();
     if (!supabaseClient) {
         return null;
     }
-    
+
     try {
         const { data: { user }, error } = await supabaseClient.auth.getUser();
         if (error) {

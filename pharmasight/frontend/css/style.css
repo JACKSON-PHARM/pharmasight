@@ -462,6 +462,16 @@ body {
     border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.sidebar-powered-by {
+    margin-top: 0.75rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    font-size: 0.65rem;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.6);
+    text-align: center;
+}
+
 .user-info {
     display: flex;
     align-items: center;
@@ -1543,4 +1553,16 @@ tr.highlight-row-duplicate {
 .perm-na-label {
     color: var(--text-secondary);
     font-size: 0.875rem;
+}
+
+/* Item Movement Report - PDF-like document and print */
+.item-movement-report-doc {
+    border: 1px solid #ddd;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+@media print {
+    .item-movement-report-doc {
+        box-shadow: none;
+        border: 1px solid #ccc;
+    }
 }

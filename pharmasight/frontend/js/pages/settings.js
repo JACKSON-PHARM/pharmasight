@@ -462,6 +462,9 @@ async function renderBranchesPage() {
                                             <button class="btn btn-outline btn-sm" onclick="editBranch('${branch.id}')" title="Edit">
                                                 <i class="fas fa-edit"></i>
                                             </button>
+                                            <button class="btn btn-outline btn-sm" data-branch-name="${escapeHtml(branch.name || '')}" onclick="openBranchInventorySettings('${branch.id}', this.getAttribute('data-branch-name'))" title="Branch inventory rules (manual transfer/receipt)">
+                                                <i class="fas fa-truck-loading"></i>
+                                            </button>
                                             ${branch.id !== CONFIG.BRANCH_ID ? `
                                                 <button class="btn btn-outline btn-sm" onclick="setCurrentBranch('${branch.id}')" title="Set as Current">
                                                     <i class="fas fa-check"></i>
@@ -676,6 +679,62 @@ async function setCurrentBranch(branchId) {
     await renderBranchesPage();
 }
 
+async function openBranchInventorySettings(branchId, branchName) {
+    if (!branchId) return;
+    try {
+        const s = await API.branch.getSettings(branchId);
+        const allowTransfer = s.allow_manual_transfer !== false;
+        const allowReceipt = s.allow_manual_receipt !== false;
+        const name = (branchName || 'Branch').replace(/"/g, '&quot;');
+        const content = `
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Control how this branch can create Branch Transfers and Branch Receipts.</p>
+            <form id="branchInventorySettingsForm" onsubmit="saveBranchInventorySettings(event, '${branchId}')">
+                <div class="form-group">
+                    <label class="form-check" style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" name="allow_manual_transfer" ${allowTransfer ? 'checked' : ''}>
+                        <span>Allow manual Branch Transfer</span>
+                    </label>
+                    <small style="color: var(--text-secondary);">If unchecked, transfers can only be created from Pending Branch Orders.</small>
+                </div>
+                <div class="form-group">
+                    <label class="form-check" style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" name="allow_manual_receipt" ${allowReceipt ? 'checked' : ''}>
+                        <span>Allow manual Branch Receipt</span>
+                    </label>
+                    <small style="color: var(--text-secondary);">If unchecked, receipts can only be created from Pending Transfers.</small>
+                </div>
+            </form>
+        `;
+        const footer = `
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" type="submit" form="branchInventorySettingsForm">
+                <i class="fas fa-save"></i> Save
+            </button>
+        `;
+        showModal('Branch inventory – ' + name, content, footer);
+    } catch (e) {
+        console.error('Error loading branch settings:', e);
+        showToast(e.message || 'Failed to load branch settings', 'error');
+    }
+}
+
+async function saveBranchInventorySettings(event, branchId) {
+    event.preventDefault();
+    const form = document.getElementById('branchInventorySettingsForm');
+    if (!form || !branchId) return;
+    const allowTransfer = form.querySelector('input[name="allow_manual_transfer"]').checked;
+    const allowReceipt = form.querySelector('input[name="allow_manual_receipt"]').checked;
+    try {
+        await API.branch.updateSettings(branchId, { allow_manual_transfer: allowTransfer, allow_manual_receipt: allowReceipt });
+        showToast('Branch inventory settings saved', 'success');
+        closeModal();
+        await renderBranchesPage();
+    } catch (e) {
+        console.error('Error saving branch settings:', e);
+        showToast(e.message || 'Failed to save', 'error');
+    }
+}
+
 // =====================================================
 // USERS PAGE
 // =====================================================
@@ -689,21 +748,21 @@ let usersPageState = {
     invitationSent: new Set() // Track which users have had invitations sent
 };
 
-// Helper to get current user role (assumes role exists in memory or can be fetched)
+// Helper to get current user role (assumes role exists in memory or can be fetched). Prefers AuthBootstrap (internal auth) to avoid Supabase calls.
 async function getCurrentUserRole() {
     try {
-        // Try to get from current user object if available
         if (window.currentUser && window.currentUser.role) {
             return window.currentUser.role;
         }
-        // Try to get from Auth
+        // Prefer AuthBootstrap (sync, works with internal JWT) so we don't hit Supabase when using username login
+        if (typeof AuthBootstrap !== 'undefined' && AuthBootstrap.getCurrentUser) {
+            const user = AuthBootstrap.getCurrentUser();
+            if (user && user.role) return user.role;
+        }
         if (typeof Auth !== 'undefined' && Auth.getCurrentUser) {
             const user = await Auth.getCurrentUser();
-            if (user && user.role) {
-                return user.role;
-            }
+            if (user && user.role) return user.role;
         }
-        // Default: assume admin for now (backend will enforce permissions)
         return 'Admin';
     } catch (error) {
         console.warn('[USERS] Could not determine user role, defaulting to Admin:', error);
@@ -711,24 +770,23 @@ async function getCurrentUserRole() {
     }
 }
 
-// Check if user is Super Admin
+// Check if user is Super Admin. Prefers AuthBootstrap/currentUser so we don't hit Supabase when using internal auth.
 async function isSuperAdmin() {
     try {
-        // Try to get from current user object if available
         if (window.currentUser && window.currentUser.branch_roles) {
             const roles = window.currentUser.branch_roles.map(br => br.role_name);
             return roles.includes('Super Admin');
         }
-        // Try to get from API
-        if (API && API.users) {
+        const currentUserEmail = window.currentUser?.email ||
+            (typeof AuthBootstrap !== 'undefined' && AuthBootstrap.getCurrentUser ? AuthBootstrap.getCurrentUser()?.email : null) ||
+            (typeof Auth !== 'undefined' && Auth.getCurrentUser ? (await Auth.getCurrentUser())?.email : null);
+        if (API && API.users && currentUserEmail) {
             const usersResponse = await API.users.list();
-            const currentUserEmail = window.currentUser?.email || (await Auth.getCurrentUser())?.email;
             const currentUserData = usersResponse.users?.find(u => u.email === currentUserEmail);
             if (currentUserData && currentUserData.branch_roles) {
                 return currentUserData.branch_roles.some(br => br.role_name === 'Super Admin');
             }
         }
-        // Try legacy method
         const role = await getCurrentUserRole();
         return role === 'Super Admin' || role === 'admin' || role === 'Admin';
     } catch (error) {
@@ -868,16 +926,17 @@ async function renderUsersPage() {
     const showDeleted = usersPageState.showDeleted || false;
     
     try {
+        // Resolve role and admin flags once (reduces repeated getCurrentUser / API calls)
         userRole = await getCurrentUserRole();
         canCreateRole = await isPrimaryAdmin();
-        
+
         if (API && API.users) {
-            // Always fetch with include_deleted=true, we'll filter in the UI
+            // Fetch users, roles, branches in one flow
             const usersResponse = await API.users.list(true);
             users = usersResponse.users || [];
-            
+
             roles = await API.users.listRoles();
-            
+
             if (CONFIG.COMPANY_ID) {
                 branches = await API.branch.list(CONFIG.COMPANY_ID);
             }
@@ -891,10 +950,10 @@ async function renderUsersPage() {
         showToast('Error loading users. Please try again.', 'error');
     }
     
-    // Determine what to show based on state
+    // Determine what to show based on state (reuse already-fetched flags where possible)
     const view = usersPageState.view;
     const isAdminUser = await isAdmin();
-    const isPrimaryAdminUser = await isPrimaryAdmin();
+    const isPrimaryAdminUser = canCreateRole || isAdminUser;
     
     // Render the page content - NEVER render blank
     try {
@@ -1728,20 +1787,21 @@ function cancelEditRole() {
     renderUsersPage();
 }
 
+let createUserSubmitting = false;
+
 async function handleCreateUser(event) {
     event.preventDefault();
+    if (createUserSubmitting) return;
     const form = event.target;
     const formData = new FormData(form);
-    
-    // Frontend validation
+
     const emailValidation = validateEmail(formData.get('email'));
     const phoneValidation = validatePhone(formData.get('phone'));
-    
     if (!emailValidation.valid || !phoneValidation.valid) {
         showToast('Please fix validation errors before submitting', 'error');
         return;
     }
-    
+
     const userData = {
         email: formData.get('email'),
         full_name: formData.get('full_name') || null,
@@ -1750,12 +1810,19 @@ async function handleCreateUser(event) {
         branch_id: formData.get('branch_id') || null,
         is_active: formData.get('is_active') === 'on'
     };
-    
+
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const originalText = submitBtn ? submitBtn.innerHTML : '';
+    createUserSubmitting = true;
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
+    }
+
     try {
         const result = await API.users.create(userData);
         showToast(result.message || 'User created successfully!', 'success');
-        
-        // Show invitation code inline
+
         if (result.invitation_code) {
             const inviteDiv = document.createElement('div');
             inviteDiv.style.cssText = 'margin-top: 1rem; padding: 1rem; background: var(--bg-secondary); border-radius: 0.5rem;';
@@ -1773,8 +1840,7 @@ async function handleCreateUser(event) {
             `;
             form.parentNode.insertBefore(inviteDiv, form);
         }
-        
-        // Reset form and return to list after 2 seconds
+
         setTimeout(async () => {
             usersPageState.view = 'list';
             await renderUsersPage();
@@ -1782,6 +1848,11 @@ async function handleCreateUser(event) {
     } catch (error) {
         console.error('Error creating user:', error);
         showToast(error.message || 'Error creating user', 'error');
+        createUserSubmitting = false;
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+        }
     }
 }
 
@@ -2105,7 +2176,7 @@ function getPrintConfigFromForm(form) {
         print_remove_margin: bool('print_remove_margin'),
         print_copies: Math.max(1, parseInt(fd.get('print_copies'), 10) || 1),
         print_auto_cut: bool('print_auto_cut'),
-        print_theme: fd.get('print_theme') || 'theme1',
+        print_theme: fd.get('print_theme') || 'theme2',
         print_page_width_mm: Math.min(88, Math.max(58, parseInt(fd.get('print_page_width_mm'), 10) || 80)),
         print_thermal_header_font_pt: Math.min(12, Math.max(6, parseInt(fd.get('print_thermal_header_font_pt'), 10) || 9)),
         print_thermal_item_font_pt: Math.min(10, Math.max(5, parseInt(fd.get('print_thermal_item_font_pt'), 10) || 8)),
@@ -2142,7 +2213,7 @@ function applyPrintConfigToCONFIG(opts) {
     CONFIG.PRINT_REMOVE_MARGIN = !!opts.print_remove_margin;
     CONFIG.PRINT_COPIES = Math.max(1, parseInt(opts.print_copies, 10) || 1);
     CONFIG.PRINT_AUTO_CUT = !!opts.print_auto_cut;
-    CONFIG.PRINT_THEME = opts.print_theme || 'theme1';
+    CONFIG.PRINT_THEME = opts.print_theme || 'theme2';
     CONFIG.PRINT_PAGE_WIDTH_MM = Math.min(88, Math.max(58, parseInt(opts.print_page_width_mm, 10) || 80));
     CONFIG.PRINT_THERMAL_HEADER_FONT_PT = Math.min(12, Math.max(6, parseInt(opts.print_thermal_header_font_pt, 10) || 9));
     CONFIG.PRINT_THERMAL_ITEM_FONT_PT = Math.min(10, Math.max(5, parseInt(opts.print_thermal_item_font_pt, 10) || 8));
@@ -2176,7 +2247,7 @@ function applyPrintConfigToCONFIG(opts) {
 function buildPrintPreviewHTML() {
     const isThermal = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) === 'thermal';
     const noMargin = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_REMOVE_MARGIN) === true;
-    const theme = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_THEME) || 'theme1';
+    const theme = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_THEME) || 'theme2';
     const pageWidthMm = isThermal ? (Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80))) : 210;
     const contentWidthMm = isThermal ? (pageWidthMm - 4) : 202;
     const bodyPadMm = isThermal ? (noMargin ? '2mm' : '3mm') : (noMargin ? '10px' : '20px');
@@ -2247,7 +2318,7 @@ function buildPrintPreviewHTML() {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
         @media print { ${pageStyle} }
         body { font-family: Arial, sans-serif; }
-        .header { border-bottom: 2px solid #000; }
+        .header { border-bottom: 2px solid #000; text-align: ${headerAlign}; }
         .company-name { font-size: 1.25em; font-weight: bold; margin-bottom: 4px; }
         .company-details { font-size: 0.9em; color: #333; line-height: 1.4; }
         table { width: 100%; border-collapse: collapse; margin: 8px 0; }
@@ -2425,7 +2496,7 @@ async function renderPrintSettingsPage() {
     const removeMargin = CONFIG.PRINT_REMOVE_MARGIN === true;
     const printCopies = Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1);
     const autoCut = CONFIG.PRINT_AUTO_CUT === true;
-    const theme = CONFIG.PRINT_THEME || 'theme1';
+    const theme = CONFIG.PRINT_THEME || 'theme2';
     const pageWidthMm = Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80));
     const thermalHeaderFontPt = Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9));
     const thermalItemFontPt = Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8));
@@ -2602,7 +2673,7 @@ async function savePrintSettingsFromForm(form) {
     CONFIG.PRINT_REMOVE_MARGIN = !!opts.print_remove_margin;
     CONFIG.PRINT_COPIES = Math.max(1, parseInt(opts.print_copies, 10) || 1);
     CONFIG.PRINT_AUTO_CUT = !!opts.print_auto_cut;
-    CONFIG.PRINT_THEME = opts.print_theme || 'theme1';
+    CONFIG.PRINT_THEME = opts.print_theme || 'theme2';
     CONFIG.PRINT_PAGE_WIDTH_MM = Math.min(88, Math.max(58, parseInt(opts.print_page_width_mm, 10) || 80));
     CONFIG.PRINT_THERMAL_HEADER_FONT_PT = Math.min(12, Math.max(6, parseInt(opts.print_thermal_header_font_pt, 10) || 9));
     CONFIG.PRINT_THERMAL_ITEM_FONT_PT = Math.min(10, Math.max(5, parseInt(opts.print_thermal_item_font_pt, 10) || 8));
@@ -2910,6 +2981,8 @@ function switchSettingsSubPage(subPage) {
         window.editBranch = editBranch;
         window.saveBranchEdit = saveBranchEdit;
         window.setCurrentBranch = setCurrentBranch;
+        window.openBranchInventorySettings = openBranchInventorySettings;
+        window.saveBranchInventorySettings = saveBranchInventorySettings;
         
         // Print settings
         window.renderPrintSettingsPage = renderPrintSettingsPage;

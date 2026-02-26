@@ -58,4 +58,19 @@ class Branch(Base):
 
     # Relationships
     company = relationship("Company", back_populates="branches")
+    settings = relationship("BranchSetting", back_populates="branch", uselist=False, cascade="all, delete-orphan")
+
+
+class BranchSetting(Base):
+    """Per-branch settings (e.g. branch inventory: allow manual transfer/receipt)."""
+    __tablename__ = "branch_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    allow_manual_transfer = Column(Boolean, nullable=False, default=True)
+    allow_manual_receipt = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    branch = relationship("Branch", back_populates="settings")
 

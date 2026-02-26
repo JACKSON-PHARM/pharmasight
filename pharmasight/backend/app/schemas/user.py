@@ -128,3 +128,22 @@ class InvitationResponse(BaseModel):
     invitation_code: str
     invitation_link: Optional[str] = None  # Full invitation URL if available
     message: str = "User created successfully. Invitation code generated."
+
+
+class AdminCreateUserRequest(BaseModel):
+    """Schema for admin-create user (no invitation; temp password returned once). tenant_id never accepted."""
+    email: EmailStr
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    username: Optional[str] = Field(None, description="Login username; auto-generated from full_name if omitted")
+    role_name: str = Field(..., description="Role name (e.g. admin, pharmacist, cashier)")
+    branch_id: Optional[UUID] = Field(None, description="Branch to assign user to")
+
+
+class AdminCreateUserResponse(BaseModel):
+    """Response for POST /users/admin-create. Temporary password is returned only once."""
+    user_id: UUID
+    email: str
+    username: str
+    temporary_password: str
+    message: str = "User created. They must log in and change their password."

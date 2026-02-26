@@ -187,7 +187,7 @@ def run_tenant_migrations():
 
 
 # Import and include routers
-from app.api import items_router, sales_router, purchases_router, inventory_router, quotations_router, stock_take_router, order_book_router
+from app.api import items_router, sales_router, purchases_router, inventory_router, quotations_router, stock_take_router, order_book_router, branch_inventory_router
 from app.api.company import router as company_router
 from app.api.startup import router as startup_router
 from app.api.invite import router as invite_router
@@ -208,6 +208,7 @@ except ImportError:
     stripe_webhooks_router = None
 from app.api.admin_auth import router as admin_auth_router
 from app.api.auth import router as auth_router
+from app.api.reports import router as reports_router
 
 app.include_router(invite_router, prefix="/api", tags=["User Invitation & Setup"])
 app.include_router(startup_router, prefix="/api", tags=["Startup & Initialization"])
@@ -222,6 +223,8 @@ app.include_router(excel_import_router, prefix="/api/excel", tags=["Excel Import
 app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotations"])
 app.include_router(stock_take_router, prefix="/api/stock-take", tags=["Stock Take"])
 app.include_router(order_book_router, prefix="/api/order-book", tags=["Order Book"])
+app.include_router(branch_inventory_router, prefix="/api/branch-inventory", tags=["Branch Inventory"])
+app.include_router(reports_router, prefix="/api", tags=["Reports"])
 app.include_router(tenants_router, prefix="/api/admin", tags=["Tenant Management (Admin)"])
 app.include_router(onboarding_router, prefix="/api", tags=["Client Onboarding"])
 if migrations_router:

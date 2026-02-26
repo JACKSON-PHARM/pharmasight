@@ -49,6 +49,7 @@
         this.mode = options.mode || 'purchase';
         this.context = options.context || null; // 'purchase_order' for PO-specific fields
         this.canEdit = options.canEdit !== undefined ? options.canEdit : true; // Edit permission
+        this.branchReceiptQtyEditable = options.branchReceiptQtyEditable === true; // When mode=branch_receipt, allow editing qty only if true
         this.itemsSource = options.items || options.itemsSource || [];
         // purchase_price / sale_price must come from API only (inventory_ledger); never from items table
         this.priceType = options.priceType || (this.mode === 'sale' ? 'sale_price' : 'purchase_price');
@@ -203,6 +204,7 @@
                 batch_allocations: Array.isArray(item.batch_allocations) ? item.batch_allocations : null,
                 batch_number: item.batch_number != null && item.batch_number !== '' ? item.batch_number : null,
                 expiry_date: item.expiry_date != null && item.expiry_date !== '' ? item.expiry_date : null,
+                branch_order_line_id: item.branch_order_line_id || null,
                 is_empty: false
             };
             // Calculate nett and vat_amount for normalized items
@@ -250,6 +252,22 @@
         if (isNaN(margin) || !isFinite(margin)) return '—';
         return margin >= 0 ? `+${margin.toFixed(1)}%` : `${margin.toFixed(1)}%`;
     };
+
+    TransactionItemsTable.prototype.isBranchMode = function() {
+        return this.mode === 'branch_order' || this.mode === 'branch_transfer' || this.mode === 'branch_receipt';
+    };
+
+    TransactionItemsTable.prototype.isBranchOrderMode = function() {
+        return this.mode === 'branch_order';
+    };
+
+    TransactionItemsTable.prototype.isBranchTransferMode = function() {
+        return this.mode === 'branch_transfer';
+    };
+
+    TransactionItemsTable.prototype.isBranchReceiptMode = function() {
+        return this.mode === 'branch_receipt';
+    };
     
     /**
      * Render the table
@@ -265,7 +283,24 @@
         const thStyle = 'padding: 0.3rem 0.4rem; text-align: left; font-weight: 600; font-size: 0.75rem;';
         const thStyleRight = 'padding: 0.3rem 0.4rem; text-align: right; font-weight: 600; font-size: 0.75rem;';
         const thStyleCenter = 'padding: 0.3rem 0.4rem; text-align: center; font-weight: 600; font-size: 0.75rem;';
-        const headerRow = `
+        const headerRow = this.isBranchMode()
+            ? (this.isBranchOrderMode()
+                ? `<tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
+                    <th style="${thStyle} width: 45%; min-width: 200px;">ITEM</th>
+                    <th style="${thStyle} width: 15%;">ITEM CODE</th>
+                    <th style="${thStyleCenter} width: 12%;">QTY</th>
+                    <th style="${thStyle} width: 18%;">UNIT</th>
+                    <th style="${thStyleCenter} width: 10%;">ACTIONS</th>
+                </tr>`
+                : `<tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
+                    <th style="${thStyle} width: 38%; min-width: 200px;">ITEM</th>
+                    <th style="${thStyle} width: 12%;">ITEM CODE</th>
+                    <th style="${thStyleCenter} width: 10%;">QTY</th>
+                    <th style="${thStyle} width: 12%;">UNIT</th>
+                    <th style="${thStyleRight} width: 12%;">COST</th>
+                    <th style="${thStyleCenter} width: 8%;">ACTIONS</th>
+                </tr>`)
+            : `
                         <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
                            <th style="${thStyle} width: 40%; min-width: 200px;">ITEM</th>
                            <th style="${thStyle} width: 12%;">ITEM CODE</th>
@@ -311,12 +346,12 @@
                         const opts = units.map(u => `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${u.multiplier_to_base || 1}" ${(ar.unit_name || '') === (u.unit_name || '') ? 'selected' : ''}>${escapeHtml(u.unit_name || '')}</option>`).join('');
                         return `<select class="form-input add-row-unit unit-select" data-row="add" data-field="unit_name" style="width: 100%; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}>${opts}</select>`;
                     })() : `<input type="text" class="form-input add-row-unit unit-display" value="${escapeHtml(ar.unit_name || '')}" readonly style="width: 100%; padding: 0.35rem 0.5rem; font-size: 0.8rem; background: #f8f9fa;" data-row="add">`}</td>
-                    <td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-price price-input" value="${this.roundMoney(ar.unit_price || 0).toFixed(2)}" step="0.01" min="0" data-row="add" data-field="unit_price" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
+                    ${!this.isBranchMode() ? `<td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-price price-input" value="${this.roundMoney(ar.unit_price || 0).toFixed(2)}" step="0.01" min="0" data-row="add" data-field="unit_price" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
                     ${(this.mode === 'sale' || this.mode === 'quotation') ? `<td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-margin margin-input" value="${(this.calculateMargin(ar) || 0).toFixed(1)}" step="0.1" data-row="add" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem; font-weight: 500; color: ${(this.calculateMargin(ar) || 0) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};" ${!this.canEdit ? 'disabled' : ''}></td>` : ''}
                     <td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-discount discount-input" value="${this.roundMoney(ar.discount_percent || 0)}" step="0.01" min="0" max="100" data-row="add" data-field="discount_percent" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
                     <td style="padding: 0.2rem 0.35rem; text-align: right; font-size: 0.8rem;"><span class="add-row-vat">${(ar.tax_percent || 0).toFixed(1)}% / ${formatCurrency(this.calculateVATAmount(ar))}</span></td>
                     <td style="padding: 0.2rem 0.35rem; text-align: right; font-weight: 600;"><input type="number" class="form-input add-row-nett nett-input" data-row="add" data-field="nett" value="${this.roundMoney(this.calculateNett(ar) || 0).toFixed(2)}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'readonly' : ''} title="Editable: change and blur to recalc from nett"></td>
-                    <td style="padding: 0.2rem 0.35rem; text-align: right; font-weight: 600;"><input type="number" class="form-input add-row-total total-input add-row-total-input" data-row="add" data-field="total" value="${this.roundMoney(ar.total || 0).toFixed(2)}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'readonly' : ''} title="Editable: enter total to reverse-calculate unit price"></td>
+                    <td style="padding: 0.2rem 0.35rem; text-align: right; font-weight: 600;"><input type="number" class="form-input add-row-total total-input add-row-total-input" data-row="add" data-field="total" value="${this.roundMoney(ar.total || 0).toFixed(2)}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'readonly' : ''} title="Editable: enter total to reverse-calculate unit price"></td>` : (this.isBranchTransferMode() || this.isBranchReceiptMode() ? `<td style="padding: 0.2rem 0.35rem; text-align: right;"><span class="add-row-cost-display">${formatCurrency(ar.unit_price != null && !isNaN(Number(ar.unit_price)) ? Number(ar.unit_price) : 0)}</span></td>` : '')}
                     <td style="padding: 0.2rem 0.35rem; text-align: center;">
                         <div style="display: flex; gap: 0.25rem; justify-content: center; align-items: center; flex-wrap: wrap;">
                             ${ar.item_id && this.mode === 'purchase' ? `
@@ -375,7 +410,31 @@
             const totalVal = (item.total != null && !isNaN(Number(item.total)) ? this.roundMoney(Number(item.total)) : 0).toFixed(2);
             const marginVal = (this.calculateMargin(item) || 0).toFixed(1);
             const discountVal = this.roundMoney(item.discount_percent);
-            const readOnlyCells = isAddRowMode ? `
+            const costVal = (item.unit_price != null && !isNaN(Number(item.unit_price)) ? this.roundMoney(Number(item.unit_price)) : 0).toFixed(2);
+            const branchCellsAddRow = this.isBranchOrderMode()
+                ? `<td style="padding: 0.25rem;"><span class="item-code-display" data-row="${index}">${escapeHtml(item.item_code || item.item_sku || '')}</span></td>
+                    <td style="padding: 0.25rem; text-align: center;"><span class="qty-display" data-row="${index}">${qtyVal}</span></td>
+                    <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>`
+                : `<td style="padding: 0.25rem;"><span class="item-code-display" data-row="${index}">${escapeHtml(item.item_code || item.item_sku || '')}</span></td>
+                    <td style="padding: 0.25rem; text-align: center;"><span class="qty-display" data-row="${index}">${qtyVal}</span></td>
+                    <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>
+                    <td style="padding: 0.25rem; text-align: right;"><span class="price-display" data-row="${index}">${formatCurrency(item.unit_price != null ? Number(item.unit_price) : 0)}</span></td>`;
+            const branchCellsEditable = this.isBranchOrderMode()
+                ? `<td style="padding: 0.25rem;"><input type="text" class="form-input" value="${escapeHtml(item.item_code || item.item_sku || '')}" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="item_code"></td>
+                    <td style="padding: 0.25rem;"><input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="0.01" min="0.01" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${!this.canEdit ? 'disabled' : ''}></td>
+                    <td style="padding: 0.25rem;">${item.item_id && (item.available_units && item.available_units.length) ? (() => {
+                        const units = item.available_units;
+                        let opts = units.map(u => `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${escapeHtml(String(u.multiplier_to_base || 1))}" ${(item.unit_name || '') === (u.unit_name || '') ? 'selected' : ''}>${escapeHtml(u.unit_name || '')}</option>`).join('');
+                        if (!opts) opts = `<option value="${escapeHtml(item.unit_name || '')}">${escapeHtml(item.unit_name || '')}</option>`;
+                        return `<select class="form-input unit-select" data-row="${index}" data-field="unit_name" style="width: 100%; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" ${!this.canEdit ? 'disabled' : ''}>${opts}</select>`;
+                    })() : `<input type="text" class="form-input unit-display" value="${escapeHtml(item.unit_name || '')}" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="unit_name">`}</td>`
+                : `<td style="padding: 0.25rem;"><input type="text" class="form-input" value="${escapeHtml(item.item_code || item.item_sku || '')}" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="item_code"></td>
+                    <td style="padding: 0.25rem;"><input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="0.01" min="0.01" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${(!this.canEdit || (this.isBranchReceiptMode() && !this.branchReceiptQtyEditable)) ? 'disabled' : ''}></td>
+                    <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>
+                    <td style="padding: 0.25rem; text-align: right;"><span class="price-display" data-row="${index}">${formatCurrency(item.unit_price != null ? Number(item.unit_price) : 0)}</span></td>`;
+            const readOnlyCells = this.isBranchMode()
+                ? (isAddRowMode ? branchCellsAddRow : branchCellsEditable)
+                : (isAddRowMode ? `
                     <td style="padding: 0.25rem;"><span class="item-code-display" data-row="${index}">${escapeHtml(item.item_code || item.item_sku || '')}</span></td>
                     <td style="padding: 0.25rem; text-align: center;">
                         <span class="qty-display" data-row="${index}">${qtyVal}</span>
@@ -403,7 +462,7 @@
                     </td>
                     <td style="padding: 0.25rem; text-align: right; font-weight: 600;"><span class="item-nett" data-row="${index}">${formatCurrency(this.calculateNett(item))}</span></td>
                     <td style="padding: 0.25rem; text-align: right; font-weight: 600;"><span class="total-display" data-row="${index}">${totalVal}</span></td>
-            ` : `
+            ` : (`
                     <td style="padding: 0.25rem;">
                         <input type="text" class="form-input" value="${escapeHtml(item.item_code || item.item_sku || '')}" placeholder="Code" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="item_code">
                     </td>
@@ -454,7 +513,7 @@
                     <td style="padding: 0.25rem; text-align: right; font-weight: 600;">
                         <input type="number" class="form-input input-direct total-input" data-row="${index}" data-field="total" value="${totalVal}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 600;" ${!this.canEdit ? 'readonly' : ''} title="Editable: enter total to reverse-calculate unit price">
                     </td>
-            `;
+            `));
             html += `
                 <tr data-item-index="${index}" data-row-id="${this.instanceId}_row_${index}" class="${isAddRowMode ? 'committed-row' : ''}" ${isAddRowMode ? 'title="Double-click to load into search row for editing"' : ''}>
                     ${firstCell}
@@ -492,10 +551,13 @@
         });
         
         const summary = this.calculateSummary();
-        
+        const branchFooter = this.isBranchOrderMode()
+            ? `<tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;"><td colspan="4" style="padding: 0.75rem; text-align: right;">Total units:</td><td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total_units">${this.getFormatNumber()(this.items.reduce(function(s, i) { return s + (parseFloat(i.quantity) || 0); }, 0))}</td></tr>`
+            : `<tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;"><td colspan="5" style="padding: 0.75rem; text-align: right;">Total:</td><td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total">${formatCurrency(summary.total)}</td></tr>`;
         html += `
                     </tbody>
                     <tfoot>
+                        ${this.isBranchMode() ? branchFooter : `
                         <tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;">
                             <td colspan="${(this.mode === 'sale' || this.mode === 'quotation') ? '7' : '6'}" style="padding: 0.75rem; text-align: right;">Net:</td>
                             <td style="padding: 0.75rem; text-align: right;" id="${this.instanceId}_vat_total">${formatCurrency(summary.vat)}</td>
@@ -503,6 +565,7 @@
                             <td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total">${formatCurrency(summary.total)}</td>
                             <td></td>
                         </tr>
+                        `}
                     </tfoot>
                 </table>
             </div>

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 from app.database_master import get_master_db
+from app.dependencies import get_current_user
 from app.services.migration_service import MigrationService
 
 router = APIRouter()
@@ -50,7 +51,10 @@ def run_migration(
 
 
 @router.get("/admin/migrations/status")
-def get_migration_status(db: Session = Depends(get_master_db)):
+def get_migration_status(
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """Get migration status for all tenants"""
     service = MigrationService()
     return service.get_migration_status()

@@ -25,9 +25,16 @@ from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_he
 from app.utils.auth_internal import (
     CLAIM_EXP,
     CLAIM_JTI,
+    CLAIM_SUB,
     CLAIM_TENANT_SUBDOMAIN,
     decode_internal_token,
     revoke_token_in_db,
+    insert_refresh_token,
+    get_active_refresh_token_by_jti,
+    deactivate_refresh_token_by_jti,
+    deactivate_all_refresh_tokens_for_user,
+    revoke_oldest_refresh_tokens_over_limit,
+    MAX_ACTIVE_REFRESH_TOKENS_PER_USER,
 )
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -43,6 +50,7 @@ from app.utils.auth_internal import (
     create_reset_token,
     decode_internal_token,
     hash_password,
+    validate_new_password,
     verify_password,
 )
 
@@ -86,6 +94,8 @@ class UsernameLoginResponse(BaseModel):
     # Internal auth: when user has password_hash we verify and return these
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
+    # When True, client should force user to change password (e.g. after admin-create)
+    must_change_password: Optional[bool] = None
 
 
 def _find_user_in_db(db: Session, normalized_username: str, check_email: bool) -> Optional[User]:
@@ -125,6 +135,7 @@ def _build_login_response(
         username=getattr(user, "username", None) or None,
         full_name=user.full_name,
         tenant_subdomain=subdomain,
+        must_change_password=getattr(user, "must_change_password", None),
     )
     if getattr(user, "password_hash", None) and password is not None:
         if verify_password(password, user.password_hash):
@@ -215,7 +226,10 @@ def username_login(
         user = _find_user_in_db(legacy_db, normalized_username, check_email)
         if user:
             _require_password_if_internal(user, request.password)
-            return _build_login_response(user, None, request.password)
+            resp = _build_login_response(user, None, request.password)
+            if resp.refresh_token:
+                _persist_refresh_token_on_login(None, str(user.id), resp.refresh_token)
+            return resp
     finally:
         legacy_db.close()
 
@@ -245,7 +259,10 @@ def username_login(
                 detail="Trial expired. Please contact support to upgrade.",
             )
         _require_password_if_internal(user, request.password)
-        return _build_login_response(user, tenant, request.password)
+        resp = _build_login_response(user, tenant, request.password)
+        if resp.refresh_token:
+            _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
+        return resp
     # Same username in multiple tenants
     tenants_info = [{"subdomain": t.subdomain, "name": t.name} for t, _ in found_list]
     raise HTTPException(
@@ -269,8 +286,8 @@ def username_login(
 @router.post("/auth/logout", status_code=status.HTTP_200_OK)
 def auth_logout(request: Request, master_db: Session = Depends(get_master_db)):
     """
-    Terminate session server-side: store the token's jti in the user's tenant (or legacy) DB
-    so that DB is the source of truth for its users' sessions. Call with Authorization: Bearer <access_token>.
+    Terminate session server-side: revoke access token (jti in revoked_tokens) and
+    invalidate all active refresh tokens for this user in this tenant. Call with Authorization: Bearer <access_token>.
     """
     auth = request.headers.get("Authorization")
     token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
@@ -280,6 +297,7 @@ def auth_logout(request: Request, master_db: Session = Depends(get_master_db)):
     if not payload or not payload.get(CLAIM_JTI):
         return {"detail": "Logged out"}
     jti = payload.get(CLAIM_JTI)
+    user_id = payload.get(CLAIM_SUB)
     tenant_subdomain = (payload.get(CLAIM_TENANT_SUBDOMAIN) or "").strip()
     exp = payload.get(CLAIM_EXP)
     expires_at = datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None
@@ -290,10 +308,16 @@ def auth_logout(request: Request, master_db: Session = Depends(get_master_db)):
     if tenant and tenant.database_url:
         with tenant_db_session(tenant) as session:
             revoke_token_in_db(session, jti, expires_at)
+            if user_id:
+                deactivate_all_refresh_tokens_for_user(session, str(user_id))
+                session.commit()
     else:
         session = SessionLocal()
         try:
             revoke_token_in_db(session, jti, expires_at)
+            if user_id:
+                deactivate_all_refresh_tokens_for_user(session, str(user_id))
+                session.commit()
         finally:
             session.close()
     return {"detail": "Logged out"}
@@ -305,6 +329,7 @@ def auth_logout(request: Request, master_db: Session = Depends(get_master_db)):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+    device_info: Optional[str] = None  # optional client/browser info
 
 
 class RefreshResponse(BaseModel):
@@ -313,25 +338,102 @@ class RefreshResponse(BaseModel):
 
 
 @router.post("/auth/refresh", response_model=RefreshResponse)
-def auth_refresh(body: RefreshRequest):
-    """Exchange a valid refresh token for a new access token (and optional new refresh token)."""
+def auth_refresh(body: RefreshRequest, master_db: Session = Depends(get_master_db)):
+    """
+    Exchange a valid refresh token for a new access token and a new refresh token (rotation).
+    Incoming refresh token must exist in refresh_tokens, be active and not expired; then it is
+    marked inactive and a new token is issued and stored.
+    """
     payload = decode_internal_token(body.refresh_token)
     if not payload or payload.get("type") != TYPE_REFRESH:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+    jti = payload.get(CLAIM_JTI)
     sub = payload.get(CLAIM_SUB)
     email = payload.get("email") or ""
     tenant_subdomain = payload.get(CLAIM_TENANT_SUBDOMAIN)
-    if not sub:
+    exp = payload.get(CLAIM_EXP)
+    if not sub or not jti:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
-    access_token = create_access_token(sub, email, tenant_subdomain)
-    new_refresh = create_refresh_token(sub, email, tenant_subdomain)
-    return RefreshResponse(access_token=access_token, refresh_token=new_refresh)
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None
+    if not expires_at or expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
+
+    # Resolve tenant and open its DB
+    tenant = None
+    if tenant_subdomain and (tenant_subdomain or "").strip() and (tenant_subdomain or "").strip() != "__default__":
+        tenant = master_db.query(Tenant).filter(Tenant.subdomain == (tenant_subdomain or "").strip()).first()
+    if not tenant or not tenant.database_url:
+        session = SessionLocal()
+        try:
+            _do_refresh_rotate(session, None, body.refresh_token, jti, sub, email, tenant_subdomain, expires_at, body.device_info)
+            access_token = create_access_token(sub, email, tenant_subdomain)
+            new_refresh = create_refresh_token(sub, email, tenant_subdomain)
+            _persist_refresh_token(session, None, sub, new_refresh, body.device_info)
+            revoke_oldest_refresh_tokens_over_limit(session, sub, MAX_ACTIVE_REFRESH_TOKENS_PER_USER)
+            session.commit()
+            return RefreshResponse(access_token=access_token, refresh_token=new_refresh)
+        finally:
+            session.close()
+
+    with tenant_db_session(tenant) as session:
+        _do_refresh_rotate(session, tenant, body.refresh_token, jti, sub, email, tenant_subdomain, expires_at, body.device_info)
+        access_token = create_access_token(sub, email, tenant_subdomain)
+        new_refresh = create_refresh_token(sub, email, tenant_subdomain)
+        _persist_refresh_token(session, tenant, sub, new_refresh, body.device_info)
+        revoke_oldest_refresh_tokens_over_limit(session, sub, MAX_ACTIVE_REFRESH_TOKENS_PER_USER)
+        session.commit()
+        return RefreshResponse(access_token=access_token, refresh_token=new_refresh)
+
+
+def _do_refresh_rotate(session, tenant, refresh_token, jti, sub, email, tenant_subdomain, expires_at, device_info):
+    """Validate incoming refresh token in DB and mark it inactive (rotate). Raises 401 if invalid."""
+    row = get_active_refresh_token_by_jti(session, jti)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+    deactivate_refresh_token_by_jti(session, jti)
+
+
+def _persist_refresh_token(session: Session, tenant: Optional[Tenant], user_id: str, refresh_token_jwt: str, device_info: Optional[str] = None) -> None:
+    """Decode the refresh token JWT and insert a row into refresh_tokens. Does not commit."""
+    payload = decode_internal_token(refresh_token_jwt)
+    if not payload:
+        return
+    jti = payload.get(CLAIM_JTI)
+    exp = payload.get(CLAIM_EXP)
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None
+    if not jti or not expires_at:
+        return
+    tenant_id = str(tenant.id) if tenant else None
+    insert_refresh_token(session, user_id, jti, expires_at, tenant_id=tenant_id, device_info=device_info)
+
+
+def _persist_refresh_token_on_login(tenant: Optional[Tenant], user_id: str, refresh_token_jwt: str) -> None:
+    """Persist a refresh token issued at login into the tenant/legacy DB. Enforces max active sessions."""
+    if not refresh_token_jwt:
+        return
+    try:
+        if tenant and tenant.database_url:
+            with tenant_db_session(tenant) as session:
+                _persist_refresh_token(session, tenant, user_id, refresh_token_jwt, device_info=None)
+                revoke_oldest_refresh_tokens_over_limit(session, user_id, MAX_ACTIVE_REFRESH_TOKENS_PER_USER)
+                session.commit()
+        else:
+            session = SessionLocal()
+            try:
+                _persist_refresh_token(session, None, user_id, refresh_token_jwt, device_info=None)
+                revoke_oldest_refresh_tokens_over_limit(session, user_id, MAX_ACTIVE_REFRESH_TOKENS_PER_USER)
+                session.commit()
+            finally:
+                session.close()
+    except Exception as e:
+        # If refresh_tokens table is missing (migration not applied), login still succeeds
+        logger.warning("Could not persist refresh token on login (table may be missing): %s", e)
 
 
 class SetPasswordRequest(BaseModel):
     """Set password via invitation_token (in-app invite flow). Requires X-Tenant-Subdomain."""
     invitation_token: str
-    new_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=8)
 
 
 @router.post("/auth/set-password", status_code=status.HTTP_200_OK)
@@ -349,6 +451,9 @@ def auth_set_password(
     ).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or expired invitation")
+    pw_error = validate_new_password(body.new_password)
+    if pw_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pw_error)
     user.password_hash = hash_password(body.new_password)
     user.password_updated_at = datetime.now(timezone.utc)
     user.password_set = True
@@ -423,13 +528,13 @@ def auth_request_reset(
 
 class ResetPasswordRequest(BaseModel):
     token: str
-    new_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=8)
 
 
 class ChangePasswordRequest(BaseModel):
     """Change password while logged in: current password + new password."""
     current_password: str
-    new_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=8)
 
 
 @router.post("/auth/change-password", status_code=status.HTTP_200_OK)
@@ -449,6 +554,9 @@ def auth_change_password(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect.",
         )
+    pw_error = validate_new_password(body.new_password)
+    if pw_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pw_error)
     user.password_hash = hash_password(body.new_password)
     user.password_updated_at = datetime.now(timezone.utc)
     user.password_set = True
@@ -478,6 +586,9 @@ def auth_reset_password(
             user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
             if not user:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            pw_error = validate_new_password(body.new_password)
+            if pw_error:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pw_error)
             user.password_hash = hash_password(body.new_password)
             user.password_updated_at = datetime.now(timezone.utc)
             user.password_set = True
@@ -494,6 +605,9 @@ def auth_reset_password(
         user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        pw_error = validate_new_password(body.new_password)
+        if pw_error:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pw_error)
         user.password_hash = hash_password(body.new_password)
         user.password_updated_at = datetime.now(timezone.utc)
         user.password_set = True

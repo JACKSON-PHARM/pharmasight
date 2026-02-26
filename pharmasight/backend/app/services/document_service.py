@@ -237,3 +237,36 @@ class DocumentService:
         # Format: QT{BRANCH_CODE}-{6-digit number}
         return f"QT{branch.code}-{sequence.current_number:06d}"
 
+    @staticmethod
+    def get_branch_order_number(
+        db: Session,
+        company_id: UUID,
+        ordering_branch_id: UUID,
+    ) -> str:
+        """Next branch order number. Format: BO-{BRANCH_CODE}-000001."""
+        return DocumentService.get_next_document_number(
+            db, company_id, ordering_branch_id, "BRANCH_ORDER", "BO"
+        )
+
+    @staticmethod
+    def get_branch_transfer_number(
+        db: Session,
+        company_id: UUID,
+        supplying_branch_id: UUID,
+    ) -> str:
+        """Next branch transfer number. Format: BT-{BRANCH_CODE}-000001."""
+        return DocumentService.get_next_document_number(
+            db, company_id, supplying_branch_id, "BRANCH_TRANSFER", "BT"
+        )
+
+    @staticmethod
+    def get_branch_receipt_number(
+        db: Session,
+        company_id: UUID,
+        receiving_branch_id: UUID,
+    ) -> str:
+        """Next branch receipt number. Format: BR-{BRANCH_CODE}-000001."""
+        return DocumentService.get_next_document_number(
+            db, company_id, receiving_branch_id, "BRANCH_RECEIPT", "BR"
+        )
+

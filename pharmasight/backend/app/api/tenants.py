@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from app.database_master import get_master_db
-from app.dependencies import tenant_db_session
+from app.dependencies import tenant_db_session, get_current_user
 from app.models.tenant import Tenant, TenantInvite, SubscriptionPlan, TenantSubscription, TenantModule
 from app.schemas.tenant import (
     TenantCreate, TenantResponse, TenantUpdate, TenantListResponse,
@@ -42,7 +42,8 @@ def list_tenants(
     limit: int = Query(100, ge=1, le=1000),
     status_filter: Optional[str] = Query(None, alias="status"),
     search: Optional[str] = Query(None),
-    db: Session = Depends(get_master_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
 ):
     """List all tenants with pagination and filtering. By default excludes deleted (cancelled) tenants."""
     try:
@@ -93,7 +94,11 @@ def _tenant_to_response(tenant: Tenant) -> TenantResponse:
     })
 
 @router.get("/tenants/{tenant_id}", response_model=TenantResponse)
-def get_tenant(tenant_id: UUID, db: Session = Depends(get_master_db)):
+def get_tenant(
+    tenant_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """Get tenant by ID"""
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
@@ -105,7 +110,11 @@ def get_tenant(tenant_id: UUID, db: Session = Depends(get_master_db)):
 
 
 @router.post("/tenants", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
-def create_tenant(tenant_data: TenantCreate, db: Session = Depends(get_master_db)):
+def create_tenant(
+    tenant_data: TenantCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """Create a new tenant (manual creation)"""
     # Generate subdomain from company name
     subdomain = _generate_subdomain(tenant_data.name, db)
@@ -147,7 +156,8 @@ def create_tenant(tenant_data: TenantCreate, db: Session = Depends(get_master_db
 def update_tenant(
     tenant_id: UUID,
     tenant_data: TenantUpdate,
-    db: Session = Depends(get_master_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
 ):
     """Update tenant information"""
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
@@ -169,7 +179,11 @@ def update_tenant(
 
 
 @router.get("/tenants/{tenant_id}/initialize-status")
-def get_initialize_status(tenant_id: UUID, db: Session = Depends(get_master_db)):
+def get_initialize_status(
+    tenant_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """
     For Admin UI: whether to show Initialize Tenant Database form.
 
@@ -203,6 +217,7 @@ def get_initialize_status(tenant_id: UUID, db: Session = Depends(get_master_db))
 def initialize_tenant(
     tenant_id: UUID,
     body: TenantInitializeRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_master_db),
 ):
     """
@@ -241,7 +256,11 @@ def initialize_tenant(
 
 
 @router.delete("/tenants/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_tenant(tenant_id: UUID, db: Session = Depends(get_master_db)):
+def delete_tenant(
+    tenant_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """Delete a tenant (soft delete by setting status to cancelled)"""
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
@@ -267,7 +286,8 @@ def create_invite(
     background_tasks: BackgroundTasks,
     tenant_id: UUID,
     invite_data: TenantInviteCreate,
-    db: Session = Depends(get_master_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
 ):
     """Create an invite token for tenant setup. Enabled only when tenant is provisioned."""
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
@@ -375,7 +395,11 @@ def create_invite(
 
 
 @router.get("/tenants/{tenant_id}/invites", response_model=List[TenantInviteResponse])
-def list_invites(tenant_id: UUID, db: Session = Depends(get_master_db)):
+def list_invites(
+    tenant_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """List all invites for a tenant"""
     invites = db.query(TenantInvite).filter(
         TenantInvite.tenant_id == tenant_id
@@ -385,7 +409,7 @@ def list_invites(tenant_id: UUID, db: Session = Depends(get_master_db)):
 
 
 @router.get("/smtp-status")
-def get_smtp_status():
+def get_smtp_status(current_user_and_db: tuple = Depends(get_current_user)):
     """Check SMTP configuration status (for admin debugging)"""
     is_configured = EmailService.is_configured()
     status_info = {
@@ -416,7 +440,10 @@ def get_smtp_status():
 # =====================================================
 
 @router.get("/plans", response_model=List[SubscriptionPlanResponse])
-def list_plans(db: Session = Depends(get_master_db)):
+def list_plans(
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """List all subscription plans"""
     plans = db.query(SubscriptionPlan).filter(
         SubscriptionPlan.is_active == True
@@ -430,7 +457,11 @@ def list_plans(db: Session = Depends(get_master_db)):
 # =====================================================
 
 @router.get("/tenants/{tenant_id}/subscription", response_model=TenantSubscriptionResponse)
-def get_subscription(tenant_id: UUID, db: Session = Depends(get_master_db)):
+def get_subscription(
+    tenant_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """Get tenant's current subscription"""
     subscription = db.query(TenantSubscription).filter(
         TenantSubscription.tenant_id == tenant_id
@@ -450,7 +481,11 @@ def get_subscription(tenant_id: UUID, db: Session = Depends(get_master_db)):
 # =====================================================
 
 @router.get("/tenants/{tenant_id}/modules", response_model=List[TenantModuleResponse])
-def list_modules(tenant_id: UUID, db: Session = Depends(get_master_db)):
+def list_modules(
+    tenant_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_master_db),
+):
     """List all modules for a tenant"""
     modules = db.query(TenantModule).filter(
         TenantModule.tenant_id == tenant_id

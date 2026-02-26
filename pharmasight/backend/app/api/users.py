@@ -5,16 +5,17 @@ Handles user creation, listing, updating, activating/deactivating, and deletion.
 Admin-only endpoints for managing organization users.
 """
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query, UploadFile, File
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from typing import List, Optional
 from uuid import UUID
 import secrets
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user
+from sqlalchemy import text
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole, UserBranchRole
 from app.services.tenant_storage_service import (
@@ -29,8 +30,9 @@ from app.models.permission import Permission, RolePermission
 from app.schemas.user import (
     UserCreate, UserUpdate, UserResponse, UserListResponse,
     UserRoleResponse, UserActivateRequest, UserRoleUpdate,
-    InvitationResponse
+    InvitationResponse, AdminCreateUserRequest, AdminCreateUserResponse,
 )
+from app.utils.auth_internal import hash_password, verify_password, validate_new_password
 from app.services.invite_service import InviteService
 from app.utils.username_generator import generate_username_from_name
 import logging
@@ -51,6 +53,31 @@ def generate_invitation_token() -> str:
     return token
 
 
+def generate_temporary_password() -> str:
+    """
+    Generate a secure temporary password using Python secrets.
+    Minimum 10 characters, mix of letters and digits. Not derived from name or phone.
+    """
+    alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    return "".join(secrets.choice(alphabet) for _ in range(12))
+
+
+def _user_has_owner_or_admin_role(db: Session, user_id: UUID) -> bool:
+    """
+    True if the user has role 'owner' or 'admin' in any branch in this tenant.
+    db is the tenant DB session; roles are branch-scoped within the same tenant.
+    No global role; no cross-tenant. Caller must ensure db is the resolved tenant DB from auth context.
+    """
+    role_names = (
+        db.query(UserRole.role_name)
+        .join(UserBranchRole, UserBranchRole.role_id == UserRole.id)
+        .filter(UserBranchRole.user_id == user_id)
+        .all()
+    )
+    allowed = {"owner", "admin"}
+    return any((r[0] or "").strip().lower() in allowed for r in role_names)
+
+
 def get_role_by_name(role_name: str, db: Session) -> UserRole:
     """Get role by name, create if it doesn't exist"""
     role = db.query(UserRole).filter(UserRole.role_name == role_name.lower()).first()
@@ -63,7 +90,10 @@ def get_role_by_name(role_name: str, db: Session) -> UserRole:
 
 
 @router.get("/users/roles", response_model=List[UserRoleResponse])
-def list_roles(db: Session = Depends(get_tenant_db)):
+def list_roles(
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     List all available roles
     
@@ -85,13 +115,16 @@ except ImportError:
 
 
 @router.get("/permissions/hq-only")
-def list_hq_only_permissions():
+def list_hq_only_permissions(current_user_and_db: tuple = Depends(get_current_user)):
     """Return permission names that are restricted to HQ branch only."""
     return {"permissions": list(HQ_ONLY_PERMISSIONS)}
 
 
 @router.get("/permissions")
-def list_permissions(db: Session = Depends(get_tenant_db)):
+def list_permissions(
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     List all permissions grouped by module for the permission matrix UI.
     Returns: [{ module, permissions: [{ id, name, action, description }] }]
@@ -111,7 +144,11 @@ def list_permissions(db: Session = Depends(get_tenant_db)):
 
 
 @router.get("/users/roles/{role_id}/permissions")
-def get_role_permissions(role_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_role_permissions(
+    role_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get permission names granted to a role (global, branch_id=null)."""
     role = db.query(UserRole).filter(UserRole.id == role_id).first()
     if not role:
@@ -133,6 +170,7 @@ class RolePermissionsUpdate(BaseModel):
 def update_role_permissions(
     role_id: UUID,
     payload: RolePermissionsUpdate,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """Replace role's permissions with the given list. branch_id=null (global)."""
@@ -163,6 +201,7 @@ class RoleUpdate(BaseModel):
 def update_role(
     role_id: UUID,
     payload: RoleUpdate,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """Update role name and description."""
@@ -181,7 +220,8 @@ def update_role(
 @router.get("/users", response_model=UserListResponse)
 def list_users(
     include_deleted: bool = Query(False, description="Include soft-deleted users"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     List all users in the organization
@@ -246,7 +286,11 @@ def list_users(
 
 
 @router.get("/users/{user_id}", response_model=UserResponse)
-def get_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_user(
+    user_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get user by ID with role information"""
     user = db.query(User).filter(User.id == user_id).first()
     if not user or user.deleted_at is not None:
@@ -387,7 +431,8 @@ def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bo
 def get_user_permissions(
     user_id: UUID,
     branch_id: Optional[UUID] = Query(None, description="Branch ID to check permissions for"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Get all permissions for a user, combining role permissions.
@@ -426,7 +471,11 @@ def get_user_permissions(
 
 
 @router.post("/users", response_model=InvitationResponse, status_code=status.HTTP_201_CREATED)
-def create_user(user_data: UserCreate, db: Session = Depends(get_tenant_db)):
+def create_user(
+    user_data: UserCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Create a new user (Admin-only)
     
@@ -520,7 +569,8 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_tenant_db)):
         is_pending=True,  # Pending password setup
         password_set=False,
         invitation_token=invitation_token,
-        invitation_code=invitation_code
+        invitation_code=invitation_code,
+        must_change_password=False,  # Invitation flow: no forced change after set-password
     )
     
     try:
@@ -613,8 +663,163 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_tenant_db)):
     )
 
 
+@router.post("/users/admin-create", response_model=AdminCreateUserResponse, status_code=status.HTTP_201_CREATED)
+def admin_create_user(
+    request: Request,
+    body: AdminCreateUserRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+    tenant: Tenant = Depends(get_tenant_or_default),
+):
+    """
+    Create a user directly (no email invitation). Only owner or admin role.
+    Tenant is strictly from authenticated user context (token/header). tenant_id is NEVER read from request body.
+    Role check is scoped to the same tenant DB; no cross-tenant privilege.
+    Returns a temporary password once; user must log in and change password.
+    """
+    current_user, _ = current_user_and_db
+    # Role check uses db (tenant DB from auth context); same tenant as current_user
+    if not _user_has_owner_or_admin_role(db, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only owners or admins can create users this way.",
+        )
+    normalized_email = body.email.lower().strip()
+    if not normalized_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is required",
+        )
+    if body.username:
+        normalized_username = body.username.lower().strip()
+    elif body.full_name:
+        try:
+            normalized_username = generate_username_from_name(body.full_name, db_session=db).lower()
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot generate username: {str(e)}. Provide username or full_name.",
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either username or full_name is required",
+        )
+    existing_email = db.query(User).filter(func.lower(func.trim(User.email)) == normalized_email).first()
+    if existing_email and existing_email.deleted_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this email already exists.",
+        )
+    existing_username = db.query(User).filter(
+        func.lower(func.trim(User.username)) == normalized_username,
+    ).first()
+    if existing_username and existing_username.deleted_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This username is already taken.",
+        )
+    temp_password = generate_temporary_password()
+    import uuid as uuid_mod
+    new_user_id = uuid_mod.uuid4()
+    new_user = User(
+        id=new_user_id,
+        email=normalized_email,
+        username=normalized_username,
+        full_name=body.full_name,
+        phone=body.phone,
+        is_active=True,
+        is_pending=False,
+        password_set=False,  # Semantics: "user has set their own password"; set True when they complete change-password-first-time
+        password_hash=hash_password(temp_password),
+        password_updated_at=datetime.now(timezone.utc),
+        must_change_password=True,
+        created_by=current_user.id,
+    )
+    db.add(new_user)
+    db.flush()
+    role = get_role_by_name(body.role_name, db)
+    if body.branch_id:
+        branch = db.query(Branch).filter(Branch.id == body.branch_id).first()
+        if not branch:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
+        db.add(UserBranchRole(user_id=new_user.id, branch_id=body.branch_id, role_id=role.id))
+    db.commit()
+    db.refresh(new_user)
+    # Minimal audit log (no event bus or framework)
+    try:
+        request_ip = request.client.host if request.client else None
+        db.execute(
+            text(
+                "INSERT INTO admin_audit_log (action_type, performed_by, target_user_id, tenant_id, request_ip) "
+                "VALUES (:action_type, :performed_by, :target_user_id, :tenant_id, :request_ip)"
+            ),
+            {
+                "action_type": "admin_create_user",
+                "performed_by": current_user.id,
+                "target_user_id": new_user.id,
+                "tenant_id": tenant.id,
+                "request_ip": request_ip,
+            },
+        )
+        db.commit()
+    except Exception as e:
+        logger.warning("Admin audit log insert failed (non-fatal): %s", e)
+        db.rollback()
+    return AdminCreateUserResponse(
+        user_id=new_user.id,
+        email=new_user.email,
+        username=new_user.username,
+        temporary_password=temp_password,
+        message="User created. They must log in and change their password.",
+    )
+
+
+class ChangePasswordFirstTimeRequest(BaseModel):
+    """Request for first-time password change (after admin-create)."""
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+
+@router.post("/users/change-password-first-time", status_code=status.HTTP_200_OK)
+def change_password_first_time(
+    body: ChangePasswordFirstTimeRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
+):
+    """
+    Change password and clear must_change_password. For users who were admin-created.
+    Requires current (temporary) password; sets must_change_password = False after success.
+    """
+    user, db = current_user_and_db
+    if not getattr(user, "password_hash", None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password change is not available for this account.",
+        )
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect.",
+        )
+    pw_error = validate_new_password(body.new_password)
+    if pw_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pw_error)
+    user.password_hash = hash_password(body.new_password)
+    user.password_updated_at = datetime.now(timezone.utc)
+    user.password_set = True
+    user.must_change_password = False
+    db.commit()
+    return {"message": "Password updated. You will not be asked to change it again."}
+
+
 @router.put("/users/{user_id}", response_model=UserResponse)
-def update_user(user_id: UUID, user_update: UserUpdate, db: Session = Depends(get_tenant_db)):
+def update_user(
+    user_id: UUID,
+    user_update: UserUpdate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Update user details (full_name, phone, is_active)"""
     user = db.query(User).filter(
         and_(User.id == user_id, User.deleted_at.is_(None))
@@ -636,7 +841,12 @@ def update_user(user_id: UUID, user_update: UserUpdate, db: Session = Depends(ge
 
 
 @router.patch("/users/{user_id}/activate", response_model=UserResponse)
-def activate_user(user_id: UUID, activate_data: UserActivateRequest, db: Session = Depends(get_tenant_db)):
+def activate_user(
+    user_id: UUID,
+    activate_data: UserActivateRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Activate or deactivate a user"""
     user = db.query(User).filter(
         and_(User.id == user_id, User.deleted_at.is_(None))
@@ -653,7 +863,11 @@ def activate_user(user_id: UUID, activate_data: UserActivateRequest, db: Session
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_200_OK)
-def delete_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
+def delete_user(
+    user_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Soft delete a user
     
@@ -677,7 +891,11 @@ def delete_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.post("/users/{user_id}/restore", response_model=UserResponse, status_code=status.HTTP_200_OK)
-def restore_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
+def restore_user(
+    user_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Restore a soft-deleted user
     
@@ -747,7 +965,8 @@ def restore_user(user_id: UUID, db: Session = Depends(get_tenant_db)):
 def assign_role(
     user_id: UUID,
     role_data: UserRoleUpdate,
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Assign or update user role for a branch

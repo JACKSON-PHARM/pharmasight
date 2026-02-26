@@ -53,7 +53,7 @@ async function loadInventory(optionalSubPage) {
         }
         
         // Respect URL subpage so Current Stock (and others) persist and aren't overwritten by hashchange
-        const validSubPages = ['items', 'batch', 'expiry', 'movement', 'stock'];
+        const validSubPages = ['items', 'batch', 'expiry', 'movement', 'stock', 'branch-orders', 'branch-transfers', 'branch-receipts'];
         if (optionalSubPage && validSubPages.includes(optionalSubPage)) {
             currentInventorySubPage = optionalSubPage;
         } else {
@@ -121,6 +121,12 @@ function renderSubPageContent() {
                 return renderItemMovementSubPage();
             case 'stock':
                 return renderCurrentStockSubPage();
+            case 'branch-orders':
+                return renderBranchOrdersSubPage();
+            case 'branch-transfers':
+                return renderBranchTransfersSubPage();
+            case 'branch-receipts':
+                return renderBranchReceiptsSubPage();
             default:
                 return '<p>Sub-page not found</p>';
         }
@@ -219,6 +225,20 @@ async function loadSubPageData() {
             case 'batch':
                 await loadBatchTrackingData();
                 break;
+            case 'branch-orders':
+                if (branchOrdersView === 'create') await initBranchOrderCreatePage();
+                else if (branchOrdersView === 'view' && branchOrderViewId) await loadBranchOrderViewPage(branchOrderViewId);
+                else await loadBranchOrdersData();
+                break;
+            case 'branch-transfers':
+                if (branchTransfersView === 'create') await initBranchTransferCreatePage();
+                else if (branchTransfersView === 'view' && branchTransferViewId) await loadBranchTransferViewPage(branchTransferViewId);
+                else await loadBranchTransfersData();
+                break;
+            case 'branch-receipts':
+                if (branchReceiptsView === 'view' && branchReceiptViewId) await loadBranchReceiptViewPage(branchReceiptViewId);
+                else await loadBranchReceiptsData();
+                break;
             case 'expiry':
                 await loadExpiryReportData();
                 break;
@@ -237,6 +257,840 @@ async function loadSubPageData() {
                 container.innerHTML = '<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Failed to load. ' + (err && err.message ? escapeHtml(err.message) : 'Unknown error') + '</div>';
             }
         }
+    }
+}
+
+// ============================================
+// BRANCH INVENTORY (Orders, Transfers, Receipts)
+// ============================================
+let branchOrdersList = [];
+let branchTransfersList = [];
+let branchReceiptsList = [];
+let branchSettingsCache = null; // { allow_manual_transfer, allow_manual_receipt } for current branch
+var branchOrdersView = 'list'; // 'list' | 'create' | 'view'
+var branchOrderViewId = null;
+var branchTransfersView = 'list'; // 'list' | 'create' | 'view'
+var branchTransferViewId = null;
+var branchReceiptsView = 'list'; // 'list' | 'view'
+var branchReceiptViewId = null;
+var currentBranchName = '';
+
+function formatDate(d) {
+    if (!d) return '—';
+    const dt = typeof d === 'string' ? new Date(d) : d;
+    return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString();
+}
+
+async function getBranchSettingsForCurrentBranch() {
+    const bid = CONFIG.BRANCH_ID;
+    if (!bid) return { allow_manual_transfer: true, allow_manual_receipt: true };
+    try {
+        const s = await API.branch.getSettings(bid);
+        branchSettingsCache = s;
+        return s;
+    } catch (e) {
+        return { allow_manual_transfer: true, allow_manual_receipt: true };
+    }
+}
+
+function renderBranchOrdersSubPage() {
+    if (branchOrdersView === 'create') return renderBranchOrderCreatePage();
+    if (branchOrdersView === 'view') return renderBranchOrderViewPage();
+    const today = new Date().toISOString().split('T')[0];
+    return `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-list-alt"></i> Branch Orders</h3>
+                <button class="btn btn-primary" onclick="if(window.openBranchOrderCreate) window.openBranchOrderCreate()">
+                    <i class="fas fa-plus"></i> New Order
+                </button>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;">
+                <div style="margin-bottom: 1rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                    <label>From</label>
+                    <input type="date" id="branchOrdersDateFrom" class="form-input" value="${today}" style="width: 140px;">
+                    <label>To</label>
+                    <input type="date" id="branchOrdersDateTo" class="form-input" value="${today}" style="width: 140px;">
+                    <select id="branchOrdersStatus" class="form-input" style="width: 140px;">
+                        <option value="">All</option>
+                        <option value="DRAFT">Draft</option>
+                        <option value="BATCHED">Batched</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="if(window.loadBranchOrdersData) window.loadBranchOrdersData()">Apply</button>
+                </div>
+                <div class="table-container" style="max-height: calc(100vh - 320px); overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 10;">
+                            <tr>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Document #</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Date</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Status</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">From (Ordering)</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">To (Supplying)</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Total units</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Created by</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="branchOrdersTableBody">
+                            <tr><td colspan="8" style="padding: 2rem; text-align: center;"><div class="spinner"></div> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBranchOrderCreatePage() {
+    return `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-plus-circle"></i> Create Branch Order</h3>
+                <button class="btn btn-outline" onclick="if(window.showBranchOrdersList) window.showBranchOrdersList()">
+                    <i class="fas fa-arrow-left"></i> Back to list
+                </button>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;">
+                <p style="margin-bottom: 1rem; color: var(--text-secondary);">Ordering branch (this branch) requests stock from the supplying branch. Add items manually or fetch from the Order Book.</p>
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label class="form-label">Ordering branch (requesting)</label>
+                    <div class="form-input" style="background: var(--bg-secondary, #f8f9fa); cursor: default;" id="branchOrderOrderingBranchName">—</div>
+                </div>
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label class="form-label">Supplying branch (sending) *</label>
+                    <div id="branchOrderSupplyingBranchWrap"><span style="color: var(--text-secondary);">Loading branches...</span></div>
+                </div>
+                <div class="form-group" style="margin-bottom: 0.5rem;">
+                    <label class="form-label">Items</label>
+                    <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.5rem;">When you batch this order, items will be added to the Order Book and marked as converted (Branch Order).</p>
+                    <div id="branchOrderTableMount"></div>
+                </div>
+                <div style="margin-top: 1.5rem; display: flex; gap: 0.5rem;">
+                    <button type="button" class="btn btn-primary" id="branchOrderSaveDraftBtn" onclick="if(window.saveBranchOrderDraft) window.saveBranchOrderDraft()">
+                        <i class="fas fa-save"></i> Save as draft
+                    </button>
+                    <button type="button" class="btn btn-outline" onclick="if(window.showBranchOrdersList) window.showBranchOrdersList()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBranchOrderViewPage() {
+    return `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-list-alt"></i> Branch Order</h3>
+                <button class="btn btn-outline" onclick="if(window.showBranchOrdersList) window.showBranchOrdersList()"><i class="fas fa-arrow-left"></i> Back to list</button>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;" id="branchOrderViewContent">
+                <div style="text-align: center; padding: 2rem;"><div class="spinner"></div> Loading...</div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBranchTransfersSubPage() {
+    if (branchTransfersView === 'create') return renderBranchTransferCreatePage();
+    if (branchTransfersView === 'view') return renderBranchTransferViewPage();
+    const today = new Date().toISOString().split('T')[0];
+    return `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-truck-loading"></i> Branch Transfers</h3>
+                <div id="branchTransfersHeaderButtons">
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">Loading...</span>
+                </div>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;">
+                <div style="margin-bottom: 1rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                    <label>From</label>
+                    <input type="date" id="branchTransfersDateFrom" class="form-input" value="${today}" style="width: 140px;">
+                    <label>To</label>
+                    <input type="date" id="branchTransfersDateTo" class="form-input" value="${today}" style="width: 140px;">
+                    <select id="branchTransfersStatus" class="form-input" style="width: 140px;">
+                        <option value="">All</option>
+                        <option value="DRAFT">Draft</option>
+                        <option value="COMPLETED">Completed</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="if(window.loadBranchTransfersData) window.loadBranchTransfersData()">Apply</button>
+                </div>
+                <div class="table-container" style="max-height: calc(100vh - 320px); overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 10;">
+                            <tr>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Document #</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Date</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Status</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">From (Supplying)</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">To (Receiving)</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Total units</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Created by</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="branchTransfersTableBody">
+                            <tr><td colspan="8" style="padding: 2rem; text-align: center;"><div class="spinner"></div> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBranchTransferCreatePage() {
+    return `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-truck-loading"></i> Create Branch Transfer</h3>
+                <button class="btn btn-outline" onclick="if(window.showBranchTransfersList) window.showBranchTransfersList()"><i class="fas fa-arrow-left"></i> Back to list</button>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;">
+                <p style="margin-bottom: 1rem; color: var(--text-secondary);">Create a transfer from this branch (supplying) to receiving branch. Cost is set on Complete (FEFO).</p>
+                <div id="branchTransferCreateFormWrap"><span style="color: var(--text-secondary);">Loading...</span></div>
+                <div id="branchTransferTableMount" style="margin-top: 1rem;"></div>
+                <div style="margin-top: 1rem;"><button class="btn btn-primary" id="branchTransferSaveDraftBtn" onclick="if(window.saveBranchTransferDraft) window.saveBranchTransferDraft()"><i class="fas fa-save"></i> Save as draft</button> <button class="btn btn-outline" onclick="if(window.showBranchTransfersList) window.showBranchTransfersList()">Cancel</button></div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBranchTransferViewPage() {
+    return `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-truck-loading"></i> Branch Transfer</h3>
+                <button class="btn btn-outline" onclick="if(window.showBranchTransfersList) window.showBranchTransfersList()"><i class="fas fa-arrow-left"></i> Back to list</button>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;" id="branchTransferViewContent">
+                <div style="text-align: center; padding: 2rem;"><div class="spinner"></div> Loading...</div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBranchReceiptsSubPage() {
+    if (branchReceiptsView === 'view') return renderBranchReceiptViewPage();
+    const today = new Date().toISOString().split('T')[0];
+    return `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-clipboard-check"></i> Branch Receipts</h3>
+                <div id="branchReceiptsHeaderButtons">
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">Loading...</span>
+                </div>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;">
+                <div style="margin-bottom: 1rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                    <label>From</label>
+                    <input type="date" id="branchReceiptsDateFrom" class="form-input" value="${today}" style="width: 140px;">
+                    <label>To</label>
+                    <input type="date" id="branchReceiptsDateTo" class="form-input" value="${today}" style="width: 140px;">
+                    <select id="branchReceiptsStatus" class="form-input" style="width: 140px;">
+                        <option value="">All</option>
+                        <option value="PENDING">Pending</option>
+                        <option value="RECEIVED">Received</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="if(window.loadBranchReceiptsData) window.loadBranchReceiptsData()">Apply</button>
+                </div>
+                <div class="table-container" style="max-height: calc(100vh - 320px); overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 10;">
+                            <tr>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Document #</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Date</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Status</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Receiving branch</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Total units</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="branchReceiptsTableBody">
+                            <tr><td colspan="6" style="padding: 2rem; text-align: center;"><div class="spinner"></div> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBranchReceiptViewPage() {
+    return `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-clipboard-check"></i> Branch Receipt</h3>
+                <button class="btn btn-outline" onclick="if(window.showBranchReceiptsList) window.showBranchReceiptsList()"><i class="fas fa-arrow-left"></i> Back to list</button>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;" id="branchReceiptViewContent">
+                <div style="text-align: center; padding: 2rem;"><div class="spinner"></div> Loading...</div>
+            </div>
+        </div>
+    `;
+}
+
+async function loadBranchOrdersData() {
+    const tbody = document.getElementById('branchOrdersTableBody');
+    if (!tbody) return;
+    try {
+        const statusFilter = document.getElementById('branchOrdersStatus');
+        const params = {};
+        if (statusFilter && statusFilter.value) params.status = statusFilter.value;
+        if (CONFIG.BRANCH_ID) params.ordering_branch_id = CONFIG.BRANCH_ID;
+        const list = await API.branchInventory.getOrders(params);
+        branchOrdersList = Array.isArray(list) ? list : [];
+        const fromEl = document.getElementById('branchOrdersDateFrom');
+        const toEl = document.getElementById('branchOrdersDateTo');
+        const fromDate = fromEl ? fromEl.value : null;
+        const toDate = toEl ? toEl.value : null;
+        let filtered = branchOrdersList;
+        if (fromDate || toDate) {
+            filtered = branchOrdersList.filter(o => {
+                const d = (o.created_at || '').split('T')[0];
+                if (fromDate && d < fromDate) return false;
+                if (toDate && d > toDate) return false;
+                return true;
+            });
+        }
+        const totalUnits = (order) => (order.lines || []).reduce((sum, l) => sum + parseFloat(l.quantity || 0), 0);
+        if (filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="padding: 2rem; text-align: center; color: var(--text-secondary);">No branch orders found.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = filtered.map(o => {
+            const status = o.status || 'DRAFT';
+            const badge = status === 'BATCHED' ? 'badge-success' : 'badge-warning';
+            const units = totalUnits(o);
+            return `<tr style="cursor: pointer;" onclick="if(window.openBranchOrderView) window.openBranchOrderView('${o.id}')">
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${(o.order_number || o.id).toString().substring(0, 20)}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatDate(o.created_at)}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><span class="badge ${badge}">${status}</span></td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${(o.ordering_branch_name || '—')}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${(o.supplying_branch_name || '—')}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${units}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">—</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.openBranchOrderView) window.openBranchOrderView('${o.id}')"><i class="fas fa-eye"></i></button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadBranchOrdersData', e);
+        tbody.innerHTML = '<tr><td colspan="8" style="padding: 2rem; text-align: center; color: var(--danger-color);">' + (e.message || 'Failed to load') + '</td></tr>';
+    }
+}
+
+async function loadBranchTransfersData() {
+    const tbody = document.getElementById('branchTransfersTableBody');
+    if (!tbody) return;
+    const headerBtns = document.getElementById('branchTransfersHeaderButtons');
+    try {
+        await getBranchSettingsForCurrentBranch();
+        if (headerBtns) {
+            const allowManual = (branchSettingsCache && branchSettingsCache.allow_manual_transfer !== false);
+            headerBtns.innerHTML = allowManual
+                ? '<button class="btn btn-primary" onclick="if(window.openBranchTransferCreate) window.openBranchTransferCreate()"><i class="fas fa-plus"></i> New Transfer</button>'
+                : '<span style="color: var(--text-secondary); font-size: 0.875rem;">Create from Pending Branch Orders only</span>';
+        }
+        const params = {};
+        const statusFilter = document.getElementById('branchTransfersStatus');
+        if (statusFilter && statusFilter.value) params.status = statusFilter.value;
+        if (CONFIG.BRANCH_ID) params.supplying_branch_id = CONFIG.BRANCH_ID;
+        const list = await API.branchInventory.getTransfers(params);
+        branchTransfersList = Array.isArray(list) ? list : [];
+        const fromEl = document.getElementById('branchTransfersDateFrom');
+        const toEl = document.getElementById('branchTransfersDateTo');
+        const fromDate = fromEl ? fromEl.value : null;
+        const toDate = toEl ? toEl.value : null;
+        let filtered = branchTransfersList;
+        if (fromDate || toDate) {
+            filtered = branchTransfersList.filter(t => {
+                const d = (t.created_at || '').split('T')[0];
+                if (fromDate && d < fromDate) return false;
+                if (toDate && d > toDate) return false;
+                return true;
+            });
+        }
+        const totalUnits = (t) => (t.lines || []).reduce((sum, l) => sum + parseFloat(l.quantity || 0), 0);
+        if (filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="padding: 2rem; text-align: center; color: var(--text-secondary);">No branch transfers found.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = filtered.map(t => {
+            const status = t.status || 'DRAFT';
+            const badge = status === 'COMPLETED' ? 'badge-success' : 'badge-warning';
+            const units = totalUnits(t);
+            return `<tr style="cursor: pointer;" onclick="if(window.openBranchTransferView) window.openBranchTransferView('${t.id}')">
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${(t.transfer_number || t.id).toString().substring(0, 20)}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatDate(t.created_at)}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><span class="badge ${badge}">${status}</span></td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${(t.supplying_branch_name || '—')}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${(t.receiving_branch_name || '—')}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${units}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">—</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.openBranchTransferView) window.openBranchTransferView('${t.id}')"><i class="fas fa-eye"></i></button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadBranchTransfersData', e);
+        tbody.innerHTML = '<tr><td colspan="8" style="padding: 2rem; text-align: center; color: var(--danger-color);">' + (e.message || 'Failed to load') + '</td></tr>';
+        if (headerBtns) headerBtns.innerHTML = '';
+    }
+}
+
+async function loadBranchReceiptsData() {
+    const tbody = document.getElementById('branchReceiptsTableBody');
+    if (!tbody) return;
+    const headerBtns = document.getElementById('branchReceiptsHeaderButtons');
+    try {
+        await getBranchSettingsForCurrentBranch();
+        if (headerBtns) {
+            const allowManual = (branchSettingsCache && branchSettingsCache.allow_manual_receipt !== false);
+            headerBtns.innerHTML = allowManual
+                ? '<button class="btn btn-primary" onclick="if(window.openBranchReceiptCreate) window.openBranchReceiptCreate()"><i class="fas fa-plus"></i> New Receipt</button>'
+                : '<span style="color: var(--text-secondary); font-size: 0.875rem;">Create from Pending Transfers only</span>';
+        }
+        const params = {};
+        if (CONFIG.BRANCH_ID) params.receiving_branch_id = CONFIG.BRANCH_ID;
+        const statusFilter = document.getElementById('branchReceiptsStatus');
+        if (statusFilter && statusFilter.value) params.status = statusFilter.value;
+        const list = await API.branchInventory.getReceipts(params);
+        branchReceiptsList = Array.isArray(list) ? list : [];
+        const fromEl = document.getElementById('branchReceiptsDateFrom');
+        const toEl = document.getElementById('branchReceiptsDateTo');
+        const fromDate = fromEl ? fromEl.value : null;
+        const toDate = toEl ? toEl.value : null;
+        let filtered = branchReceiptsList;
+        if (fromDate || toDate) {
+            filtered = branchReceiptsList.filter(r => {
+                const d = (r.created_at || '').split('T')[0];
+                if (fromDate && d < fromDate) return false;
+                if (toDate && d > toDate) return false;
+                return true;
+            });
+        }
+        const totalUnits = (r) => (r.lines || []).reduce((sum, l) => sum + parseFloat(l.quantity || 0), 0);
+        if (filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="padding: 2rem; text-align: center; color: var(--text-secondary);">No branch receipts found.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = filtered.map(r => {
+            const status = r.status || 'PENDING';
+            const badge = status === 'RECEIVED' ? 'badge-success' : 'badge-warning';
+            const units = totalUnits(r);
+            return `<tr style="cursor: pointer;" onclick="if(window.openBranchReceiptView) window.openBranchReceiptView('${r.id}')">
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${(r.receipt_number || r.id).toString().substring(0, 20)}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatDate(r.created_at)}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><span class="badge ${badge}">${status}</span></td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${(r.receiving_branch_name || '—')}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${units}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.openBranchReceiptView) window.openBranchReceiptView('${r.id}')"><i class="fas fa-eye"></i></button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadBranchReceiptsData', e);
+        tbody.innerHTML = '<tr><td colspan="6" style="padding: 2rem; text-align: center; color: var(--danger-color);">' + (e.message || 'Failed to load') + '</td></tr>';
+        if (headerBtns) headerBtns.innerHTML = '';
+    }
+}
+
+let branchOrderTableInstance = null;
+
+function showBranchOrdersList() {
+    branchOrdersView = 'list';
+    branchOrderViewId = null;
+    renderInventoryPage();
+}
+
+function openBranchOrderCreate() {
+    branchOrdersView = 'create';
+    // Full-page create: re-render entire inventory area so create form is main content (no modal)
+    renderInventoryPage();
+}
+
+async function initBranchOrderCreatePage() {
+    var orderingNameEl = document.getElementById('branchOrderOrderingBranchName');
+    var supplyingWrap = document.getElementById('branchOrderSupplyingBranchWrap');
+    var mount = document.getElementById('branchOrderTableMount');
+    if (!mount || !supplyingWrap) return;
+    try {
+        var branches = await API.branch.list(CONFIG.COMPANY_ID);
+        var currentId = CONFIG.BRANCH_ID;
+        var currentBranch = branches.find(function (b) { return b.id === currentId; });
+        currentBranchName = currentBranch ? (currentBranch.name || 'Current branch') : 'Current branch';
+        if (orderingNameEl) orderingNameEl.textContent = currentBranchName;
+        var supplyingBranches = branches.filter(function (b) { return b.id !== currentId; });
+        var supplyingOpts = supplyingBranches.map(function (b) {
+            return '<option value="' + b.id + '">' + (typeof escapeHtml === 'function' ? escapeHtml(b.name) : b.name) + '</option>';
+        }).join('');
+        supplyingWrap.innerHTML = '<select id="branchOrderSupplyingBranch" class="form-input" style="width: 100%; max-width: 400px;"><option value="">— Select supplying branch —</option>' + supplyingOpts + '</select>';
+        mount.innerHTML = '';
+        branchOrderTableInstance = new window.TransactionItemsTable({
+            mountEl: mount,
+            mode: 'branch_order',
+            useAddRow: true,
+            canEdit: true,
+            items: [],
+            onAddItem: function (item) {
+                if (!item || !item.item_id) return;
+                var items = branchOrderTableInstance.getItems().filter(function (i) { return i.item_id && !i.is_empty; });
+                var existing = items.filter(function (i) { return i.item_id === item.item_id && (i.unit_name || '') === (item.unit_name || ''); });
+                if (existing.length) {
+                    existing[0].quantity = (parseFloat(existing[0].quantity) || 0) + (parseFloat(item.quantity) || 1);
+                } else {
+                    items.push({ item_id: item.item_id, item_name: item.item_name, item_code: item.item_code, item_sku: item.item_sku, unit_name: item.unit_name || '', quantity: item.quantity || 1, unit_price: 0, total: 0, is_empty: false });
+                }
+                branchOrderTableInstance.setItems(items);
+                branchOrderTableInstance.addRowItem = null;
+                branchOrderTableInstance.editingRowIndex = null;
+                branchOrderTableInstance.render();
+                branchOrderTableInstance.attachEventListeners();
+            },
+            onItemCreate: function (query, rowIndex, callback) {
+                window._transactionItemCreateCallback = callback;
+                window._transactionItemCreateRowIndex = rowIndex;
+                if (query) window._transactionItemCreateName = query;
+                if (typeof showAddItemModal === 'function') {
+                    showAddItemModal();
+                    setTimeout(function () {
+                        var nameInput = document.querySelector('#itemForm input[name="name"]');
+                        if (nameInput && query) nameInput.value = query;
+                    }, 100);
+                } else {
+                    if (window.showToast) showToast('To create item, go to Items page', 'info');
+                }
+            }
+        });
+    } catch (e) {
+        console.error('initBranchOrderCreatePage', e);
+        if (orderingNameEl) orderingNameEl.textContent = 'Current branch';
+        supplyingWrap.innerHTML = '<span style="color: var(--danger-color);">Failed to load branches.</span>';
+        if (window.showToast) showToast(e.message || 'Failed to load form', 'error');
+    }
+}
+
+async function saveBranchOrderDraft() {
+    var orderingId = CONFIG.BRANCH_ID;
+    var supplyingSelect = document.getElementById('branchOrderSupplyingBranch');
+    var supplyingId = supplyingSelect ? supplyingSelect.value : null;
+    if (!orderingId) {
+        if (window.showToast) showToast('Current branch required', 'error');
+        return;
+    }
+    if (!supplyingId) {
+        if (window.showToast) showToast('Select supplying branch', 'error');
+        return;
+    }
+    if (orderingId === supplyingId) {
+        if (window.showToast) showToast('Ordering and supplying branch must be different', 'error');
+        return;
+    }
+    var items = branchOrderTableInstance ? branchOrderTableInstance.getItems() : [];
+    var valid = items.filter(function (i) { return i.item_id && (parseFloat(i.quantity) || 0) > 0; });
+    if (valid.length === 0) {
+        if (window.showToast) showToast('Add at least one item with quantity', 'error');
+        return;
+    }
+    var lines = valid.map(function (i) {
+        return { item_id: i.item_id, unit_name: i.unit_name || 'piece', quantity: parseFloat(i.quantity) || 1 };
+    });
+    try {
+        await API.branchInventory.createOrder({ ordering_branch_id: orderingId, supplying_branch_id: supplyingId, lines: lines });
+        if (window.showToast) showToast('Branch order saved as draft', 'success');
+        showBranchOrdersList();
+    } catch (e) {
+        console.error('saveBranchOrderDraft', e);
+        if (window.showToast) showToast(e.message || (e.detail && (typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail))) || 'Failed to save', 'error');
+    }
+}
+
+function openBranchOrderView(id) {
+    branchOrdersView = 'view';
+    branchOrderViewId = id;
+    renderInventoryPage();
+}
+
+async function loadBranchOrderViewPage(orderId) {
+    var container = document.getElementById('branchOrderViewContent');
+    if (!container) return;
+    try {
+        var order = await API.branchInventory.getOrder(orderId);
+        var status = order.status || 'DRAFT';
+        var canBatch = status === 'DRAFT' && order.lines && order.lines.length > 0;
+        var rows = (order.lines || []).map(function (l) {
+            return '<tr><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.item_name || '—') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.unit_name || '') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: right;">' + (l.quantity != null ? l.quantity : '—') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: right;">' + (l.fulfilled_qty != null ? l.fulfilled_qty : '0') + '</td></tr>';
+        }).join('');
+        container.innerHTML =
+            '<div style="margin-bottom: 1rem;">' +
+            '<p><strong>Document:</strong> ' + (order.order_number || order.id) + ' &nbsp; <span class="badge ' + (status === 'BATCHED' ? 'badge-success' : 'badge-warning') + '">' + status + '</span></p>' +
+            '<p><strong>From (ordering):</strong> ' + (order.ordering_branch_name || '—') + ' &nbsp; <strong>To (supplying):</strong> ' + (order.supplying_branch_name || '—') + '</p>' +
+            '</div>' +
+            '<div class="table-container" style="max-height: 40vh;"><table style="width: 100%; border-collapse: collapse;">' +
+            '<thead><tr><th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color);">Item</th><th>Unit</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Fulfilled</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+            (canBatch ? '<div style="margin-top: 1rem;"><button class="btn btn-primary" id="branchOrderBatchBtn"><i class="fas fa-check-double"></i> Batch order</button></div>' : '');
+        if (canBatch) document.getElementById('branchOrderBatchBtn').onclick = function () { batchBranchOrder(orderId); };
+    } catch (e) {
+        console.error('loadBranchOrderViewPage', e);
+        container.innerHTML = '<div class="alert alert-danger">' + (e.message || 'Failed to load order') + '</div>';
+        if (window.showToast) showToast(e.message || 'Failed to load order', 'error');
+    }
+}
+
+async function batchBranchOrder(orderId) {
+    try {
+        await API.branchInventory.batchOrder(orderId);
+        if (window.showToast) showToast('Order batched successfully. Items added to Order Book as Branch Order.', 'success');
+        showBranchOrdersList();
+    } catch (e) {
+        console.error('batchBranchOrder', e);
+        if (window.showToast) showToast(e.message || (e.detail && (typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail))) || 'Failed to batch', 'error');
+    }
+}
+
+let branchTransferTableInstance = null;
+let branchTransferFromOrderId = null;
+
+function showBranchTransfersList() {
+    branchTransfersView = 'list';
+    branchTransferViewId = null;
+    renderInventoryPage();
+}
+
+function openBranchTransferCreate() {
+    branchTransfersView = 'create';
+    branchTransferViewId = null;
+    // Full-page create: re-render entire inventory area so create form is main content (no modal)
+    renderInventoryPage();
+}
+
+async function initBranchTransferCreatePage() {
+    var formWrap = document.getElementById('branchTransferCreateFormWrap');
+    var mount = document.getElementById('branchTransferTableMount');
+    if (!formWrap || !mount) return;
+    try {
+        await getBranchSettingsForCurrentBranch();
+        var allowManual = branchSettingsCache && branchSettingsCache.allow_manual_transfer !== false;
+        var supplyingBranchId = CONFIG.BRANCH_ID;
+        if (!supplyingBranchId) {
+            formWrap.innerHTML = '<p class="alert alert-warning">Select current branch first.</p>';
+            return;
+        }
+        var pending = await API.branchInventory.getPendingOrdersForSupply(supplyingBranchId);
+        pending = Array.isArray(pending) ? pending : [];
+        var branches = await API.branch.list(CONFIG.COMPANY_ID);
+        var receivingOpts = branches.filter(function (b) { return b.id !== supplyingBranchId; }).map(function (b) { return '<option value="' + b.id + '">' + (typeof escapeHtml === 'function' ? escapeHtml(b.name) : b.name) + '</option>'; }).join('');
+        var orderOpts = '<option value="">-- Select order --</option>' + pending.map(function (o) {
+            return '<option value="' + o.id + '">' + (o.order_number || o.id) + ' (to ' + (o.ordering_branch_name || '') + ')</option>';
+        }).join('');
+        formWrap.innerHTML =
+            '<div class="form-group"><label class="form-label">Create from</label><select id="branchTransferSource" class="form-input" style="width: 100%; max-width: 400px;">' +
+            '<option value="order">From Pending Branch Order</option>' + (allowManual ? '<option value="manual">Manual</option>' : '') +
+            '</select></div>' +
+            '<div id="branchTransferOrderGroup" class="form-group"><label class="form-label">Pending order</label><select id="branchTransferOrderId" class="form-input" style="width: 100%; max-width: 400px;">' + orderOpts + '</select></div>' +
+            '<div id="branchTransferManualGroup" class="form-group" style="display: none;"><label class="form-label">Receiving branch</label><select id="branchTransferReceivingBranch" class="form-input" style="width: 100%; max-width: 400px;">' + receivingOpts + '</select></div>' +
+            '<div class="form-group"><label class="form-label">Items</label></div>';
+        branchTransferFromOrderId = null;
+        document.getElementById('branchTransferSource').onchange = function () {
+            var isOrder = this.value === 'order';
+            document.getElementById('branchTransferOrderGroup').style.display = isOrder ? 'block' : 'none';
+            document.getElementById('branchTransferManualGroup').style.display = isOrder ? 'none' : 'block';
+            if (isOrder && document.getElementById('branchTransferOrderId')) document.getElementById('branchTransferOrderId').dispatchEvent(new Event('change'));
+            else initBranchTransferTable([]);
+        };
+        document.getElementById('branchTransferOrderId').onchange = function () {
+            var orderId = this.value;
+            if (!orderId) { initBranchTransferTable([]); return; }
+            API.branchInventory.getOrder(orderId).then(function (order) {
+                branchTransferFromOrderId = orderId;
+                var items = (order.lines || []).map(function (l) {
+                    return { item_id: l.item_id, item_name: l.item_name, unit_name: l.unit_name || 'piece', quantity: parseFloat(l.quantity) || 1, unit_price: 0, total: 0, branch_order_line_id: l.id, is_empty: false };
+                });
+                initBranchTransferTable(items);
+            }).catch(function (e) {
+                if (window.showToast) showToast(e.message || 'Failed to load order', 'error');
+                initBranchTransferTable([]);
+            });
+        };
+        if (pending.length && document.getElementById('branchTransferOrderId')) document.getElementById('branchTransferOrderId').dispatchEvent(new Event('change'));
+        else initBranchTransferTable([]);
+    } catch (e) {
+        console.error('initBranchTransferCreatePage', e);
+        formWrap.innerHTML = '<p class="alert alert-danger">' + (e.message || 'Failed to load') + '</p>';
+        if (window.showToast) showToast(e.message || 'Failed to open form', 'error');
+    }
+}
+
+function initBranchTransferTable(items) {
+    var mount = document.getElementById('branchTransferTableMount');
+    if (!mount) return;
+    mount.innerHTML = '';
+    branchTransferTableInstance = new window.TransactionItemsTable({
+        mountEl: mount,
+        mode: 'branch_transfer',
+        useAddRow: true,
+        canEdit: true,
+        items: items,
+        onAddItem: function (item) {
+            if (!item || !item.item_id) return;
+            var list = branchTransferTableInstance.getItems().filter(function (i) { return i.item_id && !i.is_empty; });
+            var existing = list.filter(function (i) { return i.item_id === item.item_id && (i.unit_name || '') === (item.unit_name || ''); });
+            if (existing.length) existing[0].quantity = (parseFloat(existing[0].quantity) || 0) + (parseFloat(item.quantity) || 1);
+            else list.push({ item_id: item.item_id, item_name: item.item_name, item_code: item.item_code, unit_name: item.unit_name || '', quantity: item.quantity || 1, unit_price: 0, total: 0, is_empty: false });
+            branchTransferTableInstance.setItems(list);
+            branchTransferTableInstance.addRowItem = null;
+            branchTransferTableInstance.editingRowIndex = null;
+            branchTransferTableInstance.render();
+            branchTransferTableInstance.attachEventListeners();
+        },
+        onItemCreate: function (query, rowIndex, callback) {
+            window._transactionItemCreateCallback = callback;
+            if (typeof showAddItemModal === 'function') showAddItemModal();
+            else if (window.showToast) showToast('Create item from Items page', 'info');
+        }
+    });
+}
+
+async function saveBranchTransferDraft() {
+    var supplyingId = CONFIG.BRANCH_ID;
+    if (!supplyingId) { if (window.showToast) showToast('Current branch required', 'error'); return; }
+    var receivingId;
+    var orderId = null;
+    if (document.getElementById('branchTransferSource').value === 'order') {
+        orderId = document.getElementById('branchTransferOrderId').value;
+        if (!orderId) { if (window.showToast) showToast('Select a pending order', 'error'); return; }
+        var order = await API.branchInventory.getOrder(orderId);
+        receivingId = order.ordering_branch_id;
+    } else {
+        receivingId = document.getElementById('branchTransferReceivingBranch').value;
+        if (!receivingId || receivingId === supplyingId) {
+            if (window.showToast) showToast('Select a different receiving branch', 'error');
+            return;
+        }
+    }
+    var items = branchTransferTableInstance ? branchTransferTableInstance.getItems() : [];
+    var valid = items.filter(function (i) { return i.item_id && (parseFloat(i.quantity) || 0) > 0; });
+    if (valid.length === 0) { if (window.showToast) showToast('Add at least one item', 'error'); return; }
+    var lines = valid.map(function (i) {
+        return {
+            branch_order_line_id: i.branch_order_line_id || null,
+            item_id: i.item_id,
+            unit_name: i.unit_name || 'piece',
+            quantity: parseFloat(i.quantity) || 1,
+            unit_cost: parseFloat(i.unit_price) || 0
+        };
+    });
+    try {
+        await API.branchInventory.createTransfer({
+            supplying_branch_id: supplyingId,
+            receiving_branch_id: receivingId,
+            branch_order_id: orderId || undefined,
+            lines: lines
+        });
+        if (window.showToast) showToast('Transfer saved as draft', 'success');
+        showBranchTransfersList();
+    } catch (e) {
+        console.error('saveBranchTransferDraft', e);
+        if (window.showToast) showToast(e.message || (e.detail && (typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail))) || 'Failed to save', 'error');
+    }
+}
+
+function openBranchTransferView(id) {
+    branchTransfersView = 'view';
+    branchTransferViewId = id;
+    renderInventoryPage();
+}
+
+async function loadBranchTransferViewPage(transferId) {
+    var container = document.getElementById('branchTransferViewContent');
+    if (!container) return;
+    try {
+        var transfer = await API.branchInventory.getTransfer(transferId);
+        var status = transfer.status || 'DRAFT';
+        var canComplete = status === 'DRAFT' && transfer.lines && transfer.lines.length > 0;
+        var rows = (transfer.lines || []).map(function (l) {
+            return '<tr><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.item_name || '—') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.unit_name || '') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: right;">' + (l.quantity != null ? l.quantity : '') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: right;">' + (l.unit_cost != null ? l.unit_cost : '') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.batch_number || '—') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.expiry_date || '—') + '</td></tr>';
+        }).join('');
+        container.innerHTML =
+            '<div style="margin-bottom: 1rem;">' +
+            '<p><strong>Document:</strong> ' + (transfer.transfer_number || transfer.id) + ' &nbsp; <span class="badge ' + (status === 'COMPLETED' ? 'badge-success' : 'badge-warning') + '">' + status + '</span></p>' +
+            '<p><strong>From:</strong> ' + (transfer.supplying_branch_name || '—') + ' &nbsp; <strong>To:</strong> ' + (transfer.receiving_branch_name || '—') + '</p></div>' +
+            '<div class="table-container" style="max-height: 40vh;"><table style="width: 100%; border-collapse: collapse;">' +
+            '<thead><tr><th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color);">Item</th><th>Unit</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Cost</th><th>Batch</th><th>Expiry</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+            (canComplete ? '<div style="margin-top: 1rem;"><button class="btn btn-primary" id="branchTransferCompleteBtn"><i class="fas fa-check-double"></i> Complete transfer</button></div>' : '');
+        if (canComplete) document.getElementById('branchTransferCompleteBtn').onclick = function () { completeBranchTransfer(transferId); };
+    } catch (e) {
+        console.error('loadBranchTransferViewPage', e);
+        container.innerHTML = '<div class="alert alert-danger">' + (e.message || 'Failed to load transfer') + '</div>';
+        if (window.showToast) showToast(e.message || 'Failed to load transfer', 'error');
+    }
+}
+
+async function completeBranchTransfer(transferId) {
+    try {
+        await API.branchInventory.completeTransfer(transferId);
+        if (window.showToast) showToast('Transfer completed; stock deducted and receipt created for receiving branch.', 'success');
+        showBranchTransfersList();
+    } catch (e) {
+        console.error('completeBranchTransfer', e);
+        if (window.showToast) showToast(e.message || (e.detail && (typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail))) || 'Failed to complete', 'error');
+    }
+}
+
+function openBranchReceiptCreate() {
+    if (window.showToast) showToast('Receipts are created when a transfer is completed. Open a pending receipt below to confirm receipt.', 'info');
+}
+
+function showBranchReceiptsList() {
+    branchReceiptsView = 'list';
+    branchReceiptViewId = null;
+    renderInventoryPage();
+}
+
+function openBranchReceiptView(id) {
+    branchReceiptsView = 'view';
+    branchReceiptViewId = id;
+    renderInventoryPage();
+}
+
+async function loadBranchReceiptViewPage(receiptId) {
+    var container = document.getElementById('branchReceiptViewContent');
+    if (!container) return;
+    try {
+        var receipt = await API.branchInventory.getReceipt(receiptId);
+        var status = receipt.status || 'PENDING';
+        var canReceive = status === 'PENDING' && receipt.lines && receipt.lines.length > 0;
+        var rows = (receipt.lines || []).map(function (l) {
+            return '<tr><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.item_name || '—') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.unit_name || '') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: right;">' + (l.quantity != null ? l.quantity : '') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align: right;">' + (l.unit_cost != null ? l.unit_cost : '') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.batch_number || '—') + '</td><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + (l.expiry_date || '—') + '</td></tr>';
+        }).join('');
+        container.innerHTML =
+            '<div style="margin-bottom: 1rem;">' +
+            '<p><strong>Document:</strong> ' + (receipt.receipt_number || receipt.id) + ' &nbsp; <span class="badge ' + (status === 'RECEIVED' ? 'badge-success' : 'badge-warning') + '">' + status + '</span></p>' +
+            '<p><strong>Receiving branch:</strong> ' + (receipt.receiving_branch_name || '—') + '</p></div>' +
+            '<div class="table-container" style="max-height: 40vh;"><table style="width: 100%; border-collapse: collapse;">' +
+            '<thead><tr><th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color);">Item</th><th>Unit</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Cost</th><th>Batch</th><th>Expiry</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+            (canReceive ? '<div style="margin-top: 1rem;"><button class="btn btn-primary" id="branchReceiptConfirmBtn"><i class="fas fa-check"></i> Confirm receipt</button></div>' : '');
+        if (canReceive) document.getElementById('branchReceiptConfirmBtn').onclick = function () { confirmBranchReceipt(receiptId); };
+    } catch (e) {
+        console.error('loadBranchReceiptViewPage', e);
+        container.innerHTML = '<div class="alert alert-danger">' + (e.message || 'Failed to load receipt') + '</div>';
+        if (window.showToast) showToast(e.message || 'Failed to load receipt', 'error');
+    }
+}
+
+async function confirmBranchReceipt(receiptId) {
+    try {
+        await API.branchInventory.receiveReceipt(receiptId);
+        if (window.showToast) showToast('Receipt confirmed; stock added to this branch.', 'success');
+        showBranchReceiptsList();
+    } catch (e) {
+        console.error('confirmBranchReceipt', e);
+        if (window.showToast) showToast(e.message || (e.detail && (typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail))) || 'Failed to confirm', 'error');
     }
 }
 
@@ -600,7 +1454,7 @@ function renderExpiryReportSubPage() {
 }
 
 function renderItemMovementSubPage() {
-    return '<div><h2>Item Movement</h2><p>Item movement functionality coming soon...</p></div>';
+    return '<div id="inventoryMovementContainer" class="item-movement-report-wrapper"></div>';
 }
 
 function renderCurrentStockSubPage() {
@@ -662,7 +1516,10 @@ async function loadExpiryReportData() {
 }
 
 async function loadItemMovementData() {
-    // TODO
+    const container = document.getElementById('inventoryMovementContainer');
+    if (container && typeof window.renderItemMovementReportInto === 'function') {
+        window.renderItemMovementReportInto(container);
+    }
 }
 
 async function loadCurrentStockData() {
@@ -911,6 +1768,24 @@ function formatNumber(num) {
             // Export loadItemsData for use from items.js
             window.loadItemsData = loadItemsData;
             if (typeof showAdjustStockModal === 'function') window.showAdjustStockModal = showAdjustStockModal;
+            // Branch inventory
+            window.loadBranchOrdersData = loadBranchOrdersData;
+            window.loadBranchTransfersData = loadBranchTransfersData;
+            window.loadBranchReceiptsData = loadBranchReceiptsData;
+            window.openBranchOrderCreate = openBranchOrderCreate;
+            window.openBranchOrderView = openBranchOrderView;
+            window.openBranchTransferCreate = openBranchTransferCreate;
+            window.openBranchTransferView = openBranchTransferView;
+            window.openBranchReceiptCreate = openBranchReceiptCreate;
+            window.openBranchReceiptView = openBranchReceiptView;
+            window.showBranchOrdersList = showBranchOrdersList;
+            window.saveBranchOrderDraft = saveBranchOrderDraft;
+            window.batchBranchOrder = batchBranchOrder;
+            window.saveBranchTransferDraft = saveBranchTransferDraft;
+            window.showBranchTransfersList = showBranchTransfersList;
+            window.showBranchReceiptsList = showBranchReceiptsList;
+            window.completeBranchTransfer = completeBranchTransfer;
+            window.confirmBranchReceipt = confirmBranchReceipt;
             if (typeof submitAdjustStock === 'function') window.submitAdjustStock = submitAdjustStock;
             
             console.log('✓ Inventory functions exported to window:', {

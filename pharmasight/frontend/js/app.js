@@ -1044,6 +1044,9 @@ window.subNavItems = {
         { page: 'inventory', subPage: 'expiry', label: 'Expiry Report', icon: 'fa-calendar-times' },
         { page: 'inventory', subPage: 'movement', label: 'Item Movement', icon: 'fa-exchange-alt' },
         { page: 'inventory', subPage: 'stock', label: 'Current Stock', icon: 'fa-chart-bar' },
+        { page: 'inventory', subPage: 'branch-orders', label: 'Branch Orders', icon: 'fa-list-alt' },
+        { page: 'inventory', subPage: 'branch-transfers', label: 'Branch Transfers', icon: 'fa-truck-loading' },
+        { page: 'inventory', subPage: 'branch-receipts', label: 'Branch Receipts', icon: 'fa-clipboard-check' },
         { page: 'stock-take', label: 'Stock Take', icon: 'fa-clipboard-list' }
     ],
     expenses: [
@@ -1054,6 +1057,7 @@ window.subNavItems = {
     reports: [
         { page: 'reports-sales', label: 'Sales Reports', icon: 'fa-chart-line' },
         { page: 'reports-inventory', label: 'Inventory Reports', icon: 'fa-warehouse' },
+        { page: 'reports-item-movement', label: 'Item Movement Report', icon: 'fa-exchange-alt' },
         { page: 'reports-financial', label: 'Financial Reports', icon: 'fa-dollar-sign' },
         { page: 'reports-custom', label: 'Custom Reports', icon: 'fa-file-alt' }
     ],

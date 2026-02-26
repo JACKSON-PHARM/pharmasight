@@ -56,6 +56,21 @@ def verify_password(plain_password: str, password_hash: Optional[str]) -> bool:
         return False
 
 
+def validate_new_password(password: str) -> Optional[str]:
+    """
+    Validate new password for submission. Applies only to new password input; does not touch stored hashes.
+    Returns None if valid, or an error message string if invalid.
+    Policy: minimum 8 characters; at least 1 letter and 1 digit. No special character requirement.
+    """
+    if not password or len(password) < 8:
+        return "Password must be at least 8 characters."
+    has_letter = any(c.isalpha() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    if not has_letter or not has_digit:
+        return "Password must contain at least one letter and one digit."
+    return None
+
+
 def _internal_encode(
     payload: dict,
     expires_delta: timedelta,
@@ -165,6 +180,129 @@ def revoke_token_in_db(session: Session, jti: str, expires_at: Optional[datetime
             {"jti": jti, "expires_at": expires_at},
         )
         session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+
+# -----------------------------------------------------------------------------
+# Refresh token storage (per-device, rotation, revoke on logout)
+# Table: refresh_tokens (migration 039). All queries are tenant-scoped (session is tenant/legacy DB).
+# -----------------------------------------------------------------------------
+
+def insert_refresh_token(
+    session: Session,
+    user_id: str,
+    jti: str,
+    expires_at: datetime,
+    tenant_id: Optional[str] = None,
+    device_info: Optional[str] = None,
+    issued_at: Optional[datetime] = None,
+) -> None:
+    """Insert a new refresh token row. Caller must commit if needed."""
+    from uuid import uuid4
+    now = issued_at or datetime.now(timezone.utc)
+    session.execute(
+        text(
+            """
+            INSERT INTO refresh_tokens (id, user_id, jti, issued_at, expires_at, device_info, tenant_id, is_active)
+            VALUES (:id, :user_id::uuid, :jti, :issued_at, :expires_at, :device_info, :tenant_id::uuid, TRUE)
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "user_id": user_id,
+            "jti": jti,
+            "issued_at": now,
+            "expires_at": expires_at,
+            "device_info": device_info,
+            "tenant_id": tenant_id,
+        },
+    )
+
+
+def get_active_refresh_token_by_jti(session: Session, jti: str):
+    """Return the refresh_tokens row if active and not expired, else None. Caller uses same DB session."""
+    if not jti:
+        return None
+    try:
+        row = session.execute(
+            text(
+                """
+                SELECT id, user_id, jti, issued_at, expires_at, device_info, tenant_id, is_active
+                FROM refresh_tokens
+                WHERE jti = :jti AND is_active = TRUE AND expires_at > NOW()
+                """
+            ),
+            {"jti": jti},
+        ).fetchone()
+        return row
+    except Exception:
+        return None
+
+
+def deactivate_refresh_token_by_jti(session: Session, jti: str) -> None:
+    """Set is_active = FALSE for the given jti."""
+    try:
+        session.execute(
+            text("UPDATE refresh_tokens SET is_active = FALSE WHERE jti = :jti"),
+            {"jti": jti},
+        )
+    except Exception:
+        session.rollback()
+        raise
+
+
+def deactivate_all_refresh_tokens_for_user(session: Session, user_id: str) -> None:
+    """Invalidate all active refresh tokens for this user (in this tenant/legacy DB)."""
+    try:
+        session.execute(
+            text("UPDATE refresh_tokens SET is_active = FALSE WHERE user_id = :user_id::uuid AND is_active = TRUE"),
+            {"user_id": user_id},
+        )
+    except Exception:
+        session.rollback()
+        raise
+
+
+def count_active_refresh_tokens(session: Session, user_id: str) -> int:
+    """Number of active (is_active=TRUE, not expired) refresh tokens for this user."""
+    try:
+        row = session.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM refresh_tokens
+                WHERE user_id = :user_id::uuid AND is_active = TRUE AND expires_at > NOW()
+                """
+            ),
+            {"user_id": user_id},
+        ).fetchone()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
+# Max concurrent active refresh tokens (sessions) per user per tenant. Oldest revoked when exceeded.
+MAX_ACTIVE_REFRESH_TOKENS_PER_USER = 3
+
+
+def revoke_oldest_refresh_tokens_over_limit(session: Session, user_id: str, max_active: int = MAX_ACTIVE_REFRESH_TOKENS_PER_USER) -> None:
+    """If user has more than max_active active tokens, deactivate oldest by issued_at until at most max_active remain."""
+    try:
+        session.execute(
+            text(
+                """
+                WITH ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (ORDER BY issued_at DESC) AS rn
+                    FROM refresh_tokens
+                    WHERE user_id = :user_id::uuid AND is_active = TRUE AND expires_at > NOW()
+                )
+                UPDATE refresh_tokens rt SET is_active = FALSE
+                FROM ranked r WHERE rt.id = r.id AND r.rn > :max_active
+                """
+            ),
+            {"user_id": user_id, "max_active": max_active},
+        )
     except Exception:
         session.rollback()
         raise

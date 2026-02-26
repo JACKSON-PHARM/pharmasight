@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_current_user
 from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
@@ -139,7 +139,11 @@ def generate_sku(company_id: UUID, db: Session) -> str:
 
 
 @router.post("/", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
-def create_item(item: ItemCreate, db: Session = Depends(get_tenant_db)):
+def create_item(
+    item: ItemCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Create a new item with 3-tier units. SKU auto-generated if not provided. Rejects duplicate names (same company)."""
     try:
         db_item = svc_create_item(db, item)
@@ -184,7 +188,8 @@ class StockBatchRequest(BaseModel):
 @router.post("/stock-batch")
 def stock_batch(
     body: StockBatchRequest,
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Batch fetch stock for multiple items. Uses inventory_balances (snapshot) for fast lookup.
@@ -226,7 +231,8 @@ def search_items(
     limit: int = Query(50, ge=1, le=100, description="Maximum results"),
     include_pricing: bool = Query(False, description="Include pricing info (slower)"),
     context: Optional[str] = Query(None, description="Context: 'purchase_order' for PO-specific fields"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Item search: reads only from DB (items table). Joins with inventory_ledger for
@@ -546,6 +552,7 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
 def get_item(
     item_id: UUID,
     branch_id: Optional[UUID] = Query(None, description="Branch ID for cost from ledger (optional)"),
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -574,6 +581,7 @@ def get_item(
 def get_item_activity(
     item_id: UUID,
     branch_id: UUID = Query(..., description="Session branch ID (for stock and cost context)"),
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -725,7 +733,8 @@ def get_item_tier_price(
     item_id: UUID,
     tier: str,
     unit_name: Optional[str] = Query(None, description="Optional unit name to convert price to"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Get price for a specific tier (supplier, wholesale, or retail)"""
     item = db.query(Item).filter(Item.id == item_id).first()
@@ -743,7 +752,11 @@ def get_item_tier_price(
 
 
 @router.get("/company/{company_id}/count", response_model=dict)
-def get_items_count(company_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_items_count(
+    company_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get count of items for a company (fast, no data loading)"""
     count = db.query(Item).filter(Item.company_id == company_id).count()
     return {"count": count}
@@ -753,7 +766,8 @@ def get_items_count(company_id: UUID, db: Session = Depends(get_tenant_db)):
 def get_items_overview(
     company_id: UUID,
     branch_id: Optional[UUID] = Query(None, description="Branch ID for stock calculation (optional)"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Get items with overview data (stock, supplier, cost) - OPTIMIZED
@@ -951,6 +965,7 @@ def get_items_by_company(
 def adjust_stock(
     item_id: UUID,
     body: AdjustStockRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -1072,7 +1087,12 @@ def adjust_stock(
 
 
 @router.put("/{item_id}", response_model=ItemResponse)
-def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(get_tenant_db)):
+def update_item(
+    item_id: UUID,
+    item_update: ItemUpdate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Update item with strict business rules:
     - SKU is immutable (never editable)
@@ -1126,7 +1146,11 @@ def update_item(item_id: UUID, item_update: ItemUpdate, db: Session = Depends(ge
 
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_item(item_id: UUID, db: Session = Depends(get_tenant_db)):
+def delete_item(
+    item_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Soft delete item (set is_active=False)"""
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
@@ -1138,7 +1162,11 @@ def delete_item(item_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.post("/bulk", response_model=dict, status_code=status.HTTP_201_CREATED)
-def bulk_create_items(bulk_data: ItemsBulkCreate, db: Session = Depends(get_tenant_db)):
+def bulk_create_items(
+    bulk_data: ItemsBulkCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Bulk create items (for Excel import) - OPTIMIZED with duplicate detection
     
@@ -1329,7 +1357,8 @@ def get_recommended_price(
     company_id: UUID,
     unit_name: str,
     tier: Optional[str] = Query("retail", description="Pricing tier: retail, wholesale, or supplier"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Get recommended selling price for item (tier: retail / wholesale / supplier)."""
     try:
@@ -1354,7 +1383,8 @@ def get_recommended_price(
 def has_transactions(
     item_id: UUID,
     branch_id: UUID = Query(..., description="Branch ID to check transactions in"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Check if item has any transactions (sales or purchases) in the specified branch

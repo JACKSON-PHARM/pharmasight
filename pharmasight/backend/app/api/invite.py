@@ -6,7 +6,7 @@ This endpoint requires admin privileges and uses Supabase Service Role Key.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_current_user
 from app.services.invite_service import InviteService
 from app.services.startup_service import StartupService
 from app.schemas.invite import (
@@ -21,7 +21,10 @@ router = APIRouter()
 
 
 @router.post("/invite/admin", response_model=InviteAdminResponse, status_code=status.HTTP_201_CREATED)
-def invite_admin_user(request: InviteAdminRequest):
+def invite_admin_user(
+    request: InviteAdminRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
+):
     """
     Invite an admin user via Supabase Auth
     
@@ -91,7 +94,10 @@ def update_user_metadata(request: UpdateUserMetadataRequest):
 
 
 @router.post("/invite/mark-setup-complete", status_code=status.HTTP_200_OK)
-def mark_setup_complete(user_id: UUID = Query(..., description="Supabase Auth user ID")):
+def mark_setup_complete(
+    user_id: UUID = Query(..., description="Supabase Auth user ID"),
+    current_user_and_db: tuple = Depends(get_current_user),
+):
     """
     Mark company setup as complete for a user
     
@@ -117,7 +123,8 @@ def mark_setup_complete(user_id: UUID = Query(..., description="Supabase Auth us
 @router.get("/setup/status", response_model=SetupStatusResponse)
 def get_setup_status(
     user_id: UUID,
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Check if user needs to complete company setup

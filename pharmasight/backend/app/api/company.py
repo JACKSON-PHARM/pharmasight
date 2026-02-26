@@ -8,13 +8,14 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from pathlib import Path
 from pydantic import BaseModel
-from app.dependencies import get_tenant_db, get_tenant_or_default, require_settings_edit
+from app.dependencies import get_tenant_db, get_tenant_or_default, require_settings_edit, get_current_user
 from app.models.tenant import Tenant
-from app.models.company import Company, Branch
+from app.models.company import Company, Branch, BranchSetting
 from app.models.settings import CompanySetting
 from app.schemas.company import (
     CompanyCreate, CompanyResponse, CompanyUpdate,
-    BranchCreate, BranchResponse, BranchUpdate
+    BranchCreate, BranchResponse, BranchUpdate,
+    BranchSettingResponse, BranchSettingUpdate,
 )
 from app.services.tenant_storage_service import (
     upload_stamp,
@@ -41,7 +42,11 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Company endpoints
 @router.post("/companies", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
-def create_company(company: CompanyCreate, db: Session = Depends(get_tenant_db)):
+def create_company(
+    company: CompanyCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Create a new company
     
@@ -93,14 +98,21 @@ def create_company(company: CompanyCreate, db: Session = Depends(get_tenant_db))
 
 
 @router.get("/companies", response_model=List[CompanyResponse])
-def get_companies(db: Session = Depends(get_tenant_db)):
+def get_companies(
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get all companies"""
     companies = db.query(Company).all()
     return companies
 
 
 @router.get("/companies/{company_id}", response_model=CompanyResponse)
-def get_company(company_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_company(
+    company_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get company by ID"""
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
@@ -112,6 +124,7 @@ def get_company(company_id: UUID, db: Session = Depends(get_tenant_db)):
 def get_company_logo_url(
     company_id: UUID,
     request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
@@ -174,6 +187,7 @@ def _mask_document_branding_for_frontend(
 def get_company_settings(
     company_id: UUID,
     key: Optional[str] = Query(None, description="Setting key, e.g. 'print_config'. Omit to get all."),
+    current_user_and_db: tuple = Depends(get_current_user),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ) -> Dict[str, Any]:
@@ -390,7 +404,11 @@ async def upload_company_logo(
 
 # Branch endpoints
 @router.post("/branches", response_model=BranchResponse, status_code=status.HTTP_201_CREATED)
-def create_branch(branch: BranchCreate, db: Session = Depends(get_tenant_db)):
+def create_branch(
+    branch: BranchCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Create a new branch
     
@@ -431,14 +449,22 @@ def create_branch(branch: BranchCreate, db: Session = Depends(get_tenant_db)):
 
 
 @router.get("/branches/company/{company_id}", response_model=List[BranchResponse])
-def get_branches_by_company(company_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_branches_by_company(
+    company_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get all branches for a company"""
     branches = db.query(Branch).filter(Branch.company_id == company_id).all()
     return branches
 
 
 @router.get("/branches/{branch_id}", response_model=BranchResponse)
-def get_branch(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_branch(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get branch by ID"""
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
@@ -447,7 +473,12 @@ def get_branch(branch_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.put("/branches/{branch_id}", response_model=BranchResponse)
-def update_branch(branch_id: UUID, branch_update: BranchUpdate, db: Session = Depends(get_tenant_db)):
+def update_branch(
+    branch_id: UUID,
+    branch_update: BranchUpdate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Update branch"""
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
@@ -463,7 +494,11 @@ def update_branch(branch_id: UUID, branch_update: BranchUpdate, db: Session = De
 
 
 @router.post("/branches/{branch_id}/set-hq", response_model=BranchResponse)
-def set_branch_as_hq(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def set_branch_as_hq(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Set this branch as the HQ (headquarters) branch.
     Only one branch per company can be HQ. HQ has exclusive access to:
@@ -483,4 +518,61 @@ def set_branch_as_hq(branch_id: UUID, db: Session = Depends(get_tenant_db)):
     db.commit()
     db.refresh(branch)
     return branch
+
+
+@router.get("/branches/{branch_id}/settings", response_model=BranchSettingResponse)
+def get_branch_settings(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Get branch settings (branch inventory: allow manual transfer/receipt). Returns defaults if no row exists."""
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    row = db.query(BranchSetting).filter(BranchSetting.branch_id == branch_id).first()
+    if row:
+        return BranchSettingResponse(
+            branch_id=row.branch_id,
+            allow_manual_transfer=row.allow_manual_transfer,
+            allow_manual_receipt=row.allow_manual_receipt,
+        )
+    return BranchSettingResponse(
+        branch_id=branch_id,
+        allow_manual_transfer=True,
+        allow_manual_receipt=True,
+    )
+
+
+@router.patch("/branches/{branch_id}/settings", response_model=BranchSettingResponse)
+def update_branch_settings(
+    branch_id: UUID,
+    body: BranchSettingUpdate,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Update branch settings. Requires settings.edit or equivalent."""
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    row = db.query(BranchSetting).filter(BranchSetting.branch_id == branch_id).first()
+    if not row:
+        row = BranchSetting(
+            branch_id=branch_id,
+            allow_manual_transfer=True,
+            allow_manual_receipt=True,
+        )
+        db.add(row)
+        db.flush()
+    if body.allow_manual_transfer is not None:
+        row.allow_manual_transfer = body.allow_manual_transfer
+    if body.allow_manual_receipt is not None:
+        row.allow_manual_receipt = body.allow_manual_receipt
+    db.commit()
+    db.refresh(row)
+    return BranchSettingResponse(
+        branch_id=row.branch_id,
+        allow_manual_transfer=row.allow_manual_transfer,
+        allow_manual_receipt=row.allow_manual_receipt,
+    )
 

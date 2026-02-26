@@ -10,7 +10,7 @@ from sqlalchemy import and_, or_, func, desc
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta
-from app.dependencies import get_tenant_db
+from app.dependencies import get_tenant_db, get_current_user
 from app.config import settings
 from app.models import (
     StockTakeSession, StockTakeCount, StockTakeCounterLock, StockTakeAdjustment,
@@ -242,7 +242,7 @@ def _build_stock_take_template_html() -> str:
 
 
 @router.get("/template/pdf")
-def download_stock_take_template():
+def download_stock_take_template(current_user_and_db: tuple = Depends(get_current_user)):
     """
     Download an A4 PDF template for recording counted drugs during stock take.
     Fields: Item Name, Wholesale Units, Retail Units, Expiry Date, Batch Number.
@@ -270,7 +270,7 @@ def download_stock_take_template():
 
 
 @router.get("/template/html", response_class=HTMLResponse)
-def get_stock_take_template_html():
+def get_stock_take_template_html(current_user_and_db: tuple = Depends(get_current_user)):
     """
     Printable HTML template (same layout as PDF). Use when PDF is unavailable
     or user prefers to print from browser (Print → Save as PDF).
@@ -286,7 +286,8 @@ def get_stock_take_template_html():
 def create_session(
     session_data: StockTakeSessionCreate,
     created_by: UUID = Query(..., description="User ID creating the session"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Create a new stock take session (Admin/Auditor only)
@@ -370,7 +371,8 @@ def create_session(
 def list_sessions(
     branch_id: Optional[UUID] = Query(None, description="Filter by branch"),
     status_filter: Optional[str] = Query(None, description="Filter by status"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """List stock take sessions"""
     query = db.query(StockTakeSession)
@@ -418,7 +420,11 @@ def list_sessions(
 
 
 @router.get("/sessions/{session_id}", response_model=StockTakeSessionResponse)
-def get_session(session_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_session(
+    session_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get a stock take session by ID"""
     session = db.query(StockTakeSession).filter(StockTakeSession.id == session_id).first()
     if not session:
@@ -454,7 +460,11 @@ def get_session(session_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.get("/sessions/code/{session_code}", response_model=StockTakeSessionResponse)
-def get_session_by_code(session_code: str, db: Session = Depends(get_tenant_db)):
+def get_session_by_code(
+    session_code: str,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get a stock take session by code"""
     session = db.query(StockTakeSession).filter(
         StockTakeSession.session_code == session_code.upper()
@@ -495,7 +505,8 @@ def update_session(
     session_id: UUID,
     session_update: StockTakeSessionUpdate,
     user_id: UUID = Query(..., description="User ID making the update"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Update a stock take session (Admin/Auditor only)"""
     session = db.query(StockTakeSession).filter(StockTakeSession.id == session_id).first()
@@ -530,14 +541,15 @@ def update_session(
     db.commit()
     db.refresh(session)
     
-    return get_session(session_id, db)
+    return get_session(session_id, current_user_and_db, db)
 
 
 @router.post("/sessions/{session_id}/start", response_model=StockTakeSessionResponse)
 def start_session(
     session_id: UUID,
     user_id: UUID = Query(..., description="User ID starting the session"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Start a stock take session (Admin/Auditor only)"""
     session = db.query(StockTakeSession).filter(StockTakeSession.id == session_id).first()
@@ -562,7 +574,7 @@ def start_session(
     db.commit()
     db.refresh(session)
     
-    return get_session(session_id, db)
+    return get_session(session_id, current_user_and_db, db)
 
 
 # ============================================
@@ -573,7 +585,8 @@ def start_session(
 def create_count(
     count_data: dict,
     counted_by: UUID = Query(..., description="User ID making the count"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Create a stock take count
@@ -942,7 +955,8 @@ def list_counts(
 def lock_item(
     lock_request: StockTakeLockRequest,
     counter_id: UUID = Query(..., description="User ID requesting the lock"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Lock an item for counting (prevents duplicate counting)
@@ -1018,7 +1032,11 @@ def lock_item(
 
 
 @router.get("/sessions/{session_id}/locks", response_model=List[StockTakeLockResponse])
-def list_locks(session_id: UUID, db: Session = Depends(get_tenant_db)):
+def list_locks(
+    session_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """List active locks for a session"""
     cleanup_expired_locks(db)
     
@@ -1150,7 +1168,8 @@ def get_progress(session_id: UUID, db: Session = Depends(get_tenant_db)):
 def join_session(
     join_request: SessionJoinRequest,
     user_id: UUID = Query(..., description="User ID joining the session"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Join a stock take session with a code"""
     session = db.query(StockTakeSession).filter(
@@ -1221,7 +1240,11 @@ def join_session(
 # ============================================
 
 @router.get("/branch/{branch_id}/status")
-def get_branch_status(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_branch_status(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Get stock take status for a branch
     
@@ -1283,7 +1306,11 @@ def get_branch_status(branch_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.get("/branch/{branch_id}/has-drafts")
-def check_draft_documents(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def check_draft_documents(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """
     Check if branch has any draft documents that would prevent stock take
     
@@ -1511,7 +1538,8 @@ def start_branch_stock_take(
 def get_my_counts(
     branch_id: UUID,
     user_id: UUID = Query(..., description="User ID"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Get counts for current user in branch's active stock take"""
     try:
@@ -1573,7 +1601,11 @@ def get_my_counts(
 
 
 @router.get("/branch/{branch_id}/progress")
-def get_branch_progress(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_branch_progress(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get progress for branch's active stock take"""
     try:
         # Get active session
@@ -1621,7 +1653,11 @@ def get_branch_progress(branch_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.get("/branch/{branch_id}/locks")
-def get_branch_locks(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_branch_locks(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get active locks for branch's stock take"""
     cleanup_expired_locks(db)
     
@@ -1664,7 +1700,8 @@ def get_branch_locks(branch_id: UUID, db: Session = Depends(get_tenant_db)):
 def complete_branch_stock_take(
     branch_id: UUID,
     user_id: UUID = Query(None, description="User ID completing the stock take (optional)"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Complete stock take for branch.
@@ -1831,7 +1868,8 @@ def complete_branch_stock_take(
 def cancel_branch_stock_take(
     branch_id: UUID,
     user_id: UUID = Query(None, description="User ID cancelling the stock take (optional)"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Cancel stock take for branch
@@ -1901,7 +1939,8 @@ def cancel_branch_stock_take(
 def get_stock_take_variance_report(
     branch_id: UUID,
     session_id: UUID = Query(..., description="Completed stock take session ID"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Variance report for a completed stock take: counted items (system vs counted vs variance)
@@ -1984,7 +2023,11 @@ def get_stock_take_variance_report(
 
 
 @router.get("/counts/{count_id}")
-def get_count(count_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_count(
+    count_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get a single count by ID"""
     count = db.query(StockTakeCount).filter(StockTakeCount.id == count_id).first()
     if not count:
@@ -2025,7 +2068,8 @@ def update_count(
     count_id: UUID,
     count_data: dict,
     user_id: UUID = Query(..., description="User ID updating the count"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Update an existing count (only before session completion)"""
     try:
@@ -2156,7 +2200,8 @@ def update_count(
 def delete_count(
     count_id: UUID,
     user_id: UUID = Query(..., description="User ID deleting the count"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Delete a count (only before session completion)"""
     try:
@@ -2208,7 +2253,11 @@ def delete_count(
 # ============================================
 
 @router.get("/branch/{branch_id}/shelves")
-def get_shelves(branch_id: UUID, db: Session = Depends(get_tenant_db)):
+def get_shelves(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get all shelves with counts for a branch's active stock take"""
     try:
         # Get active session
@@ -2264,7 +2313,12 @@ def get_shelves(branch_id: UUID, db: Session = Depends(get_tenant_db)):
 
 
 @router.get("/branch/{branch_id}/shelves/{shelf_name}/counts")
-def get_shelf_counts(branch_id: UUID, shelf_name: str, db: Session = Depends(get_tenant_db)):
+def get_shelf_counts(
+    branch_id: UUID,
+    shelf_name: str,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Get all counts for a specific shelf"""
     try:
         # Get active session
@@ -2323,7 +2377,8 @@ def approve_shelf(
     branch_id: UUID,
     shelf_name: str,
     user_id: UUID = Query(..., description="User ID approving the shelf"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Approve all counts for a shelf"""
     try:
@@ -2385,7 +2440,8 @@ def reject_shelf(
     shelf_name: str,
     rejection_data: dict,
     user_id: UUID = Query(..., description="User ID rejecting the shelf"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """Reject all counts for a shelf (return to counter)"""
     try:

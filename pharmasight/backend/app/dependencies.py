@@ -412,6 +412,19 @@ def get_current_user(
         user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
         if not user or not user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        # Enforce must_change_password: deny access except to change-password-first-time, logout, auth/me
+        if getattr(user, "must_change_password", False):
+            path = (request.url.path or "").strip()
+            allowed = {
+                "/api/users/change-password-first-time",
+                "/api/auth/logout",
+                "/api/auth/me",
+            }
+            if path not in allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You must change your password before accessing other resources.",
+                )
         yield (user, db)
     finally:
         db.close()
