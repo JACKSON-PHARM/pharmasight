@@ -42,19 +42,25 @@ class PricingService:
         db: Session,
         item_id: UUID,
         branch_id: UUID,
-        use_fefo: bool = True
+        use_fefo: bool = True,
+        batch_id: Optional[UUID] = None,
     ) -> Optional[Decimal]:
         """
-        Get unit cost for item (FEFO batch or last purchase)
-        
-        Priority:
-        1. FEFO batch cost (if use_fefo=True and stock available)
-        2. Last purchase cost
-        3. Item default cost
-        
-        Returns:
-            Decimal: Cost per base unit, or None if not available
+        Get unit cost for item (FEFO batch or last purchase).
+        Model B support: when batch_id is provided, returns that ledger entry's unit_cost (per base unit).
         """
+        # Model B: optional batch-scoped cost resolution
+        if batch_id is not None:
+            ledger_row = db.query(InventoryLedger).filter(InventoryLedger.id == batch_id).first()
+            if not ledger_row:
+                raise ValueError(f"Batch not found: {batch_id}")
+            if str(ledger_row.branch_id) != str(branch_id):
+                raise ValueError("Batch does not belong to branch")
+            if str(ledger_row.item_id) != str(item_id):
+                raise ValueError("Batch does not belong to item")
+            return Decimal(str(ledger_row.unit_cost))
+
+        # Existing behaviour when batch_id is None: FEFO-first, then fallbacks
         # Try FEFO batch cost first
         if use_fefo:
             batches = InventoryService.get_stock_by_batch(db, item_id, branch_id)
@@ -254,28 +260,12 @@ class PricingService:
         branch_id: UUID,
         company_id: UUID,
         unit_name: str,
-        tier: str = "retail"
+        tier: str = "retail",
+        batch_id: Optional[UUID] = None,
     ) -> Optional[Dict]:
         """
-        Calculate recommended selling price for item
-        
-        Args:
-            item_id: Item ID
-            branch_id: Branch ID
-            company_id: Company ID
-            unit_name: Sale unit (tablet, box, etc.)
-            tier: Pricing tier to use ('supplier', 'wholesale', or 'retail'). Defaults to 'retail'
-        
-        Returns:
-            Dict with:
-            - recommended_unit_price (in sale unit)
-            - unit_cost_used (per base unit)
-            - markup_percent
-            - margin_percent
-            - batch_reference (batch info if FEFO)
-            - base_unit_price (per base unit)
-            - pricing_tier (which tier was used)
-            - pricing_unit (unit for the tier price)
+        Calculate recommended selling price for item.
+        Model B support: when batch_id is provided, unit_cost_used is that batch's cost (per base unit).
         """
         # First, try to get 3-tier pricing
         tier_pricing = PricingService.get_price_for_tier(db, item_id, tier, unit_name)
@@ -301,8 +291,8 @@ class PricingService:
                     recommended_unit_price = Decimal(str(tier_pricing["price"]))
                 pricing_unit = unit_name
             
-            # Get cost for margin calculation
-            unit_cost = PricingService.get_item_cost(db, item_id, branch_id, use_fefo=True)
+            # Get cost for margin calculation (Model B: optional batch-scoped cost)
+            unit_cost = PricingService.get_item_cost(db, item_id, branch_id, use_fefo=True, batch_id=batch_id)
             if not unit_cost:
                 unit_cost = Decimal("0")
             
@@ -346,8 +336,8 @@ class PricingService:
         if multiplier is None:
             raise ValueError(f"Unit '{unit_name}' not found for item {item_id}")
         
-        # Get cost (FEFO batch preferred)
-        unit_cost = PricingService.get_item_cost(db, item_id, branch_id, use_fefo=True)
+        # Get cost (Model B: optional batch-scoped; else FEFO batch preferred)
+        unit_cost = PricingService.get_item_cost(db, item_id, branch_id, use_fefo=True, batch_id=batch_id)
         if not unit_cost:
             return None
         

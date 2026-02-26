@@ -217,6 +217,8 @@ def build_item_movement_report(
             doc_type, ref = "Adjustment", (row.notes or "Adjustment").strip() or "Adjustment"
         elif rt == "OPENING_BALANCE":
             doc_type, ref = "Opening Balance", ""
+        elif rt == "BATCH_QUANTITY_CORRECTION":
+            doc_type, ref = "Quantity correction", (row.notes or "Batch quantity correction").strip() or "Batch quantity correction"
         else:
             info = ref_map.get((rt, row.reference_id)) if row.reference_id else None
             doc_type = (info or {}).get("document_type", rt or "—")
@@ -352,6 +354,8 @@ def build_batch_movement_report(
             doc_type, ref = "Adjustment", (row.notes or "Adjustment").strip() or "Adjustment"
         elif rt == "OPENING_BALANCE":
             doc_type, ref = "Opening Balance", ""
+        elif rt == "BATCH_QUANTITY_CORRECTION":
+            doc_type, ref = "Quantity correction", (row.notes or "Batch quantity correction").strip() or "Batch quantity correction"
         else:
             info = ref_map.get((rt, row.reference_id)) if row.reference_id else None
             doc_type = (info or {}).get("document_type", rt or "—")

@@ -91,6 +91,17 @@ function loadConfig() {
         if (supabase.SUPABASE_ANON_KEY) CONFIG.SUPABASE_ANON_KEY = supabase.SUPABASE_ANON_KEY;
     }
 
+    // Optional: override API base URL when on localhost (so local UI can talk to Render API and avoid "redirect to setup" due to empty local DB)
+    const isLocalHost = typeof window !== 'undefined' && window.location && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    if (isLocalHost) {
+        try {
+            const apiBase = localStorage.getItem('pharmasight_api_base_url');
+            if (apiBase && typeof apiBase === 'string' && apiBase.trim()) {
+                CONFIG.API_BASE_URL = apiBase.trim().replace(/\/+$/, '');
+            }
+        } catch (_) {}
+    }
+
     // Optional: override public app URL for email redirects (useful when testing locally but sending production links)
     try {
         const pub = localStorage.getItem('pharmasight_app_public_url');

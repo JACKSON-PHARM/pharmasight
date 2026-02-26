@@ -53,7 +53,7 @@ async function loadInventory(optionalSubPage) {
         }
         
         // Respect URL subpage so Current Stock (and others) persist and aren't overwritten by hashchange
-        const validSubPages = ['items', 'batch', 'expiry', 'movement', 'stock', 'branch-orders', 'branch-transfers', 'branch-receipts'];
+        const validSubPages = ['items', 'batch', 'expiry', 'movement', 'stock', 'manual-adjustments', 'branch-orders', 'branch-transfers', 'branch-receipts'];
         if (optionalSubPage && validSubPages.includes(optionalSubPage)) {
             currentInventorySubPage = optionalSubPage;
         } else {
@@ -121,6 +121,8 @@ function renderSubPageContent() {
                 return renderItemMovementSubPage();
             case 'stock':
                 return renderCurrentStockSubPage();
+            case 'manual-adjustments':
+                return renderManualAdjustmentsSubPage();
             case 'branch-orders':
                 return renderBranchOrdersSubPage();
             case 'branch-transfers':
@@ -247,6 +249,9 @@ async function loadSubPageData() {
                 break;
             case 'stock':
                 await loadCurrentStockData();
+                break;
+            case 'manual-adjustments':
+                if (typeof setupManualAdjustmentsHandlers === 'function') setupManualAdjustmentsHandlers();
                 break;
         }
     } catch (err) {
@@ -1443,16 +1448,300 @@ async function submitAdjustStock(itemId) {
 }
 
 // ============================================
+// Adjustments (Cost, Quantity, Metadata) — branch-scoped, type-ahead item search
+// ============================================
+const CORRECTION_WARNING = 'This action is audited and cannot be reversed.';
+
+function renderManualAdjustmentsSubPage() {
+    const branch = typeof BranchContext !== 'undefined' && BranchContext.getBranch ? BranchContext.getBranch() : null;
+    const branchId = getBranchIdForStock();
+    const branchName = (branch && (branch.name || branch.branch_name)) || (branchId ? 'Current branch' : 'Select branch');
+    return `
+        <div class="manual-adjustments-page">
+            <h2 style="margin-bottom: 0.5rem;"><i class="fas fa-wrench"></i> Adjustments</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Adjust cost, batch quantity, or batch metadata. Branch-scoped; all actions require a reason and are fully audited.</p>
+            <div class="alert alert-warning" style="margin-bottom: 1.5rem;">
+                <i class="fas fa-exclamation-triangle"></i> ${CORRECTION_WARNING}
+            </div>
+            <div class="card" style="margin-bottom: 1.5rem; max-width: 32rem;">
+                <div class="form-group">
+                    <label>Branch</label>
+                    <input type="text" class="form-input" readonly value="${escapeHtml(branchName)}">
+                </div>
+                <div class="form-group" style="position: relative;">
+                    <label>Item</label>
+                    <input type="text" id="adjustmentItemSearch" class="form-input item-search-input" placeholder="Type at least 2 characters to search (name, SKU)..."
+                        autocomplete="off">
+                    <input type="hidden" id="adjustmentItemId" value="">
+                    <div id="adjustmentItemDropdown" style="display: none; position: absolute; left: 0; right: 0; top: 100%; z-index: 100; background: var(--bg-color, #fff); border: 1px solid var(--border-color); border-top: 0; max-height: 280px; overflow-y: auto; box-shadow: 0 4px 12px rgba(0,0,0,0.15);"></div>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: -0.5rem;">Units and batches shown are for the branch in session.</p>
+            </div>
+            <ul class="tabs" id="manualAdjustmentsTabs" style="display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+                <li><a href="#" class="tab-link active" data-tab="cost">Cost</a></li>
+                <li><a href="#" class="tab-link" data-tab="quantity">Quantity</a></li>
+                <li><a href="#" class="tab-link" data-tab="metadata">Metadata</a></li>
+            </ul>
+            <div id="manualAdjustmentsCost" class="tab-pane">
+                <div class="card" style="max-width: 32rem;">
+                    <h3 style="margin-bottom: 0.75rem;">Cost Adjustment</h3>
+                    <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Adjust batch cost (valuation only). Quantity unchanged.</p>
+                    <div class="form-group">
+                        <label>Batch (ledger row)</label>
+                        <select id="costBatchSelect" class="form-input"><option value="">Select item above first</option></select>
+                    </div>
+                    <div class="form-group">
+                        <label>New unit cost (per base unit)</label>
+                        <input type="number" id="costNewCost" class="form-input" min="0" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Reason <span style="color: var(--danger-color);">*</span></label>
+                        <textarea id="costReason" class="form-input" rows="2" required placeholder="e.g. Supplier invoice corrected"></textarea>
+                    </div>
+                    <button type="button" class="btn btn-primary" id="submitCostAdjustment"><i class="fas fa-check"></i> Apply cost adjustment</button>
+                </div>
+            </div>
+            <div id="manualAdjustmentsQuantity" class="tab-pane" style="display: none;">
+                <div class="card" style="max-width: 32rem;">
+                    <h3 style="margin-bottom: 0.75rem;">Quantity Correction</h3>
+                    <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Align ledger to physical count. Forward correction only.</p>
+                    <div class="form-group">
+                        <label>Batch number</label>
+                        <input type="text" id="qtyBatchNumber" class="form-input" required placeholder="e.g. BATCH-001">
+                    </div>
+                    <div class="form-group">
+                        <label>Expiry date (optional)</label>
+                        <input type="date" id="qtyExpiryDate" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label>Physical count (base units)</label>
+                        <input type="number" id="qtyPhysicalCount" class="form-input" min="0" step="any" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Reason <span style="color: var(--danger-color);">*</span></label>
+                        <textarea id="qtyReason" class="form-input" rows="2" required placeholder="e.g. Stock count correction"></textarea>
+                    </div>
+                    <button type="button" class="btn btn-primary" id="submitQuantityCorrection"><i class="fas fa-check"></i> Apply quantity correction</button>
+                </div>
+            </div>
+            <div id="manualAdjustmentsMetadata" class="tab-pane" style="display: none;">
+                <div class="card" style="max-width: 32rem;">
+                    <h3 style="margin-bottom: 0.75rem;">Metadata Correction</h3>
+                    <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Correct batch number or expiry date.</p>
+                    <div class="form-group">
+                        <label>Current batch number</label>
+                        <input type="text" id="metaBatchNumber" class="form-input" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Current expiry date (optional)</label>
+                        <input type="date" id="metaExpiryDate" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label>New batch number (optional)</label>
+                        <input type="text" id="metaNewBatchNumber" class="form-input" placeholder="Leave blank to keep">
+                    </div>
+                    <div class="form-group">
+                        <label>New expiry date (optional)</label>
+                        <input type="date" id="metaNewExpiryDate" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label>Reason <span style="color: var(--danger-color);">*</span></label>
+                        <textarea id="metaReason" class="form-input" rows="2" required></textarea>
+                    </div>
+                    <button type="button" class="btn btn-primary" id="submitMetadataCorrection"><i class="fas fa-check"></i> Apply metadata correction</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function setupManualAdjustmentsHandlers() {
+    const container = document.querySelector('.manual-adjustments-page');
+    if (!container) return;
+    const branchId = getBranchIdForStock();
+    const branchIdRaw = branchId != null ? (typeof branchId === 'string' ? branchId : (branchId && (branchId.id || branchId))) : null;
+    if (!branchIdRaw) {
+        if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
+        return;
+    }
+    // Tabs
+    container.querySelectorAll('.tab-link').forEach(function (a) {
+        a.addEventListener('click', function (e) {
+            e.preventDefault();
+            const tab = this.dataset.tab;
+            container.querySelectorAll('.tab-link').forEach(l => l.classList.remove('active'));
+            container.querySelectorAll('.tab-pane').forEach(p => { p.style.display = 'none'; });
+            this.classList.add('active');
+            const pane = document.getElementById('manualAdjustments' + (tab === 'cost' ? 'Cost' : tab === 'quantity' ? 'Quantity' : 'Metadata'));
+            if (pane) pane.style.display = 'block';
+        });
+    });
+    document.getElementById('manualAdjustmentsQuantity').style.display = 'none';
+    document.getElementById('manualAdjustmentsMetadata').style.display = 'none';
+
+    // Shared item search (type-ahead, branch-scoped; no overview on load — avoids DB load)
+    const searchInput = document.getElementById('adjustmentItemSearch');
+    const itemIdHidden = document.getElementById('adjustmentItemId');
+    const dropdownEl = document.getElementById('adjustmentItemDropdown');
+    const costBatchSelect = document.getElementById('costBatchSelect');
+    var adjustmentSearchTimeout = null;
+    function getAdjustmentItemId() {
+        return (itemIdHidden && itemIdHidden.value) ? itemIdHidden.value : null;
+    }
+    function loadBatchesForAdjustmentItem(itemId) {
+        if (!costBatchSelect || !itemId) {
+            if (costBatchSelect) costBatchSelect.innerHTML = '<option value="">Select item above first</option>';
+            return;
+        }
+        costBatchSelect.innerHTML = '<option value="">Loading...</option>';
+        API.items.getLedgerBatches(itemId, branchIdRaw).then(function (r) {
+            const entries = (r && r.entries) || [];
+            costBatchSelect.innerHTML = entries.length ? '' : '<option value="">No batches with stock</option>';
+            entries.forEach(function (e) {
+                const opt = document.createElement('option');
+                opt.value = e.ledger_id;
+                opt.textContent = (e.batch_number || '—') + ' | Exp: ' + (e.expiry_date || '—') + ' | Cost: ' + (e.unit_cost || 0);
+                costBatchSelect.appendChild(opt);
+            });
+        }).catch(function () { costBatchSelect.innerHTML = '<option value="">Error loading batches</option>'; });
+    }
+    if (searchInput && itemIdHidden && dropdownEl) {
+        searchInput.addEventListener('input', function () {
+            var q = (searchInput.value || '').trim();
+            itemIdHidden.value = '';
+            loadBatchesForAdjustmentItem(null);
+            if (q.length < 2) {
+                dropdownEl.style.display = 'none';
+                dropdownEl.innerHTML = '';
+                return;
+            }
+            clearTimeout(adjustmentSearchTimeout);
+            adjustmentSearchTimeout = setTimeout(function () {
+                dropdownEl.innerHTML = '<div style="padding: 12px; text-align: center; color: var(--text-secondary);"><i class="fas fa-spinner fa-spin" style="margin-right: 6px;"></i> Searching...</div>';
+                dropdownEl.style.display = 'block';
+                var companyId = typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID ? CONFIG.COMPANY_ID : null;
+                if (!companyId || !API || !API.items || !API.items.search) {
+                    dropdownEl.innerHTML = '<div style="padding: 8px;">Search not available.</div>';
+                    return;
+                }
+                API.items.search(q, companyId, 20, branchIdRaw, false).then(function (items) {
+                    var list = Array.isArray(items) ? items : [];
+                    if (!list.length) {
+                        dropdownEl.innerHTML = '<div style="padding: 8px;">No items found. Type at least 2 characters.</div>';
+                    } else {
+                        dropdownEl.innerHTML = list.map(function (it) {
+                            var name = (it.name || '').trim() || '—';
+                            var sku = (it.sku || '').trim();
+                            var label = name + (sku ? ' (' + sku + ')' : '');
+                            var safeName = String(name).replace(/"/g, '&quot;');
+                            var safeSku = String(sku).replace(/"/g, '&quot;');
+                            var safeLabel = (typeof escapeHtml === 'function' ? escapeHtml(label) : label);
+                            return '<div class="dropdown-item" data-id="' + (it.id || '') + '" data-name="' + safeName + '" data-sku="' + safeSku + '" style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border-color);">' + safeLabel + '</div>';
+                        }).join('');
+                        dropdownEl.querySelectorAll('.dropdown-item').forEach(function (el) {
+                            el.addEventListener('click', function () {
+                                var id = el.getAttribute('data-id');
+                                var name = el.getAttribute('data-name') || '';
+                                var sku = el.getAttribute('data-sku') || '';
+                                itemIdHidden.value = id;
+                                searchInput.value = name + (sku ? ' (' + sku + ')' : '');
+                                dropdownEl.style.display = 'none';
+                                dropdownEl.innerHTML = '';
+                                loadBatchesForAdjustmentItem(id);
+                            });
+                        });
+                    }
+                }).catch(function () {
+                    dropdownEl.innerHTML = '<div style="padding: 8px; color: var(--danger-color);">Search failed.</div>';
+                });
+            }, 300);
+        });
+        searchInput.addEventListener('blur', function () {
+            setTimeout(function () { dropdownEl.style.display = 'none'; }, 200);
+        });
+    }
+
+    // Submit Cost
+    const submitCost = document.getElementById('submitCostAdjustment');
+    if (submitCost) {
+        submitCost.onclick = function () {
+            const itemId = getAdjustmentItemId();
+            const batchId = document.getElementById('costBatchSelect').value;
+            const newCost = parseFloat(document.getElementById('costNewCost').value);
+            const reason = (document.getElementById('costReason') && document.getElementById('costReason').value || '').trim();
+            if (!itemId || !batchId || isNaN(newCost) || newCost < 0 || !reason) {
+                if (typeof showToast === 'function') showToast('Select an item (search above), then batch, new cost, and reason.', 'warning');
+                return;
+            }
+            submitCost.disabled = true;
+            API.items.corrections.costAdjustment(itemId, { branch_id: branchIdRaw, batch_id: batchId, new_unit_cost: newCost, reason }).then(function (res) {
+                if (typeof showToast === 'function') showToast(res.message || 'Cost adjusted.', 'success');
+                document.getElementById('costReason').value = '';
+                document.getElementById('costNewCost').value = '';
+            }).catch(function (err) {
+                const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Failed';
+                if (typeof showToast === 'function') showToast(msg, 'error');
+            }).finally(function () { submitCost.disabled = false; });
+        };
+    }
+    // Submit Quantity
+    const submitQty = document.getElementById('submitQuantityCorrection');
+    if (submitQty) {
+        submitQty.onclick = function () {
+            const itemId = getAdjustmentItemId();
+            const batchNumber = (document.getElementById('qtyBatchNumber') && document.getElementById('qtyBatchNumber').value || '').trim();
+            const expiryDate = document.getElementById('qtyExpiryDate') && document.getElementById('qtyExpiryDate').value || null;
+            const physicalCount = parseFloat(document.getElementById('qtyPhysicalCount').value);
+            const reason = (document.getElementById('qtyReason') && document.getElementById('qtyReason').value || '').trim();
+            if (!itemId || !batchNumber || isNaN(physicalCount) || !reason) {
+                if (typeof showToast === 'function') showToast('Select an item (search above), then batch number, physical count, and reason.', 'warning');
+                return;
+            }
+            submitQty.disabled = true;
+            API.items.corrections.batchQuantityCorrection(itemId, { branch_id: branchIdRaw, batch_number: batchNumber, expiry_date: expiryDate || undefined, physical_count: physicalCount, reason }).then(function (res) {
+                if (typeof showToast === 'function') showToast(res.message || 'Quantity corrected.', 'success');
+                document.getElementById('qtyReason').value = '';
+            }).catch(function (err) {
+                const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Failed';
+                if (typeof showToast === 'function') showToast(msg, 'error');
+            }).finally(function () { submitQty.disabled = false; });
+        };
+    }
+    // Submit Metadata
+    const submitMeta = document.getElementById('submitMetadataCorrection');
+    if (submitMeta) {
+        submitMeta.onclick = function () {
+            const itemId = getAdjustmentItemId();
+            const batchNumber = (document.getElementById('metaBatchNumber') && document.getElementById('metaBatchNumber').value || '').trim();
+            const expiryDate = document.getElementById('metaExpiryDate') && document.getElementById('metaExpiryDate').value || null;
+            const newBatchNumber = (document.getElementById('metaNewBatchNumber') && document.getElementById('metaNewBatchNumber').value || '').trim() || null;
+            const newExpiryDate = document.getElementById('metaNewExpiryDate') && document.getElementById('metaNewExpiryDate').value || null;
+            const reason = (document.getElementById('metaReason') && document.getElementById('metaReason').value || '').trim();
+            if (!itemId || !batchNumber || !reason) {
+                if (typeof showToast === 'function') showToast('Select an item (search above), then current batch number and reason.', 'warning');
+                return;
+            }
+            if (!newBatchNumber && !newExpiryDate) {
+                if (typeof showToast === 'function') showToast('Provide at least one of new batch number or new expiry date.', 'warning');
+                return;
+            }
+            submitMeta.disabled = true;
+            API.items.corrections.batchMetadataCorrection(itemId, { branch_id: branchIdRaw, batch_number: batchNumber, expiry_date: expiryDate || undefined, new_batch_number: newBatchNumber, new_expiry_date: newExpiryDate || undefined, reason }).then(function (res) {
+                if (typeof showToast === 'function') showToast(res.message || 'Metadata corrected.', 'success');
+                document.getElementById('metaReason').value = '';
+            }).catch(function (err) {
+                const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Failed';
+                if (typeof showToast === 'function') showToast(msg, 'error');
+            }).finally(function () { submitMeta.disabled = false; });
+        };
+    }
+}
+
+// ============================================
 // OTHER SUB-PAGES (Placeholders)
 // ============================================
 function renderBatchTrackingSubPage() {
-    return `
-        <div class="batch-tracking-page">
-            <h2 style="margin-bottom: 1rem;"><i class="fas fa-layer-group"></i> Batch Tracking</h2>
-            <p style="color: var(--text-secondary); margin-bottom: 1rem;">View batch movement by item and batch. Select date range, item, and batch, then click Apply. Export to CSV or PDF below the report.</p>
-            <div id="inventoryBatchTrackingContainer" class="item-movement-report-wrapper"></div>
-        </div>
-    `;
+    return '<div><h2>Batch Tracking</h2><p>Batch tracking content is loaded dynamically.</p></div>';
 }
 
 function renderExpiryReportSubPage() {

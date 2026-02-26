@@ -1,8 +1,9 @@
 """
 Inventory Ledger model - Single source of truth for stock
+ItemMovement - Audit log for inventory corrections (cost, quantity, metadata)
 """
-from sqlalchemy import Column, String, Integer, Numeric, Date, ForeignKey, CheckConstraint, Boolean
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Integer, Numeric, Date, ForeignKey, CheckConstraint, Boolean, Text
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.types import TIMESTAMP
@@ -53,4 +54,32 @@ class InventoryLedger(Base):
     branch = relationship("Branch")
     company = relationship("Company")
     parent_batch = relationship("InventoryLedger", remote_side=[id], foreign_keys=[parent_batch_id])
+
+
+class ItemMovement(Base):
+    """
+    Audit log for inventory corrections. All correction types create a record here.
+    movement_type: COST_ADJUSTMENT | BATCH_QUANTITY_CORRECTION | BATCH_METADATA_CORRECTION
+    """
+    __tablename__ = "item_movements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
+    movement_type = Column(String(50), nullable=False)
+    ledger_id = Column(UUID(as_uuid=True), ForeignKey("inventory_ledger.id", ondelete="SET NULL"), nullable=True)
+    quantity = Column(Numeric(20, 4), nullable=False, default=0)
+    previous_unit_cost = Column(Numeric(20, 4), nullable=True)
+    new_unit_cost = Column(Numeric(20, 4), nullable=True)
+    metadata_before = Column(JSONB, nullable=True)
+    metadata_after = Column(JSONB, nullable=True)
+    reason = Column(Text, nullable=False)
+    performed_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    item = relationship("Item")
+    branch = relationship("Branch")
+    company = relationship("Company")
+    ledger_entry = relationship("InventoryLedger", foreign_keys=[ledger_id])
 

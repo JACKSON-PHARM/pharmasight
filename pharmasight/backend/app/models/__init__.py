@@ -7,7 +7,7 @@ from app.database import Base
 from .company import Company, Branch, BranchSetting
 from .user import User, UserRole, UserBranchRole
 from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier
-from .inventory import InventoryLedger
+from .inventory import InventoryLedger, ItemMovement
 from .snapshot import InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot
 from .supplier import Supplier
 from .purchase import GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem, PurchaseOrder, PurchaseOrderItem
@@ -42,6 +42,7 @@ __all__ = [
     "CompanyPricingDefault",
     "CompanyMarginTier",
     "InventoryLedger",
+    "ItemMovement",
     "InventoryBalance",
     "ItemBranchPurchaseSnapshot",
     "ItemBranchSearchSnapshot",

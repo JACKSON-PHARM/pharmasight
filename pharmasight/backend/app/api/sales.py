@@ -1229,22 +1229,7 @@ def batch_sales_invoice(
             line.unit_price_exclusive = payload.unit_price_exclusive or Decimal("0")
             line.discount_percent = payload.discount_percent or Decimal("0")
             line.discount_amount = payload.discount_amount or Decimal("0")
-            # Enforce minimum margin when updating price (use batched_by for permission)
-            unit_price_val = line.unit_price_exclusive or Decimal("0")
-            if unit_price_val > 0:
-                cost_info = PricingService.get_item_cost(db, line.item_id, invoice.branch_id)
-                if cost_info and float(cost_info) > 0:
-                    mult = get_unit_multiplier_from_item(item, line.unit_name)
-                    if mult is not None and mult > 0:
-                        cost_per_sale_unit = cost_info * mult
-                        if cost_per_sale_unit > 0:
-                            margin_percent = (unit_price_val - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
-                            min_margin = PricingService.get_min_margin_percent(db, line.item_id, invoice.company_id)
-                            if margin_percent < min_margin and not _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id):
-                                raise HTTPException(
-                                    status_code=400,
-                                    detail=f"Price for {item.name} is below minimum allowed margin ({float(min_margin):.1f}%). Contact admin for permission to sell below margin."
-                                )
+            # Model B: margin at batch is validated after allocation using allocated batch cost only (see below)
             line_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
             line.line_total_exclusive = (
                 line.unit_price_exclusive * line.quantity
@@ -1296,7 +1281,23 @@ def batch_sales_invoice(
                 quantity_base, invoice_item.unit_name
             )
 
+            # Model B: post-allocation margin validation and cost alignment
             if allocations:
+                batch_cost = Decimal(str(allocations[0]["unit_cost"]))  # per base unit
+                mult = get_unit_multiplier_from_item(item, invoice_item.unit_name)
+                if mult is not None and mult > 0:
+                    cost_per_sale_unit = batch_cost * mult
+                    if cost_per_sale_unit > 0:
+                        unit_price_val = invoice_item.unit_price_exclusive or Decimal("0")
+                        margin_percent = (unit_price_val - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
+                        min_margin = PricingService.get_min_margin_percent(db, invoice_item.item_id, invoice.company_id)
+                        if margin_percent < min_margin and not _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id):
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Price below minimum margin for allocated batch."
+                            )
+                # Model B: overwrite unit_cost_used with allocated batch cost (per base unit)
+                invoice_item.unit_cost_used = batch_cost
                 invoice_item.batch_id = allocations[0]["ledger_entry_id"]
 
             for allocation in allocations:

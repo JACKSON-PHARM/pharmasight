@@ -263,6 +263,13 @@ const API = {
         delete: (itemId) => api.delete(`${CONFIG.API_ENDPOINTS.items}/${itemId}`),
         hasTransactions: (itemId, branchId) => api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/has-transactions`, { branch_id: branchId }),
         adjustStock: (itemId, data) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/adjust-stock`, data),
+        getLedgerBatches: (itemId, branchId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/ledger-batches`, { branch_id: branchId }),
+        corrections: {
+            costAdjustment: (itemId, data) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/corrections/cost-adjustment`, data),
+            batchQuantityCorrection: (itemId, data) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/corrections/batch-quantity-correction`, data),
+            batchMetadataCorrection: (itemId, data) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/corrections/batch-metadata-correction`, data),
+        },
         getRecommendedPrice: (itemId, branchId, companyId, unitName, tier) => 
             api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/recommended-price`, {
                 branch_id: branchId,

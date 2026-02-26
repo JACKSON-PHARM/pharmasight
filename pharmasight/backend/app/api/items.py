@@ -6,7 +6,7 @@ X-Tenant-Subdomain is set, else default DB). Same company/DB as rest of app.
 """
 import logging
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from fastapi import APIRouter, Body, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc
@@ -19,8 +19,9 @@ from app.models import (
     InventoryLedger, InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot,
     SupplierInvoice, SupplierInvoiceItem, Supplier,
     PurchaseOrder, PurchaseOrderItem, Branch,
-    UserRole, UserBranchRole
+    UserRole, UserBranchRole, ItemMovement,
 )
+from app.models.permission import Permission, RolePermission
 from app.models.sale import SalesInvoice, SalesInvoiceItem
 from app.schemas.item import (
     ItemCreate, ItemResponse, ItemUpdate,
@@ -28,7 +29,9 @@ from app.schemas.item import (
     ItemPricingCreate, ItemPricingResponse,
     CompanyPricingDefaultCreate, CompanyPricingDefaultResponse,
     ItemsBulkCreate, ItemOverviewResponse,
-    AdjustStockRequest, AdjustStockResponse
+    AdjustStockRequest, AdjustStockResponse,
+    CostAdjustmentRequest, BatchQuantityCorrectionRequest, BatchMetadataCorrectionRequest,
+    CorrectionResponse, LedgerBatchEntry, LedgerBatchesResponse,
 )
 from app.services.pricing_service import PricingService
 from app.services.items_service import create_item as svc_create_item, DuplicateItemNameError
@@ -60,6 +63,31 @@ def _get_user_role(user_id: UUID, branch_id: UUID, db: Session) -> Optional[str]
         )
     ).first()
     return (role[0].lower() if role and role[0] else None)
+
+
+def _user_has_correction_permission(db: Session, user_id: UUID, branch_id: UUID, permission_name: str) -> bool:
+    """True if user has the given permission for this branch (via role)."""
+    perm = db.query(Permission).filter(Permission.name == permission_name).first()
+    if not perm:
+        return False
+    ubr = (
+        db.query(UserBranchRole)
+        .join(UserRole, UserBranchRole.role_id == UserRole.id)
+        .filter(UserBranchRole.user_id == user_id, UserBranchRole.branch_id == branch_id)
+        .first()
+    )
+    if not ubr:
+        return False
+    rp = (
+        db.query(RolePermission)
+        .filter(
+            RolePermission.role_id == ubr.role_id,
+            RolePermission.permission_id == perm.id,
+            RolePermission.branch_id.is_(None),
+        )
+        .first()
+    )
+    return rp is not None
 
 
 def _display_units_from_item(item: Item) -> List[ItemUnitResponse]:
@@ -1471,4 +1499,325 @@ def has_transactions(
         "purchaseCount": purchase_count,
         "ledgerCount": ledger_count
     }
+
+
+# --- Inventory corrections (audit trail; do not modify sales, FEFO, or pricing) ---
+
+@router.get("/{item_id}/ledger-batches", response_model=LedgerBatchesResponse)
+def get_ledger_batches(
+    item_id: UUID,
+    branch_id: UUID = Query(..., description="Branch ID"),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    List ledger rows with positive quantity for this item/branch (for cost-adjustment batch selection).
+    Returns ledger_id, batch_number, expiry_date, unit_cost, quantity per row.
+    """
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    rows = (
+        db.query(InventoryLedger)
+        .filter(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.quantity_delta > 0,
+        )
+        .order_by(InventoryLedger.expiry_date.asc().nulls_last(), InventoryLedger.batch_number.asc())
+        .all()
+    )
+    entries = [
+        LedgerBatchEntry(
+            ledger_id=r.id,
+            batch_number=r.batch_number,
+            expiry_date=r.expiry_date.isoformat() if r.expiry_date else None,
+            unit_cost=float(r.unit_cost or 0),
+            quantity=float(r.quantity_delta or 0),
+        )
+        for r in rows
+    ]
+    return LedgerBatchesResponse(entries=entries)
+
+
+def _batch_current_quantity(db: Session, item_id: UUID, branch_id: UUID, batch_number: str, expiry_date: Optional[date]) -> float:
+    """Current quantity (sum of quantity_delta) for batch (batch_number, expiry_date)."""
+    q = db.query(func.coalesce(func.sum(InventoryLedger.quantity_delta), 0)).filter(
+        and_(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.batch_number == batch_number,
+        )
+    )
+    if expiry_date is not None:
+        q = q.filter(InventoryLedger.expiry_date == expiry_date)
+    else:
+        q = q.filter(InventoryLedger.expiry_date.is_(None))
+    result = q.scalar()
+    return float(result) if result is not None else 0.0
+
+
+@router.post("/{item_id}/corrections/cost-adjustment", response_model=CorrectionResponse, status_code=status.HTTP_201_CREATED)
+def post_cost_adjustment(
+    item_id: UUID,
+    body: CostAdjustmentRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Adjust batch cost (valuation only). Quantity unchanged. No change to sales or COGS history.
+    Requires permission inventory.adjust_cost. Recorded in item_movements.
+    """
+    user, _ = current_user_and_db
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_correction_permission(db, user.id, body.branch_id, "inventory.adjust_cost"):
+        raise HTTPException(status_code=403, detail="Permission inventory.adjust_cost required for this branch.")
+    branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
+    if not branch:
+        raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
+    ledger_row = (
+        db.query(InventoryLedger)
+        .filter(
+            InventoryLedger.id == body.batch_id,
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == body.branch_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not ledger_row:
+        raise HTTPException(status_code=404, detail="Batch not found or does not belong to this item/branch.")
+    remaining = _batch_current_quantity(db, item_id, body.branch_id, ledger_row.batch_number or "", ledger_row.expiry_date)
+    if remaining <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot adjust cost for a batch with no remaining stock (batch fully depleted).",
+        )
+    previous_cost = Decimal(str(ledger_row.unit_cost))
+    new_cost = Decimal(str(body.new_unit_cost))
+    if previous_cost == new_cost:
+        raise HTTPException(status_code=400, detail="New cost is unchanged.")
+    try:
+        movement = ItemMovement(
+            company_id=item.company_id,
+            branch_id=body.branch_id,
+            item_id=item_id,
+            movement_type="COST_ADJUSTMENT",
+            ledger_id=ledger_row.id,
+            quantity=Decimal("0"),
+            previous_unit_cost=previous_cost,
+            new_unit_cost=new_cost,
+            reason=body.reason.strip(),
+            performed_by=user.id,
+        )
+        db.add(movement)
+        ledger_row.unit_cost = new_cost
+        ledger_row.total_cost = new_cost * ledger_row.quantity_delta
+        db.flush()
+        db.commit()
+        db.refresh(movement)
+        return CorrectionResponse(
+            success=True,
+            message=f"Batch cost updated from {previous_cost} to {new_cost}. Audited.",
+            movement_id=movement.id,
+            item_id=item_id,
+            branch_id=body.branch_id,
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{item_id}/corrections/batch-quantity-correction", response_model=CorrectionResponse, status_code=status.HTTP_201_CREATED)
+def post_batch_quantity_correction(
+    item_id: UUID,
+    body: BatchQuantityCorrectionRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Correct batch quantity to match physical count. Forward correction only; no change to sales history.
+    Requires permission inventory.adjust_batch_quantity. Appends ledger row; recorded in item_movements.
+    """
+    user, _ = current_user_and_db
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_correction_permission(db, user.id, body.branch_id, "inventory.adjust_batch_quantity"):
+        raise HTTPException(status_code=403, detail="Permission inventory.adjust_batch_quantity required for this branch.")
+    branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
+    if not branch:
+        raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
+    expiry_date_parsed = None
+    if body.expiry_date and body.expiry_date.strip():
+        try:
+            expiry_date_parsed = date.fromisoformat(body.expiry_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid expiry_date; use YYYY-MM-DD.")
+    current_qty = _batch_current_quantity(db, item_id, body.branch_id, body.batch_number.strip(), expiry_date_parsed)
+    physical = float(body.physical_count)
+    difference = physical - current_qty
+    if difference == 0:
+        raise HTTPException(status_code=400, detail="Physical count matches current quantity; no correction needed.")
+    if current_qty + difference < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot reduce batch by {abs(difference)}: current quantity is {current_qty}. Would go below zero.",
+        )
+    quantity_delta = Decimal(str(difference))
+    batches = InventoryService.get_stock_by_batch(db, item_id, body.branch_id)
+    unit_cost = Decimal("0")
+    for b in batches or []:
+        bn_ok = (b.get("batch_number") or "").strip() == body.batch_number.strip()
+        ed = b.get("expiry_date")
+        if ed is not None and hasattr(ed, "date"):
+            ed = getattr(ed, "date", lambda: ed)()
+        ed_ok = (expiry_date_parsed is None and ed is None) or (expiry_date_parsed is not None and ed == expiry_date_parsed)
+        if bn_ok and ed_ok:
+            unit_cost = Decimal(str(b.get("unit_cost", 0)))
+            break
+    if unit_cost <= 0:
+        unit_cost = CanonicalPricingService.get_best_available_cost(db, item_id, body.branch_id, item.company_id)
+    if unit_cost is None or unit_cost <= 0:
+        unit_cost = Decimal("0")
+    total_cost = unit_cost * abs(quantity_delta)
+    try:
+        ledger_entry = InventoryLedger(
+            company_id=item.company_id,
+            branch_id=body.branch_id,
+            item_id=item_id,
+            batch_number=body.batch_number.strip(),
+            expiry_date=expiry_date_parsed,
+            transaction_type="ADJUSTMENT",
+            reference_type="BATCH_QUANTITY_CORRECTION",
+            reference_id=None,
+            quantity_delta=quantity_delta,
+            unit_cost=unit_cost,
+            total_cost=total_cost,
+            created_by=user.id,
+            notes=body.reason.strip()[:2000] if body.reason else None,
+        )
+        db.add(ledger_entry)
+        db.flush()
+        movement = ItemMovement(
+            company_id=item.company_id,
+            branch_id=body.branch_id,
+            item_id=item_id,
+            movement_type="BATCH_QUANTITY_CORRECTION",
+            ledger_id=ledger_entry.id,
+            quantity=quantity_delta,
+            reason=body.reason.strip(),
+            performed_by=user.id,
+        )
+        db.add(movement)
+        SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, float(quantity_delta))
+        db.commit()
+        db.refresh(movement)
+        return CorrectionResponse(
+            success=True,
+            message=f"Batch quantity corrected by {difference} base units. Audited.",
+            movement_id=movement.id,
+            item_id=item_id,
+            branch_id=body.branch_id,
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{item_id}/corrections/batch-metadata-correction", response_model=CorrectionResponse, status_code=status.HTTP_201_CREATED)
+def post_batch_metadata_correction(
+    item_id: UUID,
+    body: BatchMetadataCorrectionRequest,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Correct batch metadata (batch_number, expiry_date). No quantity or cost change.
+    Requires permission inventory.adjust_batch_metadata. Recorded in item_movements.
+    """
+    user, _ = current_user_and_db
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_correction_permission(db, user.id, body.branch_id, "inventory.adjust_batch_metadata"):
+        raise HTTPException(status_code=403, detail="Permission inventory.adjust_batch_metadata required for this branch.")
+    branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
+    if not branch:
+        raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
+    expiry_parsed = None
+    if body.expiry_date and body.expiry_date.strip():
+        try:
+            expiry_parsed = date.fromisoformat(body.expiry_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid expiry_date; use YYYY-MM-DD.")
+    new_expiry_parsed = None
+    if body.new_expiry_date and body.new_expiry_date.strip():
+        try:
+            new_expiry_parsed = date.fromisoformat(body.new_expiry_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid new_expiry_date; use YYYY-MM-DD.")
+    new_batch_number = body.new_batch_number.strip() if body.new_batch_number and body.new_batch_number.strip() else None
+    if not new_batch_number and new_expiry_parsed is None:
+        raise HTTPException(status_code=400, detail="Provide at least one of new_batch_number or new_expiry_date.")
+    rows = (
+        db.query(InventoryLedger)
+        .filter(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == body.branch_id,
+            InventoryLedger.batch_number == body.batch_number.strip(),
+        )
+        .with_for_update()
+    )
+    if expiry_parsed is not None:
+        rows = rows.filter(InventoryLedger.expiry_date == expiry_parsed)
+    else:
+        rows = rows.filter(InventoryLedger.expiry_date.is_(None))
+    rows = rows.all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No ledger rows found for this batch.")
+    metadata_before = {
+        "batch_number": body.batch_number.strip(),
+        "expiry_date": body.expiry_date if body.expiry_date else None,
+    }
+    metadata_after = {
+        "batch_number": new_batch_number if new_batch_number else body.batch_number.strip(),
+        "expiry_date": body.new_expiry_date if body.new_expiry_date else body.expiry_date,
+    }
+    if new_expiry_parsed is not None:
+        metadata_after["expiry_date"] = new_expiry_parsed.isoformat()
+    try:
+        movement = ItemMovement(
+            company_id=item.company_id,
+            branch_id=body.branch_id,
+            item_id=item_id,
+            movement_type="BATCH_METADATA_CORRECTION",
+            ledger_id=rows[0].id,
+            quantity=Decimal("0"),
+            metadata_before=metadata_before,
+            metadata_after=metadata_after,
+            reason=body.reason.strip(),
+            performed_by=user.id,
+        )
+        db.add(movement)
+        for row in rows:
+            if new_batch_number:
+                row.batch_number = new_batch_number
+            if new_expiry_parsed is not None:
+                row.expiry_date = new_expiry_parsed
+        db.flush()
+        db.commit()
+        db.refresh(movement)
+        return CorrectionResponse(
+            success=True,
+            message="Batch metadata updated. Audited.",
+            movement_id=movement.id,
+            item_id=item_id,
+            branch_id=body.branch_id,
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 

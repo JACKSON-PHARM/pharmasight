@@ -249,3 +249,55 @@ class AdjustStockResponse(BaseModel):
     new_stock: float = Field(..., description="New total stock in base units after adjustment")
     new_stock_display: Optional[str] = Field(None, description="New stock in 3-tier form e.g. '1 packet + 1 sachet'")
 
+
+# --- Inventory corrections (audit trail, no mutation of sales/FEFO) ---
+
+class CostAdjustmentRequest(BaseModel):
+    """Cost adjustment: change batch unit cost (valuation only). Quantity unchanged."""
+    branch_id: UUID = Field(..., description="Branch that owns the batch")
+    batch_id: UUID = Field(..., description="InventoryLedger row id (specific batch)")
+    new_unit_cost: float = Field(..., ge=0, description="New cost per base unit")
+    reason: str = Field(..., min_length=1, description="Mandatory reason (audited)")
+
+
+class BatchQuantityCorrectionRequest(BaseModel):
+    """Quantity correction: align ledger to physical count for a batch. Forward correction only."""
+    branch_id: UUID = Field(..., description="Branch that owns the batch")
+    batch_number: str = Field(..., min_length=1, description="Batch/lot number")
+    expiry_date: Optional[str] = Field(None, description="Expiry date YYYY-MM-DD (required if item tracks expiry)")
+    physical_count: float = Field(..., description="Physical count in base units")
+    reason: str = Field(..., min_length=1, description="Mandatory reason (audited)")
+
+
+class BatchMetadataCorrectionRequest(BaseModel):
+    """Metadata correction: fix batch_number or expiry_date for a batch."""
+    branch_id: UUID = Field(..., description="Branch that owns the batch")
+    batch_number: str = Field(..., min_length=1, description="Current batch/lot number")
+    expiry_date: Optional[str] = Field(None, description="Current expiry YYYY-MM-DD")
+    new_batch_number: Optional[str] = Field(None, max_length=200, description="New batch number (if correcting)")
+    new_expiry_date: Optional[str] = Field(None, description="New expiry YYYY-MM-DD (if correcting)")
+    reason: str = Field(..., min_length=1, description="Mandatory reason (audited)")
+
+
+class CorrectionResponse(BaseModel):
+    """Response after a correction. Returns success and updated batch snapshot."""
+    success: bool = True
+    message: str = Field(..., description="Success message")
+    movement_id: UUID = Field(..., description="ItemMovement audit record id")
+    item_id: UUID = Field(..., description="Item")
+    branch_id: UUID = Field(..., description="Branch")
+
+
+class LedgerBatchEntry(BaseModel):
+    """Single ledger row with positive quantity (for cost-adjustment batch selection)."""
+    ledger_id: UUID
+    batch_number: Optional[str] = None
+    expiry_date: Optional[str] = None
+    unit_cost: float = 0
+    quantity: float = Field(..., description="Quantity (balance) for this row")
+
+
+class LedgerBatchesResponse(BaseModel):
+    """Response for GET /api/items/{item_id}/ledger-batches (cost adjustment dropdown)."""
+    entries: List[LedgerBatchEntry] = Field(default_factory=list)
+
