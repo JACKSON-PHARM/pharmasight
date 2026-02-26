@@ -1044,7 +1044,6 @@ window.subNavItems = {
         { page: 'inventory', subPage: 'expiry', label: 'Expiry Report', icon: 'fa-calendar-times' },
         { page: 'inventory', subPage: 'movement', label: 'Item Movement', icon: 'fa-exchange-alt' },
         { page: 'inventory', subPage: 'stock', label: 'Current Stock', icon: 'fa-chart-bar' },
-        { page: 'inventory', subPage: 'manual-adjustments', label: 'Adjustments', icon: 'fa-wrench' },
         { page: 'inventory', subPage: 'branch-orders', label: 'Branch Orders', icon: 'fa-list-alt' },
         { page: 'inventory', subPage: 'branch-transfers', label: 'Branch Transfers', icon: 'fa-truck-loading' },
         { page: 'inventory', subPage: 'branch-receipts', label: 'Branch Receipts', icon: 'fa-clipboard-check' },

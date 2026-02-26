@@ -1254,15 +1254,20 @@ function renderItemsTable() {
                                 </span>
                             </td>
                             <td>
-                                <button class="btn btn-primary" onclick="showAdjustStockModal('${item.id}')" title="Adjust stock: add/reduce, set batch, expiry, notes" style="min-width: 2.25rem;">
-                                    <i class="fas fa-sliders-h"></i> <span style="margin-left: 0.25rem;">Adjust</span>
-                                </button>
-                                <button class="btn btn-outline" onclick="editItem('${item.id}')" title="Edit item">
-                                    <i class="fas fa-edit"></i>
-                                </button>
-                                <button class="btn btn-outline" onclick="viewItemUnits('${item.id}')" title="View units">
-                                    <i class="fas fa-cubes"></i>
-                                </button>
+                                <div style="display: flex; flex-direction: column; gap: 0.25rem; align-items: flex-start;">
+                                    <button class="btn btn-primary" onclick="showAdjustStockModal('${item.id}')" title="Adjust stock: add/reduce, set batch, expiry, notes" style="min-width: 2.25rem;">
+                                        <i class="fas fa-sliders-h"></i> <span style="margin-left: 0.25rem;">Adjust</span>
+                                    </button>
+                                    <button class="btn btn-outline" onclick="openCostAndMetadataAdjustments('${item.id}', ${JSON.stringify(item.name || '')}, ${JSON.stringify(item.sku || '')})" title="Cost &amp; metadata corrections" style="padding: 0.25rem 0.5rem; font-size: 0.875rem;">
+                                        <i class="fas fa-wrench"></i>
+                                    </button>
+                                    <button class="btn btn-outline" onclick="editItem('${item.id}')" title="Edit item">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button class="btn btn-outline" onclick="viewItemUnits('${item.id}')" title="View units">
+                                        <i class="fas fa-cubes"></i>
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                     `;
@@ -1274,6 +1279,20 @@ function renderItemsTable() {
             ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${inventoryFilteredItemsList.length} search result${inventoryFilteredItemsList.length !== 1 ? 's' : ''}</p>`
             : ''}
     `;
+}
+
+// Open Cost & Metadata adjustments for a specific item (from Items table wrench icon)
+function openCostAndMetadataAdjustments(itemId, itemName, itemSku) {
+    try {
+        sessionStorage.setItem('pharmasight_adjustment_preselected', JSON.stringify({
+            itemId: itemId,
+            itemName: itemName || '',
+            itemSku: itemSku || ''
+        }));
+    } catch (e) { /* ignore */ }
+    window.location.hash = 'inventory-manual-adjustments';
+    if (typeof loadPage === 'function') loadPage('inventory', 'manual-adjustments');
+    else if (typeof loadInventory === 'function') loadInventory('manual-adjustments');
 }
 
 // ============================================
@@ -1479,7 +1498,6 @@ function renderManualAdjustmentsSubPage() {
             </div>
             <ul class="tabs" id="manualAdjustmentsTabs" style="display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
                 <li><a href="#" class="tab-link active" data-tab="cost">Cost</a></li>
-                <li><a href="#" class="tab-link" data-tab="quantity">Quantity</a></li>
                 <li><a href="#" class="tab-link" data-tab="metadata">Metadata</a></li>
             </ul>
             <div id="manualAdjustmentsCost" class="tab-pane">
@@ -1499,29 +1517,6 @@ function renderManualAdjustmentsSubPage() {
                         <textarea id="costReason" class="form-input" rows="2" required placeholder="e.g. Supplier invoice corrected"></textarea>
                     </div>
                     <button type="button" class="btn btn-primary" id="submitCostAdjustment"><i class="fas fa-check"></i> Apply cost adjustment</button>
-                </div>
-            </div>
-            <div id="manualAdjustmentsQuantity" class="tab-pane" style="display: none;">
-                <div class="card" style="max-width: 32rem;">
-                    <h3 style="margin-bottom: 0.75rem;">Quantity Correction</h3>
-                    <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Align ledger to physical count. Forward correction only.</p>
-                    <div class="form-group">
-                        <label>Batch number</label>
-                        <input type="text" id="qtyBatchNumber" class="form-input" required placeholder="e.g. BATCH-001">
-                    </div>
-                    <div class="form-group">
-                        <label>Expiry date (optional)</label>
-                        <input type="date" id="qtyExpiryDate" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>Physical count (base units)</label>
-                        <input type="number" id="qtyPhysicalCount" class="form-input" min="0" step="any" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Reason <span style="color: var(--danger-color);">*</span></label>
-                        <textarea id="qtyReason" class="form-input" rows="2" required placeholder="e.g. Stock count correction"></textarea>
-                    </div>
-                    <button type="button" class="btn btn-primary" id="submitQuantityCorrection"><i class="fas fa-check"></i> Apply quantity correction</button>
                 </div>
             </div>
             <div id="manualAdjustmentsMetadata" class="tab-pane" style="display: none;">
@@ -1572,12 +1567,12 @@ function setupManualAdjustmentsHandlers() {
             container.querySelectorAll('.tab-link').forEach(l => l.classList.remove('active'));
             container.querySelectorAll('.tab-pane').forEach(p => { p.style.display = 'none'; });
             this.classList.add('active');
-            const pane = document.getElementById('manualAdjustments' + (tab === 'cost' ? 'Cost' : tab === 'quantity' ? 'Quantity' : 'Metadata'));
+            const pane = document.getElementById('manualAdjustments' + (tab === 'cost' ? 'Cost' : 'Metadata'));
             if (pane) pane.style.display = 'block';
         });
     });
-    document.getElementById('manualAdjustmentsQuantity').style.display = 'none';
-    document.getElementById('manualAdjustmentsMetadata').style.display = 'none';
+    var metaPane = document.getElementById('manualAdjustmentsMetadata');
+    if (metaPane) metaPane.style.display = 'none';
 
     // Shared item search (type-ahead, branch-scoped; no overview on load — avoids DB load)
     const searchInput = document.getElementById('adjustmentItemSearch');
@@ -1624,22 +1619,34 @@ function setupManualAdjustmentsHandlers() {
                     dropdownEl.innerHTML = '<div style="padding: 8px;">Search not available.</div>';
                     return;
                 }
-                API.items.search(q, companyId, 20, branchIdRaw, false).then(function (items) {
+                API.items.search(q, companyId, 20, branchIdRaw, true).then(function (items) {
                     var list = Array.isArray(items) ? items : [];
                     if (!list.length) {
                         dropdownEl.innerHTML = '<div style="padding: 8px;">No items found. Type at least 2 characters.</div>';
                     } else {
+                        var fmt = (typeof formatCurrency === 'function') ? formatCurrency : function (n) { return n != null ? Number(n).toFixed(2) : '—'; };
                         dropdownEl.innerHTML = list.map(function (it) {
                             var name = (it.name || '').trim() || '—';
                             var sku = (it.sku || '').trim();
-                            var label = name + (sku ? ' (' + sku + ')' : '');
                             var safeName = String(name).replace(/"/g, '&quot;');
                             var safeSku = String(sku).replace(/"/g, '&quot;');
-                            var safeLabel = (typeof escapeHtml === 'function' ? escapeHtml(label) : label);
-                            return '<div class="dropdown-item" data-id="' + (it.id || '') + '" data-name="' + safeName + '" data-sku="' + safeSku + '" style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border-color);">' + safeLabel + '</div>';
+                            var stockNum = it.current_stock != null ? it.current_stock : (it.stock != null ? Number(it.stock) : null);
+                            var stockDisplay = it.stock_display != null ? String(it.stock_display) : (stockNum != null ? stockNum + ' ' + (it.base_unit || '') : '—');
+                            var priceDisplay = '—';
+                            var costDisplay = '—';
+                            if (it.pricing_3tier) {
+                                var rt = it.pricing_3tier.retail_price || it.pricing_3tier.wholesale_price || it.pricing_3tier.supplier_price;
+                                if (rt && rt.price != null) priceDisplay = fmt(rt.price) + (rt.unit ? ' / ' + rt.unit : '');
+                            }
+                            if (it.last_unit_cost != null) costDisplay = fmt(it.last_unit_cost);
+                            else if (it.default_cost != null) costDisplay = fmt(it.default_cost);
+                            var subLine = '<div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 2px;">Stock: ' + (typeof escapeHtml === 'function' ? escapeHtml(stockDisplay) : stockDisplay) + ' &nbsp; Price: ' + (typeof escapeHtml === 'function' ? escapeHtml(priceDisplay) : priceDisplay) + ' &nbsp; Cost: ' + (typeof escapeHtml === 'function' ? escapeHtml(costDisplay) : costDisplay) + '</div>';
+                            var label = (typeof escapeHtml === 'function' ? escapeHtml(name + (sku ? ' (' + sku + ')' : '')) : (name + (sku ? ' (' + sku + ')' : '')));
+                            return '<div class="dropdown-item" data-id="' + (it.id || '') + '" data-name="' + safeName + '" data-sku="' + safeSku + '" style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border-color);">' + label + subLine + '</div>';
                         }).join('');
                         dropdownEl.querySelectorAll('.dropdown-item').forEach(function (el) {
-                            el.addEventListener('click', function () {
+                            el.addEventListener('mousedown', function (e) {
+                                e.preventDefault();
                                 var id = el.getAttribute('data-id');
                                 var name = el.getAttribute('data-name') || '';
                                 var sku = el.getAttribute('data-sku') || '';
@@ -1659,6 +1666,19 @@ function setupManualAdjustmentsHandlers() {
         searchInput.addEventListener('blur', function () {
             setTimeout(function () { dropdownEl.style.display = 'none'; }, 200);
         });
+        // Pre-fill item when opened from Items table (wrench icon)
+        try {
+            var raw = sessionStorage.getItem('pharmasight_adjustment_preselected');
+            if (raw) {
+                sessionStorage.removeItem('pharmasight_adjustment_preselected');
+                var pre = JSON.parse(raw);
+                if (pre && pre.itemId) {
+                    itemIdHidden.value = pre.itemId;
+                    searchInput.value = (pre.itemName || '') + (pre.itemSku ? ' (' + pre.itemSku + ')' : '');
+                    loadBatchesForAdjustmentItem(pre.itemId);
+                }
+            }
+        } catch (e) { /* ignore */ }
     }
 
     // Submit Cost
@@ -1682,29 +1702,6 @@ function setupManualAdjustmentsHandlers() {
                 const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Failed';
                 if (typeof showToast === 'function') showToast(msg, 'error');
             }).finally(function () { submitCost.disabled = false; });
-        };
-    }
-    // Submit Quantity
-    const submitQty = document.getElementById('submitQuantityCorrection');
-    if (submitQty) {
-        submitQty.onclick = function () {
-            const itemId = getAdjustmentItemId();
-            const batchNumber = (document.getElementById('qtyBatchNumber') && document.getElementById('qtyBatchNumber').value || '').trim();
-            const expiryDate = document.getElementById('qtyExpiryDate') && document.getElementById('qtyExpiryDate').value || null;
-            const physicalCount = parseFloat(document.getElementById('qtyPhysicalCount').value);
-            const reason = (document.getElementById('qtyReason') && document.getElementById('qtyReason').value || '').trim();
-            if (!itemId || !batchNumber || isNaN(physicalCount) || !reason) {
-                if (typeof showToast === 'function') showToast('Select an item (search above), then batch number, physical count, and reason.', 'warning');
-                return;
-            }
-            submitQty.disabled = true;
-            API.items.corrections.batchQuantityCorrection(itemId, { branch_id: branchIdRaw, batch_number: batchNumber, expiry_date: expiryDate || undefined, physical_count: physicalCount, reason }).then(function (res) {
-                if (typeof showToast === 'function') showToast(res.message || 'Quantity corrected.', 'success');
-                document.getElementById('qtyReason').value = '';
-            }).catch(function (err) {
-                const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Failed';
-                if (typeof showToast === 'function') showToast(msg, 'error');
-            }).finally(function () { submitQty.disabled = false; });
         };
     }
     // Submit Metadata
@@ -2074,6 +2071,7 @@ function formatNumber(num) {
             // Export loadItemsData for use from items.js
             window.loadItemsData = loadItemsData;
             if (typeof showAdjustStockModal === 'function') window.showAdjustStockModal = showAdjustStockModal;
+            if (typeof openCostAndMetadataAdjustments === 'function') window.openCostAndMetadataAdjustments = openCostAndMetadataAdjustments;
             // Branch inventory
             window.loadBranchOrdersData = loadBranchOrdersData;
             window.loadBranchTransfersData = loadBranchTransfersData;
