@@ -9,6 +9,7 @@ Auth: get_current_user_optional / get_current_user accept internal JWT or (when
 SUPABASE_JWT_SECRET set) Supabase JWT. Tenant from token or X-Tenant-* header.
 """
 from urllib.parse import urlparse, quote
+import time as _time
 
 import logging
 import threading
@@ -42,6 +43,10 @@ logger = logging.getLogger(__name__)
 _tenant_engines: dict[str, object] = {}
 _tenant_sessions: dict[str, sessionmaker] = {}
 _pool_lock = threading.Lock()
+
+# In-process cache for default tenant (key=url, value=(tenant, expiry_ts)); TTL 10 minutes
+_default_tenant_cache: dict = {}
+_default_tenant_cache_ttl_seconds = 600
 
 # Supabase: transaction pooler port on db.xxx (IPv6); session pooler on pooler.supabase.com (IPv4).
 _SUPABASE_TRANSACTION_POOLER_PORT = "6543"
@@ -301,19 +306,30 @@ def _tenant_from_token_or_header(request: Request, master_db: Session, payload: 
 
 
 def _get_default_tenant(master_db: Session) -> Optional[Tenant]:
-    """Return the tenant whose database_url equals this app's DATABASE_URL (or same Supabase project), or None."""
+    """Return the tenant whose database_url equals this app's DATABASE_URL (or same Supabase project), or None.
+    Uses in-process cache keyed by DATABASE_URL with 10-minute TTL."""
     default_url = settings.database_connection_string
     if not default_url:
         return None
     default_url = default_url.strip()
-    tenant = master_db.query(Tenant).filter(
-        Tenant.database_url.isnot(None),
-    ).all()
-    for t in tenant:
+    now = _time.monotonic()
+    with _pool_lock:
+        entry = _default_tenant_cache.get(default_url)
+        if entry is not None:
+            cached_tenant, expiry = entry
+            if expiry > now:
+                return cached_tenant
+            _default_tenant_cache.pop(default_url, None)
+    tenants = master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).all()
+    result = None
+    for t in tenants:
         u = (t.database_url or "").strip()
         if u == default_url or _same_supabase_db(u, default_url):
-            return t
-    return None
+            result = t
+            break
+    with _pool_lock:
+        _default_tenant_cache[default_url] = (result, now + _default_tenant_cache_ttl_seconds)
+    return result
 
 
 def get_current_user_optional(
@@ -485,24 +501,10 @@ def get_tenant_or_default(
     tenant = get_tenant_from_header(request, master_db)
     if tenant is not None:
         return tenant
-    # No header: use default DB as tenant if it is listed in tenants table
-    default_url = settings.database_connection_string
-    if not default_url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Tenant required for this request. Send X-Tenant-ID or X-Tenant-Subdomain, "
-                "or add your default database as a tenant in the tenants table for development/demos."
-            ),
-        )
-    default_url = default_url.strip()
-    default_tenant = None
-    for t in master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).all():
-        u = (t.database_url or "").strip()
-        if u == default_url or _same_supabase_db(u, default_url):
-            default_tenant = t
-            break
+    # No header: use default DB as tenant (reuse cached lookup)
+    default_tenant = _get_default_tenant(master_db)
     if default_tenant is None:
+        default_url = settings.database_connection_string
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(

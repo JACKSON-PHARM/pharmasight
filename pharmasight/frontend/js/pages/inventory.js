@@ -1197,7 +1197,7 @@ async function filterItems() {
         } finally {
             isInventorySearching = false;
         }
-    }, 150);
+    }, 300);
 }
 
 function renderItemsTable() {
@@ -1217,8 +1217,11 @@ function renderItemsTable() {
     }
     
     container.innerHTML = `
+        <style>.inventory-items-table.inventory-items-compact th,
+.inventory-items-table.inventory-items-compact td { padding: 0.35rem 0.5rem; vertical-align: middle; }
+.inventory-items-table.inventory-items-compact tbody tr[data-item-id]:hover { background: rgba(0,0,0,0.04); }</style>
         <div class="table-container" style="max-height: calc(100vh - 400px); overflow-y: auto;">
-            <table style="width: 100%;">
+            <table class="inventory-items-table inventory-items-compact" style="width: 100%; border-collapse: collapse;">
                 <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
                     <tr>
                         <th>Name</th>
@@ -1239,7 +1242,7 @@ function renderItemsTable() {
                         const rowClass = isLowStock ? 'style="background-color: #fff3cd;"' : '';
                         const stockDisplay = typeof formatStockCell === 'function' ? formatStockCell(item) : '—';
                         return `
-                        <tr ${rowClass}>
+                        <tr ${rowClass} data-item-id="${item.id}" style="cursor: pointer;" title="Click row to adjust stock">
                             <td>${escapeHtml(item.name)}</td>
                             <td><code>${escapeHtml(item.sku || '—')}</code></td>
                             <td>${escapeHtml(item.base_unit)}</td>
@@ -1254,19 +1257,21 @@ function renderItemsTable() {
                                 </span>
                             </td>
                             <td>
-                                <div style="display: flex; flex-direction: column; gap: 0.25rem; align-items: flex-start;">
-                                    <button class="btn btn-primary" onclick="showAdjustStockModal('${item.id}')" title="Adjust stock: add/reduce, set batch, expiry, notes" style="min-width: 2.25rem;">
+                                <div style="display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-start;">
+                                    <button class="btn btn-primary" onclick="showAdjustStockModal('${item.id}')" title="Adjust stock: add/reduce, set batch, expiry, notes" style="min-width: 2.25rem; padding: 0.25rem 0.5rem; font-size: 0.875rem;">
                                         <i class="fas fa-sliders-h"></i> <span style="margin-left: 0.25rem;">Adjust</span>
                                     </button>
-                                    <button class="btn btn-outline" onclick="openCostAndMetadataAdjustments('${item.id}', ${JSON.stringify(item.name || '')}, ${JSON.stringify(item.sku || '')})" title="Cost &amp; metadata corrections" style="padding: 0.25rem 0.5rem; font-size: 0.875rem;">
-                                        <i class="fas fa-wrench"></i>
-                                    </button>
-                                    <button class="btn btn-outline" onclick="editItem('${item.id}')" title="Edit item">
-                                        <i class="fas fa-edit"></i>
-                                    </button>
-                                    <button class="btn btn-outline" onclick="viewItemUnits('${item.id}')" title="View units">
-                                        <i class="fas fa-cubes"></i>
-                                    </button>
+                                    <div style="display: flex; flex-direction: row; gap: 0.2rem; flex-wrap: nowrap;">
+                                        <button type="button" class="btn btn-outline js-cost-metadata-adjust" data-item-id="${item.id}" data-item-name="${String(item.name || '').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/&/g, '&amp;')}" data-item-sku="${String(item.sku || '').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/&/g, '&amp;')}" title="Cost &amp; metadata corrections" style="padding: 0.2rem 0.4rem; font-size: 0.8rem;">
+                                            <i class="fas fa-wrench"></i>
+                                        </button>
+                                        <button class="btn btn-outline" onclick="editItem('${item.id}')" title="Edit item" style="padding: 0.2rem 0.4rem; font-size: 0.8rem;">
+                                            <i class="fas fa-edit"></i>
+                                        </button>
+                                        <button class="btn btn-outline" onclick="viewItemUnits('${item.id}')" title="View units" style="padding: 0.2rem 0.4rem; font-size: 0.8rem;">
+                                            <i class="fas fa-cubes"></i>
+                                        </button>
+                                    </div>
                                 </div>
                             </td>
                         </tr>
@@ -1279,6 +1284,24 @@ function renderItemsTable() {
             ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${inventoryFilteredItemsList.length} search result${inventoryFilteredItemsList.length !== 1 ? 's' : ''}</p>`
             : ''}
     `;
+    // Delegated click: spanner (cost/metadata) button, then row click for Adjust modal
+    var tbody = container.querySelector('.inventory-items-table tbody');
+    if (tbody) {
+        tbody.addEventListener('click', function (e) {
+            var costMetaBtn = e.target.closest('button.js-cost-metadata-adjust');
+            if (costMetaBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof openCostAndMetadataAdjustmentsFromButton === 'function') openCostAndMetadataAdjustmentsFromButton(costMetaBtn);
+                return;
+            }
+            if (e.target.closest('button')) return;
+            var row = e.target.closest('tr[data-item-id]');
+            if (!row) return;
+            var id = row.getAttribute('data-item-id');
+            if (id && typeof showAdjustStockModal === 'function') showAdjustStockModal(id);
+        });
+    }
 }
 
 // Open Cost & Metadata adjustments for a specific item (from Items table wrench icon)
@@ -1291,8 +1314,17 @@ function openCostAndMetadataAdjustments(itemId, itemName, itemSku) {
         }));
     } catch (e) { /* ignore */ }
     window.location.hash = 'inventory-manual-adjustments';
-    if (typeof loadPage === 'function') loadPage('inventory', 'manual-adjustments');
+    if (typeof loadPage === 'function') loadPage('inventory-manual-adjustments');
     else if (typeof loadInventory === 'function') loadInventory('manual-adjustments');
+}
+
+// Called from wrench button onclick; reads from data attributes to avoid broken HTML (quotes in name/sku)
+function openCostAndMetadataAdjustmentsFromButton(btn) {
+    if (!btn || !btn.getAttribute) return;
+    var id = btn.getAttribute('data-item-id');
+    var name = (btn.getAttribute('data-item-name') || '').trim();
+    var sku = (btn.getAttribute('data-item-sku') || '').trim();
+    if (id && typeof openCostAndMetadataAdjustments === 'function') openCostAndMetadataAdjustments(id, name, sku);
 }
 
 // ============================================
@@ -1666,19 +1698,21 @@ function setupManualAdjustmentsHandlers() {
         searchInput.addEventListener('blur', function () {
             setTimeout(function () { dropdownEl.style.display = 'none'; }, 200);
         });
-        // Pre-fill item when opened from Items table (wrench icon)
-        try {
-            var raw = sessionStorage.getItem('pharmasight_adjustment_preselected');
-            if (raw) {
-                sessionStorage.removeItem('pharmasight_adjustment_preselected');
+        // Pre-fill item when opened from Items table (wrench icon) — selected item loaded directly, no search needed
+        function applyPreselectedItem() {
+            try {
+                var raw = sessionStorage.getItem('pharmasight_adjustment_preselected');
+                if (!raw) return;
                 var pre = JSON.parse(raw);
-                if (pre && pre.itemId) {
-                    itemIdHidden.value = pre.itemId;
-                    searchInput.value = (pre.itemName || '') + (pre.itemSku ? ' (' + pre.itemSku + ')' : '');
-                    loadBatchesForAdjustmentItem(pre.itemId);
-                }
-            }
-        } catch (e) { /* ignore */ }
+                if (!pre || !pre.itemId) return;
+                sessionStorage.removeItem('pharmasight_adjustment_preselected');
+                itemIdHidden.value = pre.itemId;
+                searchInput.value = (pre.itemName || '') + (pre.itemSku ? ' (' + pre.itemSku + ')' : '');
+                loadBatchesForAdjustmentItem(pre.itemId);
+            } catch (e) { /* ignore */ }
+        }
+        applyPreselectedItem();
+        setTimeout(applyPreselectedItem, 100);
     }
 
     // Submit Cost
@@ -2072,6 +2106,7 @@ function formatNumber(num) {
             window.loadItemsData = loadItemsData;
             if (typeof showAdjustStockModal === 'function') window.showAdjustStockModal = showAdjustStockModal;
             if (typeof openCostAndMetadataAdjustments === 'function') window.openCostAndMetadataAdjustments = openCostAndMetadataAdjustments;
+            if (typeof openCostAndMetadataAdjustmentsFromButton === 'function') window.openCostAndMetadataAdjustmentsFromButton = openCostAndMetadataAdjustmentsFromButton;
             // Branch inventory
             window.loadBranchOrdersData = loadBranchOrdersData;
             window.loadBranchTransfersData = loadBranchTransfersData;

@@ -2151,7 +2151,7 @@ async function searchItems(event) {
             document.getElementById('itemsList').innerHTML = 
                 `<p class="text-center" style="color: var(--danger-color);">Error: ${error.message || 'Search failed'}</p>`;
         }
-    }, 150); // OPTIMIZED: Reduced debounce from 300ms to 150ms
+    }, 300);
 }
 
 function renderItemsList(items) {

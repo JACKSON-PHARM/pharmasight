@@ -8,6 +8,7 @@ import logging
 import time
 from datetime import datetime, timezone, timedelta, date
 from fastapi import APIRouter, Body, Depends, HTTPException, status, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc
 from typing import Any, Dict, List, Optional
@@ -829,7 +830,11 @@ def get_items_count(
     return {"count": count}
 
 
-@router.get("/company/{company_id}/overview", response_model=List[ItemOverviewResponse])
+# Safe cap to prevent runaway payloads (performance protection; pagination is structural phase 2)
+MAX_ITEMS_OVERVIEW = 2000
+
+
+@router.get("/company/{company_id}/overview")
 def get_items_overview(
     company_id: UUID,
     branch_id: Optional[UUID] = Query(None, description="Branch ID for stock calculation (optional)"),
@@ -842,17 +847,20 @@ def get_items_overview(
     Single query endpoint to avoid N+1 problems.
     Computes stock from inventory_ledger aggregation.
     Gets last supplier and cost from purchase transactions.
+    Returns at most MAX_ITEMS_OVERVIEW items; response header X-Items-Truncated is set when capped.
     """
     # Base query for items (units are from item columns; no item_units table)
     items_query = db.query(Item).filter(Item.company_id == company_id)
-    items = items_query.all()
-    
+    total_count = items_query.count()
+    items = items_query.limit(MAX_ITEMS_OVERVIEW).all()
+    truncated = total_count > MAX_ITEMS_OVERVIEW
+
     if not items:
-        return []
-    
+        return JSONResponse(content=[], headers={"X-Items-Truncated": "false"})
+
     item_ids = [item.id for item in items]
-    # Subquery for "all company item ids" - avoids 10k+ bind params in stock/purchase queries
-    company_item_ids_subq = db.query(Item.id).filter(Item.company_id == company_id)
+    # Subquery limited to the items we are returning (capped set)
+    company_item_ids_subq = db.query(Item.id).filter(Item.id.in_(item_ids))
     
     # Aggregate stock from inventory_ledger (single query; use subquery, not IN(list))
     stock_query = db.query(
@@ -993,8 +1001,11 @@ def get_items_overview(
         if items[i].id in tier_pricing_map:
             item_dict['pricing_3tier'] = tier_pricing_map[items[i].id]
         result_dicts.append(item_dict)
-    
-    return result_dicts
+
+    return JSONResponse(
+        content=result_dicts,
+        headers={"X-Items-Truncated": "true" if truncated else "false"},
+    )
 
 
 @router.get("/company/{company_id}", response_model=List[ItemResponse])

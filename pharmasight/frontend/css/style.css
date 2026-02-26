@@ -797,6 +797,19 @@ body {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
+/* Dashboard skeleton loading state (lightweight CSS-only) */
+.stat-card-loading .stat-info h3 {
+    color: transparent;
+    background: linear-gradient(90deg, var(--border-color) 25%, var(--bg-color) 50%, var(--border-color) 75%);
+    background-size: 200% 100%;
+    animation: stat-card-shimmer 1.2s ease-in-out infinite;
+    border-radius: 0.25rem;
+}
+@keyframes stat-card-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
 /* Tables - scrollable on all devices; visible scrollbars for mouse users */
 .table-container {
     overflow-x: auto;

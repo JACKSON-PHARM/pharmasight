@@ -274,7 +274,7 @@ async function filterItems() {
         `;
     }
     
-    // Debounce search (150ms for fast response)
+    // Debounce search (300ms)
     itemsSearchTimeout = setTimeout(async () => {
         isSearching = true;
         
@@ -348,7 +348,7 @@ async function filterItems() {
         } finally {
             isSearching = false;
         }
-    }, 150);
+    }, 300);
 }
 
 function renderItemsTable() {

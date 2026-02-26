@@ -98,8 +98,34 @@ class APIClient {
                 error.status = response.status;
                 error.data = data;
                 console.error('API Error Response:', { url, status: response.status, data });
-                // Invalid or expired token: show clear message, then full session cleanup and redirect to login
                 if (response.status === 401) {
+                    var alreadyRetried = options._retried401 === true;
+                    var isInternalAuth = false;
+                    try {
+                        if (typeof localStorage !== 'undefined' && !isAuthEndpoint && !isAdminRoute) {
+                            var at = localStorage.getItem('pharmasight_access_token');
+                            var rt = localStorage.getItem('pharmasight_refresh_token');
+                            isInternalAuth = !!(at && rt);
+                        }
+                    } catch (_) {}
+                    if (isInternalAuth && !alreadyRetried) {
+                        try {
+                            var refreshResp = await fetch(this.baseURL + '/api/auth/refresh', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ refresh_token: localStorage.getItem('pharmasight_refresh_token') }),
+                            });
+                            var refreshData = refreshResp.ok ? (await refreshResp.json().catch(function() { return null; })) : null;
+                            if (refreshResp.ok && refreshData && refreshData.access_token) {
+                                localStorage.setItem('pharmasight_access_token', refreshData.access_token);
+                                if (refreshData.refresh_token) localStorage.setItem('pharmasight_refresh_token', refreshData.refresh_token);
+                                var retryOpts = { ...options, _retried401: true };
+                                return await this.request(endpoint, retryOpts);
+                            }
+                        } catch (refreshErr) {
+                            console.warn('Token refresh failed:', refreshErr);
+                        }
+                    }
                     if (typeof window.showToast === 'function') {
                         window.showToast('Session expired. Please log in again.', 'warning');
                     }

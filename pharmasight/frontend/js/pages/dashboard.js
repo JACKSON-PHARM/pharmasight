@@ -101,131 +101,97 @@ async function loadDashboard() {
     const ob = document.getElementById('orderBookPendingToday');
     if (ob) ob.textContent = '0';
 
+    // Skeleton loading state (removed when data loads below)
+    var dashboardStatCards = document.querySelectorAll('#dashboard .stat-card');
+    dashboardStatCards.forEach(function (card) { card.classList.add('stat-card-loading'); });
+
     try {
-        // Items in database (all company items, with or without stock)
+        var promises = [];
         if (CONFIG.COMPANY_ID && API.items && typeof API.items.count === 'function') {
-            try {
-                const itemsCountData = await API.items.count(CONFIG.COMPANY_ID);
-                const totalInDb = itemsCountData.count != null ? itemsCountData.count : 0;
-                const totalItemsEl = document.getElementById('totalItems');
-                if (totalItemsEl) totalItemsEl.textContent = totalInDb;
-            } catch (err) {
-                console.warn('Items count (database) failed:', err);
-            }
+            promises.push(API.items.count(CONFIG.COMPANY_ID).then(function (d) {
+                var el = document.getElementById('totalItems');
+                if (el) el.textContent = (d.count != null ? d.count : 0);
+            }).catch(function (err) { console.warn('Items count (database) failed:', err); }));
         }
-
-        // Unique items in stock (distinct items with stock > 0 at this branch)
         if (branchId && API.inventory && typeof API.inventory.getItemsInStockCount === 'function') {
-            try {
-                const countData = await API.inventory.getItemsInStockCount(branchId);
-                const uniqueInStock = countData.count != null ? countData.count : 0;
-                const totalStockEl = document.getElementById('totalStock');
-                if (totalStockEl) totalStockEl.textContent = uniqueInStock;
-            } catch (err) {
-                console.warn('Items-in-stock count failed:', err);
-            }
+            promises.push(API.inventory.getItemsInStockCount(branchId).then(function (d) {
+                var el = document.getElementById('totalStock');
+                if (el) el.textContent = (d.count != null ? d.count : 0);
+            }).catch(function (err) { console.warn('Items-in-stock count failed:', err); }));
         }
-
-        // Today's sales - check permissions to determine if user sees own sales or all sales
         if (branchId && API.sales && typeof API.sales.getTodaySummary === 'function') {
-            try {
-                let userId = null;
-                // Check if user can view all sales or only their own
-                if (typeof window.Permissions !== 'undefined' && window.Permissions.getSalesViewPermissions) {
-                    const salesPerms = await window.Permissions.getSalesViewPermissions(branchId);
-                    // If user can only view own sales, filter by user_id
-                    if (!salesPerms.canViewAll && salesPerms.canViewOwn) {
-                        userId = CONFIG.USER_ID || null;
-                    }
-                    // If user can't view any sales, don't show the card (already hidden above)
-                } else {
-                    // Fallback: show own sales only
-                    userId = CONFIG.USER_ID || null;
-                }
-                const summary = await API.sales.getTodaySummary(branchId, userId);
-                const total = parseFloat(summary.total_inclusive || summary.total_exclusive || 0);
+            promises.push((window.Permissions && window.Permissions.getSalesViewPermissions
+                ? window.Permissions.getSalesViewPermissions(branchId).then(function (p) {
+                    return (!p.canViewAll && p.canViewOwn) ? (CONFIG.USER_ID || null) : null;
+                })
+                : Promise.resolve(CONFIG.USER_ID || null)
+            ).then(function (userId) {
+                return API.sales.getTodaySummary(branchId, userId);
+            }).then(function (s) {
+                var total = parseFloat(s.total_inclusive || s.total_exclusive || 0);
                 document.getElementById('todaySales').textContent = formatCurrency(total);
-            } catch (err) {
-                console.warn('Today summary failed:', err);
-            }
+            }).catch(function (err) { console.warn('Today summary failed:', err); }));
         }
-
-        // Today's gross profit (Sales exclusive - COGS), requires cost permissions.
         if (branchId && API.sales && typeof API.sales.getGrossProfit === 'function') {
-            try {
-                // If the card is hidden by permissions, skip work.
-                const gpCard = document.getElementById('todayGrossProfit')?.closest('.stat-card');
-                if (gpCard && gpCard.style.display === 'none') {
-                    // noop
-                } else {
-                    const res = await API.sales.getGrossProfit(branchId, { preset: 'today' });
-                    const gp = parseFloat(res.gross_profit || 0);
-                    const margin = parseFloat(res.margin_percent || 0);
-                    const gpEl2 = document.getElementById('todayGrossProfit');
-                    if (gpEl2) gpEl2.textContent = formatCurrency(gp);
-                    const meta = document.getElementById('todayGrossProfitMeta');
-                    if (meta) meta.textContent = `Gross Profit (Today) • Margin ${margin.toFixed(1)}%`;
-                }
-            } catch (err) {
-                console.warn('Today gross profit failed:', err);
-                const gpEl2 = document.getElementById('todayGrossProfit');
-                if (gpEl2) gpEl2.textContent = formatCurrency(0);
-                const meta = document.getElementById('todayGrossProfitMeta');
-                if (meta) meta.textContent = 'Gross Profit (Today)';
-            }
+            promises.push((function () {
+                var gpCard = document.getElementById('todayGrossProfit') && document.getElementById('todayGrossProfit').closest('.stat-card');
+                if (gpCard && gpCard.style.display === 'none') return Promise.resolve();
+                return API.sales.getGrossProfit(branchId, { preset: 'today' }).then(function (r) {
+                    var gp = parseFloat(r.gross_profit || 0);
+                    var margin = parseFloat(r.margin_percent || 0);
+                    var el = document.getElementById('todayGrossProfit');
+                    if (el) el.textContent = formatCurrency(gp);
+                    var meta = document.getElementById('todayGrossProfitMeta');
+                    if (meta) meta.textContent = 'Gross Profit (Today) • Margin ' + margin.toFixed(1) + '%';
+                }).catch(function (err) {
+                    console.warn('Today gross profit failed:', err);
+                    var el = document.getElementById('todayGrossProfit');
+                    if (el) el.textContent = formatCurrency(0);
+                    var meta = document.getElementById('todayGrossProfitMeta');
+                    if (meta) meta.textContent = 'Gross Profit (Today)';
+                });
+            })());
         }
-
-        // Soon to expire count (batches expiring within 365 days)
         if (branchId && API.inventory && typeof API.inventory.getExpiringCount === 'function') {
-            try {
-                const expiringData = await API.inventory.getExpiringCount(branchId, 365);
-                const expiringCount = expiringData.count != null ? expiringData.count : 0;
-                document.getElementById('expiringItems').textContent = expiringCount;
-            } catch (err) {
+            promises.push(API.inventory.getExpiringCount(branchId, 365).then(function (d) {
+                document.getElementById('expiringItems').textContent = (d.count != null ? d.count : 0);
+            }).catch(function (err) {
                 console.warn('Expiring count endpoint not available:', err);
                 document.getElementById('expiringItems').textContent = '0';
-            }
+            }));
         }
-
-        // totalStock card is set above from getItemsInStockCount (unique items); no separate API needed
-
-        // Stock value in KES (monetary)
         if (branchId && API.inventory && typeof API.inventory.getTotalStockValue === 'function') {
-            try {
-                const valueData = await API.inventory.getTotalStockValue(branchId);
-                const totalValue = valueData.total_value != null ? valueData.total_value : 0;
-                const totalStockValueEl = document.getElementById('totalStockValue');
-                if (totalStockValueEl) totalStockValueEl.textContent = formatCurrency(totalValue);
-            } catch (err) {
+            promises.push(API.inventory.getTotalStockValue(branchId).then(function (d) {
+                var el = document.getElementById('totalStockValue');
+                if (el) el.textContent = (d.total_value != null ? formatCurrency(d.total_value) : '—');
+            }).catch(function (err) {
                 console.warn('Total stock value endpoint not available:', err);
-                const totalStockValueEl = document.getElementById('totalStockValue');
-                if (totalStockValueEl) totalStockValueEl.textContent = '—';
-            }
+                var el = document.getElementById('totalStockValue');
+                if (el) el.textContent = '—';
+            }));
         }
-
-        // Order book pending today (count + cache preview list)
         if (branchId && API.orderBook && typeof API.orderBook.getTodaySummary === 'function') {
-            try {
-                const summary = await API.orderBook.getTodaySummary(branchId, CONFIG.COMPANY_ID, 50);
-                const pendingCount = summary && summary.pending_count != null ? summary.pending_count : 0;
-                const el = document.getElementById('orderBookPendingToday');
-                if (el) el.textContent = pendingCount;
-                cachedOrderBookPendingToday = (summary && summary.entries) ? summary.entries : [];
-            } catch (err) {
+            promises.push(API.orderBook.getTodaySummary(branchId, CONFIG.COMPANY_ID, 50).then(function (s) {
+                var el = document.getElementById('orderBookPendingToday');
+                if (el) el.textContent = (s && s.pending_count != null ? s.pending_count : 0);
+                cachedOrderBookPendingToday = (s && s.entries) ? s.entries : [];
+            }).catch(function (err) {
                 console.warn('Order book today summary failed:', err);
-                const el = document.getElementById('orderBookPendingToday');
+                var el = document.getElementById('orderBookPendingToday');
                 if (el) el.textContent = '0';
                 cachedOrderBookPendingToday = [];
-            }
+            }));
         }
+        await Promise.all(promises);
     } catch (error) {
         console.error('Error loading dashboard:', error);
-        // Only surface toast when user is already on dashboard (avoid noise during navigation)
-        const active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
+        var active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
         if (active === 'dashboard' && typeof showToast === 'function') {
             showToast('Error loading dashboard data', 'error');
         }
     }
+    dashboardStatCards = document.querySelectorAll('#dashboard .stat-card');
+    dashboardStatCards.forEach(function (card) { card.classList.remove('stat-card-loading'); });
 }
 
 async function showOrderBookPendingTodayModal() {
