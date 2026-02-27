@@ -1617,6 +1617,73 @@ async function editItem(itemId) {
                 </div>
             </div>
 
+            <!-- Pricing overrides: floor & promo (simple) -->
+            <div class="form-section">
+                <div class="form-section-title">
+                    <i class="fas fa-tags"></i> Pricing overrides (optional)
+                </div>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.75rem;">
+                    Use these fields only when you need to pin a minimum selling price or a temporary promo price for this item.
+                    Leave them blank to use normal margin rules.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">
+                            Floor price (retail)
+                            <small style="display:block; color: var(--text-secondary); font-weight: normal;">
+                                Minimum allowed unit price for this item. Selling below this is blocked.
+                            </small>
+                        </label>
+                        <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            class="form-input"
+                            name="floor_price_retail"
+                            value="${item.floor_price_retail != null ? item.floor_price_retail : ''}"
+                            placeholder="e.g. 150.00"
+                        >
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">
+                            Promo price (retail)
+                            <small style="display:block; color: var(--text-secondary); font-weight: normal;">
+                                Temporary promo unit price. Only active between the dates below.
+                            </small>
+                        </label>
+                        <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            class="form-input"
+                            name="promo_price_retail"
+                            value="${item.promo_price_retail != null ? item.promo_price_retail : ''}"
+                            placeholder="e.g. 120.00"
+                        >
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Promo start date</label>
+                        <input
+                            type="date"
+                            class="form-input"
+                            name="promo_start_date"
+                            value="${item.promo_start_date ? String(item.promo_start_date).substring(0, 10) : ''}"
+                        >
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Promo end date</label>
+                        <input
+                            type="date"
+                            class="form-input"
+                            name="promo_end_date"
+                            value="${item.promo_end_date ? String(item.promo_end_date).substring(0, 10) : ''}"
+                        >
+                    </div>
+                </div>
+            </div>
+
             <!-- 3-Tier Unit System (clear wholesale / retail / supplier) -->
             <div class="form-section">
                 <div class="form-section-title">
@@ -1999,6 +2066,17 @@ async function updateItem(event, itemId) {
     // Normalize VAT based on category (current app uses 0% or 16%)
     if (updateData.vat_category === 'STANDARD_RATED') updateData.vat_rate = 16;
     else if (updateData.vat_category === 'ZERO_RATED') updateData.vat_rate = 0;
+
+    // Pricing overrides (floor & promo) - simple, optional
+    const floorPriceRaw = formData.get('floor_price_retail');
+    const promoPriceRaw = formData.get('promo_price_retail');
+    const promoStartRaw = formData.get('promo_start_date');
+    const promoEndRaw = formData.get('promo_end_date');
+
+    updateData.floor_price_retail = floorPriceRaw && floorPriceRaw.trim() !== '' ? parseFloat(floorPriceRaw) : null;
+    updateData.promo_price_retail = promoPriceRaw && promoPriceRaw.trim() !== '' ? parseFloat(promoPriceRaw) : null;
+    updateData.promo_start_date = promoStartRaw && promoStartRaw.trim() !== '' ? promoStartRaw : null;
+    updateData.promo_end_date = promoEndRaw && promoEndRaw.trim() !== '' ? promoEndRaw : null;
 
     // 3-tier unit fields (only if item doesn't have transactions)
     if (!hasTransactions) {

@@ -1,7 +1,7 @@
 """
 Item and Unit models
 """
-from sqlalchemy import Column, String, Boolean, Numeric, ForeignKey, Integer
+from sqlalchemy import Column, String, Boolean, Numeric, ForeignKey, Integer, Date
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -57,6 +57,11 @@ class Item(Base):
     # Default parameters — used only when item has no inventory_ledger / purchase history
     default_cost_per_base = Column(Numeric(20, 4), nullable=True)  # Cost per base unit fallback
     default_supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True)
+    # Item-level pricing overrides (floor + simple promo window)
+    floor_price_retail = Column(Numeric(20, 4), nullable=True)
+    promo_price_retail = Column(Numeric(20, 4), nullable=True)
+    promo_start_date = Column(Date, nullable=True)
+    promo_end_date = Column(Date, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -109,6 +114,22 @@ class CompanyMarginTier(Base):
     tier_name = Column(String(50), nullable=False)
     default_margin_percent = Column(Numeric(10, 2), nullable=False)
     min_margin_percent = Column(Numeric(10, 2), nullable=False, default=0)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PricingSettings(Base):
+    """Company-level pricing & margin defaults and discount/promo rules."""
+    __tablename__ = "pricing_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, unique=True)
+    default_min_margin_retail_pct = Column(Numeric(10, 2), nullable=True)
+    default_min_margin_wholesale_pct = Column(Numeric(10, 2), nullable=True)
+    below_margin_behavior = Column(String(50), nullable=False, default="allow_warn")
+    allow_line_discounts = Column(Boolean, nullable=False, default=True)
+    max_discount_pct_without_override = Column(Numeric(10, 2), nullable=True)
+    promotions_can_go_below_margin = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

@@ -6,7 +6,7 @@ from app.database import Base
 # Import all models
 from .company import Company, Branch, BranchSetting
 from .user import User, UserRole, UserBranchRole
-from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier
+from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier, PricingSettings
 from .inventory import InventoryLedger, ItemMovement
 from .snapshot import InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot
 from .supplier import Supplier
@@ -41,6 +41,7 @@ __all__ = [
     "ItemPricing",
     "CompanyPricingDefault",
     "CompanyMarginTier",
+    "PricingSettings",
     "InventoryLedger",
     "ItemMovement",
     "InventoryBalance",

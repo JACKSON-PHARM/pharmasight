@@ -5,7 +5,7 @@ retail_unit (what customers buy), pack_size (retail units per packet).
 """
 from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date
 from uuid import UUID
 
 
@@ -106,6 +106,10 @@ class ItemUpdate(BaseModel):
     is_controlled: Optional[bool] = None
     is_cold_chain: Optional[bool] = None
     units: Optional[List[ItemUnitUpdate]] = Field(None, description="Unit conversions (optional, only if modifying units)")
+    floor_price_retail: Optional[float] = Field(None, ge=0, description="Minimum allowed selling price (retail)")
+    promo_price_retail: Optional[float] = Field(None, ge=0, description="Temporary promo price (retail)")
+    promo_start_date: Optional[date] = Field(None, description="Promo start date (YYYY-MM-DD)")
+    promo_end_date: Optional[date] = Field(None, description="Promo end date (YYYY-MM-DD)")
 
 
 def _is_numeric_unit_value(value) -> bool:
@@ -133,6 +137,10 @@ class ItemResponse(ItemBase):
     stock_display: Optional[str] = Field(None, description="3-tier stock string when branch_id provided (e.g. '2 packet (200 tablet)')")
     current_stock: Optional[float] = Field(None, description="Current stock in base units when branch_id provided")
     has_transactions: Optional[bool] = Field(False, description="True if item has sales, purchases, or non–opening-balance ledger (locks unit fields)")
+    floor_price_retail: Optional[float] = Field(None, description="Minimum allowed selling price (retail)")
+    promo_price_retail: Optional[float] = Field(None, description="Temporary promo price (retail)")
+    promo_start_date: Optional[date] = Field(None, description="Promo start date")
+    promo_end_date: Optional[date] = Field(None, description="Promo end date")
 
     @model_validator(mode="after")
     def coerce_numeric_base_unit_for_display(self):
