@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     SMTP_USER: str = os.getenv("SMTP_USER", "")
     SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
     EMAIL_FROM: str = os.getenv("EMAIL_FROM", "PharmaSight <noreply@pharmasight.com>")
+    # Base URL for invite/password-reset links. Set to your public frontend URL (e.g. https://app.pharmasight.com)
+    # so links work for recipients; if unset or localhost, links will point to localhost and fail for external users.
     APP_PUBLIC_URL: str = os.getenv("APP_PUBLIC_URL", "http://localhost:3000")
 
     # Security

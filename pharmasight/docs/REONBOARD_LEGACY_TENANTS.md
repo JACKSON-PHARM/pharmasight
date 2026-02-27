@@ -101,8 +101,7 @@ You can repeat the Company + Branch steps for each legacy tenant (PharmaSage, HA
 2. Open **Organization management** and find the tenant (e.g. PharmaSage, HARTE).
 3. Click **Invite** for that tenant.
 4. Create the invite (with or without “send email” depending on your SMTP setup).
-5. Share the **setup URL** with the client (e.g. copy from the modal or from the email). The URL looks like:  
-   `https://your-app-domain/setup?token=<invite_token>`.
+5. Share the **setup URL** with the client (e.g. copy from the modal or from the email). The URL uses **APP_PUBLIC_URL** (see below); if that is not set, the link will be localhost and will not work for recipients. Set **APP_PUBLIC_URL** in your backend environment (e.g. `https://app.pharmasight.com`) so the link is reachable on their phone or computer.
 
 ---
 
