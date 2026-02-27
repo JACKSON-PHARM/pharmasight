@@ -17,6 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.database import SessionLocal
@@ -57,8 +58,10 @@ from app.utils.auth_internal import (
 router = APIRouter()
 
 
-def _trial_expired(tenant: Tenant) -> bool:
+def _trial_expired(tenant: Optional[Tenant]) -> bool:
     """True if tenant is on trial and trial_ends_at is in the past (UTC)."""
+    if tenant is None:
+        return False
     if tenant.status != "trial" or not tenant.trial_ends_at:
         return False
     end = tenant.trial_ends_at
@@ -264,8 +267,16 @@ def username_login(
                 detail="Trial expired. Please contact support to upgrade.",
             )
         _require_password_if_internal(user, request.password)
-        with tenant_db_session(tenant) as tenant_db:
-            resp = _build_login_response(user, tenant, request.password, db=tenant_db)
+        # User found in legacy/app DB (tenant is None) or in a tenant DB
+        if tenant is None:
+            db = SessionLocal()
+            try:
+                resp = _build_login_response(user, tenant, request.password, db=db)
+            finally:
+                db.close()
+        else:
+            with tenant_db_session(tenant) as tenant_db:
+                resp = _build_login_response(user, tenant, request.password, db=tenant_db)
         if resp.refresh_token:
             _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
         return resp

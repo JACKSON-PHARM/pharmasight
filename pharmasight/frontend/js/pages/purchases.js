@@ -66,8 +66,16 @@ async function loadPurchases() {
     if (typeof window.loadCompanyPrintSettings === 'function') {
         window.loadCompanyPrintSettings().catch(() => {});
     }
+    try {
+        const raw = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pendingLandingDocument');
+        if (raw) {
+            const pending = JSON.parse(raw);
+            if (pending && pending.type === 'purchase_order') {
+                currentPurchaseSubPage = 'create';
+            }
+        }
+    } catch (_) {}
     console.log('Loading purchase sub-page:', currentPurchaseSubPage);
-    // Load sub-page based on current selection (default to 'orders' if not set)
     const subPageToLoad = currentPurchaseSubPage || 'orders';
     await loadPurchaseSubPage(subPageToLoad);
 }
@@ -1136,6 +1144,61 @@ async function renderCreatePurchaseOrderPage() {
             }
         }, 100);
     }
+
+    // If opened from landing quick-search with an item, create PO with first supplier
+    try {
+        const raw = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pendingLandingDocument');
+        if (raw && !isEditMode) {
+            const pending = JSON.parse(raw);
+            if (pending && pending.type === 'purchase_order' && pending.item) {
+                sessionStorage.removeItem('pendingLandingDocument');
+                (async () => {
+                    try {
+                        if (!window.API || !window.API.suppliers || !window.API.suppliers.list) {
+                            if (typeof showToast === 'function') showToast('Suppliers API not available', 'warning');
+                            return;
+                        }
+                        const list = await window.API.suppliers.list(window.CONFIG.COMPANY_ID);
+                        const suppliers = list.suppliers || list || [];
+                        const firstSupplier = Array.isArray(suppliers) ? suppliers[0] : null;
+                        if (!firstSupplier || !firstSupplier.id) {
+                            if (typeof showToast === 'function') showToast('Add a supplier first (Purchases → Suppliers)', 'warning');
+                            return;
+                        }
+                        const payload = {
+                            company_id: window.CONFIG.COMPANY_ID,
+                            branch_id: window.CONFIG.BRANCH_ID,
+                            supplier_id: firstSupplier.id,
+                            order_date: new Date().toISOString().split('T')[0],
+                            reference: null,
+                            notes: null,
+                            status: 'PENDING',
+                            created_by: window.CONFIG.USER_ID,
+                            items: [mapTableItemToOrderItem(pending.item)]
+                        };
+                        const order = await window.API.purchases.createOrder(payload);
+                        currentDocument = { type: 'order', id: order.id, order_number: order.order_number, status: order.status };
+                        poSyncedItemIds = new Set((order.items || []).map(i => i.item_id));
+                        documentItems = (order.items || []).map(i => ({
+                            item_id: i.item_id,
+                            item_name: i.item_name || '',
+                            item_sku: i.item_code || '',
+                            item_code: i.item_code || '',
+                            unit_name: i.unit_name || 'unit',
+                            quantity: i.quantity || 1,
+                            unit_price: i.unit_price != null ? i.unit_price : 0,
+                            total: i.total_price != null ? i.total_price : 0,
+                            is_empty: false
+                        }));
+                        await renderCreatePurchaseOrderPage();
+                        if (typeof showToast === 'function') showToast('Purchase order created. Add more items or save when ready.', 'success');
+                    } catch (e) {
+                        if (typeof showToast === 'function') showToast((e && e.message) ? e.message : 'Could not create order', 'error');
+                    }
+                })();
+            }
+        }
+    } catch (_) {}
 }
 
 // Render Create Supplier Invoice Page (RECEIVING document - ADDS STOCK)

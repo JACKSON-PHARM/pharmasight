@@ -189,10 +189,23 @@
                         <h2 id="landingWelcome">Welcome</h2>
                         <p class="landing-branch" id="landingBranch">Loading...</p>
                     </div>
-                    <div class="landing-quick-stats">
+                    <div class="landing-quick-stats" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
                         <div class="landing-stat">
                             <span class="landing-stat-value" id="landingPendingOrders">—</span>
                             <span class="landing-stat-label">Pending orders (today)</span>
+                        </div>
+                        <div class="landing-quick-search" style="flex: 1; min-width: 200px; max-width: 360px; position: relative;">
+                            <input type="text" id="landingItemSearch" class="form-input" placeholder="Search item (name, SKU)…" autocomplete="off" style="width: 100%; padding: 0.5rem 0.75rem;">
+                            <div id="landingItemSearchDropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px; background: var(--bg-color, #fff); border: 1px solid var(--border-color, #dee2e6); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-height: 220px; overflow-y: auto; z-index: 100;"></div>
+                        </div>
+                    </div>
+                    <div id="landingSelectedItemRow" style="display: none; margin: 0.75rem 0; padding: 0.75rem; background: var(--bg-secondary, #f8f9fa); border-radius: 8px; border: 1px solid var(--border-color, #dee2e6);">
+                        <span id="landingSelectedItemName" style="font-weight: 600;"></span>
+                        <span style="margin-left: 0.5rem; color: var(--text-secondary);"></span>
+                        <div style="margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                            <button type="button" class="btn btn-primary btn-sm" id="landingCreateInvoiceBtn"><i class="fas fa-file-invoice-dollar"></i> Sales invoice</button>
+                            <button type="button" class="btn btn-outline btn-sm" id="landingCreateQuotationBtn"><i class="fas fa-file-invoice"></i> Quotation</button>
+                            <button type="button" class="btn btn-outline btn-sm" id="landingCreateOrderBtn"><i class="fas fa-shopping-bag"></i> Purchase order</button>
                         </div>
                     </div>
                     <div class="landing-tiles">

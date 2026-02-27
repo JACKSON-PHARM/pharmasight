@@ -8,8 +8,10 @@ Authority: database-per-tenant. Users live in TENANT DB only.
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from app.database_master import get_master_db
+from app.database import SessionLocal
 from app.dependencies import tenant_or_app_db_session
 from app.schemas.tenant import OnboardingSignupRequest, OnboardingSignupResponse
 from datetime import datetime, timezone
@@ -148,7 +150,7 @@ def validate_token(
     master_db: Session = Depends(get_master_db),
 ):
     """Validate invite token; returns tenant info and username for set-password flow.
-    Uses MASTER for token/tenant; TENANT DB for username derivation (per-tenant uniqueness).
+    Uses MASTER for token/tenant; TENANT DB (or app DB if tenant DB unreachable) for username.
     """
     tenant = OnboardingService.validate_invite_token(token, master_db)
     if not tenant:
@@ -156,8 +158,19 @@ def validate_token(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or expired invite token",
         )
-    with tenant_or_app_db_session(tenant) as tenant_db:
-        username = _username_for_tenant(tenant, tenant_db)
+    try:
+        with tenant_or_app_db_session(tenant) as tenant_db:
+            username = _username_for_tenant(tenant, tenant_db)
+    except OperationalError as e:
+        err_msg = str(e).strip()
+        if "Tenant or user not found" not in err_msg and "FATAL:" not in err_msg.upper():
+            raise
+        # Tenant's DB deleted/unreachable (legacy re-invite); use app DB for username derivation.
+        db = SessionLocal()
+        try:
+            username = _username_for_tenant(tenant, db)
+        finally:
+            db.close()
     return {
         "valid": True,
         "tenant_id": str(tenant.id),
@@ -168,16 +181,65 @@ def validate_token(
     }
 
 
+def _complete_invite_with_session(
+    tenant_db: Session,
+    tenant,
+    uid,
+    body: CompleteTenantInviteRequest,
+    master_db: Session,
+) -> dict:
+    """Run invite-completion logic against the given tenant/app DB session. Returns response dict."""
+    username = _username_for_tenant(tenant, tenant_db)
+    existing_by_id = tenant_db.query(User).filter(User.id == uid).first()
+    if existing_by_id:
+        _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
+        tenant_db.commit()
+        OnboardingService.mark_invite_used(body.token, uid, master_db)
+        return {
+            "success": True,
+            "message": "Account already exists. Sign in with your username and password.",
+            "username": username,
+        }
+    # Init flow may have created User with temp UUID. Remove it before adding Supabase-backed user.
+    init_user = tenant_db.query(User).filter(User.email == tenant.admin_email).first()
+    if init_user:
+        tenant_db.delete(init_user)
+        tenant_db.flush()
+    user = User(
+        id=uid,
+        email=tenant.admin_email,
+        username=username,
+        full_name=tenant.admin_full_name,
+        phone=tenant.phone,
+        is_active=True,
+        is_pending=False,
+        password_set=True,
+        password_hash=hash_password(body.password),
+        password_updated_at=datetime.now(timezone.utc),
+    )
+    tenant_db.add(user)
+    tenant_db.flush()
+    _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
+    tenant_db.commit()
+    OnboardingService.mark_invite_used(body.token, uid, master_db)
+    return {
+        "success": True,
+        "message": "Password set. Sign in with your username and password.",
+        "username": username,
+    }
+
+
 @router.post("/onboarding/complete-tenant-invite")
 def complete_tenant_invite(
     body: CompleteTenantInviteRequest,
     master_db: Session = Depends(get_master_db),
 ):
     """
-    Complete tenant invite: validate token, create user in TENANT DB, mark invite used.
+    Complete tenant invite: validate token, create user in TENANT DB (or app DB), mark invite used.
 
     Uses MASTER for token/tenant and mark_invite_used only.
-    User create/lookup is in TENANT DB only. No global user linking or email pre-check.
+    If the tenant's database_url points to a deleted project (e.g. re-invited legacy tenant),
+    falls back to the app DB so setup can complete.
     """
     import uuid as _uuid
 
@@ -201,43 +263,17 @@ def complete_tenant_invite(
     user_id = result["user_id"]
     uid = _uuid.UUID(user_id) if isinstance(user_id, str) else user_id
 
-    with tenant_or_app_db_session(tenant) as tenant_db:
-        username = _username_for_tenant(tenant, tenant_db)
-        existing_by_id = tenant_db.query(User).filter(User.id == uid).first()
-        if existing_by_id:
-            _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
-            tenant_db.commit()
-            OnboardingService.mark_invite_used(body.token, uid, master_db)
-            return {
-                "success": True,
-                "message": "Account already exists. Sign in with your username and password.",
-                "username": username,
-            }
-        # Init flow may have created User with temp UUID. Remove it before adding Supabase-backed user.
-        init_user = tenant_db.query(User).filter(User.email == tenant.admin_email).first()
-        if init_user:
-            tenant_db.delete(init_user)
-            tenant_db.flush()
-        user = User(
-            id=uid,
-            email=tenant.admin_email,
-            username=username,
-            full_name=tenant.admin_full_name,
-            phone=tenant.phone,
-            is_active=True,
-            is_pending=False,
-            password_set=True,
-            password_hash=hash_password(body.password),
-            password_updated_at=datetime.now(timezone.utc),
-        )
-        tenant_db.add(user)
-        tenant_db.flush()
-        _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
-        tenant_db.commit()
-
-    OnboardingService.mark_invite_used(body.token, uid, master_db)
-    return {
-        "success": True,
-        "message": "Password set. Sign in with your username and password.",
-        "username": username,
-    }
+    try:
+        with tenant_or_app_db_session(tenant) as tenant_db:
+            return _complete_invite_with_session(tenant_db, tenant, uid, body, master_db)
+    except OperationalError as e:
+        err_msg = str(e).strip()
+        if "Tenant or user not found" not in err_msg and "FATAL:" not in err_msg.upper():
+            raise
+        # Tenant's database_url points to a deleted/unreachable Supabase project (legacy re-invite).
+        # Use app DB so the user can complete setup in the single-DB multi-company instance.
+        db = SessionLocal()
+        try:
+            return _complete_invite_with_session(db, tenant, uid, body, master_db)
+        finally:
+            db.close()

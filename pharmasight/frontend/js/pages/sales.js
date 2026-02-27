@@ -30,7 +30,19 @@ async function loadSales() {
         page.innerHTML = '<div class="card"><p>Please configure Company and Branch in Settings</p></div>';
         return;
     }
-    
+
+    try {
+        const raw = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pendingLandingDocument');
+        if (raw) {
+            const pending = JSON.parse(raw);
+            if (pending && pending.type === 'sales_invoice') {
+                currentSalesSubPage = 'create-invoice';
+            } else if (pending && pending.type === 'quotation') {
+                currentSalesSubPage = 'create-quotation';
+            }
+        }
+    } catch (_) {}
+
     console.log('Loading sales sub-page:', currentSalesSubPage);
     await loadSalesSubPage(currentSalesSubPage);
 }
@@ -768,6 +780,23 @@ async function renderCreateSalesInvoicePage() {
     setTimeout(() => {
         handlePaymentModeChange();
     }, 100);
+
+    // If opened from landing quick-search with an item, create draft with that item
+    try {
+        const raw = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pendingLandingDocument');
+        if (raw) {
+            const pending = JSON.parse(raw);
+            if (pending && pending.type === 'sales_invoice' && pending.item) {
+                sessionStorage.removeItem('pendingLandingDocument');
+                setTimeout(async () => {
+                    if (typeof onSalesInvoiceAddItem === 'function') {
+                        await onSalesInvoiceAddItem(pending.item);
+                        if (typeof showToast === 'function') showToast('Draft created. Add more items or batch when ready.', 'success');
+                    }
+                }, 200);
+            }
+        }
+    } catch (_) {}
 }
 
 // Handle payment mode change - validate credit requirements
@@ -1693,6 +1722,23 @@ function initializeSalesQuotationItemsTable() {
             salesQuotationItemsTable.autoFocusFirstItemField();
         }
     }, 150);
+
+    // If opened from landing quick-search with an item, create quotation with that item
+    try {
+        const raw = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pendingLandingDocument');
+        if (raw) {
+            const pending = JSON.parse(raw);
+            if (pending && pending.type === 'quotation' && pending.item) {
+                sessionStorage.removeItem('pendingLandingDocument');
+                setTimeout(async () => {
+                    if (typeof onQuotationAddItem === 'function') {
+                        await onQuotationAddItem(pending.item);
+                        if (typeof showToast === 'function') showToast('Quotation created. Add more items or update when ready.', 'success');
+                    }
+                }, 200);
+            }
+        }
+    } catch (_) {}
 }
 
 // Update sales quotation summary (Net, VAT, Total) — debounced so totals don't flicker
