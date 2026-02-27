@@ -17,26 +17,11 @@ router = APIRouter()
 @router.post("/startup", response_model=StartupResponse, status_code=status.HTTP_201_CREATED)
 def initialize_company(startup: StartupRequest, db: Session = Depends(get_tenant_db)):
     """
-    Complete company initialization
-    
-    This endpoint performs the full setup:
-    1. Creates company (enforces ONE COMPANY rule)
-    2. Creates initial admin user
-    3. Creates first branch (with code)
-    4. Assigns admin role to branch
-    5. Initializes document sequences
-    6. Initializes pricing defaults
-    
-    **This should only be called once per database.**
+    Complete company initialization (multi-company safe).
+    - If no company exists: creates first company, branch, assigns user.
+    - If user already has a company (e.g. from invite): completes setup for that company.
+    - If other companies exist but user has none: creates a new company for this user.
     """
-    # Check if company already exists
-    if StartupService.check_company_exists(db):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Company already exists. This database supports only ONE company. "
-                   "To reset, you must manually delete the existing company record."
-        )
-    
     try:
         # Prepare data dictionaries
         company_data = startup.company.model_dump() if hasattr(startup.company, 'model_dump') else startup.company.dict()

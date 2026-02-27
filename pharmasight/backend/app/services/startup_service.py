@@ -1,18 +1,10 @@
 """
 Company Startup/Initialization Service
 
-Handles the complete company setup flow:
-1. Create company (enforce single company)
-2. Create app-level user record (mirror of Supabase Auth user - user must already exist in Auth)
-3. Create first branch (with code)
-4. Assign admin role to branch
-5. Initialize document sequences
-6. Initialize pricing defaults
-
-STRICT RULES:
-- User MUST already exist in Supabase Auth (created via InviteService)
-- This service NEVER creates auth users or handles passwords
-- This service ONLY creates app-level user profile records
+Handles the complete company setup flow (single-DB multi-company):
+- If no company exists: create first company, branch, assign user.
+- If companies exist and user already has a branch role (e.g. from invite): complete setup for that company/branch.
+- If companies exist and user has no branch role: create a new company and assign user (multi-company).
 """
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -28,13 +20,51 @@ from app.models import (
 
 
 class StartupService:
-    """Service for company initialization"""
+    """Service for company initialization (supports multi-company)."""
 
     @staticmethod
     def check_company_exists(db: Session) -> bool:
-        """Check if company already exists (should be only one)"""
+        """Check if any company exists in the database."""
         count = db.query(func.count(Company.id)).scalar()
         return count > 0
+
+    @staticmethod
+    def _ensure_sequences_and_pricing(db: Session, company_id: UUID, branch_id: UUID) -> None:
+        """Ensure document sequences and company pricing default exist for a company/branch."""
+        current_year = date.today().year
+        # Pricing default (one per company)
+        has_pricing = db.query(CompanyPricingDefault).filter(
+            CompanyPricingDefault.company_id == company_id
+        ).first()
+        if not has_pricing:
+            db.add(CompanyPricingDefault(
+                company_id=company_id,
+                default_markup_percent=Decimal('30.00'),
+                rounding_rule='nearest_1',
+                min_margin_percent=Decimal('15.00')
+            ))
+            db.flush()
+        # Document sequences for branch
+        doc_types = [
+            ('SALES_INVOICE', 'CS'), ('GRN', 'GRN'), ('CREDIT_NOTE', 'CN'), ('PAYMENT', 'PAY')
+        ]
+        for doc_type, prefix in doc_types:
+            exists = db.query(DocumentSequence).filter(
+                DocumentSequence.company_id == company_id,
+                DocumentSequence.branch_id == branch_id,
+                DocumentSequence.document_type == doc_type,
+                DocumentSequence.year == current_year,
+            ).first()
+            if not exists:
+                db.add(DocumentSequence(
+                    company_id=company_id,
+                    branch_id=branch_id,
+                    document_type=doc_type,
+                    prefix=prefix,
+                    current_number=0,
+                    year=current_year
+                ))
+        db.flush()
 
     @staticmethod
     def initialize_company(
@@ -44,62 +74,116 @@ class StartupService:
         branch_data: dict
     ) -> dict:
         """
-        Complete company initialization flow
-        
-        Args:
-            company_data: Company creation data
-            admin_user_data: Admin user data (id, email, full_name, phone)
-            branch_data: First branch data (name, code, address, phone)
-        
-        Returns:
-            dict with company_id, user_id, branch_id
-        
-        Raises:
-            ValueError: If company already exists or validation fails
+        Complete company initialization flow (multi-company safe).
+        - No company in DB: create first company, branch, assign user.
+        - User already has company/branch (e.g. from invite): ensure sequences/pricing, return existing.
+        - Companies exist but user has none: create new company and branch for this user.
         """
-        # Step 1: Check if company already exists
-        if StartupService.check_company_exists(db):
-            raise ValueError(
-                "Company already exists. This database supports only ONE company. "
-                "To reset, you must manually delete the existing company record."
-            )
-
-        # Step 2: Create app-level user record FIRST (before company)
-        # IMPORTANT: User MUST already exist in Supabase Auth
-        # This service does NOT create auth users - only app-level profile records
-        # We create user FIRST to avoid transaction timeout issues with slow index
-        if not admin_user_data.get('id'):
+        admin_user_id = admin_user_data.get('id')
+        if not admin_user_id:
             raise ValueError(
                 "Admin user ID is required (must match Supabase Auth user_id). "
                 "User must be created via Supabase Auth first (use InviteService)."
             )
-        
-        # Check if user record already exists
-        existing_user = db.query(User).filter(User.id == admin_user_data['id']).first()
+
+        # Resolve or create user record
+        existing_user = db.query(User).filter(User.id == admin_user_id).first()
         if existing_user:
-            # Update existing user record
-            existing_user.email = admin_user_data['email']
-            existing_user.full_name = admin_user_data.get('full_name')
-            existing_user.phone = admin_user_data.get('phone')
+            existing_user.email = admin_user_data.get('email', existing_user.email)
+            existing_user.full_name = admin_user_data.get('full_name') or existing_user.full_name
+            existing_user.phone = admin_user_data.get('phone') or existing_user.phone
             existing_user.is_active = True
             admin_user = existing_user
-            db.flush()  # Flush update
+            db.flush()
         else:
-            # User doesn't exist - SKIP INSERT (index is too slow)
-            # Instead, raise a helpful error with manual insert instructions
             raise ValueError(
-                f"User with ID {admin_user_data['id']} does not exist in the app database. "
-                f"The users table index is too slow for automatic insertion. "
-                f"Please run this SQL manually in Supabase SQL Editor:\n\n"
-                f"INSERT INTO users (id, email, full_name, phone, is_active)\n"
-                f"VALUES ('{admin_user_data['id']}', '{admin_user_data['email']}', "
-                f"'{admin_user_data.get('full_name', 'Admin User')}', "
-                f"'{admin_user_data.get('phone', '')}', TRUE)\n"
-                f"ON CONFLICT (id) DO NOTHING;\n\n"
-                f"Then try the company setup again."
+                f"User with ID {admin_user_id} does not exist in the app database. "
+                "Complete the invite setup first, then return to this page."
             )
 
-        # Step 3: Create company (after user is committed)
+        # If user already has a branch role (e.g. from invite completion), complete setup for that company/branch
+        existing_ubr = db.query(UserBranchRole).filter(UserBranchRole.user_id == admin_user_id).first()
+        if existing_ubr:
+            branch = db.query(Branch).filter(Branch.id == existing_ubr.branch_id).first()
+            company = db.query(Company).filter(Company.id == branch.company_id).first() if branch else None
+            if company and branch:
+                # Optionally update branch details from form
+                if branch_data.get('name'):
+                    branch.name = branch_data['name']
+                if branch_data.get('address') is not None:
+                    branch.address = branch_data.get('address')
+                if branch_data.get('phone') is not None:
+                    branch.phone = branch_data.get('phone')
+                db.flush()
+                StartupService._ensure_sequences_and_pricing(db, company.id, branch.id)
+                db.commit()
+                db.refresh(company)
+                db.refresh(branch)
+                return {
+                    'company_id': str(company.id),
+                    'user_id': str(admin_user.id),
+                    'branch_id': str(branch.id),
+                    'message': 'Company setup completed (you were already assigned to this company).'
+                }
+
+        # If at least one company exists but this user has no branch role, create a new company (multi-company)
+        if StartupService.check_company_exists(db):
+            # Create new company for this user
+            company = Company(**company_data)
+            db.add(company)
+            db.flush()
+            admin_role = db.query(UserRole).filter(UserRole.role_name == 'admin').first()
+            if not admin_role:
+                admin_role = UserRole(role_name='admin', description='Full system access')
+                db.add(admin_role)
+                db.flush()
+            branch_code = (branch_data.get('code') or '').strip() or 'BR001'
+            branch = Branch(
+                company_id=company.id,
+                name=branch_data.get('name') or company.name,
+                code=branch_code.upper(),
+                address=branch_data.get('address'),
+                phone=branch_data.get('phone'),
+                is_active=True,
+                is_hq=True,
+            )
+            db.add(branch)
+            db.flush()
+            db.add(UserBranchRole(
+                user_id=admin_user.id,
+                branch_id=branch.id,
+                role_id=admin_role.id
+            ))
+            db.add(CompanyPricingDefault(
+                company_id=company.id,
+                default_markup_percent=Decimal('30.00'),
+                rounding_rule='nearest_1',
+                min_margin_percent=Decimal('15.00')
+            ))
+            db.flush()
+            current_year = date.today().year
+            for doc_type, prefix in [('SALES_INVOICE', 'CS'), ('GRN', 'GRN'), ('CREDIT_NOTE', 'CN'), ('PAYMENT', 'PAY')]:
+                db.add(DocumentSequence(
+                    company_id=company.id,
+                    branch_id=branch.id,
+                    document_type=doc_type,
+                    prefix=prefix,
+                    current_number=0,
+                    year=current_year
+                ))
+            db.commit()
+            db.refresh(company)
+            db.refresh(branch)
+            return {
+                'company_id': str(company.id),
+                'user_id': str(admin_user.id),
+                'branch_id': str(branch.id),
+                'message': 'Company initialization completed successfully'
+            }
+
+        # No company exists: create first company, branch, and assign user
+        # (admin_user already resolved above)
+        # Step 3: Create company
         company = Company(**company_data)
         db.add(company)
         db.flush()  # Get company.id
