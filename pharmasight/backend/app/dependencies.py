@@ -241,11 +241,7 @@ def get_tenant_from_header(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tenant not found",
         )
-    if not tenant.database_url:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Tenant database not provisioned",
-        )
+    # Allow tenant with no database_url (single-DB / re-invited); get_tenant_db will use app DB
     if (tenant.status or "").lower() in ("suspended", "cancelled"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -265,7 +261,8 @@ def get_tenant_db(
 
     Uses MASTER only for resolution; this session is never master.
     """
-    if tenant is None:
+    if tenant is None or not (tenant.database_url and tenant.database_url.strip()):
+        # No tenant header or tenant has no DB URL (single-DB / re-invited legacy): use app DB
         db = SessionLocal()
         try:
             yield db
@@ -273,21 +270,30 @@ def get_tenant_db(
             db.close()
         return
 
-    # Architecture: tenant.database_url comes from master DB (tenants table). We connect to that URL only.
+    # Architecture: tenant.database_url from master DB. If unreachable (e.g. deleted project), use app DB.
     try:
         factory = _session_factory_for_url(tenant.database_url)
         db = factory()
-        db.execute(text("SELECT 1"))  # force connection so unreachable DB returns 503 here
+        db.execute(text("SELECT 1"))  # force connection
     except (OperationalError, OSError) as e:
-        logger.warning(
-            "Tenant DB unreachable subdomain=%s: %s",
-            getattr(tenant, "subdomain", None),
-            e,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Tenant database is temporarily unreachable (network or DNS). The URL is read from the master DB; check connectivity to that host.",
-        ) from e
+        err_str = str(e)
+        if "tenant or user not found" in err_str.lower() or "fatal:" in err_str.lower():
+            # Tenant's DB points to deleted/unreachable project (e.g. re-invited legacy). Use app DB.
+            logger.info(
+                "Tenant %s DB unreachable (e.g. deleted project), using app DB",
+                getattr(tenant, "subdomain", None),
+            )
+            db = SessionLocal()
+        else:
+            logger.warning(
+                "Tenant DB unreachable subdomain=%s: %s",
+                getattr(tenant, "subdomain", None),
+                e,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Tenant database is temporarily unreachable (network or DNS). The URL is read from the master DB; check connectivity to that host.",
+            ) from e
     try:
         yield db
     finally:
@@ -391,8 +397,8 @@ def get_current_user_optional(
 ) -> Generator[Optional[Tuple[User, Session]], None, None]:
     """
     If Authorization: Bearer <token> present and valid (internal or Supabase JWT),
-    yield (user, tenant_db_session). Otherwise yield None.
-    Tenant comes from token (internal) or X-Tenant-Subdomain header (Supabase).
+    yield (user, tenant_db_session). Otherwise yield None. Uses app DB when tenant
+    missing or tenant DB unreachable (same as get_current_user).
     """
     auth = request.headers.get("Authorization")
     token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
@@ -408,26 +414,12 @@ def get_current_user_optional(
     except (ValueError, TypeError):
         yield None
         return
-    tenant = _tenant_from_token_or_header(request, master_db, payload)
-    if tenant is None:
-        tenant = _get_default_tenant(master_db)
-    if not tenant or not tenant.database_url:
+    result = _resolve_user_and_db_optional(request, master_db, payload, sub)
+    if result is None:
         yield None
         return
-    if (tenant.status or "").lower() in ("suspended", "cancelled"):
-        yield None
-        return
-    factory = _session_factory_for_url(tenant.database_url)
-    db = factory()
+    user, db = result
     try:
-        if is_token_revoked_in_db(db, payload.get(CLAIM_JTI)):
-            yield None
-            return
-        user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
-        if not user or not user.is_active:
-            yield None
-            return
-        # Set RLS session GUC so queries in this request are scoped to user's company
         company_id = get_effective_company_id_for_user(db, user)
         if company_id:
             try:
@@ -439,12 +431,88 @@ def get_current_user_optional(
         db.close()
 
 
+def _resolve_user_and_db_for_request(
+    request: Request,
+    master_db: Session,
+    payload: dict,
+    sub: UUID,
+) -> Tuple[User, Session]:
+    """
+    Resolve (user, db) for a valid token. Uses tenant DB when available and reachable;
+    falls back to app DB for legacy/re-invited users (no tenant or tenant DB unreachable).
+    Caller must close db. Raises HTTPException on auth failure.
+    """
+    tenant = _tenant_from_token_or_header(request, master_db, payload)
+    if tenant is None:
+        tenant = _get_default_tenant(master_db)
+    if tenant and (tenant.status or "").lower() in ("suspended", "cancelled"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
+
+    def _lookup_in_db(db: Session) -> Optional[User]:
+        if is_token_revoked_in_db(db, payload.get(CLAIM_JTI)):
+            return None
+        user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
+        if not user or not user.is_active:
+            return None
+        return user
+
+    # Prefer app DB when no tenant or tenant has no database_url (single-DB / re-invited legacy)
+    if not tenant or not (tenant.database_url and tenant.database_url.strip()):
+        db = SessionLocal()
+        user = _lookup_in_db(db)
+        if user:
+            return (user, db)
+        db.close()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Try tenant DB; on unreachable (e.g. deleted project), fall back to app DB
+    try:
+        factory = _session_factory_for_url(tenant.database_url)
+        db = factory()
+        user = _lookup_in_db(db)
+        if user:
+            return (user, db)
+        db.close()
+    except OperationalError as e:
+        err_str = str(e)
+        if "tenant or user not found" in err_str.lower() or "fatal:" in err_str.lower():
+            db = SessionLocal()
+            user = _lookup_in_db(db)
+            if user:
+                return (user, db)
+            db.close()
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="User not found or inactive",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _resolve_user_and_db_optional(
+    request: Request,
+    master_db: Session,
+    payload: dict,
+    sub: UUID,
+) -> Optional[Tuple[User, Session]]:
+    """Like _resolve_user_and_db_for_request but returns None instead of raising when user not found."""
+    try:
+        user, db = _resolve_user_and_db_for_request(request, master_db, payload, sub)
+        return (user, db)
+    except HTTPException:
+        return None
+
+
 def get_current_user(
     request: Request,
     master_db: Session = Depends(get_master_db),
 ) -> Generator[Tuple[User, Session], None, None]:
     """
-    Require valid JWT; yield (user, tenant_db_session). Raises 401 if no/invalid token.
+    Require valid JWT; yield (user, tenant_db_session). Uses app DB when tenant
+    missing or tenant DB unreachable (e.g. re-invited legacy users). Raises 401 if no/invalid token.
     """
     auth = request.headers.get("Authorization")
     token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
@@ -465,29 +533,9 @@ def get_current_user(
         sub = UUID(str(payload["sub"]))
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    tenant = _tenant_from_token_or_header(request, master_db, payload)
-    if tenant is None:
-        tenant = _get_default_tenant(master_db)
-    if not tenant or not tenant.database_url:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Tenant not found or not provisioned",
-        )
-    if (tenant.status or "").lower() in ("suspended", "cancelled"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
-    factory = _session_factory_for_url(tenant.database_url)
-    db = factory()
+
+    user, db = _resolve_user_and_db_for_request(request, master_db, payload, sub)
     try:
-        # Revocation is stored in the tenant/legacy DB (same DB that holds users and password_hash)
-        if is_token_revoked_in_db(db, payload.get(CLAIM_JTI)):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session ended",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
-        if not user or not user.is_active:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
         # Set RLS session GUC so all queries in this request are scoped to user's company
         company_id = get_effective_company_id_for_user(db, user)
         if company_id:
