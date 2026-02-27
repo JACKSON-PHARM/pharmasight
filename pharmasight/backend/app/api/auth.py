@@ -267,7 +267,7 @@ def username_login(
                 detail="Trial expired. Please contact support to upgrade.",
             )
         _require_password_if_internal(user, request.password)
-        # User found in legacy/app DB (tenant is None) or in a tenant DB
+        # User found in legacy/app DB (tenant is None) or in a tenant DB (use app DB if tenant DB unreachable)
         if tenant is None:
             db = SessionLocal()
             try:
@@ -275,8 +275,18 @@ def username_login(
             finally:
                 db.close()
         else:
-            with tenant_db_session(tenant) as tenant_db:
-                resp = _build_login_response(user, tenant, request.password, db=tenant_db)
+            try:
+                with tenant_db_session(tenant) as tenant_db:
+                    resp = _build_login_response(user, tenant, request.password, db=tenant_db)
+            except OperationalError as e:
+                if "Tenant or user not found" in str(e) or "FATAL:" in str(e).upper():
+                    db = SessionLocal()
+                    try:
+                        resp = _build_login_response(user, tenant, request.password, db=db)
+                    finally:
+                        db.close()
+                else:
+                    raise
         if resp.refresh_token:
             _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
         return resp
