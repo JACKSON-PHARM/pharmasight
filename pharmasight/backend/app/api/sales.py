@@ -54,6 +54,10 @@ def _resolve_date_range(
     elif p in ("today",):
         sd = today
         ed = today
+    elif p in ("yesterday",):
+        y = today - timedelta(days=1)
+        sd = y
+        ed = y
     elif p in ("this_week", "week", "current_week"):
         # Monday..Sunday
         sd = today - timedelta(days=today.weekday())
@@ -936,7 +940,7 @@ def _compute_cogs_from_invoice_lines(
 @router.get("/branch/{branch_id}/gross-profit", response_model=dict)
 def get_branch_gross_profit(
     branch_id: UUID,
-    preset: Optional[str] = Query(None, description="today | this_week | last_week | this_month | last_month | this_year | last_year"),
+    preset: Optional[str] = Query(None, description="today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year"),
     start_date: Optional[date] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
     end_date: Optional[date] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
     include_breakdown: bool = Query(False, description="If true, include per-day breakdown for the date range"),

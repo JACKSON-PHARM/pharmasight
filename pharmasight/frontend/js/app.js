@@ -1,6 +1,6 @@
 // Main Application Logic
 
-let currentPage = 'dashboard';
+let currentPage = 'landing';
 let isInitializing = false;
 let isNavigatingFromAuth = false; // Prevent redirect loops
 let currentScreen = null; // Track current screen to prevent duplicate navigation
@@ -297,7 +297,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Load appropriate auth page
             // Ensure hash is set to login if it's pointing to an app route
             let route = routeHash.replace('#', '').split('?')[0] || 'login';
-            const appRoutes = ['dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select'];
+            const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select'];
             if (!isAuthRoute_ && appRoutes.includes(route)) {
                 // Hash is pointing to app route but not authenticated - force login
                 route = 'login';
@@ -368,7 +368,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     
                     // Force hash to login immediately (before any async operations)
                     const currentHash = window.location.hash.replace('#', '');
-                    const appRoutes = ['dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set'];
+                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set'];
                     
                     if (appRoutes.includes(currentHash) || !currentHash || currentHash === '') {
                         console.log('[AUTH STATE CHANGE] Redirecting from app route to login (tenant-free URL):', currentHash);
@@ -436,7 +436,7 @@ function initializeHashRouting() {
             return;
         }
 
-        const hash = window.location.hash.replace('#', '') || 'dashboard';
+        const hash = window.location.hash.replace('#', '') || 'landing';
         const routeBase = hash.split('?')[0] || hash;
         // De-duplication: do not re-load the same page (avoids double load on hashchange)
         if (routeBase === lastLoadedPage) {
@@ -862,12 +862,12 @@ async function startAppFlow() {
             // On error, allow continuation (don't block user)
         }
         
-        // All checks passed - show dashboard
-        if (currentScreen !== 'dashboard') {
-            console.log('✅ All checks passed, showing dashboard...');
-            currentScreen = 'dashboard';
+        // All checks passed - show landing (lightweight home)
+        if (currentScreen !== 'landing') {
+            console.log('✅ All checks passed, showing landing...');
+            currentScreen = 'landing';
             await updateStatusBar(user);
-            loadPage('dashboard');
+            loadPage('landing');
         }
         
     } catch (error) {
@@ -977,13 +977,11 @@ window.handleBranchSelected = async function() {
         return; // Block further navigation - user is now in stock take
     }
     
-    // Force route to dashboard now that a branch is selected so that
-    // the branch-select page does not persist and the dashboard metrics
-    // are shown instead.
+    // Force route to landing (lightweight home) now that a branch is selected
     try {
-        window.location.hash = '#dashboard';
+        window.location.hash = '#landing';
     } catch (e) {
-        console.warn('[BRANCH SELECTED] Could not update hash to #dashboard:', e);
+        console.warn('[BRANCH SELECTED] Could not update hash to #landing:', e);
     }
     
     await startAppFlow();
@@ -1485,14 +1483,14 @@ async function loadPage(pageName) {
     const isPasswordSetPage = pageName === 'password-set';
     const isSetupPage = pageName === 'setup';
     if (isAuthPage && authenticated && !isPasswordResetFlow && !isPasswordSetPage && !isSetupPage && layoutRendered !== 'auth' && !isOnBranchSelectRoute) {
-        console.warn('[ROUTING] Auth page requested but user is authenticated, redirecting to dashboard...');
-        // Don't load auth pages in app layout - redirect to dashboard
+        console.warn('[ROUTING] Auth page requested but user is authenticated, redirecting to landing...');
+        // Don't load auth pages in app layout - redirect to landing
         // UNLESS it's a password reset flow with recovery token
         // UNLESS it's password-set page (new users need to set password)
         // UNLESS it's setup page (first user must complete company + branch)
         // UNLESS user is on branch-select route (must allow user to select branch)
-        pageName = 'dashboard';
-        currentPage = 'dashboard';
+        pageName = 'landing';
+        currentPage = 'landing';
     }
     
     // Ensure correct layout is rendered before proceeding
@@ -1651,6 +1649,13 @@ async function loadPage(pageName) {
             const topBar = document.querySelector('.top-bar');
             if (sidebar) sidebar.style.display = 'flex';
             if (topBar) topBar.style.display = 'flex';
+            // Sync sidebar active state to current page (e.g. after hash change or initial load)
+            const mainNav = document.getElementById('mainNav');
+            if (mainNav) {
+                mainNav.querySelectorAll('.nav-item').forEach(function (nav) {
+                    nav.classList.toggle('active', nav.dataset.page === mainPage);
+                });
+            }
         }
         
         // CRITICAL: Ensure auth layout container is visible for auth pages
@@ -1680,13 +1685,13 @@ async function loadPage(pageName) {
             }
             return; // Stop here, don't try to show dashboard
         }
-        // Fallback: show dashboard if requested page doesn't exist (app pages only, authenticated)
-        const dashboard = document.getElementById('dashboard');
-        if (dashboard) {
-            dashboard.classList.add('active');
-            dashboard.style.display = 'block';
-            dashboard.style.visibility = 'visible';
-            console.log('⚠️ Fallback: showing dashboard instead');
+        // Fallback: show landing if requested page doesn't exist (app pages only, authenticated)
+        const landing = document.getElementById('landing');
+        if (landing) {
+            landing.classList.add('active');
+            landing.style.display = 'block';
+            landing.style.visibility = 'visible';
+            console.log('⚠️ Fallback: showing landing instead');
         }
     }
     
@@ -1799,6 +1804,9 @@ async function loadPage(pageName) {
             break;
         case 'setup':
             if (window.loadSetup) window.loadSetup();
+            break;
+        case 'landing':
+            if (window.loadLanding) window.loadLanding();
             break;
         case 'dashboard':
             if (window.loadDashboard) window.loadDashboard();

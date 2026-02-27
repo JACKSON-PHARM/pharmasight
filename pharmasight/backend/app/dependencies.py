@@ -35,6 +35,27 @@ from app.utils.auth_internal import (
 
 logger = logging.getLogger(__name__)
 
+# RLS session variable name (PostgreSQL). Set on each request so RLS policies can filter by company.
+RLS_CLAIM_COMPANY_ID = "jwt.claims.company_id"
+
+
+def get_effective_company_id_for_user(db: Session, user: User):
+    """
+    Resolve the company_id for the authenticated user (single-DB multi-company).
+    Uses: user's branch assignments (UserBranchRole -> Branch -> company_id), or the single company in DB.
+    Returns None if no company can be resolved (caller should handle).
+    """
+    from app.models.user import UserBranchRole
+    from app.models.company import Branch, Company
+    ubr = db.query(UserBranchRole).filter(UserBranchRole.user_id == user.id).first()
+    if ubr:
+        branch = db.query(Branch).filter(Branch.id == ubr.branch_id).first()
+        if branch:
+            return branch.company_id
+    company = db.query(Company).limit(1).first()
+    return company.id if company else None
+
+
 # -----------------------------------------------------------------------------
 # Tenant engine pool (Step 2)
 # One engine + session factory per tenant database_url. Legacy uses existing
@@ -82,6 +103,21 @@ def _same_supabase_db(url_a: Optional[str], url_b: Optional[str]) -> bool:
     ref_a = _supabase_project_ref_from_url(a)
     ref_b = _supabase_project_ref_from_url(b)
     return ref_a is not None and ref_a == ref_b
+
+
+def is_tenant_ready_for_invite(tenant: Tenant) -> bool:
+    """
+    True if an invite can be created for this tenant.
+    Single-DB: no database_url → use app DB, allow invite. With database_url → allow if provisioned or same as app DB.
+    """
+    if not tenant.database_url or not tenant.database_url.strip():
+        return True  # Single-DB: use app database for invite and company setup
+    if tenant.is_provisioned:
+        return True
+    app_url = getattr(settings, "database_connection_string", None) or getattr(settings, "DATABASE_URL", None)
+    if not app_url:
+        return False
+    return _same_supabase_db(tenant.database_url, app_url.strip())
 
 
 def _get_pooler_host() -> Optional[str]:
@@ -280,6 +316,23 @@ def tenant_db_session(tenant: Tenant) -> Generator[Session, None, None]:
         db.close()
 
 
+@contextmanager
+def tenant_or_app_db_session(tenant: Tenant) -> Generator[Session, None, None]:
+    """
+    Yield a DB session for invite/onboarding: tenant's DB if database_url set, else app DB (single-DB).
+    Use when creating invites or completing invite so tenants without database_url still work.
+    """
+    if tenant.database_url and tenant.database_url.strip():
+        with tenant_db_session(tenant) as db:
+            yield db
+    else:
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+
 # -----------------------------------------------------------------------------
 # Auth: current user from JWT (internal or Supabase dual-auth)
 # -----------------------------------------------------------------------------
@@ -374,6 +427,13 @@ def get_current_user_optional(
         if not user or not user.is_active:
             yield None
             return
+        # Set RLS session GUC so queries in this request are scoped to user's company
+        company_id = get_effective_company_id_for_user(db, user)
+        if company_id:
+            try:
+                db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
+            except Exception as e:
+                logger.debug("Could not set RLS GUC %s: %s", RLS_CLAIM_COMPANY_ID, e)
         yield (user, db)
     finally:
         db.close()
@@ -428,6 +488,13 @@ def get_current_user(
         user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
         if not user or not user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        # Set RLS session GUC so all queries in this request are scoped to user's company
+        company_id = get_effective_company_id_for_user(db, user)
+        if company_id:
+            try:
+                db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
+            except Exception as e:
+                logger.debug("Could not set RLS GUC %s: %s", RLS_CLAIM_COMPANY_ID, e)
         # Enforce must_change_password: deny access except to change-password-first-time, logout, auth/me
         if getattr(user, "must_change_password", False):
             path = (request.url.path or "").strip()

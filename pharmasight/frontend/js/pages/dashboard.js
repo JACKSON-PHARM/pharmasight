@@ -1,9 +1,16 @@
-// Dashboard Page
+// Dashboard Page - Heavy metrics load on demand (Apply only). Cached by date range + branch.
 
 // Cached expiring list for CSV export (set when modal opens)
 let cachedExpiringList = [];
 // Cached order book pending list for quick preview
 let cachedOrderBookPendingToday = [];
+
+// Cache for dashboard metrics: key = branchId + preset + start + end (for range data), branchId only for KPIs
+const DASHBOARD_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+let dashboardCache = {
+    range: null,   // { key, data, ts } for gross profit / sales / orders
+    kpis: null     // { branchId, data, ts } for items, stock, value, expiring, orderBook
+};
 
 /** Branch for stock/counts: session branch (same as header), then CONFIG, then localStorage. */
 function getBranchIdForStock() {
@@ -20,41 +27,47 @@ function getBranchIdForStock() {
     return null;
 }
 
-async function loadDashboard() {
-    // Strict page ownership: only run dashboard logic when dashboard is the active page
-    const active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
-    if (active !== 'dashboard') {
-        return;
+function getDashboardParams() {
+    const preset = (document.getElementById('dashboardPreset') && document.getElementById('dashboardPreset').value) || 'today';
+    let startDate = null;
+    let endDate = null;
+    if (preset === 'custom') {
+        const startEl = document.getElementById('dashboardStartDate');
+        const endEl = document.getElementById('dashboardEndDate');
+        if (startEl && startEl.value) startDate = startEl.value;
+        if (endEl && endEl.value) endDate = endEl.value;
     }
+    return { preset: preset, startDate: startDate, endDate: endDate };
+}
+
+function cacheKeyForRange(branchId, params) {
+    return branchId + '|' + (params.preset || '') + '|' + (params.startDate || '') + '|' + (params.endDate || '');
+}
+
+async function loadDashboard() {
+    const active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
+    if (active !== 'dashboard') return;
     const page = document.getElementById('dashboard');
     if (!page) return;
-    // Skip when no company/branch (avoids invalid API calls)
-    if (!CONFIG.COMPANY_ID) {
-        const ti = document.getElementById('totalItems');
-        if (ti) ti.textContent = '0';
-        const ts = document.getElementById('totalStock');
-        if (ts) ts.textContent = formatCurrency(0);
-        const tsv = document.getElementById('totalStockValue');
-        if (tsv) tsv.textContent = '—';
-        const td = document.getElementById('todaySales');
-        if (td) td.textContent = formatCurrency(0);
-        const ex = document.getElementById('expiringItems');
-        if (ex) ex.textContent = '0';
-        return;
-    }
 
-    // Use session branch (same as header) so dashboard matches branch context
     const branchId = getBranchIdForStock();
-    
-    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
-    // Reset all cards visible first so a previous load cannot leave them hidden
-    for (const cardId of cardIds) {
-        const card = document.getElementById(cardId)?.closest('.stat-card');
+    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'ordersProcessed', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
+
+    // Reset cards to placeholder (no auto-fetch)
+    cardIds.forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '—';
+    });
+    const salesLabel = document.getElementById('dashboardSalesLabel');
+    if (salesLabel) salesLabel.textContent = 'Sales (select range & Apply)';
+    const gpMeta = document.getElementById('todayGrossProfitMeta');
+    if (gpMeta) gpMeta.textContent = 'Gross Profit';
+
+    // Show/hide cards by permission (same as before)
+    for (let i = 0; i < cardIds.length; i++) {
+        const card = document.getElementById(cardIds[i])?.closest('.stat-card');
         if (card) card.style.display = '';
     }
-    // Check permissions and hide/show cards accordingly.
-    // Fail-open: if permissions could not be loaded (empty set), show all cards so dashboard is never blank.
-    // Also fail-open: if we would hide every card, show all (avoids blank dashboard after data fetch).
     if (typeof window.Permissions !== 'undefined' && window.Permissions.getUserPermissions && window.Permissions.canViewDashboardCard) {
         let permissionsLoaded = false;
         try {
@@ -64,134 +77,170 @@ async function loadDashboard() {
             console.warn('Dashboard: could not load permissions, showing all cards.', e);
         }
         let visibleCount = 0;
-        for (const cardId of cardIds) {
-            const card = document.getElementById(cardId)?.closest('.stat-card');
+        for (let i = 0; i < cardIds.length; i++) {
+            const card = document.getElementById(cardIds[i])?.closest('.stat-card');
             if (card) {
                 let canView = true;
                 try {
-                    canView = !permissionsLoaded || await window.Permissions.canViewDashboardCard(cardId, branchId);
+                    canView = !permissionsLoaded || await window.Permissions.canViewDashboardCard(cardIds[i], branchId);
                 } catch (e) {
-                    console.warn('Dashboard: permission check failed for card', cardId, e);
+                    console.warn('Dashboard: permission check failed for card', cardIds[i], e);
                 }
                 card.style.display = canView ? '' : 'none';
                 if (canView) visibleCount++;
             }
         }
-        // If permission check hid every card, show all so dashboard is never blank
         if (visibleCount === 0) {
-            for (const cardId of cardIds) {
-                const card = document.getElementById(cardId)?.closest('.stat-card');
+            cardIds.forEach(function (id) {
+                const card = document.getElementById(id)?.closest('.stat-card');
                 if (card) card.style.display = '';
-            }
+            });
         }
     }
 
-    // Placeholders first
-    document.getElementById('totalItems').textContent = '0';
-    document.getElementById('totalStock').textContent = '0';
-    if (document.getElementById('totalStockValue')) {
-        document.getElementById('totalStockValue').textContent = '—';
+    // Toolbar: preset change toggles custom range visibility
+    const presetSelect = document.getElementById('dashboardPreset');
+    const customRange = document.getElementById('dashboardCustomRange');
+    if (presetSelect && customRange) {
+        function toggleCustom() {
+            customRange.style.display = (presetSelect.value === 'custom') ? 'flex' : 'none';
+        }
+        presetSelect.onchange = toggleCustom;
+        toggleCustom();
     }
-    document.getElementById('todaySales').textContent = formatCurrency(0);
-    const gpEl = document.getElementById('todayGrossProfit');
-    if (gpEl) gpEl.textContent = formatCurrency(0);
-    const gpMeta = document.getElementById('todayGrossProfitMeta');
-    if (gpMeta) gpMeta.textContent = 'Gross Profit (Today)';
-    document.getElementById('expiringItems').textContent = '0';
-    const ob = document.getElementById('orderBookPendingToday');
-    if (ob) ob.textContent = '0';
 
-    // Skeleton loading state (removed when data loads below)
-    var dashboardStatCards = document.querySelectorAll('#dashboard .stat-card');
-    dashboardStatCards.forEach(function (card) { card.classList.add('stat-card-loading'); });
+    // Set default custom dates to today if empty
+    const startInput = document.getElementById('dashboardStartDate');
+    const endInput = document.getElementById('dashboardEndDate');
+    if (startInput && endInput) {
+        const today = new Date().toISOString().slice(0, 10);
+        if (!startInput.value) startInput.value = today;
+        if (!endInput.value) endInput.value = today;
+    }
+
+    // Apply button: fetch metrics only on click
+    const applyBtn = document.getElementById('dashboardApplyBtn');
+    if (applyBtn) {
+        applyBtn.onclick = function () { applyDashboardFilters(); };
+    }
+}
+
+async function applyDashboardFilters() {
+    const active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
+    if (active !== 'dashboard') return;
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
+        if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
+        return;
+    }
+    if (!CONFIG || !CONFIG.COMPANY_ID) {
+        if (typeof showToast === 'function') showToast('Company not set.', 'warning');
+        return;
+    }
+
+    const params = getDashboardParams();
+    const rangeKey = cacheKeyForRange(branchId, params);
+    const grid = document.getElementById('dashboardStatsGrid');
+
+    // Show loading state
+    if (grid) grid.querySelectorAll('.stat-card').forEach(function (card) { card.classList.add('stat-card-loading'); });
+
+    const salesLabel = document.getElementById('dashboardSalesLabel');
+    if (salesLabel) salesLabel.textContent = 'Sales';
 
     try {
-        var promises = [];
-        if (CONFIG.COMPANY_ID && API.items && typeof API.items.count === 'function') {
-            promises.push(API.items.count(CONFIG.COMPANY_ID).then(function (d) {
-                var el = document.getElementById('totalItems');
-                if (el) el.textContent = (d.count != null ? d.count : 0);
-            }).catch(function (err) { console.warn('Items count (database) failed:', err); }));
+        const now = Date.now();
+        let rangeData = null;
+        let kpisData = null;
+
+        if (dashboardCache.range && dashboardCache.range.key === rangeKey && (now - dashboardCache.range.ts) < DASHBOARD_CACHE_TTL_MS) {
+            rangeData = dashboardCache.range.data;
         }
-        if (branchId && API.inventory && typeof API.inventory.getItemsInStockCount === 'function') {
-            promises.push(API.inventory.getItemsInStockCount(branchId).then(function (d) {
-                var el = document.getElementById('totalStock');
-                if (el) el.textContent = (d.count != null ? d.count : 0);
-            }).catch(function (err) { console.warn('Items-in-stock count failed:', err); }));
+        if (dashboardCache.kpis && dashboardCache.kpis.branchId === branchId && (now - dashboardCache.kpis.ts) < DASHBOARD_CACHE_TTL_MS) {
+            kpisData = dashboardCache.kpis.data;
         }
-        if (branchId && API.sales && typeof API.sales.getTodaySummary === 'function') {
-            promises.push((window.Permissions && window.Permissions.getSalesViewPermissions
-                ? window.Permissions.getSalesViewPermissions(branchId).then(function (p) {
+
+        const gpParams = {};
+        if (params.preset && params.preset !== 'custom') {
+            gpParams.preset = params.preset;
+        } else if (params.startDate && params.endDate) {
+            gpParams.start_date = params.startDate;
+            gpParams.end_date = params.endDate;
+        } else {
+            gpParams.preset = 'today';
+        }
+
+        if (!rangeData) {
+            const userId = (window.Permissions && window.Permissions.getSalesViewPermissions)
+                ? await window.Permissions.getSalesViewPermissions(branchId).then(function (p) {
                     return (!p.canViewAll && p.canViewOwn) ? (CONFIG.USER_ID || null) : null;
                 })
-                : Promise.resolve(CONFIG.USER_ID || null)
-            ).then(function (userId) {
-                return API.sales.getTodaySummary(branchId, userId);
-            }).then(function (s) {
-                var total = parseFloat(s.total_inclusive || s.total_exclusive || 0);
-                document.getElementById('todaySales').textContent = formatCurrency(total);
-            }).catch(function (err) { console.warn('Today summary failed:', err); }));
+                : (CONFIG.USER_ID || null);
+            const gpRes = await API.sales.getGrossProfit(branchId, gpParams);
+            rangeData = {
+                sales_exclusive: parseFloat(gpRes.sales_exclusive || 0),
+                gross_profit: parseFloat(gpRes.gross_profit || 0),
+                margin_percent: parseFloat(gpRes.margin_percent || 0),
+                invoice_count: parseInt(gpRes.invoice_count || 0, 10),
+                start_date: gpRes.start_date,
+                end_date: gpRes.end_date
+            };
+            dashboardCache.range = { key: rangeKey, data: rangeData, ts: now };
         }
-        if (branchId && API.sales && typeof API.sales.getGrossProfit === 'function') {
-            promises.push((function () {
-                var gpCard = document.getElementById('todayGrossProfit') && document.getElementById('todayGrossProfit').closest('.stat-card');
-                if (gpCard && gpCard.style.display === 'none') return Promise.resolve();
-                return API.sales.getGrossProfit(branchId, { preset: 'today' }).then(function (r) {
-                    var gp = parseFloat(r.gross_profit || 0);
-                    var margin = parseFloat(r.margin_percent || 0);
-                    var el = document.getElementById('todayGrossProfit');
-                    if (el) el.textContent = formatCurrency(gp);
-                    var meta = document.getElementById('todayGrossProfitMeta');
-                    if (meta) meta.textContent = 'Gross Profit (Today) • Margin ' + margin.toFixed(1) + '%';
-                }).catch(function (err) {
-                    console.warn('Today gross profit failed:', err);
-                    var el = document.getElementById('todayGrossProfit');
-                    if (el) el.textContent = formatCurrency(0);
-                    var meta = document.getElementById('todayGrossProfitMeta');
-                    if (meta) meta.textContent = 'Gross Profit (Today)';
-                });
-            })());
+
+        if (!kpisData) {
+            const promises = [];
+            const kpis = {};
+            if (API.items && typeof API.items.count === 'function') {
+                promises.push(API.items.count(CONFIG.COMPANY_ID).then(function (d) { kpis.itemsCount = (d.count != null ? d.count : 0); }).catch(function () { kpis.itemsCount = 0; }));
+            }
+            if (API.inventory && typeof API.inventory.getItemsInStockCount === 'function') {
+                promises.push(API.inventory.getItemsInStockCount(branchId).then(function (d) { kpis.stockCount = (d.count != null ? d.count : 0); }).catch(function () { kpis.stockCount = 0; }));
+            }
+            if (API.inventory && typeof API.inventory.getTotalStockValue === 'function') {
+                promises.push(API.inventory.getTotalStockValue(branchId).then(function (d) { kpis.stockValue = d.total_value; }).catch(function () { kpis.stockValue = null; }));
+            }
+            if (API.inventory && typeof API.inventory.getExpiringCount === 'function') {
+                promises.push(API.inventory.getExpiringCount(branchId, 365).then(function (d) { kpis.expiringCount = (d.count != null ? d.count : 0); }).catch(function () { kpis.expiringCount = 0; }));
+            }
+            if (API.orderBook && typeof API.orderBook.getTodaySummary === 'function') {
+                promises.push(API.orderBook.getTodaySummary(branchId, CONFIG.COMPANY_ID, 50).then(function (s) {
+                    kpis.orderBookPending = (s && s.pending_count != null ? s.pending_count : 0);
+                    cachedOrderBookPendingToday = (s && s.entries) ? s.entries : [];
+                }).catch(function () { kpis.orderBookPending = 0; cachedOrderBookPendingToday = []; }));
+            }
+            await Promise.all(promises);
+            kpisData = kpis;
+            dashboardCache.kpis = { branchId: branchId, data: kpisData, ts: now };
         }
-        if (branchId && API.inventory && typeof API.inventory.getExpiringCount === 'function') {
-            promises.push(API.inventory.getExpiringCount(branchId, 365).then(function (d) {
-                document.getElementById('expiringItems').textContent = (d.count != null ? d.count : 0);
-            }).catch(function (err) {
-                console.warn('Expiring count endpoint not available:', err);
-                document.getElementById('expiringItems').textContent = '0';
-            }));
-        }
-        if (branchId && API.inventory && typeof API.inventory.getTotalStockValue === 'function') {
-            promises.push(API.inventory.getTotalStockValue(branchId).then(function (d) {
-                var el = document.getElementById('totalStockValue');
-                if (el) el.textContent = (d.total_value != null ? formatCurrency(d.total_value) : '—');
-            }).catch(function (err) {
-                console.warn('Total stock value endpoint not available:', err);
-                var el = document.getElementById('totalStockValue');
-                if (el) el.textContent = '—';
-            }));
-        }
-        if (branchId && API.orderBook && typeof API.orderBook.getTodaySummary === 'function') {
-            promises.push(API.orderBook.getTodaySummary(branchId, CONFIG.COMPANY_ID, 50).then(function (s) {
-                var el = document.getElementById('orderBookPendingToday');
-                if (el) el.textContent = (s && s.pending_count != null ? s.pending_count : 0);
-                cachedOrderBookPendingToday = (s && s.entries) ? s.entries : [];
-            }).catch(function (err) {
-                console.warn('Order book today summary failed:', err);
-                var el = document.getElementById('orderBookPendingToday');
-                if (el) el.textContent = '0';
-                cachedOrderBookPendingToday = [];
-            }));
-        }
-        await Promise.all(promises);
+
+        // Fill range-based cards
+        const totalItemsEl = document.getElementById('totalItems');
+        const totalStockEl = document.getElementById('totalStock');
+        const totalStockValueEl = document.getElementById('totalStockValue');
+        const todaySalesEl = document.getElementById('todaySales');
+        const ordersProcessedEl = document.getElementById('ordersProcessed');
+        const todayGrossProfitEl = document.getElementById('todayGrossProfit');
+        const todayGrossProfitMetaEl = document.getElementById('todayGrossProfitMeta');
+        const expiringItemsEl = document.getElementById('expiringItems');
+        const orderBookPendingEl = document.getElementById('orderBookPendingToday');
+
+        if (totalItemsEl) totalItemsEl.textContent = (kpisData.itemsCount != null ? kpisData.itemsCount : '—');
+        if (totalStockEl) totalStockEl.textContent = (kpisData.stockCount != null ? kpisData.stockCount : '—');
+        if (totalStockValueEl) totalStockValueEl.textContent = (kpisData.stockValue != null ? (typeof formatCurrency === 'function' ? formatCurrency(kpisData.stockValue) : kpisData.stockValue) : '—');
+        if (todaySalesEl) todaySalesEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(rangeData.sales_exclusive) : rangeData.sales_exclusive;
+        if (ordersProcessedEl) ordersProcessedEl.textContent = rangeData.invoice_count != null ? rangeData.invoice_count : '—';
+        if (todayGrossProfitEl) todayGrossProfitEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(rangeData.gross_profit) : rangeData.gross_profit;
+        if (todayGrossProfitMetaEl) todayGrossProfitMetaEl.textContent = 'Gross Profit • Margin ' + (rangeData.margin_percent != null ? rangeData.margin_percent.toFixed(1) : '0') + '%';
+        if (expiringItemsEl) expiringItemsEl.textContent = (kpisData.expiringCount != null ? kpisData.expiringCount : '—');
+        if (orderBookPendingEl) orderBookPendingEl.textContent = (kpisData.orderBookPending != null ? kpisData.orderBookPending : '—');
+
     } catch (error) {
         console.error('Error loading dashboard:', error);
-        var active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
-        if (active === 'dashboard' && typeof showToast === 'function') {
-            showToast('Error loading dashboard data', 'error');
-        }
+        if (typeof showToast === 'function') showToast('Error loading dashboard data', 'error');
+    } finally {
+        if (grid) grid.querySelectorAll('.stat-card').forEach(function (card) { card.classList.remove('stat-card-loading'); });
     }
-    dashboardStatCards = document.querySelectorAll('#dashboard .stat-card');
-    dashboardStatCards.forEach(function (card) { card.classList.remove('stat-card-loading'); });
 }
 
 async function showOrderBookPendingTodayModal() {
@@ -274,7 +323,6 @@ function openOrderBookFromDashboard() {
 
 /**
  * Show drill-down modal for Expiring Soon card.
- * Fetches expiring batches and displays table with Export CSV button.
  */
 async function showExpiringSoonModal() {
     const branchId = getBranchIdForStock();
@@ -336,9 +384,6 @@ async function showExpiringSoonModal() {
     }
 }
 
-/**
- * Export cached expiring list to CSV file.
- */
 function exportExpiringToCsv() {
     if (!cachedExpiringList || cachedExpiringList.length === 0) {
         if (typeof showToast === 'function') showToast('No data to export.', 'warning');
@@ -368,7 +413,6 @@ function exportExpiringToCsv() {
 }
 
 function openFinancialReportsFromDashboard() {
-    // Navigate to financial reports (default: today)
     if (typeof window.loadPage === 'function') {
         window.loadPage('reports-financial');
     } else {
@@ -378,9 +422,9 @@ function openFinancialReportsFromDashboard() {
 
 // Export
 window.loadDashboard = loadDashboard;
+window.applyDashboardFilters = applyDashboardFilters;
 window.showOrderBookPendingTodayModal = showOrderBookPendingTodayModal;
 window.openOrderBookFromDashboard = openOrderBookFromDashboard;
 window.showExpiringSoonModal = showExpiringSoonModal;
 window.exportExpiringToCsv = exportExpiringToCsv;
 window.openFinancialReportsFromDashboard = openFinancialReportsFromDashboard;
-

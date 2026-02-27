@@ -442,7 +442,7 @@ function renderCreateFirstBranch() {
                 if (window.handleBranchSelected) {
                     window.handleBranchSelected();
                 } else {
-                    loadPage('dashboard');
+                    loadPage('landing');
                 }
             } catch (err) {
                 const msg = (err && err.message) || (err.data && (err.data.detail || err.data.message)) || 'Failed to create branch';
@@ -467,8 +467,8 @@ async function selectBranch(branch) {
         if (window.handleBranchSelected) {
             window.handleBranchSelected();
         } else {
-            // Fallback: navigate to dashboard
-            loadPage('dashboard');
+            // Fallback: navigate to landing
+            loadPage('landing');
         }
     } catch (error) {
         console.error('Error selecting branch:', error);

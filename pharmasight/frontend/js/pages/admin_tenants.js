@@ -178,8 +178,8 @@ function renderTenants() {
         tbody.innerHTML = `
             <tr>
                 <td colspan="7" class="text-center" style="padding: 40px 20px;">
-                    <p style="font-size: 1.1rem; color: #666; margin-bottom: 8px;">No tenant projects exist.</p>
-                    <p style="font-size: 0.9rem; color: #999;">Create your first tenant to get started.</p>
+                    <p style="font-size: 1.1rem; color: #666; margin-bottom: 8px;">No organizations yet.</p>
+                    <p style="font-size: 0.9rem; color: #999;">Create your first organization to get started.</p>
                 </td>
             </tr>
         `;
@@ -299,7 +299,7 @@ async function setTenantStatus(tenantId, newStatus) {
     const action = labels[newStatus] || newStatus;
     try {
         await window.API.admin.tenants.update(tenantId, { status: newStatus });
-        showNotification(`Tenant ${action.toLowerCase()} updated`, 'success');
+        showNotification(`Organization ${action.toLowerCase()} updated`, 'success');
         await loadTenants();
     } catch (e) {
         showNotification('Failed to update status: ' + (e.message || 'Unknown error'), 'error');
@@ -334,12 +334,11 @@ function changePage(delta) {
 }
 
 function showCreateTenantModal() {
-    // Simple modal for creating tenant
     const modal = document.createElement('div');
     modal.className = 'modal';
     modal.innerHTML = `
         <div class="modal-content">
-            <h2>Create New Tenant</h2>
+            <h2>Create new organization</h2>
             <form id="create-tenant-form">
                 <div class="form-group">
                     <label>Company Name <span style="color: red;">*</span></label>
@@ -390,14 +389,14 @@ async function createTenant(data) {
     try {
         const response = await window.API.admin.tenants.create(data);
         if (response) {
-            showNotification('Tenant created successfully', 'success');
+            showNotification('Organization created successfully', 'success');
             await loadTenants();
         } else {
-            showNotification('Failed to create tenant', 'error');
+            showNotification('Failed to create organization', 'error');
         }
     } catch (error) {
-        console.error('Error creating tenant:', error);
-        showNotification('Error creating tenant: ' + (error.message || 'Unknown error'), 'error');
+        console.error('Error creating organization:', error);
+        showNotification('Error creating organization: ' + (error.message || 'Unknown error'), 'error');
     }
 }
 
@@ -438,7 +437,7 @@ async function createInvite(tenantId) {
             
             showInviteModal({
                 url,
-                tenantName: tenant?.name || 'Tenant',
+                tenantName: tenant?.name || 'Organization',
                 username: response.username,
                 emailSent,
                 adminEmail: tenant?.admin_email || ''
@@ -479,7 +478,7 @@ function showInviteModal(opts) {
     modal.innerHTML = `
         <div class="modal-content" style="background: white; padding: 30px; border-radius: 8px; max-width: 600px; width: 90%;">
             <h2 style="margin-top: 0;">${emailSent ? 'Invite Sent' : 'Invite Link Created'}</h2>
-            <p><strong>Tenant:</strong> ${escapeHtml(tenantName)}</p>
+            <p><strong>Organization:</strong> ${escapeHtml(tenantName)}</p>
             ${username ? `<p><strong>Generated Username:</strong> <code style="background: #f0f0f0; padding: 4px 8px; border-radius: 4px; font-weight: bold;">${escapeHtml(username)}</code></p>
             <p style="color: #666; font-size: 14px;">They will use this username to log in after setting their password.</p>` : ''}
             <p>${statusMsg}</p>
@@ -517,16 +516,16 @@ function showInviteModal(opts) {
 
 async function deleteTenant(tenantId) {
     const tenant = tenants.find(t => t.id === tenantId);
-    const name = tenant ? tenant.name : 'this tenant';
-    if (!confirm(`Remove "${name}" from the list? The tenant will be marked as cancelled and will no longer appear in the list. You can still re-create a tenant with the same details later.`)) {
+    const name = tenant ? tenant.name : 'this organization';
+    if (!confirm(`Remove "${name}" from the list? It will be marked as cancelled and will no longer appear. You can create a new organization with the same details later.`)) {
         return;
     }
     try {
         await window.API.admin.tenants.delete(tenantId);
-        if (window.showNotification) window.showNotification('Tenant removed from list.', 'success');
+        if (window.showNotification) window.showNotification('Organization removed from list.', 'success');
         await loadTenants();
     } catch (error) {
-        const msg = error?.data?.detail || error?.message || 'Failed to remove tenant';
+        const msg = error?.data?.detail || error?.message || 'Failed to remove organization';
         if (window.showNotification) window.showNotification(msg, 'error');
     }
 }
@@ -534,34 +533,15 @@ async function deleteTenant(tenantId) {
 function viewTenant(tenantId) {
     const tenant = tenants.find(t => t.id === tenantId);
     if (!tenant) {
-        if (window.showNotification) window.showNotification('Tenant not found', 'error');
+        if (window.showNotification) window.showNotification('Organization not found', 'error');
         return;
     }
     showTenantDetailModal(tenant);
 }
 
 async function showTenantDetailModal(tenant) {
-    let status = { is_provisioned: !!tenant.is_provisioned, can_show_initialize_form: !tenant.is_provisioned };
-    try {
-        status = await window.API.admin.tenants.initializeStatus(tenant.id);
-    } catch (e) {
-        console.warn('Initialize status fetch failed', e);
-    }
-    const isProvisioned = !!status.is_provisioned;
-    const canShowForm = !!status.can_show_initialize_form;
-
-    const initSectionHtml = isProvisioned
-        ? `<p style="margin: 0;"><strong>Database:</strong> <code>${escapeHtml(tenant.database_name || '')}</code> (provisioned)</p><p style="margin: 8px 0 0 0; color: #666; font-size: 0.9rem;">Tables created. Initial admin user created. You can create invites.</p>`
-        : canShowForm
-            ? `<p style="margin: 0 0 12px 0;"><strong>Initialize Tenant Database</strong></p>
-               <p style="margin: 0 0 10px 0; color: #666; font-size: 0.9rem;">You must first create a Supabase project for this tenant. Paste the direct Postgres URI here to initialize the database.</p>
-               <p style="margin: 0 0 10px 0; color: #666; font-size: 0.85rem;">Supabase → Settings → Database → Connection string → URI (port 5432).</p>
-               <textarea id="tenant-database-url" rows="3" placeholder="postgresql://postgres:PASSWORD@db.xxx.supabase.co:5432/postgres" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 0.85rem;"></textarea>
-               <div style="margin-top: 10px;">
-                 <button type="button" id="tenant-initialize-btn" class="btn btn-primary">Initialize Database</button>
-                 <span id="tenant-initialize-status" style="margin-left: 10px;"></span>
-               </div>`
-            : `<p style="margin: 0; color: #666;">Database URL set but database already has tables. Refusing to re-initialize.</p>`;
+    // Single-DB multi-company: no per-tenant database or storage config in UI.
+    const isProvisioned = !!tenant.is_provisioned;
 
     const modal = document.createElement('div');
     modal.className = 'modal';
@@ -569,7 +549,7 @@ async function showTenantDetailModal(tenant) {
     
     modal.innerHTML = `
         <div class="modal-content" style="background: white; padding: 30px; border-radius: 8px; max-width: 800px; width: 90%; margin: 20px;">
-            <h2 style="margin-top: 0;">Tenant Details</h2>
+            <h2 style="margin-top: 0;">Organization details</h2>
             <form id="tenant-edit-form">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
                     <div class="form-group">
@@ -620,25 +600,13 @@ async function showTenantDetailModal(tenant) {
                         <p>${formatDate(tenant.created_at)}</p>
                     </div>
                 </div>
-                <div id="tenant-supabase-storage-section" style="margin-top: 24px; padding: 16px; background: #f0f7ff; border-radius: 8px; border: 1px solid #c5d9f0;">
-                    <p style="margin: 0 0 12px 0;"><strong>Supabase Storage (per-tenant)</strong></p>
-                    <p style="margin: 0 0 10px 0; color: #555; font-size: 0.9rem;">When set, this tenant uses its own Supabase project for storage (logos, PO PDFs, signed URLs). Leave blank to use the app-wide Supabase (Render env).</p>
-                    <div class="form-group" style="margin-bottom: 12px;">
-                        <label><strong>Supabase project URL:</strong></label>
-                        <input type="url" name="supabase_storage_url" value="${escapeHtml(tenant.supabase_storage_url || '')}" placeholder="https://xxxx.supabase.co" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace;">
-                    </div>
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label><strong>Service role key:</strong></label>
-                        <input type="password" name="supabase_storage_service_role_key" placeholder="${tenant.supabase_storage_configured ? '•••••••• (leave blank to keep existing)' : 'eyJ... (from Supabase → Settings → API)'}" autocomplete="off" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace;">
-                        <small style="color: #666;">Use the <strong>JWT</strong> service_role key (starts with eyJ...) from API → <strong>Legacy API Keys</strong> → service_role. Do not use the sb_secret_ key—it causes "Invalid API key". Not shown after save.</small>
-                    </div>
-                </div>
-                <div id="tenant-initialize-section" style="margin-top: 24px; padding: 16px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e0e0e0;">
-                                        ${initSectionHtml}
+                <div style="margin-top: 24px; padding: 16px; background: #f0f7ff; border-radius: 8px; border: 1px solid #c5d9f0;">
+                    <p style="margin: 0 0 6px 0;"><strong>Data &amp; storage</strong></p>
+                    <p style="margin: 0; color: #555; font-size: 0.9rem;">This organization uses the shared app database. Data is isolated by company. Storage (logos, PO PDFs) uses the app-wide Supabase project; assets are scoped by organization.</p>
                 </div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
                     <button type="button" class="btn btn-secondary" onclick="this.closest('.modal').remove()">Close</button>
-                    <button type="button" class="btn btn-secondary" id="tenant-create-invite-btn" ${!isProvisioned ? 'disabled title="Initialize database first"' : ''} onclick="createInviteWithId('${tenant.id}')">Create Invite</button>
+                    <button type="button" class="btn btn-secondary" id="tenant-create-invite-btn" onclick="createInviteWithId('${tenant.id}')">Create Invite</button>
                     <button type="submit" class="btn btn-primary">Save Changes</button>
                 </div>
             </form>
@@ -647,35 +615,6 @@ async function showTenantDetailModal(tenant) {
     
     document.body.appendChild(modal);
     
-    const initBtn = modal.querySelector('#tenant-initialize-btn');
-    if (initBtn) {
-        initBtn.addEventListener('click', async () => {
-            const textarea = modal.querySelector('#tenant-database-url');
-            const statusEl = modal.querySelector('#tenant-initialize-status');
-            const url = (textarea && textarea.value || '').trim();
-            if (!url) {
-                if (window.showNotification) window.showNotification('Paste the database URL first', 'error');
-                else alert('Paste the database URL first.');
-                return;
-            }
-            initBtn.disabled = true;
-            if (statusEl) statusEl.textContent = 'Initializing…';
-            try {
-                await window.API.admin.tenants.initialize(tenant.id, { database_url: url });
-                if (window.showNotification) window.showNotification('Database initialized. Tables created, initial admin user created. You can now create an invite.', 'success');
-                else alert('Database initialized. You can now create an invite.');
-                modal.remove();
-                await loadTenants();
-            } catch (err) {
-                initBtn.disabled = false;
-                if (statusEl) statusEl.textContent = '';
-                const msg = err.message || (err.data && (err.data.detail || err.data.message)) || 'Initialize failed';
-                if (window.showNotification) window.showNotification(msg, 'error');
-                else alert(msg);
-            }
-        });
-    }
-    
     // Handle form submission
     const form = modal.querySelector('#tenant-edit-form');
     form.addEventListener('submit', async (e) => {
@@ -683,26 +622,20 @@ async function showTenantDetailModal(tenant) {
         const formData = new FormData(form);
         const trialEndInput = modal.querySelector('#tenant-trial-ends-at');
         const trialEndVal = trialEndInput && trialEndInput.value ? trialEndInput.value : null;
-        const supabaseStorageUrl = (formData.get('supabase_storage_url') || '').trim();
-        const supabaseStorageKey = (formData.get('supabase_storage_service_role_key') || '').trim();
         const updateData = {
             name: formData.get('name'),
             admin_email: formData.get('admin_email'),
             admin_full_name: formData.get('admin_full_name') || null,
             phone: formData.get('phone') || null,
             status: formData.get('status') || undefined,
-            trial_ends_at: trialEndVal ? new Date(trialEndVal + 'T12:00:00Z').toISOString() : null,
-            supabase_storage_url: supabaseStorageUrl || null
+            trial_ends_at: trialEndVal ? new Date(trialEndVal + 'T12:00:00Z').toISOString() : null
         };
-        if (supabaseStorageKey) {
-            updateData.supabase_storage_service_role_key = supabaseStorageKey;
-        }
         
         try {
             const response = await window.API.admin.tenants.update(tenant.id, updateData);
             if (response) {
                 if (window.showNotification) {
-                    window.showNotification('Tenant updated successfully', 'success');
+                    window.showNotification('Organization updated successfully', 'success');
                 }
                 modal.remove();
                 await loadTenants(); // Refresh the list
@@ -719,9 +652,9 @@ async function showTenantDetailModal(tenant) {
                 errorMsg = error.message;
             }
             if (window.showNotification) {
-                window.showNotification('Error updating tenant: ' + errorMsg, 'error');
+                window.showNotification('Error updating organization: ' + errorMsg, 'error');
             } else {
-                alert('Error updating tenant: ' + errorMsg);
+                alert('Error updating organization: ' + errorMsg);
             }
         }
     });

@@ -297,6 +297,8 @@ class MigrationService:
                 err_str = str(e)
                 if "Network is unreachable" in err_str and "supabase.co" in (t.database_url or ""):
                     err_str += " (On Render, use Supabase connection pooler URL instead of db.xxx.supabase.co – see RENDER.md)"
+                if "Tenant or user not found" in err_str:
+                    err_str += " (Supabase project was deleted; point tenant at single DB or run: python scripts/mark_tenant_cancelled.py <tenant_id_or_name>)"
                 errors[str(t.id)] = err_str
                 logger.exception("Migrations failed for tenant %s: %s", t.name, e)
         return {"applied": applied, "errors": errors}

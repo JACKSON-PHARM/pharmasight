@@ -18,7 +18,7 @@ import hashlib
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from app.dependencies import get_tenant_db, get_tenant_from_header, get_current_user, _session_factory_for_url
+from app.dependencies import get_tenant_db, get_tenant_from_header, get_current_user, get_effective_company_id_for_user, _session_factory_for_url
 from app.services.excel_import_service import ExcelImportService, EXPECTED_EXCEL_FIELDS
 from app.services.clear_for_reimport_service import run_clear as run_clear_for_reimport
 from app.models import ImportJob
@@ -156,8 +156,28 @@ async def import_excel(
     
     column_mapping: optional JSON string mapping Excel header names to system field ids (Vyper-style).
     Two modes: AUTHORITATIVE (no live tx) / NON_DESTRUCTIVE (live tx exist).
+    company_id and branch_id must belong to the authenticated user's company (server-side enforced).
     """
     try:
+        user, _ = current_user_and_db
+        effective_company_id = get_effective_company_id_for_user(db, user)
+        if not effective_company_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Could not resolve company for this user. Assign the user to a branch or ensure a company exists.",
+            )
+        if company_id != effective_company_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Import is only allowed for your company. company_id does not match your account.",
+            )
+        from app.models.company import Branch
+        branch = db.query(Branch).filter(Branch.id == branch_id, Branch.company_id == effective_company_id).first()
+        if not branch:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Branch not found or does not belong to your company.",
+            )
         # Parse column_mapping if provided
         mapping_dict: Optional[Dict[str, str]] = None
         if column_mapping and column_mapping.strip():
@@ -417,8 +437,21 @@ def clear_for_reimport(
 
     Deletes all transactional and master data for the company; table schemas are left intact.
     Companies, branches, and users are NOT deleted.
+    company_id is derived from the authenticated user only; request body must match or is ignored for security.
     """
-    company_id = body.company_id
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if not effective_company_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not resolve company for this user. Assign the user to a branch or ensure a company exists.",
+        )
+    if body.company_id != effective_company_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only clear data for your own company. Requested company_id does not match your account.",
+        )
+    company_id = effective_company_id
     success, messages = run_clear_for_reimport(company_id)
     if not success:
         raise HTTPException(

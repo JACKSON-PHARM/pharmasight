@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from app.database_master import get_master_db
-from app.dependencies import tenant_db_session, get_current_admin
+from app.dependencies import tenant_or_app_db_session, get_current_admin, is_tenant_ready_for_invite
 from app.models.tenant import Tenant, TenantInvite, SubscriptionPlan, TenantSubscription, TenantModule
 from app.schemas.tenant import (
     TenantCreate, TenantResponse, TenantUpdate, TenantListResponse,
@@ -289,22 +289,22 @@ def create_invite(
     _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
-    """Create an invite token for tenant setup. Enabled only when tenant is provisioned."""
+    """Create an invite token for tenant setup. Works when tenant is provisioned or points to the app DB (single-DB)."""
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tenant not found"
         )
-    if not tenant.is_provisioned:
+    if not is_tenant_ready_for_invite(tenant):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Tenant database not provisioned. Initialize the database first, then create an invite."
+            detail="Tenant not ready for invite. Set database_url to your app database URL or leave it unset to use the shared app DB."
         )
 
-    # Generate username for admin user (tenant DB for per-tenant uniqueness)
+    # Generate username (tenant DB or app DB when single-DB)
     generated_username = None
-    with tenant_db_session(tenant) as tenant_db:
+    with tenant_or_app_db_session(tenant) as tenant_db:
         if tenant.admin_full_name:
             try:
                 generated_username = generate_username_from_name(

@@ -27,7 +27,7 @@ async function loadLogin() {
         if (window.startAppFlow) {
             await window.startAppFlow();
         } else {
-            loadPage('dashboard');
+            loadPage('landing');
         }
         return;
     }

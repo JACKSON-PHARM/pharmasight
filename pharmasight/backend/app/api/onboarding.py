@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database_master import get_master_db
-from app.dependencies import tenant_db_session
+from app.dependencies import tenant_or_app_db_session
 from app.schemas.tenant import OnboardingSignupRequest, OnboardingSignupResponse
 from datetime import datetime, timezone
 
@@ -19,9 +19,65 @@ from app.services.invite_service import InviteService
 from app.utils.public_url import get_public_base_url
 from app.utils.username_generator import generate_username_from_name
 from app.utils.auth_internal import hash_password
-from app.models.user import User
+from app.models.user import User, UserRole, UserBranchRole
+from app.models.company import Company, Branch
 
 router = APIRouter()
+
+
+def _ensure_company_and_branch_for_tenant(tenant_db: Session, tenant) -> None:
+    """
+    Single-DB: ensure a Company and Branch exist for this tenant (name = tenant.name). Create if missing.
+    """
+    company = tenant_db.query(Company).filter(Company.name == tenant.name).first()
+    if not company:
+        company = Company(
+            name=tenant.name,
+            currency="KES",
+            timezone="Africa/Nairobi",
+        )
+        tenant_db.add(company)
+        tenant_db.flush()
+    branch = tenant_db.query(Branch).filter(Branch.company_id == company.id).first()
+    if not branch:
+        branch = Branch(
+            company_id=company.id,
+            name="Head Office",
+            code="HQ",
+            is_active=True,
+            is_hq=True,
+        )
+        tenant_db.add(branch)
+        tenant_db.flush()
+
+
+def _ensure_user_branch_role_for_tenant(tenant_db: Session, user_id, tenant) -> None:
+    """
+    Single-DB multi-company: ensure user has a branch role so they get the correct company_id.
+    Ensures Company+Branch exist, then finds or creates UserBranchRole.
+    """
+    _ensure_company_and_branch_for_tenant(tenant_db, tenant)
+    company = tenant_db.query(Company).filter(Company.name == tenant.name).first()
+    if not company:
+        return
+    branch = tenant_db.query(Branch).filter(Branch.company_id == company.id).first()
+    if not branch:
+        return
+    admin_role = tenant_db.query(UserRole).filter(UserRole.role_name == "admin").first()
+    if not admin_role:
+        admin_role = UserRole(role_name="admin", description="Company admin")
+        tenant_db.add(admin_role)
+        tenant_db.flush()
+    existing = tenant_db.query(UserBranchRole).filter(
+        UserBranchRole.user_id == user_id,
+        UserBranchRole.branch_id == branch.id,
+    ).first()
+    if existing:
+        return
+    tenant_db.add(
+        UserBranchRole(user_id=user_id, branch_id=branch.id, role_id=admin_role.id)
+    )
+    tenant_db.flush()
 
 
 def _username_for_tenant(tenant, tenant_db: Session) -> str:
@@ -100,7 +156,7 @@ def validate_token(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or expired invite token",
         )
-    with tenant_db_session(tenant) as tenant_db:
+    with tenant_or_app_db_session(tenant) as tenant_db:
         username = _username_for_tenant(tenant, tenant_db)
     return {
         "valid": True,
@@ -145,10 +201,12 @@ def complete_tenant_invite(
     user_id = result["user_id"]
     uid = _uuid.UUID(user_id) if isinstance(user_id, str) else user_id
 
-    with tenant_db_session(tenant) as tenant_db:
+    with tenant_or_app_db_session(tenant) as tenant_db:
         username = _username_for_tenant(tenant, tenant_db)
         existing_by_id = tenant_db.query(User).filter(User.id == uid).first()
         if existing_by_id:
+            _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
+            tenant_db.commit()
             OnboardingService.mark_invite_used(body.token, uid, master_db)
             return {
                 "success": True,
@@ -173,6 +231,8 @@ def complete_tenant_invite(
             password_updated_at=datetime.now(timezone.utc),
         )
         tenant_db.add(user)
+        tenant_db.flush()
+        _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
         tenant_db.commit()
 
     OnboardingService.mark_invite_used(body.token, uid, master_db)

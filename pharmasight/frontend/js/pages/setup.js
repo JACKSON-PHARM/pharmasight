@@ -29,9 +29,9 @@ async function loadSetup() {
     
     // Check if already configured in localStorage
     if (CONFIG.COMPANY_ID && CONFIG.BRANCH_ID) {
-        console.log('Already configured, redirecting to dashboard');
-        window.location.hash = '#dashboard';
-        loadPage('dashboard');
+        console.log('Already configured, redirecting to landing');
+        window.location.hash = '#landing';
+        loadPage('landing');
         return;
     }
 
@@ -58,8 +58,8 @@ async function loadSetup() {
                         CONFIG.BRANCH_ID = branches[0].id;
                         saveConfig();
                         console.log('Found existing company and branch, redirecting...');
-                        window.location.hash = '#dashboard';
-                        loadPage('dashboard');
+                        window.location.hash = '#landing';
+                        loadPage('landing');
                         return;
                     }
                 }
@@ -586,9 +586,9 @@ async function saveBranchStep(event) {
 }
 
 function goToDashboard() {
-    window.location.hash = '#dashboard';
-    if (window.loadDashboard) {
-        window.loadDashboard();
+    window.location.hash = '#landing';
+    if (window.loadPage) {
+        window.loadPage('landing');
     }
 }
 

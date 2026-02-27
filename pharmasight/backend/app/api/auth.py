@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.database_master import get_master_db
-from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_header, tenant_db_session
+from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_header, tenant_db_session, get_effective_company_id_for_user
 from app.utils.auth_internal import (
     CLAIM_EXP,
     CLAIM_JTI,
@@ -126,9 +126,14 @@ def _build_login_response(
     user: User,
     tenant: Optional[Tenant],
     password: Optional[str] = None,
+    db: Optional[Session] = None,
 ) -> UsernameLoginResponse:
-    """Build login response; if user has password_hash and password matches, add tokens."""
+    """Build login response; if user has password_hash and password matches, add tokens. company_id from user's DB for JWT."""
     subdomain = tenant.subdomain if tenant else None
+    company_id_str = None
+    if db:
+        company_id = get_effective_company_id_for_user(db, user)
+        company_id_str = str(company_id) if company_id else None
     out = UsernameLoginResponse(
         email=user.email,
         user_id=str(user.id),
@@ -139,8 +144,8 @@ def _build_login_response(
     )
     if getattr(user, "password_hash", None) and password is not None:
         if verify_password(password, user.password_hash):
-            out.access_token = create_access_token(str(user.id), user.email, subdomain)
-            out.refresh_token = create_refresh_token(str(user.id), user.email, subdomain)
+            out.access_token = create_access_token(str(user.id), user.email, subdomain, company_id=company_id_str)
+            out.refresh_token = create_refresh_token(str(user.id), user.email, subdomain, company_id=company_id_str)
     return out
 
 
@@ -226,7 +231,7 @@ def username_login(
         user = _find_user_in_db(legacy_db, normalized_username, check_email)
         if user:
             _require_password_if_internal(user, request.password)
-            resp = _build_login_response(user, None, request.password)
+            resp = _build_login_response(user, None, request.password, db=legacy_db)
             if resp.refresh_token:
                 _persist_refresh_token_on_login(None, str(user.id), resp.refresh_token)
             return resp
@@ -259,7 +264,8 @@ def username_login(
                 detail="Trial expired. Please contact support to upgrade.",
             )
         _require_password_if_internal(user, request.password)
-        resp = _build_login_response(user, tenant, request.password)
+        with tenant_db_session(tenant) as tenant_db:
+            resp = _build_login_response(user, tenant, request.password, db=tenant_db)
         if resp.refresh_token:
             _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
         return resp
@@ -366,8 +372,13 @@ def auth_refresh(body: RefreshRequest, master_db: Session = Depends(get_master_d
         session = SessionLocal()
         try:
             _do_refresh_rotate(session, None, body.refresh_token, jti, sub, email, tenant_subdomain, expires_at, body.device_info)
-            access_token = create_access_token(sub, email, tenant_subdomain)
-            new_refresh = create_refresh_token(sub, email, tenant_subdomain)
+            user = session.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
+            company_id_str = None
+            if user:
+                cid = get_effective_company_id_for_user(session, user)
+                company_id_str = str(cid) if cid else None
+            access_token = create_access_token(sub, email, tenant_subdomain, company_id=company_id_str)
+            new_refresh = create_refresh_token(sub, email, tenant_subdomain, company_id=company_id_str)
             _persist_refresh_token(session, None, sub, new_refresh, body.device_info)
             revoke_oldest_refresh_tokens_over_limit(session, sub, MAX_ACTIVE_REFRESH_TOKENS_PER_USER)
             session.commit()
@@ -377,8 +388,13 @@ def auth_refresh(body: RefreshRequest, master_db: Session = Depends(get_master_d
 
     with tenant_db_session(tenant) as session:
         _do_refresh_rotate(session, tenant, body.refresh_token, jti, sub, email, tenant_subdomain, expires_at, body.device_info)
-        access_token = create_access_token(sub, email, tenant_subdomain)
-        new_refresh = create_refresh_token(sub, email, tenant_subdomain)
+        user = session.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
+        company_id_str = None
+        if user:
+            cid = get_effective_company_id_for_user(session, user)
+            company_id_str = str(cid) if cid else None
+        access_token = create_access_token(sub, email, tenant_subdomain, company_id=company_id_str)
+        new_refresh = create_refresh_token(sub, email, tenant_subdomain, company_id=company_id_str)
         _persist_refresh_token(session, tenant, sub, new_refresh, body.device_info)
         revoke_oldest_refresh_tokens_over_limit(session, sub, MAX_ACTIVE_REFRESH_TOKENS_PER_USER)
         session.commit()

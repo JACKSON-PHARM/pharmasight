@@ -57,7 +57,11 @@
                 </button>
             </div>
             <nav class="sidebar-nav" id="mainNav">
-                <a href="#" class="nav-item active" data-page="dashboard" data-has-sub="false">
+                <a href="#" class="nav-item active" data-page="landing" data-has-sub="false">
+                    <i class="fas fa-home"></i>
+                    <span>Home</span>
+                </a>
+                <a href="#" class="nav-item" data-page="dashboard" data-has-sub="false">
                     <i class="fas fa-chart-line"></i>
                     <span>Dashboard</span>
                 </a>
@@ -179,20 +183,81 @@
                         <p>Please enable JavaScript to use PharmaSight.</p>
                     </div>
                 </noscript>
-                <div id="dashboard" class="page active">
+                <!-- Landing: lightweight home, minimal queries -->
+                <div id="landing" class="page">
+                    <div class="landing-header">
+                        <h2 id="landingWelcome">Welcome</h2>
+                        <p class="landing-branch" id="landingBranch">Loading...</p>
+                    </div>
+                    <div class="landing-quick-stats">
+                        <div class="landing-stat">
+                            <span class="landing-stat-value" id="landingPendingOrders">—</span>
+                            <span class="landing-stat-label">Pending orders (today)</span>
+                        </div>
+                    </div>
+                    <div class="landing-tiles">
+                        <a href="#dashboard" class="landing-tile">
+                            <span class="landing-tile-icon"><i class="fas fa-chart-line"></i></span>
+                            <span class="landing-tile-label">Dashboard</span>
+                            <span class="landing-tile-desc">View metrics &amp; KPIs</span>
+                        </a>
+                        <a href="#inventory" class="landing-tile">
+                            <span class="landing-tile-icon"><i class="fas fa-warehouse"></i></span>
+                            <span class="landing-tile-label">Inventory</span>
+                            <span class="landing-tile-desc">Stock &amp; batches</span>
+                        </a>
+                        <a href="#sales" class="landing-tile">
+                            <span class="landing-tile-icon"><i class="fas fa-shopping-cart"></i></span>
+                            <span class="landing-tile-label">Orders / Sales</span>
+                            <span class="landing-tile-desc">Invoices &amp; sales</span>
+                        </a>
+                        <a href="#purchases" class="landing-tile">
+                            <span class="landing-tile-icon"><i class="fas fa-shopping-bag"></i></span>
+                            <span class="landing-tile-label">Purchases &amp; Transfers</span>
+                            <span class="landing-tile-desc">POs, order book, branch transfers</span>
+                        </a>
+                        <a href="#reports" class="landing-tile">
+                            <span class="landing-tile-icon"><i class="fas fa-chart-bar"></i></span>
+                            <span class="landing-tile-label">Reports</span>
+                            <span class="landing-tile-desc">Analytics &amp; exports</span>
+                        </a>
+                    </div>
+                </div>
+                <div id="dashboard" class="page">
                     <h2>Dashboard</h2>
-                    <div class="stats-grid">
+                    <div class="dashboard-toolbar">
+                        <label for="dashboardPreset">Date range</label>
+                        <select id="dashboardPreset" class="dashboard-preset">
+                            <option value="today">Today</option>
+                            <option value="yesterday">Yesterday</option>
+                            <option value="this_week">This Week</option>
+                            <option value="last_week">Last Week</option>
+                            <option value="this_month">This Month</option>
+                            <option value="last_month">Last Month</option>
+                            <option value="this_year">This Year</option>
+                            <option value="last_year">Last Year</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                        <div id="dashboardCustomRange" class="dashboard-custom-range" style="display: none;">
+                            <input type="date" id="dashboardStartDate" />
+                            <span>to</span>
+                            <input type="date" id="dashboardEndDate" />
+                        </div>
+                        <button type="button" id="dashboardApplyBtn" class="btn btn-primary"><i class="fas fa-filter"></i> Apply</button>
+                    </div>
+                    <p class="dashboard-hint">Select a date range and click Apply to load metrics. No data is fetched until you apply.</p>
+                    <div class="stats-grid" id="dashboardStatsGrid">
                         <div class="stat-card">
                             <div class="stat-icon"><i class="fas fa-box"></i></div>
                             <div class="stat-info">
-                                <h3 id="totalItems">0</h3>
+                                <h3 id="totalItems">—</h3>
                                 <p>Items in database</p>
                             </div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon"><i class="fas fa-warehouse"></i></div>
                             <div class="stat-info">
-                                <h3 id="totalStock">0</h3>
+                                <h3 id="totalStock">—</h3>
                                 <p>Unique items in stock</p>
                             </div>
                         </div>
@@ -206,28 +271,35 @@
                         <div class="stat-card">
                             <div class="stat-icon"><i class="fas fa-shopping-cart"></i></div>
                             <div class="stat-info">
-                                <h3 id="todaySales">0</h3>
-                                <p>Today's Sales</p>
+                                <h3 id="todaySales">—</h3>
+                                <p id="dashboardSalesLabel">Sales</p>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-file-invoice"></i></div>
+                            <div class="stat-info">
+                                <h3 id="ordersProcessed">—</h3>
+                                <p>Orders processed</p>
                             </div>
                         </div>
                         <div class="stat-card stat-card-clickable" id="todayGrossProfitCard" title="Click to open financial reports" style="cursor: pointer;" onclick="if(typeof window.openFinancialReportsFromDashboard==='function') window.openFinancialReportsFromDashboard()">
                             <div class="stat-icon"><i class="fas fa-chart-pie"></i></div>
                             <div class="stat-info">
-                                <h3 id="todayGrossProfit">0</h3>
-                                <p id="todayGrossProfitMeta">Gross Profit (Today)</p>
+                                <h3 id="todayGrossProfit">—</h3>
+                                <p id="todayGrossProfitMeta">Gross Profit</p>
                             </div>
                         </div>
                         <div class="stat-card stat-card-clickable" id="expiringSoonCard" title="Click to view details" style="cursor: pointer;" onclick="if(typeof showExpiringSoonModal==='function')showExpiringSoonModal()">
                             <div class="stat-icon"><i class="fas fa-exclamation-triangle"></i></div>
                             <div class="stat-info">
-                                <h3 id="expiringItems">0</h3>
+                                <h3 id="expiringItems">—</h3>
                                 <p>Expiring Soon</p>
                             </div>
                         </div>
                         <div class="stat-card stat-card-clickable" id="orderBookPendingCard" title="Click to view pending order book items" style="cursor: pointer;" onclick="if(typeof showOrderBookPendingTodayModal==='function')showOrderBookPendingTodayModal()">
                             <div class="stat-icon"><i class="fas fa-clipboard-list"></i></div>
                             <div class="stat-info">
-                                <h3 id="orderBookPendingToday">0</h3>
+                                <h3 id="orderBookPendingToday">—</h3>
                                 <p>Order Book Pending (Today)</p>
                             </div>
                         </div>
@@ -302,15 +374,15 @@
             console.log('✅ DOM already loaded when diagnostic script ran');
         }
         
-        // Ensure at least dashboard is visible if script fails
+        // Ensure at least landing is visible if script fails
         window.addEventListener('error', function(e) {
             console.error('❌ JavaScript Error:', e.error);
             console.error('❌ Error at:', e.filename, 'line', e.lineno);
             console.error('❌ Error stack:', e.error?.stack);
-            const dashboard = document.getElementById('dashboard');
-            if (dashboard) {
-                dashboard.classList.add('active');
-                dashboard.style.display = 'block';
+            const landing = document.getElementById('landing');
+            if (landing) {
+                landing.classList.add('active');
+                landing.style.display = 'block';
             }
         });
         
@@ -356,6 +428,7 @@
     <script src="js/pages/password_set.js?v=1"></script>
     <script src="js/pages/branch_select.js?v=3"></script>
     <script src="js/pages/setup.js?v=7"></script>
+    <script src="js/pages/landing.js?v=1"></script>
     <script src="js/pages/dashboard.js?v=6"></script>
     <script src="js/pages/items.js?v=5"></script>
     <script src="js/pages/sales.js?v=5"></script>

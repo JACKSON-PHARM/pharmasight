@@ -163,9 +163,12 @@
 <body>
     <div class="admin-container">
         <div class="admin-header">
-            <h1>Tenant Management</h1>
+            <div>
+                <h1>Organization management</h1>
+                <p style="margin: 4px 0 0 0; font-size: 0.9rem; color: #666;">Shared app database; data isolated by company. Manage trial, status, and invites.</p>
+            </div>
             <div class="admin-header-actions">
-                <button id="create-tenant-btn" class="btn btn-primary">Create New Tenant</button>
+                <button id="create-tenant-btn" class="btn btn-primary">Create new organization</button>
                 <button id="logout-btn" class="btn btn-danger">Logout</button>
             </div>
         </div>
@@ -190,9 +193,9 @@
             <table>
                 <thead>
                     <tr>
-                        <th>Company Name</th>
+                        <th>Organization</th>
                         <th>Subdomain</th>
-                        <th>Admin Email</th>
+                        <th>Admin</th>
                         <th>Status</th>
                         <th>Trial ends</th>
                         <th>Created</th>

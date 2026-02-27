@@ -22,6 +22,7 @@ DEFAULT_BCRYPT_ROUNDS = 12
 CLAIM_SUB = "sub"
 CLAIM_EMAIL = "email"
 CLAIM_TENANT_SUBDOMAIN = "tenant_subdomain"
+CLAIM_COMPANY_ID = "company_id"
 CLAIM_TYPE = "type"
 CLAIM_EXP = "exp"
 CLAIM_ISS = "iss"
@@ -95,32 +96,36 @@ def create_access_token(
     user_id: str,
     email: str,
     tenant_subdomain: Optional[str] = None,
+    company_id: Optional[str] = None,
 ) -> str:
-    """Create short-lived access token for API auth."""
+    """Create short-lived access token for API auth. company_id used for RLS and multi-company scoping."""
+    payload = {
+        CLAIM_SUB: str(user_id),
+        CLAIM_EMAIL: email,
+        CLAIM_TENANT_SUBDOMAIN: tenant_subdomain,
+    }
+    if company_id is not None:
+        payload[CLAIM_COMPANY_ID] = str(company_id)
     delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    return _internal_encode(
-        {
-            CLAIM_SUB: str(user_id),
-            CLAIM_EMAIL: email,
-            CLAIM_TENANT_SUBDOMAIN: tenant_subdomain,
-        },
-        delta,
-        token_type=TYPE_ACCESS,
-    )
+    return _internal_encode(payload, delta, token_type=TYPE_ACCESS)
 
 
-def create_refresh_token(user_id: str, email: str, tenant_subdomain: Optional[str] = None) -> str:
-    """Create long-lived refresh token (used to obtain new access token)."""
+def create_refresh_token(
+    user_id: str,
+    email: str,
+    tenant_subdomain: Optional[str] = None,
+    company_id: Optional[str] = None,
+) -> str:
+    """Create long-lived refresh token (used to obtain new access token). company_id for consistency with access token."""
+    payload = {
+        CLAIM_SUB: str(user_id),
+        CLAIM_EMAIL: email,
+        CLAIM_TENANT_SUBDOMAIN: tenant_subdomain,
+    }
+    if company_id is not None:
+        payload[CLAIM_COMPANY_ID] = str(company_id)
     delta = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    return _internal_encode(
-        {
-            CLAIM_SUB: str(user_id),
-            CLAIM_EMAIL: email,
-            CLAIM_TENANT_SUBDOMAIN: tenant_subdomain,
-        },
-        delta,
-        token_type=TYPE_REFRESH,
-    )
+    return _internal_encode(payload, delta, token_type=TYPE_REFRESH)
 
 
 def create_reset_token(user_id: str, tenant_subdomain: str) -> str:
@@ -206,7 +211,7 @@ def insert_refresh_token(
         text(
             """
             INSERT INTO refresh_tokens (id, user_id, jti, issued_at, expires_at, device_info, tenant_id, is_active)
-            VALUES (:id, :user_id::uuid, :jti, :issued_at, :expires_at, :device_info, :tenant_id::uuid, TRUE)
+            VALUES (:id, CAST(:user_id AS UUID), :jti, :issued_at, :expires_at, :device_info, CAST(:tenant_id AS UUID), TRUE)
             """
         ),
         {
@@ -257,7 +262,7 @@ def deactivate_all_refresh_tokens_for_user(session: Session, user_id: str) -> No
     """Invalidate all active refresh tokens for this user (in this tenant/legacy DB)."""
     try:
         session.execute(
-            text("UPDATE refresh_tokens SET is_active = FALSE WHERE user_id = :user_id::uuid AND is_active = TRUE"),
+            text("UPDATE refresh_tokens SET is_active = FALSE WHERE user_id = CAST(:user_id AS UUID) AND is_active = TRUE"),
             {"user_id": user_id},
         )
     except Exception:
@@ -272,7 +277,7 @@ def count_active_refresh_tokens(session: Session, user_id: str) -> int:
             text(
                 """
                 SELECT COUNT(*) FROM refresh_tokens
-                WHERE user_id = :user_id::uuid AND is_active = TRUE AND expires_at > NOW()
+                WHERE user_id = CAST(:user_id AS UUID) AND is_active = TRUE AND expires_at > NOW()
                 """
             ),
             {"user_id": user_id},
@@ -295,7 +300,7 @@ def revoke_oldest_refresh_tokens_over_limit(session: Session, user_id: str, max_
                 WITH ranked AS (
                     SELECT id, ROW_NUMBER() OVER (ORDER BY issued_at DESC) AS rn
                     FROM refresh_tokens
-                    WHERE user_id = :user_id::uuid AND is_active = TRUE AND expires_at > NOW()
+                    WHERE user_id = CAST(:user_id AS UUID) AND is_active = TRUE AND expires_at > NOW()
                 )
                 UPDATE refresh_tokens rt SET is_active = FALSE
                 FROM ranked r WHERE rt.id = r.id AND r.rn > :max_active
@@ -341,6 +346,7 @@ def decode_token_dual(token: str) -> Optional[dict]:
             CLAIM_SUB: payload.get("sub"),
             CLAIM_EMAIL: payload.get("email"),
             CLAIM_TENANT_SUBDOMAIN: None,  # Must come from header
+            CLAIM_COMPANY_ID: payload.get("company_id"),  # Internal JWT only; Supabase has none
             CLAIM_TYPE: TYPE_ACCESS,
         }
     return None
