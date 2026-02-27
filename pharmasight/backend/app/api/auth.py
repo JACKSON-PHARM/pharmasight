@@ -190,8 +190,21 @@ def _find_user_in_all_tenants(
                 if user:
                     found.append((tenant, user))
         except Exception as e:
-            err_str = str(e).lower()
-            if "unreachable" in err_str or "connection" in err_str or "503" in err_str:
+            err_str = str(e)
+            if "tenant or user not found" in err_str.lower() or "fatal:" in err_str.lower():
+                # Tenant's DB points to deleted/unreachable project (e.g. re-invited legacy). Search app DB.
+                try:
+                    app_db = SessionLocal()
+                    try:
+                        user = _find_user_in_db(app_db, normalized_username, check_email)
+                        if user:
+                            found.append((tenant, user))
+                            return found
+                    finally:
+                        app_db.close()
+                except Exception:
+                    pass
+            if "unreachable" in err_str.lower() or "connection" in err_str.lower() or "503" in err_str:
                 logger.warning("Tenant %s DB unreachable or connection failed: %s", tenant.subdomain, e)
             else:
                 logger.debug("Tenant %s DB error: %s", tenant.subdomain, e)
