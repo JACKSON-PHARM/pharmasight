@@ -7,7 +7,7 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
-from app.dependencies import get_tenant_db, get_current_user, get_tenant_or_default
+from app.dependencies import get_tenant_db, get_current_user, get_tenant_or_default, get_tenant_optional
 from app.models.tenant import Tenant
 from app.models.settings import CompanySetting
 from app.models import (
@@ -528,9 +528,10 @@ def list_supplier_invoices(
 def get_supplier_invoice_pdf(
     invoice_id: UUID,
     current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
-    """Generate and return supplier invoice as PDF (Download PDF). On-demand only."""
+    """Generate and return supplier invoice as PDF (Download PDF). On-demand only. Logo when tenant is set."""
     invoice = db.query(SupplierInvoice).options(
         selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
     ).filter(SupplierInvoice.id == invoice_id).first()
@@ -550,12 +551,16 @@ def get_supplier_invoice_pdf(
             "line_total_exclusive": float(oi.line_total_exclusive or 0),
             "line_total_inclusive": float(oi.line_total_inclusive or 0),
         })
+    company_logo_bytes = None
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
+        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
     try:
         pdf_bytes = build_supplier_invoice_pdf(
             company_name=company.name if company else "—",
             company_address=getattr(company, "address", None) if company else None,
             company_phone=getattr(company, "phone", None) if company else None,
             company_pin=getattr(company, "pin", None) if company else None,
+            company_logo_bytes=company_logo_bytes,
             branch_name=branch.name if branch else None,
             branch_address=getattr(branch, "address", None) if branch else None,
             invoice_number=invoice.invoice_number,
@@ -625,8 +630,8 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
     multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
     if multiplier is None:
         raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item.name}")
-    # Batch + expiry only required at batch time; optional when adding line
-    if getattr(item, "track_expiry", False) and item_data.batches and len(item_data.batches) > 0:
+    # For track_expiry items, require at least one batch with batch_number and expiry_date before adding to invoice
+    if getattr(item, "track_expiry", False):
         _require_batch_and_expiry_for_track_expiry_item(
             item.name or str(item_data.item_id), item_data.batches, from_dict=False
         )

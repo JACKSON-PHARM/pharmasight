@@ -14,7 +14,7 @@ from uuid import UUID
 import secrets
 import hashlib
 from datetime import datetime, timezone
-from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user, get_effective_company_id_for_user
 from sqlalchemy import text
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole, UserBranchRole
@@ -76,6 +76,36 @@ def _user_has_owner_or_admin_role(db: Session, user_id: UUID) -> bool:
     )
     allowed = {"owner", "admin"}
     return any((r[0] or "").strip().lower() in allowed for r in role_names)
+
+
+def _user_in_company(db: Session, user_id: UUID, company_id: UUID) -> bool:
+    """Return True if user has at least one UserBranchRole in a branch belonging to company_id."""
+    exists = (
+        db.query(UserBranchRole.id)
+        .join(Branch, UserBranchRole.branch_id == Branch.id)
+        .filter(UserBranchRole.user_id == user_id, Branch.company_id == company_id)
+        .first()
+    )
+    return exists is not None
+
+
+def _get_user_and_verify_company(
+    db: Session, user_id: UUID, current_user: User, include_deleted: bool = False
+) -> User:
+    """
+    Get user by ID and verify they belong to the same company as current_user.
+    Raises 404 if not found or different company.
+    """
+    query = db.query(User).filter(User.id == user_id)
+    if not include_deleted:
+        query = query.filter(User.deleted_at.is_(None))
+    user = query.first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    company_id = get_effective_company_id_for_user(db, current_user)
+    if company_id and not _user_in_company(db, user.id, company_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
 
 def get_role_by_name(role_name: str, db: Session) -> UserRole:
@@ -224,17 +254,27 @@ def list_users(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    List all users in the organization
+    List all users in the organization (filtered by current user's company).
     
     Returns list of users with their roles and branch assignments.
+    Only users belonging to the same company as the current user are returned.
     Only active users are returned by default (unless include_deleted=True).
     """
+    current_user, _ = current_user_and_db
+    company_id = get_effective_company_id_for_user(db, current_user)
+
     query = db.query(User)
-    
+
+    # Filter by company: only users who have at least one branch role in the current user's company
+    if company_id:
+        query = query.join(UserBranchRole, UserBranchRole.user_id == User.id).join(
+            Branch, UserBranchRole.branch_id == Branch.id
+        ).filter(Branch.company_id == company_id).distinct()
+
     # Filter out soft-deleted users unless include_deleted is True
     if not include_deleted:
         query = query.filter(User.deleted_at.is_(None))
-    
+
     users = query.order_by(User.created_at.desc()).all()
     
     # Populate branch roles for each user
@@ -291,9 +331,13 @@ def get_user(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get user by ID with role information"""
+    """Get user by ID with role information (only users in same company)."""
+    current_user, _ = current_user_and_db
+    company_id = get_effective_company_id_for_user(db, current_user)
     user = db.query(User).filter(User.id == user_id).first()
     if not user or user.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if company_id and not _user_in_company(db, user.id, company_id):
         raise HTTPException(status_code=404, detail="User not found")
     
     # Get branch roles with details
@@ -362,9 +406,11 @@ async def upload_user_signature(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only upload your own signature, or need settings.edit",
             )
-    target = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        target = _get_user_and_verify_company(db, user_id, current_user)
+    else:
+        target = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
     file_ext = Path(file.filename or "").suffix.lower()
     if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
         raise HTTPException(
@@ -405,9 +451,12 @@ def get_user_signature_preview_url(
 ):
     """Return a short-lived signed URL for the user's signature image. Own user or settings.edit only. Never expose raw path."""
     current_user, _ = user_db
-    if current_user.id != user_id and not _user_has_permission(db, current_user.id, "settings.edit"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
-    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if current_user.id != user_id:
+        if not _user_has_permission(db, current_user.id, "settings.edit"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+        user = _get_user_and_verify_company(db, user_id, current_user)
+    else:
+        user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
     if not user or not getattr(user, "signature_path", None):
         raise HTTPException(status_code=404, detail="No signature")
     url = get_signed_url(user.signature_path, expires_in=SIGNED_URL_EXPIRY_SECONDS, tenant=tenant)
@@ -437,10 +486,10 @@ def get_user_permissions(
     """
     Get all permissions for a user, combining role permissions.
     Returns permissions from all roles the user has at the specified branch (or all branches if branch_id is None).
+    Only users in same company.
     """
-    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    current_user, _ = current_user_and_db
+    user = _get_user_and_verify_company(db, user_id, current_user)
     
     # Get user's branch-role assignments
     ubr_query = db.query(UserBranchRole).join(UserRole).filter(UserBranchRole.user_id == user_id)
@@ -478,15 +527,16 @@ def create_user(
 ):
     """
     Create a new user (Admin-only)
-    
+
     Creates a user in the database with:
     - Email (required)
     - Role (required) - will be assigned to branch if branch_id provided
-    - Branch (optional)
-    
+    - Branch (optional) - must belong to current user's company
+
     User is created as inactive/pending with invitation code.
     Returns invitation token and code for user setup.
     """
+    current_user, _ = current_user_and_db
     # Normalize email (lowercase, trim)
     normalized_email = user_data.email.lower().strip()
     if not normalized_email:
@@ -599,15 +649,18 @@ def create_user(
     
     # Get or create role
     role = get_role_by_name(user_data.role_name, db)
-    
-    # Assign role to branch if branch_id provided
+
+    # Assign role to branch if branch_id provided (must belong to current user's company)
     if user_data.branch_id:
-        # Verify branch exists
         branch = db.query(Branch).filter(Branch.id == user_data.branch_id).first()
         if not branch:
             db.rollback()
             raise HTTPException(status_code=404, detail="Branch not found")
-        
+        company_id = get_effective_company_id_for_user(db, current_user)
+        if company_id and branch.company_id != company_id:
+            db.rollback()
+            raise HTTPException(status_code=403, detail="Cannot assign user to a branch in another company")
+
         # Create user-branch-role assignment
         user_branch_role = UserBranchRole(
             user_id=new_user.id,
@@ -744,6 +797,10 @@ def admin_create_user(
         if not branch:
             db.rollback()
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
+        company_id = get_effective_company_id_for_user(db, current_user)
+        if company_id and branch.company_id != company_id:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot assign user to a branch in another company")
         db.add(UserBranchRole(user_id=new_user.id, branch_id=body.branch_id, role_id=role.id))
     db.commit()
     db.refresh(new_user)
@@ -820,14 +877,10 @@ def update_user(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Update user details (full_name, phone, is_active)"""
-    user = db.query(User).filter(
-        and_(User.id == user_id, User.deleted_at.is_(None))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+    """Update user details (full_name, phone, is_active). Only users in same company."""
+    current_user, _ = current_user_and_db
+    user = _get_user_and_verify_company(db, user_id, current_user)
+
     # Update fields
     update_data = user_update.model_dump(exclude_unset=True) if hasattr(user_update, 'model_dump') else user_update.dict(exclude_unset=True)
     for field, value in update_data.items():
@@ -847,14 +900,10 @@ def activate_user(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Activate or deactivate a user"""
-    user = db.query(User).filter(
-        and_(User.id == user_id, User.deleted_at.is_(None))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+    """Activate or deactivate a user. Only users in same company."""
+    current_user, _ = current_user_and_db
+    user = _get_user_and_verify_company(db, user_id, current_user)
+
     user.is_active = activate_data.is_active
     db.commit()
     db.refresh(user)
@@ -869,18 +918,14 @@ def delete_user(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Soft delete a user
-    
+    Soft delete a user. Only users in same company.
+
     Sets deleted_at timestamp instead of actually deleting the record.
     User is marked as inactive and excluded from normal queries.
     """
-    user = db.query(User).filter(
-        and_(User.id == user_id, User.deleted_at.is_(None))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+    current_user, _ = current_user_and_db
+    user = _get_user_and_verify_company(db, user_id, current_user)
+
     # Soft delete
     user.deleted_at = datetime.utcnow()
     user.is_active = False  # Also deactivate
@@ -897,16 +942,14 @@ def restore_user(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Restore a soft-deleted user
-    
+    Restore a soft-deleted user. Only users in same company.
+
     Removes the deleted_at timestamp to restore the user.
     User will need to be activated separately if needed.
     """
-    user = db.query(User).filter(User.id == user_id).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+    current_user, _ = current_user_and_db
+    user = _get_user_and_verify_company(db, user_id, current_user, include_deleted=True)
+
     if user.deleted_at is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -969,27 +1012,26 @@ def assign_role(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Assign or update user role for a branch
-    
+    Assign or update user role for a branch. Only users/branches in same company.
+
     If branch_id is provided, assigns role to that specific branch.
     If branch_id is None, assigns role to all branches (or primary branch logic).
     """
-    user = db.query(User).filter(
-        and_(User.id == user_id, User.deleted_at.is_(None))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+    current_user, _ = current_user_and_db
+    user = _get_user_and_verify_company(db, user_id, current_user)
+
     # Get role
     role = get_role_by_name(role_data.role_name, db)
     
     if role_data.branch_id:
-        # Assign to specific branch
+        # Assign to specific branch (must belong to same company)
         branch = db.query(Branch).filter(Branch.id == role_data.branch_id).first()
         if not branch:
             raise HTTPException(status_code=404, detail="Branch not found")
-        
+        company_id = get_effective_company_id_for_user(db, current_user)
+        if company_id and branch.company_id != company_id:
+            raise HTTPException(status_code=404, detail="Branch not found")
+
         # Check if assignment already exists
         existing = db.query(UserBranchRole).filter(
             and_(
