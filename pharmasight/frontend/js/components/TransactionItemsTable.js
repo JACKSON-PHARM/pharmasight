@@ -302,17 +302,17 @@
                 </tr>`)
             : `
                         <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
-                           <th style="${thStyle} width: 40%; min-width: 200px;">ITEM</th>
-                           <th style="${thStyle} width: 12%;">ITEM CODE</th>
-                            <th style="${thStyleCenter} width: 5%;">QTY</th>
-                            <th style="${thStyle} width: 7%; min-width: 50px;">UNIT</th>
-                            <th style="${thStyleRight} width: 9%;" title="Price per unit excluding VAT.">PRICE/UNIT (excl. VAT)</th>
-                            ${(this.mode === 'sale' || this.mode === 'quotation') ? `<th style="${thStyleRight} width: 6%;">MARGIN%</th>` : ''}
-                            <th style="${thStyleRight} width: 6%;">DISCOUNT%</th>
-                            <th style="${thStyleRight} width: 6%;">VAT</th>
-                            <th style="${thStyleRight} width: 10%;">NETT</th>
-                            <th style="${thStyleRight} width: 10%;">TOTAL</th>
-                            <th style="${thStyleCenter} width: 4%;">ACTIONS</th>
+                           <th style="${thStyle} width: 38%; min-width: 220px;">ITEM</th>
+                           <th style="${thStyle} width: 10%; min-width: 80px;">ITEM CODE</th>
+                            <th style="${thStyleCenter} width: 8%; min-width: 72px;">QTY</th>
+                            <th style="${thStyle} width: 8%; min-width: 64px;">UNIT</th>
+                            <th style="${thStyleRight} width: 10%; min-width: 95px;" title="Price per unit excluding VAT.">PRICE/UNIT (excl. VAT)</th>
+                            ${(this.mode === 'sale' || this.mode === 'quotation') ? `<th style="${thStyleRight} width: 7%; min-width: 68px;">MARGIN%</th>` : ''}
+                            <th style="${thStyleRight} width: 7%; min-width: 68px;">DISCOUNT%</th>
+                            <th style="${thStyleRight} width: 8%; min-width: 88px;">VAT</th>
+                            <th style="${thStyleRight} width: 10%; min-width: 88px;">NETT</th>
+                            <th style="${thStyleRight} width: 10%; min-width: 88px;">TOTAL</th>
+                            <th style="${thStyleCenter} width: 5%; min-width: 72px;">ACTIONS</th>
                         </tr>`;
         
         let html = `
