@@ -109,6 +109,7 @@ function initializeAppShell() {
         initializeMenuToggle();
         initializeUserMenu();
         initializeHashRouting();
+        if (typeof window.initGlobalItemSearch === 'function') window.initGlobalItemSearch();
         
         // Set up branch change listener (only for app layout)
         if (window.BranchContext) {

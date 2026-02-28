@@ -649,6 +649,81 @@ body {
     gap: 1rem;
 }
 
+/* Global Item Search (sticky on all pages) */
+.global-item-search-bar {
+    position: sticky;
+    top: 0;
+    z-index: 99;
+    background: var(--bg-secondary, #f8f9fa);
+    border-bottom: 1px solid var(--border-color);
+    padding: 0.5rem 2rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+}
+.global-item-search-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 200px;
+    max-width: 360px;
+}
+.global-item-search-bar .form-input {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.9rem;
+}
+.global-item-search-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 2px;
+    background: var(--bg-color, #fff);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 200;
+}
+.global-item-search-hit {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.875rem;
+}
+.global-item-search-hit:hover {
+    background: #f0f4ff;
+}
+.global-item-search-loading {
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.global-item-search-loading .fa-spinner {
+    flex-shrink: 0;
+}
+.global-item-search-hit .hit-name { font-weight: 500; }
+.global-item-search-hit .hit-meta { font-size: 0.8rem; color: var(--text-secondary); margin-left: 0.35rem; }
+.global-item-search-hit .hit-stock-price { font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px; }
+.global-selected-item-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 0.35rem 0;
+}
+.global-selected-name { font-weight: 600; }
+.global-selected-meta { font-size: 0.875rem; color: var(--text-secondary); }
+.global-selected-actions { display: flex; gap: 0.35rem; }
+.btn-icon {
+    padding: 0.4rem 0.6rem;
+    min-width: 2rem;
+}
+.btn-icon i { margin: 0; }
+
 .page-content {
     flex: 1;
     min-height: 0; /* Allow flex child to shrink so scrollbars appear */

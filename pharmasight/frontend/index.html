@@ -165,6 +165,23 @@
                 </div>
             </header>
 
+            <!-- Global Item Search (sticky on all pages) -->
+            <div id="globalItemSearchBar" class="global-item-search-bar">
+                <div class="global-item-search-wrap">
+                    <input type="text" id="globalItemSearchInput" class="form-input" placeholder="Search item (name, SKU)…" autocomplete="off" aria-label="Search items">
+                    <div id="globalItemSearchDropdown" class="global-item-search-dropdown" style="display: none;" aria-hidden="true"></div>
+                </div>
+                <div id="globalSelectedItemRow" class="global-selected-item-row" style="display: none;">
+                    <span id="globalSelectedItemName" class="global-selected-name"></span>
+                    <span id="globalSelectedItemMeta" class="global-selected-meta"></span>
+                    <div class="global-selected-actions">
+                        <button type="button" class="btn btn-icon btn-primary" id="globalCreateInvoiceBtn" title="New sales invoice"><i class="fas fa-file-invoice-dollar"></i></button>
+                        <button type="button" class="btn btn-icon btn-outline" id="globalCreateQuotationBtn" title="Quotation"><i class="fas fa-file-invoice"></i></button>
+                        <button type="button" class="btn btn-icon btn-outline" id="globalCreateOrderBtn" title="Purchase order"><i class="fas fa-shopping-bag"></i></button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Page Content (position: relative so overlay positions correctly) -->
             <div class="page-content" id="pageContent" style="position: relative;">
                 <!-- Page load overlay: shown during navigation until target page is ready (smooth transitions) -->
@@ -189,23 +206,10 @@
                         <h2 id="landingWelcome">Welcome</h2>
                         <p class="landing-branch" id="landingBranch">Loading...</p>
                     </div>
-                    <div class="landing-quick-stats" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
+                    <div class="landing-quick-stats" style="display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;">
                         <div class="landing-stat">
                             <span class="landing-stat-value" id="landingPendingOrders">—</span>
                             <span class="landing-stat-label">Pending orders (today)</span>
-                        </div>
-                        <div class="landing-quick-search" style="flex: 1; min-width: 200px; max-width: 360px; position: relative;">
-                            <input type="text" id="landingItemSearch" class="form-input" placeholder="Search item (name, SKU)…" autocomplete="off" style="width: 100%; padding: 0.5rem 0.75rem;">
-                            <div id="landingItemSearchDropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px; background: var(--bg-color, #fff); border: 1px solid var(--border-color, #dee2e6); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-height: 220px; overflow-y: auto; z-index: 100;"></div>
-                        </div>
-                    </div>
-                    <div id="landingSelectedItemRow" style="display: none; margin: 0.75rem 0; padding: 0.75rem; background: var(--bg-secondary, #f8f9fa); border-radius: 8px; border: 1px solid var(--border-color, #dee2e6);">
-                        <span id="landingSelectedItemName" style="font-weight: 600;"></span>
-                        <span style="margin-left: 0.5rem; color: var(--text-secondary);"></span>
-                        <div style="margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem;">
-                            <button type="button" class="btn btn-primary btn-sm" id="landingCreateInvoiceBtn"><i class="fas fa-file-invoice-dollar"></i> Sales invoice</button>
-                            <button type="button" class="btn btn-outline btn-sm" id="landingCreateQuotationBtn"><i class="fas fa-file-invoice"></i> Quotation</button>
-                            <button type="button" class="btn btn-outline btn-sm" id="landingCreateOrderBtn"><i class="fas fa-shopping-bag"></i> Purchase order</button>
                         </div>
                     </div>
                     <div class="landing-tiles">
@@ -447,6 +451,7 @@
     <script src="js/pages/sales.js?v=5"></script>
     <script src="js/utils/searchCache.js"></script>
     <script src="js/components/TransactionItemsTable.js"></script>
+    <script src="js/components/global_item_search.js"></script>
     <script src="js/components/batch-distribution.js"></script>
     <script src="js/pages/purchases.js?v=18"></script>
     <script src="js/pages/inventory.js?v=9"></script>
