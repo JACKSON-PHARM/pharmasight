@@ -3142,6 +3142,14 @@ function switchPurchaseSubPage(subPage) {
     loadPurchaseSubPage(subPage);
 }
 
+// When global item search opens "Purchase order" while already on #purchases, switch to create PO sub-page
+if (typeof window !== 'undefined') {
+    window.addEventListener('pharmasight-open-pending-document', function (e) {
+        if (!e.detail || e.detail.type !== 'purchase_order') return;
+        loadPurchaseSubPage('create');
+    });
+}
+
 // Export immediately after definition
 if (typeof window !== 'undefined') {
     window.loadPurchaseSubPage = loadPurchaseSubPage;

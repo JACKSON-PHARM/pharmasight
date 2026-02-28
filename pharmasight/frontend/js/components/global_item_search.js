@@ -102,10 +102,20 @@
         try {
             sessionStorage.setItem('pendingLandingDocument', JSON.stringify(payload));
         } catch (_) {}
+        const currentHash = (window.location.hash || '').split('?')[0];
         if (type === 'sales_invoice' || type === 'quotation') {
-            window.location.hash = '#sales';
+            if (currentHash === '#sales') {
+                // Already on sales – hash won't change, so dispatch event so sales page opens the create-invoice sub-page
+                window.dispatchEvent(new CustomEvent('pharmasight-open-pending-document', { detail: { type: type } }));
+            } else {
+                window.location.hash = '#sales';
+            }
         } else if (type === 'purchase_order') {
-            window.location.hash = '#purchases';
+            if (currentHash === '#purchases') {
+                window.dispatchEvent(new CustomEvent('pharmasight-open-pending-document', { detail: { type: type } }));
+            } else {
+                window.location.hash = '#purchases';
+            }
         }
         if (typeof showToast === 'function') showToast('Opening document…', 'info');
     }

@@ -10,7 +10,8 @@ from datetime import datetime, timezone, timedelta, date
 from fastapi import APIRouter, Body, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy import func, or_, and_, desc
+from sqlalchemy import func, or_, and_, desc, text
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 from app.dependencies import get_tenant_db, get_current_user, _user_has_permission
@@ -273,6 +274,8 @@ def search_items(
     best match then in-stock first when branch_id given.
     """
     t_start = time.perf_counter()
+    steps: List[tuple] = []  # (name, dur_ms) for Server-Timing header
+
     search_term_lower = q.lower()
     search_term_pattern = f"%{search_term_lower}%"
     search_term_start = f"{search_term_lower}%"
@@ -292,7 +295,16 @@ def search_items(
         else_=0
     ).label("relevance_score")
 
-    # Build base query: items from DB only (no Excel). Join with ledger/costs later; fallback to item defaults.
+    # Combined search expression: must match idx_items_search_combined_gin (migration 045) for one fast GIN scan
+    search_combined = func.concat(
+        func.lower(func.coalesce(Item.name, "")),
+        " ",
+        func.lower(func.coalesce(Item.sku, "")),
+        " ",
+        func.lower(func.coalesce(Item.barcode, "")),
+    )
+
+    # Build base query: items from DB only (no Excel). Single GIN index scan on search_combined.
     base_query = db.query(
         Item.id,
         Item.name,
@@ -306,11 +318,7 @@ def search_items(
     ).filter(
         Item.company_id == company_id,
         Item.is_active == True,
-        or_(
-            Item.name.ilike(search_term_pattern),
-            and_(Item.sku.isnot(None), Item.sku.ilike(search_term_pattern)),
-            and_(Item.barcode.isnot(None), Item.barcode.ilike(search_term_pattern))
-        )
+        search_combined.ilike(search_term_pattern),
     )
     
     # OPTIMIZED: Order and limit at database level for maximum performance
@@ -324,9 +332,10 @@ def search_items(
 
     if not items:
         return []
-    
+
+    steps.append(("1_base_query", round((t_base_search - t_start) * 1000, 2)))
     item_ids = [item.id for item in items]
-    
+
     # Get stock from inventory_balances (snapshot - fast O(1) per item)
     stock_map = {}
     if branch_id:
@@ -351,6 +360,7 @@ def search_items(
         )
     t_stock = time.perf_counter()
     logger.info(f"[search] stock_resolution: {(t_stock - t_base_search) * 1000:.2f} ms")
+    steps.append(("2_stock", round((t_stock - t_base_search) * 1000, 2)))
 
     # OPTIMIZED: Only fetch purchase/order info if pricing is requested
     purchase_price_map = {}
@@ -365,77 +375,95 @@ def search_items(
     last_purchases = []  # For purchase_order context when branch_id set
     if include_pricing:
         if branch_id:
-            # Get last purchase info from item_branch_purchase_snapshot (precomputed, fast)
-            last_purchases = (
-                db.query(
-                    ItemBranchPurchaseSnapshot.item_id,
-                    ItemBranchPurchaseSnapshot.last_purchase_price,
-                    ItemBranchPurchaseSnapshot.last_supplier_id,
-                    ItemBranchPurchaseSnapshot.last_purchase_date
+            # One combined query: purchase snapshot + last_order_date (saves one round-trip vs two separate)
+            try:
+                rows = db.execute(
+                    text("""
+                    SELECT ids.item_id,
+                           p.last_purchase_price, p.last_supplier_id, p.last_purchase_date,
+                           s.last_order_date
+                    FROM unnest(CAST(:item_ids AS uuid[])) AS ids(item_id)
+                    LEFT JOIN item_branch_purchase_snapshot p
+                      ON p.item_id = ids.item_id AND p.branch_id = :branch_id AND p.company_id = :company_id
+                    LEFT JOIN item_branch_search_snapshot s
+                      ON s.item_id = ids.item_id AND s.branch_id = :branch_id AND s.company_id = :company_id
+                    """),
+                    {"item_ids": item_ids, "branch_id": branch_id, "company_id": company_id},
+                ).fetchall()
+                # Build last_purchases-like list (rows with purchase data) and last_order_date_map (all rows)
+                last_purchases = []
+                for row in rows:
+                    item_id = row[0]
+                    if row[1] is not None or row[2] is not None or row[3] is not None:
+                        last_purchases.append(SimpleNamespace(
+                            item_id=item_id,
+                            last_purchase_price=row[1],
+                            last_supplier_id=row[2],
+                            last_purchase_date=row[3],
+                        ))
+                    last_order_date_map[item_id] = row[4].isoformat() if row[4] else None
+            except Exception as e:
+                logger.warning("[search] combined snapshot query failed, falling back to two queries: %s", e)
+                last_purchases = (
+                    db.query(
+                        ItemBranchPurchaseSnapshot.item_id,
+                        ItemBranchPurchaseSnapshot.last_purchase_price,
+                        ItemBranchPurchaseSnapshot.last_supplier_id,
+                        ItemBranchPurchaseSnapshot.last_purchase_date,
+                    )
+                    .filter(
+                        ItemBranchPurchaseSnapshot.item_id.in_(item_ids),
+                        ItemBranchPurchaseSnapshot.company_id == company_id,
+                        ItemBranchPurchaseSnapshot.branch_id == branch_id,
+                    )
+                    .all()
                 )
-                .filter(
-                    ItemBranchPurchaseSnapshot.item_id.in_(item_ids),
-                    ItemBranchPurchaseSnapshot.company_id == company_id,
-                    ItemBranchPurchaseSnapshot.branch_id == branch_id
+                last_order_rows = (
+                    db.query(ItemBranchSearchSnapshot.item_id, ItemBranchSearchSnapshot.last_order_date)
+                    .filter(
+                        ItemBranchSearchSnapshot.item_id.in_(item_ids),
+                        ItemBranchSearchSnapshot.company_id == company_id,
+                        ItemBranchSearchSnapshot.branch_id == branch_id,
+                    )
+                    .all()
                 )
-                .all()
-            )
+                last_order_date_map = {
+                    row.item_id: row.last_order_date.isoformat() if row.last_order_date else None
+                    for row in last_order_rows
+                }
+
             purchase_price_map = {
                 row.item_id: float(row.last_purchase_price) if row.last_purchase_price else 0.0
                 for row in last_purchases
             }
-            t_after_purchase = time.perf_counter()
-            logger.info(f"[search] pricing_last_purchase: {(t_after_purchase - t_pricing_start) * 1000:.2f} ms")
-
-            # Get supplier names in batch (from snapshot)
+            # Collect all supplier IDs we need, then one Supplier query (saves 2 round-trips)
             supplier_ids = {row.last_supplier_id for row in last_purchases if row.last_supplier_id}
-            if supplier_ids:
-                suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()}
-                last_supplier_map = {row.item_id: suppliers.get(row.last_supplier_id, '') for row in last_purchases if row.last_supplier_id}
-            # Fallback: default_supplier_id when no purchase history
-            ids_without_supplier = [i for i in item_ids if i not in last_supplier_map]
+            ids_without_supplier = [i for i in item_ids if i not in {row.item_id for row in last_purchases if row.last_supplier_id}]
+            default_rows = []
             if ids_without_supplier:
                 default_rows = db.query(Item.id, Item.default_supplier_id).filter(
                     Item.id.in_(ids_without_supplier),
                     Item.default_supplier_id.isnot(None)
                 ).all()
-                if default_rows:
-                    default_supplier_ids = {r.default_supplier_id for r in default_rows if r.default_supplier_id}
-                    default_suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(default_supplier_ids)).all()} if default_supplier_ids else {}
-                    for r in default_rows:
-                        if r.default_supplier_id:
-                            last_supplier_map[r.id] = default_suppliers.get(r.default_supplier_id, '')
-            t_after_supplier = time.perf_counter()
-            logger.info(f"[search] supplier_lookup: {(t_after_supplier - t_after_purchase) * 1000:.2f} ms")
-
-            # For purchase_order context, get cheapest supplier per item (lowest unit cost)
+            default_supplier_ids = {r.default_supplier_id for r in default_rows if r.default_supplier_id}
+            cheapest_supplier_ids = {}
             if context == 'purchase_order':
                 cheapest_supplier_ids = OrderBookService.get_cheapest_supplier_ids_batch(db, item_ids, company_id)
-                cheapest_ids = {sid for sid in cheapest_supplier_ids.values() if sid is not None}
-                if cheapest_ids:
-                    cheapest_suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(cheapest_ids)).all()}
+                supplier_ids |= {sid for sid in cheapest_supplier_ids.values() if sid is not None}
+            supplier_ids |= default_supplier_ids
+            if supplier_ids:
+                suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()}
+                last_supplier_map = {row.item_id: suppliers.get(row.last_supplier_id, '') for row in last_purchases if row.last_supplier_id}
+                for r in default_rows:
+                    if r.default_supplier_id:
+                        last_supplier_map[r.id] = suppliers.get(r.default_supplier_id, '')
+                if context == 'purchase_order':
                     cheapest_supplier_map.update({
-                        iid: cheapest_suppliers.get(sid, '')
+                        iid: suppliers.get(sid, '')
                         for iid, sid in cheapest_supplier_ids.items()
                         if sid is not None
                     })
 
-        # Get last order dates from item_branch_search_snapshot (fast; available for all contexts when branch_id set)
-        if branch_id:
-            last_order_rows = (
-                db.query(ItemBranchSearchSnapshot.item_id, ItemBranchSearchSnapshot.last_order_date)
-                .filter(
-                    ItemBranchSearchSnapshot.item_id.in_(item_ids),
-                    ItemBranchSearchSnapshot.company_id == company_id,
-                    ItemBranchSearchSnapshot.branch_id == branch_id
-                )
-                .all()
-            )
-            last_order_date_map = {
-                row.item_id: row.last_order_date.isoformat() if row.last_order_date else None
-                for row in last_order_rows
-            }
-        
         # For Purchase Order context, get additional fields from item_branch_purchase_snapshot
         last_supply_date_map = {}
         last_unit_cost_ledger_map = {}
@@ -450,8 +478,10 @@ def search_items(
             sale_price_map[item.id] = 0.0
     t_after_pricing = time.perf_counter()
     logger.info(f"[search] pricing_resolution_total: {(t_after_pricing - t_pricing_start) * 1000:.2f} ms (include_pricing={include_pricing})")
+    steps.append(("3_pricing", round((t_after_pricing - t_pricing_start) * 1000, 2)))
 
-    # Best available cost: use snapshot first (fast), fallback to ledger only for items without snapshot
+    # Best available cost: use snapshot first (fast). For items without snapshot use Item.default_cost_per_base
+    # to avoid slow ledger scans (get_best_available_cost_batch) and keep search under ~500ms.
     cost_from_ledger_map = {}
     if branch_id:
         snapshot_costs = (
@@ -465,29 +495,52 @@ def search_items(
             .all()
         )
         cost_from_ledger_map = {row.item_id: float(row.last_purchase_price) for row in snapshot_costs}
+        t_after_snapshot_costs = time.perf_counter()
         missing_cost_ids = [iid for iid in item_ids if iid not in cost_from_ledger_map]
         if missing_cost_ids:
-            fallback = CanonicalPricingService.get_best_available_cost_batch(db, missing_cost_ids, branch_id, company_id)
-            for iid, cost in fallback.items():
-                cost_from_ledger_map[iid] = float(cost)
+            # Fast path: single query to items.default_cost_per_base instead of ledger (4+ queries).
+            default_cost_rows = (
+                db.query(Item.id, Item.default_cost_per_base)
+                .filter(Item.id.in_(missing_cost_ids), Item.company_id == company_id)
+                .all()
+            )
+            for row in default_cost_rows:
+                if row.default_cost_per_base is not None:
+                    cost_from_ledger_map[row.id] = float(row.default_cost_per_base)
+                else:
+                    cost_from_ledger_map[row.id] = 0.0
+            for iid in missing_cost_ids:
+                if iid not in cost_from_ledger_map:
+                    cost_from_ledger_map[iid] = 0.0
         for iid in item_ids:
             if iid not in cost_from_ledger_map:
                 cost_from_ledger_map[iid] = 0.0
+        t_after_cost_fallback = time.perf_counter()
+    else:
+        t_after_snapshot_costs = t_after_pricing
+        t_after_cost_fallback = t_after_pricing
 
-    # sale_price: from last unit cost + category-based margin (three-tier margin system)
-    if include_pricing and branch_id and item_ids:
-        markup_batch = PricingService.get_markup_percent_batch(db, item_ids, company_id)
-        for iid in item_ids:
-            cost = cost_from_ledger_map.get(iid, 0.0) or 0.0
-            margin = markup_batch.get(iid, Decimal("30"))
-            sale_price_map[iid] = round(float(Decimal(str(cost)) * (Decimal("1") + margin / Decimal("100"))), 4)
-
-    # Get full item objects for stock_display calculation (only when branch_id provided)
+    # Get full item objects once (for stock_display and for markup tier resolution to avoid extra Item query)
     items_full_map = {}
     if branch_id:
         items_full = db.query(Item).filter(Item.id.in_(item_ids)).all()
         items_full_map = {item.id: item for item in items_full}
-    t_after_cost_and_items = time.perf_counter()
+    t_after_items_full = time.perf_counter()
+
+    # sale_price: from last unit cost + category-based margin (item_map avoids second Item query in get_markup_percent_batch)
+    if include_pricing and branch_id and item_ids:
+        markup_batch = PricingService.get_markup_percent_batch(
+            db, item_ids, company_id, item_map=items_full_map if items_full_map else None
+        )
+        for iid in item_ids:
+            cost = cost_from_ledger_map.get(iid, 0.0) or 0.0
+            margin = markup_batch.get(iid, Decimal("30"))
+            sale_price_map[iid] = round(float(Decimal(str(cost)) * (Decimal("1") + margin / Decimal("100"))), 4)
+        t_after_markup = time.perf_counter()
+    else:
+        t_after_markup = t_after_items_full if branch_id else t_after_pricing
+
+    t_after_cost_and_items = t_after_markup
     logger.info(f"[search] cost_batch_and_items_full: {(t_after_cost_and_items - t_after_pricing) * 1000:.2f} ms")
 
     result = []
@@ -533,13 +586,25 @@ def search_items(
     logger.info(f"[search] result_assembly_and_stock_display: {(t_after_result_loop - t_after_cost_and_items) * 1000:.2f} ms (items={len(result)})")
 
     t_total = time.perf_counter() - t_start
+
+    # Granular steps for Server-Timing (visible in browser DevTools > Network > request > Timing)
+    steps.append(("4_cost_snapshot", round((t_after_snapshot_costs - t_after_pricing) * 1000, 2)))
+    steps.append(("5_cost_fallback", round((t_after_cost_fallback - t_after_snapshot_costs) * 1000, 2)))
+    steps.append(("6_items_full", round((t_after_items_full - t_after_cost_fallback) * 1000, 2)))
+    steps.append(("7_markup", round((t_after_markup - t_after_items_full) * 1000, 2)))
+    steps.append(("8_result_loop", round((t_after_result_loop - t_after_cost_and_items) * 1000, 2)))
+
     logger.info(
         f"[search] TOTAL: {t_total * 1000:.2f} ms | breakdown: base={((t_base_search - t_start) * 1000):.0f}ms, "
         f"stock={((t_stock - t_base_search) * 1000):.0f}ms, pricing={((t_after_pricing - t_pricing_start) * 1000):.0f}ms, "
-        f"cost+items={((t_after_cost_and_items - t_after_pricing) * 1000):.0f}ms, result_loop={((t_after_result_loop - t_after_cost_and_items) * 1000):.0f}ms"
+        f"cost_snap={((t_after_snapshot_costs - t_after_pricing) * 1000):.0f}ms, cost_fb={((t_after_cost_fallback - t_after_snapshot_costs) * 1000):.0f}ms, "
+        f"markup={((t_after_markup - t_after_cost_fallback) * 1000):.0f}ms, items_full={((t_after_cost_and_items - t_after_markup) * 1000):.0f}ms, "
+        f"result_loop={((t_after_result_loop - t_after_cost_and_items) * 1000):.0f}ms"
     )
 
-    return result
+    # Server-Timing header: visible in Chrome DevTools > Network > select search request > Timing tab
+    server_timing = ", ".join(f"{name};dur={dur}" for name, dur in steps)
+    return JSONResponse(content=result, headers={"Server-Timing": server_timing})
 
 
 def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
@@ -1209,11 +1274,12 @@ def update_item(
                        f"Unit names (e.g. packets, bottles, tins) can still be changed."
             )
 
-    # 3-tier validation: breakable => pack_size > 1
-    cb = update_data.get('can_break_bulk') if 'can_break_bulk' in update_data else getattr(item, 'can_break_bulk', False)
-    ps = update_data.get('pack_size') if 'pack_size' in update_data else getattr(item, 'pack_size', 1) or 1
-    if cb and (int(ps) if ps is not None else 1) < 2:
-        raise HTTPException(status_code=400, detail="Breakable items must have pack_size > 1")
+    # 3-tier validation: breakable => pack_size > 1 (only when we're actually updating those fields)
+    if 'can_break_bulk' in update_data or 'pack_size' in update_data:
+        cb = update_data.get('can_break_bulk') if 'can_break_bulk' in update_data else getattr(item, 'can_break_bulk', False)
+        ps = update_data.get('pack_size') if 'pack_size' in update_data else getattr(item, 'pack_size', 1) or 1
+        if cb and (int(ps) if ps is not None else 1) < 2:
+            raise HTTPException(status_code=400, detail="Breakable items must have pack_size > 1")
     
     # Apply allowed updates. Units are item characteristics (columns on items table); no separate unit list.
     for field, value in update_data.items():

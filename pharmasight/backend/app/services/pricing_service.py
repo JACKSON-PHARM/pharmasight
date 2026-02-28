@@ -1,9 +1,10 @@
 """
 Pricing Service - Cost-based pricing with batch awareness
 """
+import time
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from uuid import UUID
 from decimal import Decimal, ROUND_HALF_UP
 from app.models import (
@@ -12,6 +13,10 @@ from app.models import (
 )
 from app.services.inventory_service import InventoryService
 from app.services.item_units_helper import get_unit_multiplier_from_item
+
+# Cache for company default markup + margin tiers (per company_id); TTL 60s to cut search markup latency
+_MARKUP_CACHE_TTL_S = 60
+_markup_cache: Dict[UUID, tuple] = {}  # company_id -> (default_markup, tier_defaults, timestamp)
 
 
 # Map product_category to default pricing_tier when item.pricing_tier is not set
@@ -166,25 +171,39 @@ class PricingService:
     def get_markup_percent_batch(
         db: Session,
         item_ids: List[UUID],
-        company_id: UUID
+        company_id: UUID,
+        item_map: Optional[Dict[UUID, Any]] = None,
     ) -> Dict[UUID, Decimal]:
-        """Batch resolve markup percent for many items (for search sale_price)."""
+        """Batch resolve markup percent for many items (for search sale_price).
+        When item_map is provided (e.g. from search's items_full_map), Item query is skipped to reduce latency.
+        """
         if not item_ids:
             return {}
-        default_markup = Decimal("30.00")
-        company_defaults = db.query(CompanyPricingDefault).filter(
-            CompanyPricingDefault.company_id == company_id
-        ).first()
-        if company_defaults:
-            default_markup = Decimal(str(company_defaults.default_markup_percent))
-        tier_defaults = {
-            row.tier_name: Decimal(str(row.default_margin_percent))
-            for row in db.query(CompanyMarginTier).filter(
-                CompanyMarginTier.company_id == company_id
-            ).all()
-        }
-        items = db.query(Item).filter(Item.id.in_(item_ids)).all()
-        item_map = {i.id: i for i in items}
+        now = time.time()
+        cache_entry = _markup_cache.get(company_id)
+        if cache_entry and (now - cache_entry[2]) < _MARKUP_CACHE_TTL_S:
+            default_markup, tier_defaults = cache_entry[0], cache_entry[1]
+        else:
+            cache_entry = None
+        if cache_entry is None:
+            default_markup = Decimal("30.00")
+            company_defaults = db.query(CompanyPricingDefault).filter(
+                CompanyPricingDefault.company_id == company_id
+            ).first()
+            if company_defaults:
+                default_markup = Decimal(str(company_defaults.default_markup_percent))
+            tier_defaults = {
+                row.tier_name: Decimal(str(row.default_margin_percent))
+                for row in db.query(CompanyMarginTier).filter(
+                    CompanyMarginTier.company_id == company_id
+                ).all()
+            }
+            _markup_cache[company_id] = (default_markup, tier_defaults, now)
+
+        if item_map is None:
+            items = db.query(Item).filter(Item.id.in_(item_ids)).all()
+            item_map = {i.id: i for i in items}
+
         pricing_list = db.query(ItemPricing).filter(ItemPricing.item_id.in_(item_ids)).all()
         pricing_map = {p.item_id: p for p in pricing_list}
         result = {}

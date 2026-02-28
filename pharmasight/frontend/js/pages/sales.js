@@ -3537,6 +3537,18 @@ async function addItemToOrderBookFromSale(itemId, itemName, unitName, invoiceId)
     }
 }
 
+// When global item search opens "Sales invoice" or "Quotation" while already on #sales, switch to the create sub-page
+if (typeof window !== 'undefined') {
+    window.addEventListener('pharmasight-open-pending-document', function (e) {
+        if (!e.detail || !e.detail.type) return;
+        if (e.detail.type === 'sales_invoice') {
+            switchSalesSubPage('create-invoice');
+        } else if (e.detail.type === 'quotation') {
+            switchSalesSubPage('create-quotation');
+        }
+    });
+}
+
 // Export functions
 if (typeof window !== 'undefined') {
     window.loadSales = loadSales;
