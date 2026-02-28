@@ -964,22 +964,61 @@ async function onSalesInvoiceAddItem(item) {
         }
         const updated = await API.sales.addInvoiceItem(draftId, mapTableItemToApiItem(item));
         salesInvoiceSyncedItemIds.add(item.item_id);
-        documentItems = (updated.items || []).map(i => ({
+        const itemsFromResponse = updated && updated.items ? updated.items : [];
+        // Refetch invoice so table always matches server (handles stale response or missing items)
+        const fresh = await API.sales.getInvoice(draftId);
+        const freshItems = (fresh && fresh.items) ? fresh.items : [];
+        const updatedItems = itemsFromResponse;
+        // Use whichever source has the expected count (current + 1) to avoid losing existing lines
+        const currentCount = salesInvoiceItemsTable && typeof salesInvoiceItemsTable.getItems === 'function'
+            ? salesInvoiceItemsTable.getItems().length
+            : documentItems.filter(i => i.item_id).length;
+        const expectedCount = currentCount + 1;
+        let apiItems = (freshItems.length >= expectedCount) ? freshItems
+            : (updatedItems.length >= expectedCount) ? updatedItems
+            : (updatedItems.length > 0) ? updatedItems
+            : freshItems;
+        // If API returned fewer items than expected, merge existing table items with API list so we don't lose the first
+        if (apiItems.length < expectedCount && salesInvoiceItemsTable && typeof salesInvoiceItemsTable.getItems === 'function') {
+            const current = salesInvoiceItemsTable.getItems();
+            const apiIds = new Set((apiItems || []).map(i => i.item_id && i.item_id.toString()));
+            const missing = current.filter(c => c.item_id && !apiIds.has(c.item_id.toString()));
+            if (missing.length > 0) {
+                const missingAsApi = missing.map(c => ({
+                    item_id: c.item_id,
+                    item_name: c.item_name,
+                    item_sku: c.item_sku,
+                    item_code: c.item_code || c.item_sku,
+                    unit_name: c.unit_name,
+                    quantity: c.quantity,
+                    unit_price_exclusive: c.unit_price,
+                    vat_rate: c.tax_percent,
+                    line_total_inclusive: c.total,
+                    discount_percent: c.discount_percent || 0,
+                    batch_allocations: c.batch_allocations || null,
+                    batch_number: c.batch_number || null,
+                    expiry_date: c.expiry_date || null
+                }));
+                apiItems = [...missingAsApi, ...apiItems];
+            }
+        }
+        const itemsToSet = (apiItems || []).map(i => ({
             item_id: i.item_id,
             item_name: i.item_name,
             item_sku: i.item_code,
             item_code: i.item_code,
             unit_name: i.unit_name,
             quantity: i.quantity,
-            unit_price: i.unit_price_exclusive,
+            unit_price: i.unit_price_exclusive != null ? i.unit_price_exclusive : i.unit_price,
             discount_percent: i.discount_percent || 0,
-            tax_percent: i.vat_rate || 0,
-            total: i.line_total_inclusive,
+            tax_percent: i.vat_rate != null ? i.vat_rate : (i.tax_percent || 0),
+            total: i.line_total_inclusive != null ? i.line_total_inclusive : i.total,
             batch_allocations: i.batch_allocations || null,
             batch_number: i.batch_number || null,
             expiry_date: i.expiry_date || null
         }));
-        lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(updated.items);
+        documentItems = itemsToSet;
+        lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(apiItems);
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
             salesInvoiceItemsTable.setItems(documentItems);
         }
@@ -989,7 +1028,59 @@ async function onSalesInvoiceAddItem(item) {
         if (msg.indexOf('already exists') !== -1) {
             showToast('Item already on this invoice. Remove the line or choose a different item.', 'warning');
         } else {
-            showToast(msg, 'error');
+            showToast(msg || 'Server error adding item. Try again.', 'error');
+        }
+        // Refetch invoice so table matches server (e.g. if add partially succeeded); merge with current table if refetch is incomplete
+        if (currentInvoice && currentInvoice.id && salesInvoiceItemsTable && typeof API.sales.getInvoice === 'function') {
+            const refetchId = currentInvoice.id;
+            try {
+                const fresh = await API.sales.getInvoice(refetchId);
+                if (fresh && fresh.items) {
+                    let apiItems = fresh.items;
+                    const current = typeof salesInvoiceItemsTable.getItems === 'function' ? salesInvoiceItemsTable.getItems() : [];
+                    const apiIds = new Set(apiItems.map(i => i.item_id && i.item_id.toString()));
+                    const missing = current.filter(c => c.item_id && !apiIds.has(c.item_id.toString()));
+                    if (missing.length > 0) {
+                        const missingAsApi = missing.map(c => ({
+                            item_id: c.item_id,
+                            item_name: c.item_name,
+                            item_sku: c.item_sku,
+                            item_code: c.item_code || c.item_sku,
+                            unit_name: c.unit_name,
+                            quantity: c.quantity,
+                            unit_price_exclusive: c.unit_price,
+                            vat_rate: c.tax_percent,
+                            line_total_inclusive: c.total,
+                            discount_percent: c.discount_percent || 0,
+                            batch_allocations: c.batch_allocations || null,
+                            batch_number: c.batch_number || null,
+                            expiry_date: c.expiry_date || null
+                        }));
+                        apiItems = [...missingAsApi, ...apiItems];
+                    }
+                    documentItems = apiItems.map(i => ({
+                        item_id: i.item_id,
+                        item_name: i.item_name,
+                        item_sku: i.item_code,
+                        item_code: i.item_code,
+                        unit_name: i.unit_name,
+                        quantity: i.quantity,
+                        unit_price: i.unit_price_exclusive != null ? i.unit_price_exclusive : i.unit_price,
+                        discount_percent: i.discount_percent || 0,
+                        tax_percent: i.vat_rate != null ? i.vat_rate : (i.tax_percent || 0),
+                        total: i.line_total_inclusive != null ? i.line_total_inclusive : i.total,
+                        batch_allocations: i.batch_allocations || null,
+                        batch_number: i.batch_number || null,
+                        expiry_date: i.expiry_date || null
+                    }));
+                    salesInvoiceSyncedItemIds = new Set(apiItems.map(i => i.item_id));
+                    lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(apiItems);
+                    if (typeof salesInvoiceItemsTable.setItems === 'function') {
+                        salesInvoiceItemsTable.setItems(documentItems);
+                    }
+                    updateSalesInvoiceSummary();
+                }
+            } catch (_) { /* ignore refetch errors */ }
         }
     }
 }

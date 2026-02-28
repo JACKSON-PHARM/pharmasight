@@ -635,7 +635,8 @@ def add_sales_invoice_item(
 
     try:
         db.commit()
-        db.refresh(invoice)
+        # Expire invoice so get_sales_invoice refetches from DB and returns all items (including the new line)
+        db.expire(invoice)
     except IntegrityError:
         db.rollback()
         raise HTTPException(
