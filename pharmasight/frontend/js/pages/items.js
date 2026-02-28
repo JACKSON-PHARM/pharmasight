@@ -1711,6 +1711,7 @@ async function editItem(itemId) {
                         placeholder="e.g. packet, vial, bottle"
                         autocomplete="off"
                         required
+                        style="background-color: #fff; cursor: text;"
                     >
                 </div>
 
@@ -1747,6 +1748,7 @@ async function editItem(itemId) {
                                 value="${escapeHtml((item.retail_unit || 'tablet').trim())}"
                                 placeholder="e.g. tablet, vial, ampule"
                                 autocomplete="off"
+                                style="background-color: #fff; cursor: text;"
                             >
                         </div>
                     </div>
@@ -1770,7 +1772,7 @@ async function editItem(itemId) {
                                 value="${escapeHtml((item.supplier_unit || 'carton').trim())}"
                                 placeholder="e.g. carton, box, crate"
                                 autocomplete="off"
-                                style="min-width: 120px;"
+                                style="min-width: 120px; background-color: #fff; cursor: text;"
                             >
                             <span>=</span>
                         </div>
@@ -1943,6 +1945,20 @@ async function editItem(itemId) {
                 el.addEventListener('change', syncCostDatasetsAndRefresh);
             });
         }
+    }, 0);
+
+    // Ensure unit name inputs are always editable (no readonly/disabled) — even if item has transactions
+    setTimeout(function() {
+        var wholesaleInput = document.getElementById('edit_wholesale_unit');
+        var retailInput = document.querySelector('#editItemForm input[name="retail_unit"]');
+        var supplierInput = document.querySelector('#editItemForm input[name="supplier_unit"]');
+        [wholesaleInput, retailInput, supplierInput].forEach(function(el) {
+            if (!el) return;
+            el.removeAttribute('readonly');
+            el.removeAttribute('disabled');
+            el.style.backgroundColor = '#fff';
+            el.style.cursor = 'text';
+        });
     }, 0);
 
     // Sync wholesale unit label in "Conversion to retail" and "Conversion to supplier" when base unit (input) changes
