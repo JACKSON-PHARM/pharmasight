@@ -29,6 +29,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.utils.auth_internal import (
     CLAIM_JTI,
+    CLAIM_TENANT_SUBDOMAIN,
     decode_token_dual,
     is_token_revoked_in_db,
 )
@@ -211,19 +212,30 @@ def get_tenant_from_header(
     db: Session = Depends(get_master_db),
 ) -> Optional[Tenant]:
     """
-    Resolve tenant from X-Tenant-Subdomain or X-Tenant-ID header.
+    Resolve tenant from X-Tenant-Subdomain or X-Tenant-ID header, or from JWT when no header.
+    Ensures authenticated tenant users always get the correct DB (tenant isolation).
 
-    Uses MASTER DB only (tenants table). No app/tenant data read here.
-
-    - No header → None (default/legacy DB).
-    - Header present, tenant not found → 404.
-    - Header present, tenant found but no database_url → 503 (not provisioned).
-    - Header present, tenant found with database_url → Tenant.
+    - Header present → use it.
+    - No header but Bearer token present → use tenant_subdomain from JWT (so Grace/Harte never gets Pharmasight DB).
+    - No header, no token → None (legacy/default DB).
     """
     subdomain = request.headers.get("X-Tenant-Subdomain")
     tenant_id_raw = request.headers.get("X-Tenant-ID")
 
     if not subdomain and not tenant_id_raw:
+        auth = request.headers.get("Authorization")
+        token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
+        if token:
+            try:
+                payload = decode_token_dual(token)
+                if payload:
+                    subdomain = (payload.get(CLAIM_TENANT_SUBDOMAIN) or "").strip()
+                    if subdomain and subdomain != "__default__":
+                        tenant = db.query(Tenant).filter(Tenant.subdomain == subdomain).first()
+                        if tenant and (tenant.status or "").lower() not in ("suspended", "cancelled"):
+                            return tenant
+            except Exception:
+                pass
         return None
 
     tenant = None
@@ -543,7 +555,8 @@ def get_current_user(
                 db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
             except Exception as e:
                 logger.debug("Could not set RLS GUC %s: %s", RLS_CLAIM_COMPANY_ID, e)
-        # Enforce must_change_password: deny access except to change-password-first-time, logout, auth/me
+        # Enforce must_change_password: deny access except to change-password-first-time, logout, auth/me,
+        # and read-only company/branch endpoints so branch-select and status bar can load
         if getattr(user, "must_change_password", False):
             path = (request.url.path or "").strip()
             allowed = {
@@ -552,10 +565,20 @@ def get_current_user(
                 "/api/auth/me",
             }
             if path not in allowed:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You must change your password before accessing other resources.",
+                # Allow GET company list, GET company by id, company settings, branches by company, and single branch (for branch-select / validateBranchAccess / status bar)
+                parts = path.split("/")
+                allow_read = (
+                    path == "/api/companies"
+                    or (path.startswith("/api/companies/") and len(parts) == 4 and "logo" not in path and "settings" not in path and "stamp" not in path)
+                    or (path.startswith("/api/companies/") and len(parts) == 5 and path.rstrip("/").endswith("/settings"))
+                    or (path.startswith("/api/branches/company/") and len(parts) == 5)
+                    or (path.startswith("/api/branches/") and len(parts) == 4)
                 )
+                if not allow_read:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You must change your password before accessing other resources.",
+                    )
         yield (user, db)
     finally:
         db.close()

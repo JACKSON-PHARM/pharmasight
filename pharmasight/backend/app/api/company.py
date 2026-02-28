@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from pathlib import Path
 from pydantic import BaseModel
-from app.dependencies import get_tenant_db, get_tenant_or_default, require_settings_edit, get_current_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, require_settings_edit, get_current_user, get_effective_company_id_for_user
 from app.models.tenant import Tenant
 from app.models.company import Company, Branch, BranchSetting
 from app.models.settings import CompanySetting
@@ -102,9 +102,13 @@ def get_companies(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get all companies"""
-    companies = db.query(Company).all()
-    return companies
+    """Get companies the current user has access to (via branch roles). Ensures tenant isolation."""
+    user = current_user_and_db[0]
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if not effective_company_id:
+        return []
+    company = db.query(Company).filter(Company.id == effective_company_id).first()
+    return [company] if company else []
 
 
 @router.get("/companies/{company_id}", response_model=CompanyResponse)
@@ -113,7 +117,11 @@ def get_company(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get company by ID"""
+    """Get company by ID. User may only access their effective company (tenant isolation)."""
+    user = current_user_and_db[0]
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -129,6 +137,10 @@ def get_company_logo_url(
     db: Session = Depends(get_tenant_db),
 ):
     """Return a viewable URL for the company logo (signed for tenant-assets, or absolute for /uploads)."""
+    user = current_user_and_db[0]
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company or not getattr(company, "logo_url", None) or not str(company.logo_url).strip():
         raise HTTPException(status_code=404, detail="Company or logo not found")
@@ -191,7 +203,11 @@ def get_company_settings(
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ) -> Dict[str, Any]:
-    """Get company-level settings. Raw storage paths are never returned; use signed URLs for preview."""
+    """Get company-level settings. User may only access settings of their effective company. Raw storage paths are never returned; use signed URLs for preview."""
+    user = current_user_and_db[0]
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -454,7 +470,11 @@ def get_branches_by_company(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get all branches for a company"""
+    """Get all branches for a company. User may only access branches of their effective company."""
+    user = current_user_and_db[0]
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")
     branches = db.query(Branch).filter(Branch.company_id == company_id).all()
     return branches
 
@@ -465,10 +485,14 @@ def get_branch(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get branch by ID"""
+    """Get branch by ID. User may only access branches of their effective company."""
+    user = current_user_and_db[0]
+    effective_company_id = get_effective_company_id_for_user(db, user)
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
+    if effective_company_id is None or branch.company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this branch")
     return branch
 
 

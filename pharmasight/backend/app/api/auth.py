@@ -85,6 +85,7 @@ class UsernameLoginRequest(BaseModel):
     """Username-based login request"""
     username: str
     password: str
+    tenant: Optional[str] = None  # Optional hint: when login fails, used to show "organization deactivated" vs "user not found"
 
 
 class UsernameLoginResponse(BaseModel):
@@ -258,6 +259,23 @@ def username_login(
     logger.info("Username not in legacy DB, searching all tenants for username=%s", normalized_username[:50])
     found_list = _find_user_in_all_tenants(master_db, normalized_username, check_email)
     if len(found_list) == 0:
+        # If client sent a tenant hint (e.g. from ?tenant= in URL), check if that org is deleted/deactivated
+        tenant_hint = (request.tenant or "").strip().lower() or None
+        if tenant_hint:
+            hinted = master_db.query(Tenant).filter(func.lower(Tenant.subdomain) == tenant_hint).first()
+            if hinted and (hinted.status or "").lower() in ("cancelled", "suspended"):
+                logger.info(
+                    "User not found; hinted tenant %s is %s (deleted/deactivated org)",
+                    tenant_hint,
+                    hinted.status,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "This organization is no longer active. Your account was part of an organization that has been deactivated. "
+                        "Please contact your administrator or support if you need access."
+                    ),
+                )
         logger.warning(
             "User not found in legacy DB or any tenant DB (username=%s). "
             "Ensure tenant DBs are reachable and public.tenants have database_url set.",

@@ -421,10 +421,12 @@ async function loadLogin() {
                     if (tenantForLogin) {
                         headers['X-Tenant-Subdomain'] = tenantForLogin;
                     }
+                    const loginBody = { username, password };
+                    if (tenantForLogin) loginBody.tenant = tenantForLogin;
                     let usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
                         method: 'POST',
                         headers,
-                        body: JSON.stringify({ username, password })
+                        body: JSON.stringify(loginBody)
                     });
                     // If this org's DB is unreachable (503), retry once without tenant so backend can find user in another organization.
                     if (usernameResponse.status === 503 && tenantForLogin) {
@@ -439,19 +441,20 @@ async function loadLogin() {
                             });
                         }
                     }
+                    // 403 with "organization ... no longer active" = deleted/deactivated tenant; show message as-is
                     if (usernameResponse.ok) {
                         const userData = await usernameResponse.json();
                         userEmail = userData.email;
-                        // Persist tenant only when backend says this user belongs to a tenant; otherwise clear so we use legacy/default DB.
+                        // Tenant isolation: always use the tenant from the login response (where this user was found).
+                        // This ensures Grace (Harte) never sees Pharmasight's company/branches even if URL or storage had another tenant.
                         if (userData.tenant_subdomain) {
                             try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
                             try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
                         } else {
-                            // Legacy/default user: clear any stored tenant so API calls don't send X-Tenant-Subdomain (backend then uses legacy DB).
                             try { if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('pharmasight_tenant_subdomain'); } catch (_) {}
                             try { if (typeof localStorage !== 'undefined') localStorage.removeItem('pharmasight_tenant_subdomain'); } catch (_) {}
                         }
-                        // Clear company/branch from any previous session so we load this user's data only (tenant or legacy).
+                        // Clear company/branch from any previous session so we never show another tenant's data.
                         if (typeof CONFIG !== 'undefined') {
                             CONFIG.COMPANY_ID = null;
                             CONFIG.BRANCH_ID = null;
@@ -538,8 +541,14 @@ async function loadLogin() {
                             const msg = typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'User not found';
                             if (errorDiv) {
                                 const hasTenant = params.get('tenant') || params.get('subdomain');
-                                errorDiv.innerHTML = '<span>' + String(msg).replace(/</g, '&lt;') + '</span>' +
-                                    (!hasTenant ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL (e.g. <code>?tenant=your-org-subdomain</code> then #login).</p>' : '');
+                                const isOrgDeactivated = msg.toLowerCase().includes('no longer active') || msg.toLowerCase().includes('deactivated');
+                                let hint = '';
+                                if (isOrgDeactivated && hasTenant) {
+                                    hint = '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">If you have an account in another organization, <a href="' + (window.location.pathname || '/') + '#login">sign in without the organization link</a>.</p>';
+                                } else if (!hasTenant) {
+                                    hint = '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL (e.g. <code>?tenant=your-org-subdomain</code> then #login).</p>';
+                                }
+                                errorDiv.innerHTML = '<span>' + String(msg).replace(/</g, '&lt;') + '</span>' + hint;
                                 errorDiv.style.display = 'block';
                             } else {
                                 showToast(msg, 'error');
