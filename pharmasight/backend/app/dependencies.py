@@ -660,6 +660,28 @@ def get_tenant_or_default(
     return default_tenant
 
 
+def get_tenant_optional(
+    request: Request,
+    master_db: Session = Depends(get_master_db),
+) -> Optional[Tenant]:
+    """
+    Resolve tenant for storage/tenant-scoped ops when available; never raises.
+    Returns tenant from header, or default DB tenant, or None so endpoints can
+    still work without tenant (e.g. skip tenant-assets logo URLs).
+    """
+    tenant = get_tenant_from_header(request, master_db)
+    if tenant is not None:
+        if (tenant.status or "").lower() in ("suspended", "cancelled"):
+            return None
+        return tenant
+    default_tenant = _get_default_tenant(master_db)
+    if default_tenant is None:
+        return None
+    if (default_tenant.status or "").lower() in ("suspended", "cancelled"):
+        return None
+    return default_tenant
+
+
 def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bool:
     """True if user has the given permission in any of their branch-role assignments."""
     from app.models.user import UserBranchRole

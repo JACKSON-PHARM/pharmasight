@@ -186,7 +186,7 @@ async function renderSalesInvoicesPage() {
                         <input type="date" 
                                class="form-input" 
                                id="filterDateFrom" 
-                               value="${today}"
+                               value=""
                                onchange="if(window.applySalesDateFilter) window.applySalesDateFilter()"
                                style="width: 150px;">
                     </div>
@@ -195,7 +195,7 @@ async function renderSalesInvoicesPage() {
                         <input type="date" 
                                class="form-input" 
                                id="filterDateTo" 
-                               value="${today}"
+                               value=""
                                onchange="if(window.applySalesDateFilter) window.applySalesDateFilter()"
                                style="width: 150px;">
                     </div>
@@ -510,6 +510,22 @@ async function fetchAndRenderSalesInvoicesData() {
         
         salesInvoices = await API.sales.getBranchInvoices(CONFIG.BRANCH_ID);
         console.log('✅ Loaded sales invoices:', salesInvoices.length);
+        // Ensure newest shows first (tie-break by created_at then invoice_no)
+        try {
+            const toTime = (v) => {
+                const t = new Date(v || 0).getTime();
+                return Number.isFinite(t) ? t : 0;
+            };
+            salesInvoices = (salesInvoices || []).slice().sort((a, b) => {
+                const aDate = toTime(a.invoice_date || a.created_at);
+                const bDate = toTime(b.invoice_date || b.created_at);
+                if (bDate !== aDate) return bDate - aDate;
+                const aCreated = toTime(a.created_at || a.invoice_date);
+                const bCreated = toTime(b.created_at || b.invoice_date);
+                if (bCreated !== aCreated) return bCreated - aCreated;
+                return String(b.invoice_no || '').localeCompare(String(a.invoice_no || ''));
+            });
+        } catch (_) {}
         renderSalesInvoicesTableBody();
     } catch (error) {
         console.error('Error fetching sales invoices:', error);
@@ -531,23 +547,77 @@ async function fetchAndRenderSalesInvoicesData() {
 function renderSalesInvoicesTableBody() {
     const tbody = document.getElementById('salesInvoicesTableBody');
     if (!tbody) return;
+
+    const search = (document.getElementById('salesSearchInput')?.value || '').trim().toLowerCase();
+    const dateFrom = (document.getElementById('filterDateFrom')?.value || '').trim(); // YYYY-MM-DD
+    const dateTo = (document.getElementById('filterDateTo')?.value || '').trim();     // YYYY-MM-DD
+
+    const toIsoDateOnly = (value) => {
+        if (!value) return '';
+        const s = String(value);
+        // Handles both 'YYYY-MM-DD' and ISO timestamps
+        return s.length >= 10 ? s.slice(0, 10) : '';
+    };
     
-    if (salesInvoices.length === 0) {
+    let filtered = Array.isArray(salesInvoices) ? salesInvoices.slice() : [];
+
+    // Date filter (inclusive)
+    if (dateFrom || dateTo) {
+        filtered = filtered.filter(inv => {
+            const d = toIsoDateOnly(inv.invoice_date || inv.created_at);
+            if (!d) return false;
+            if (dateFrom && d < dateFrom) return false;
+            if (dateTo && d > dateTo) return false;
+            return true;
+        });
+    }
+
+    // Search filter
+    if (search) {
+        filtered = filtered.filter(inv => {
+            const invNo = String(inv.invoice_no || '').toLowerCase();
+            const cust = String(inv.customer_name || '').toLowerCase();
+            return invNo.includes(search) || cust.includes(search);
+        });
+    }
+
+    // Sort newest first (date desc, then created_at desc, then invoice_no desc)
+    try {
+        const toTime = (v) => {
+            const t = new Date(v || 0).getTime();
+            return Number.isFinite(t) ? t : 0;
+        };
+        filtered.sort((a, b) => {
+            const aDate = toTime(a.invoice_date || a.created_at);
+            const bDate = toTime(b.invoice_date || b.created_at);
+            if (bDate !== aDate) return bDate - aDate;
+            const aCreated = toTime(a.created_at || a.invoice_date);
+            const bCreated = toTime(b.created_at || b.invoice_date);
+            if (bCreated !== aCreated) return bCreated - aCreated;
+            return String(b.invoice_no || '').localeCompare(String(a.invoice_no || ''));
+        });
+    } catch (_) {}
+
+    if (filtered.length === 0) {
         tbody.innerHTML = `
             <tr>
                 <td colspan="8" style="padding: 3rem; text-align: center;">
                     <i class="fas fa-file-invoice-dollar" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
                     <p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">No sales invoices found</p>
-                    <button class="btn btn-primary" onclick="if(window.createNewSalesInvoice) window.createNewSalesInvoice()">
-                        <i class="fas fa-plus"></i> Create Your First Sales Invoice
-                    </button>
+                    ${(dateFrom || dateTo || search) ? `
+                        <p style="color: var(--text-secondary); font-size: 0.875rem;">Try clearing filters/search.</p>
+                    ` : `
+                        <button class="btn btn-primary" onclick="if(window.createNewSalesInvoice) window.createNewSalesInvoice()">
+                            <i class="fas fa-plus"></i> Create Your First Sales Invoice
+                        </button>
+                    `}
                 </td>
             </tr>
         `;
         return;
     }
     
-    tbody.innerHTML = salesInvoices.map(invoice => {
+    tbody.innerHTML = filtered.map(invoice => {
         const status = invoice.status || 'DRAFT';
         const statusBadge = getSalesInvoiceStatusBadge(status);
         const paymentStatusBadge = getPaymentStatusBadge(invoice.payment_status || 'UNPAID');
@@ -2044,15 +2114,14 @@ async function autoSaveQuotation() {
 
 // Date filter functions
 function applySalesDateFilter() {
-    fetchAndRenderSalesInvoicesData();
+    renderSalesInvoicesTableBody();
 }
 
 function clearSalesDateFilter() {
-    const today = new Date().toISOString().split('T')[0];
     const dateFromInput = document.getElementById('filterDateFrom');
     const dateToInput = document.getElementById('filterDateTo');
-    if (dateFromInput) dateFromInput.value = today;
-    if (dateToInput) dateToInput.value = today;
+    if (dateFromInput) dateFromInput.value = '';
+    if (dateToInput) dateToInput.value = '';
     applySalesDateFilter();
 }
 

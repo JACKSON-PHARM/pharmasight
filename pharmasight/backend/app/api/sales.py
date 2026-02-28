@@ -11,7 +11,7 @@ from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
-from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user
 from app.services.document_pdf_generator import build_sales_invoice_pdf
 from app.services.tenant_storage_service import download_file, get_signed_url
 from app.models import (
@@ -332,7 +332,7 @@ def create_sales_invoice(
 def get_sales_invoice_pdf(
     invoice_id: UUID,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Generate and return sales invoice as PDF (Download PDF). On-demand only.
@@ -357,7 +357,7 @@ def get_sales_invoice_pdf(
             "line_total_inclusive": float(oi.line_total_inclusive or 0),
         })
     company_logo_bytes = None
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
         company_logo_bytes = download_file(company.logo_url, tenant=tenant)
     till_number = getattr(branch, "till_number", None) if branch else None
     paybill = getattr(branch, "paybill", None) if branch else None
@@ -402,10 +402,10 @@ def get_sales_invoice_pdf(
 def get_sales_invoice(
     invoice_id: UUID,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get sales invoice by ID with full item details"""
+    """Get sales invoice by ID with full item details. Works without tenant (no tenant-assets logo URL)."""
     from sqlalchemy.orm import selectinload
     # Load invoice with items and item relationships
     invoice = db.query(SalesInvoice).options(
@@ -494,7 +494,7 @@ def get_sales_invoice(
         invoice.company_address = getattr(company, "address", None) or ""
         logo_path = getattr(company, "logo_url", None)
         if logo_path and str(logo_path).strip():
-            if str(logo_path).startswith("tenant-assets/"):
+            if str(logo_path).startswith("tenant-assets/") and tenant is not None:
                 invoice.logo_url = get_signed_url(logo_path, tenant=tenant)
             elif str(logo_path).startswith("http://") or str(logo_path).startswith("https://"):
                 invoice.logo_url = str(logo_path).strip()
@@ -1048,7 +1048,11 @@ def get_branch_invoices(
             selectinload(SalesInvoice.items)
         ).filter(
             SalesInvoice.branch_id == branch_id
-        ).order_by(SalesInvoice.invoice_date.desc()).all()
+        ).order_by(
+            SalesInvoice.invoice_date.desc(),
+            SalesInvoice.created_at.desc(),
+            SalesInvoice.invoice_no.desc(),
+        ).all()
     except Exception as e:
         error_str = str(e)
         # Check if it's a missing column error
