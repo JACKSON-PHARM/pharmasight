@@ -1913,6 +1913,23 @@ async function editItem(itemId) {
         modal.setAttribute('data-has-transactions', hasTransactions.toString());
     }
     
+    // Force unit name inputs to be editable (sync, right after modal is in DOM)
+    (function ensureUnitNameInputsEditable() {
+        var wholesaleInput = document.getElementById('edit_wholesale_unit');
+        var retailInput = document.querySelector('#editItemForm input[name="retail_unit"]');
+        var supplierInput = document.querySelector('#editItemForm input[name="supplier_unit"]');
+        [wholesaleInput, retailInput, supplierInput].forEach(function(el) {
+            if (!el) return;
+            el.removeAttribute('readonly');
+            el.removeAttribute('disabled');
+            el.readOnly = false;
+            el.disabled = false;
+            el.style.backgroundColor = '#fff';
+            el.style.cursor = 'text';
+            el.style.pointerEvents = 'auto';
+        });
+    })();
+    
     // Unit cost display: derive cost per selected unit (wholesale / retail / supplier)
     setTimeout(() => {
         const sel = document.getElementById('editItemUnitCostSelect');
@@ -1945,20 +1962,6 @@ async function editItem(itemId) {
                 el.addEventListener('change', syncCostDatasetsAndRefresh);
             });
         }
-    }, 0);
-
-    // Ensure unit name inputs are always editable (no readonly/disabled) — even if item has transactions
-    setTimeout(function() {
-        var wholesaleInput = document.getElementById('edit_wholesale_unit');
-        var retailInput = document.querySelector('#editItemForm input[name="retail_unit"]');
-        var supplierInput = document.querySelector('#editItemForm input[name="supplier_unit"]');
-        [wholesaleInput, retailInput, supplierInput].forEach(function(el) {
-            if (!el) return;
-            el.removeAttribute('readonly');
-            el.removeAttribute('disabled');
-            el.style.backgroundColor = '#fff';
-            el.style.cursor = 'text';
-        });
     }, 0);
 
     // Sync wholesale unit label in "Conversion to retail" and "Conversion to supplier" when base unit (input) changes
