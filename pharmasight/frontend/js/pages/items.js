@@ -712,7 +712,7 @@ async function saveItem(event) {
         retail_unit: formData.get('retail_unit') || 'tablet',
         pack_size: packSize,
         vat_category: formData.get('vat_category') || 'ZERO_RATED',
-        wholesale_units_per_supplier: Math.max(0.0001, parseFloat(formData.get('wholesale_units_per_supplier')) || 1),
+        wholesale_units_per_supplier: Math.max(1, parseInt(formData.get('wholesale_units_per_supplier'), 10) || 1),
         can_break_bulk: packSize >= 2 ? canBreakBulk : false,
         vat_rate: parseFloat(formData.get('vat_rate') || 0),
         track_expiry: formData.has('track_expiry'),
@@ -1532,8 +1532,8 @@ async function editItem(itemId) {
             ${isLocked ? `
                 <div class="alert alert-warning" style="margin-bottom: 1rem;">
                     <i class="fas fa-lock"></i>
-                    <strong>Locked Fields:</strong> This item has inventory transactions. 
-                    Unit setup (wholesale/retail/supplier conversions) cannot be modified to maintain data integrity.
+                    <strong>Conversion rates locked:</strong> This item has inventory transactions.
+                    Pack size and supplier conversion numbers cannot be changed. You can still edit unit <em>names</em> (e.g. packets, bottles, tins) for convenience.
                 </div>
             ` : ''}
             
@@ -1688,7 +1688,7 @@ async function editItem(itemId) {
             <div class="form-section">
                 <div class="form-section-title">
                     <i class="fas fa-layer-group"></i> Unit Setup — Wholesale, Retail &amp; Supplier
-                    ${isLocked ? '<i class="fas fa-lock" style="color: #dc3545; margin-left: 0.5rem;" title="Locked after first transaction"></i>' : ''}
+                    ${isLocked ? '<i class="fas fa-lock" style="color: #dc3545; margin-left: 0.5rem;" title="Conversion rates locked after first transaction; unit names can still be edited"></i>' : ''}
                 </div>
                 <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
                     Define how units relate: <strong>wholesale</strong> is the base (stock and prices are per wholesale unit). Then set conversion to <strong>retail</strong> and to <strong>supplier</strong>. Choose a suggestion or type any unit name (e.g. vials, ampules, bottle, pairs).
@@ -1704,16 +1704,14 @@ async function editItem(itemId) {
                     <input 
                         type="text" 
                         class="form-input" 
-                        ${isLocked ? '' : 'name="wholesale_unit"'}
+                        name="wholesale_unit"
                         id="edit_wholesale_unit"
                         list="editUnitOptions"
                         value="${escapeHtml((item.wholesale_unit || item.base_unit || 'piece').trim())}"
                         placeholder="e.g. packet, vial, bottle"
                         autocomplete="off"
-                        ${isLocked ? '' : 'required'}
-                        ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
+                        required
                     >
-                    ${isLocked ? '<input type="hidden" name="wholesale_unit" value="' + escapeHtml(item.wholesale_unit || item.base_unit || 'piece') + '">' : ''}
                 </div>
 
                 <!-- 2) Conversion to retail -->
@@ -1768,13 +1766,12 @@ async function editItem(itemId) {
                             <input 
                                 type="text" 
                                 class="form-input" 
-                                ${isLocked ? '' : 'name="supplier_unit"'}
+                                name="supplier_unit"
                                 list="editUnitOptions"
                                 value="${escapeHtml((item.supplier_unit || 'carton').trim())}"
                                 placeholder="e.g. carton, box, crate"
                                 autocomplete="off"
-                                style="min-width: 120px; ${isLocked ? 'background-color: #f5f5f5; cursor: not-allowed;' : ''}"
-                                ${isLocked ? 'readonly' : ''}
+                                style="min-width: 120px;"
                             >
                             <span>=</span>
                         </div>
@@ -1792,7 +1789,7 @@ async function editItem(itemId) {
                         </div>
                         <span id="editSupplierWholesaleLabel">${escapeHtml(item.wholesale_unit || item.base_unit || 'piece')}</span>
                     </div>
-                    ${isLocked ? '<input type="hidden" name="supplier_unit" value="' + escapeHtml(item.supplier_unit || 'carton') + '"><input type="hidden" name="wholesale_units_per_supplier" value="' + (Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)) + '">' : ''}
+                    ${isLocked ? '<input type="hidden" name="wholesale_units_per_supplier" value="' + (Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)) + '">' : ''}
                 </div>
 
                 <!-- Break bulk & Track expiry -->
@@ -1816,7 +1813,7 @@ async function editItem(itemId) {
                 ${isLocked ? `
                     <div class="alert alert-info" style="margin-top: 0.5rem;">
                         <i class="fas fa-lock"></i>
-                        Unit conversions and break bulk cannot be modified after item has inventory transactions.
+                        Conversion rates (pack size, wholesale per supplier) and break bulk are locked. Unit names above can still be edited.
                     </div>
                 ` : ''}
             </div>
@@ -2078,17 +2075,17 @@ async function updateItem(event, itemId) {
     updateData.promo_start_date = promoStartRaw && promoStartRaw.trim() !== '' ? promoStartRaw : null;
     updateData.promo_end_date = promoEndRaw && promoEndRaw.trim() !== '' ? promoEndRaw : null;
 
-    // 3-tier unit fields (only if item doesn't have transactions)
+    // Unit names (wholesale_unit, retail_unit, supplier_unit) are always editable; send them every time.
+    const wholesaleUnit = (formData.get('wholesale_unit') || '').toString().trim() || 'piece';
+    updateData.wholesale_unit = wholesaleUnit;
+    updateData.base_unit = wholesaleUnit;
+    updateData.retail_unit = formData.get('retail_unit') || 'tablet';
+    updateData.supplier_unit = formData.get('supplier_unit') || 'carton';
+    // Conversion rates (pack_size, wholesale_units_per_supplier, can_break_bulk) only when item has no transactions.
     if (!hasTransactions) {
-        const wholesaleUnit = (formData.get('wholesale_unit') || '').toString().trim() || 'piece';
-        // Keep base_unit aligned with wholesale_unit for legacy compatibility
-        updateData.wholesale_unit = wholesaleUnit;
-        updateData.base_unit = wholesaleUnit;
-        updateData.retail_unit = formData.get('retail_unit') || 'tablet';
-        updateData.supplier_unit = formData.get('supplier_unit') || 'carton';
         updateData.pack_size = Math.max(1, parseInt(formData.get('pack_size'), 10) || 1);
-        updateData.wholesale_units_per_supplier = Math.max(0.0001, parseFloat(formData.get('wholesale_units_per_supplier')) || 1);
-        updateData.can_break_bulk = updateData.pack_size >= 2 ? formData.has('can_break_bulk') : false;
+        updateData.wholesale_units_per_supplier = Math.max(1, parseInt(formData.get('wholesale_units_per_supplier'), 10) || 1);
+        updateData.can_break_bulk = (Math.max(1, parseInt(formData.get('pack_size'), 10) || 1) >= 2) ? formData.has('can_break_bulk') : false;
     }
     
     // SKU is never included (immutable)
@@ -2148,7 +2145,7 @@ async function viewItemUnits(itemId) {
     const retail = (item.retail_unit || '').toString().trim();
     const supplier = (item.supplier_unit || '').toString().trim();
     const pack = Math.max(1, parseInt(item.pack_size, 10) || 1);
-    const wups = Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1);
+    const wups = Math.max(1, parseInt(item.wholesale_units_per_supplier, 10) || 1);
 
     const lines = [];
     lines.push(`<li><strong>Wholesale (base):</strong> ${escapeHtml(wholesale)}</li>`);

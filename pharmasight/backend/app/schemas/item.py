@@ -54,7 +54,7 @@ class ItemBase(BaseModel):
     wholesale_unit: str = Field(default="packet", description="Wholesale unit name (base)")
     retail_unit: str = Field(default="tablet", description="Retail unit name")
     pack_size: int = Field(default=1, ge=1, description="Wholesale-to-retail: 1 wholesale = pack_size retail")
-    wholesale_units_per_supplier: float = Field(default=1, ge=0.0001, description="Wholesale-to-supplier: 1 supplier = N wholesale")
+    wholesale_units_per_supplier: float = Field(default=1, ge=1, description="Wholesale-to-supplier: 1 supplier = N wholesale (integer, e.g. 12)")
     can_break_bulk: bool = Field(default=False, description="Can sell individual retail units? (requires pack_size > 1)")
     # VAT
     vat_category: str = Field(default="ZERO_RATED", description="ZERO_RATED | STANDARD_RATED")
@@ -100,7 +100,7 @@ class ItemUpdate(BaseModel):
     wholesale_unit: Optional[str] = None
     retail_unit: Optional[str] = None
     pack_size: Optional[int] = Field(None, ge=1)
-    wholesale_units_per_supplier: Optional[float] = Field(None, ge=0.0001)
+    wholesale_units_per_supplier: Optional[float] = Field(None, ge=1, description="Integer, e.g. 12 packs per carton")
     can_break_bulk: Optional[bool] = None
     track_expiry: Optional[bool] = None
     is_controlled: Optional[bool] = None

@@ -781,19 +781,24 @@ async function renderCreateSalesInvoicePage() {
         handlePaymentModeChange();
     }, 100);
 
-    // If opened from landing quick-search with an item, create draft with that item
+    // If opened from landing quick-search: prefill search row only (do not add to table)
     try {
         const raw = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pendingLandingDocument');
         if (raw) {
             const pending = JSON.parse(raw);
             if (pending && pending.type === 'sales_invoice' && pending.item) {
                 sessionStorage.removeItem('pendingLandingDocument');
-                setTimeout(async () => {
-                    if (typeof onSalesInvoiceAddItem === 'function') {
+                if (pending.prefillSearchOnly && salesInvoiceItemsTable && typeof salesInvoiceItemsTable.prefillAddRowSearch === 'function') {
+                    setTimeout(() => {
+                        salesInvoiceItemsTable.prefillAddRowSearch(pending.item);
+                        if (typeof showToast === 'function') showToast('Item in search row. Click Add to add to invoice.', 'info');
+                    }, 200);
+                } else if (!pending.prefillSearchOnly && typeof onSalesInvoiceAddItem === 'function') {
+                    setTimeout(async () => {
                         await onSalesInvoiceAddItem(pending.item);
                         if (typeof showToast === 'function') showToast('Draft created. Add more items or batch when ready.', 'success');
-                    }
-                }, 200);
+                    }, 200);
+                }
             }
         }
     } catch (_) {}
@@ -1723,19 +1728,24 @@ function initializeSalesQuotationItemsTable() {
         }
     }, 150);
 
-    // If opened from landing quick-search with an item, create quotation with that item
+    // If opened from landing quick-search: prefill search row only (do not add to table)
     try {
         const raw = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pendingLandingDocument');
         if (raw) {
             const pending = JSON.parse(raw);
             if (pending && pending.type === 'quotation' && pending.item) {
                 sessionStorage.removeItem('pendingLandingDocument');
-                setTimeout(async () => {
-                    if (typeof onQuotationAddItem === 'function') {
+                if (pending.prefillSearchOnly && salesQuotationItemsTable && typeof salesQuotationItemsTable.prefillAddRowSearch === 'function') {
+                    setTimeout(() => {
+                        salesQuotationItemsTable.prefillAddRowSearch(pending.item);
+                        if (typeof showToast === 'function') showToast('Item in search row. Click Add to add to quotation.', 'info');
+                    }, 200);
+                } else if (!pending.prefillSearchOnly && typeof onQuotationAddItem === 'function') {
+                    setTimeout(async () => {
                         await onQuotationAddItem(pending.item);
                         if (typeof showToast === 'function') showToast('Quotation created. Add more items or update when ready.', 'success');
-                    }
-                }, 200);
+                    }, 200);
+                }
             }
         }
     } catch (_) {}

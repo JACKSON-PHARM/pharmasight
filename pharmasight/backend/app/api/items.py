@@ -1197,15 +1197,16 @@ def update_item(
             detail="SKU cannot be modified once created. Item code is immutable."
         )
     
-    # Business Rule 2: Base unit and 3-tier unit fields locked only if item has real transactions (sales/purchases/movements)
+    # Business Rule 2: Only conversion rates and break-bulk are locked when item has real transactions.
+    # Unit names (wholesale_unit, retail_unit, supplier_unit, base_unit) are for display/convenience and may be changed.
     if has_transactions:
-        locked_fields = ['base_unit', 'supplier_unit', 'wholesale_unit', 'retail_unit', 'pack_size', 'can_break_bulk']
+        locked_fields = ['pack_size', 'wholesale_units_per_supplier', 'can_break_bulk']
         attempted_locked = [f for f in locked_fields if f in update_data]
         if attempted_locked:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot modify {', '.join(attempted_locked)} after item has been used in sales, purchases, or stock movements. "
-                       f"These fields are locked to maintain data integrity."
+                detail=f"Cannot modify conversion rates ({', '.join(attempted_locked)}) after item has been used in sales, purchases, or stock movements. "
+                       f"Unit names (e.g. packets, bottles, tins) can still be changed."
             )
 
     # 3-tier validation: breakable => pack_size > 1

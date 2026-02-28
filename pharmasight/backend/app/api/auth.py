@@ -628,6 +628,7 @@ def auth_change_password(
     user.password_hash = hash_password(body.new_password)
     user.password_updated_at = datetime.now(timezone.utc)
     user.password_set = True
+    user.must_change_password = False  # clear forced first-time change so other APIs work
     db.commit()
     return {"message": "Password updated successfully."}
 
@@ -679,5 +680,7 @@ def auth_reset_password(
         user.password_hash = hash_password(body.new_password)
         user.password_updated_at = datetime.now(timezone.utc)
         user.password_set = True
+        if hasattr(user, "must_change_password"):
+            user.must_change_password = False
         db.commit()
     return {"message": "Password reset. Sign in with your username and password."}

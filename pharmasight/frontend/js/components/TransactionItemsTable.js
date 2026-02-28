@@ -1842,7 +1842,35 @@
         if (this.onItemsChange) this.onItemsChange(this.getItems());
         if (this.onTotalChange) this.onTotalChange(this.calculateTotal());
     };
-    
+
+    /**
+     * Prefill the add-row search with an item (e.g. from global search). Does not add to table.
+     * itemTableShape: { item_id, item_name, item_sku, item_code, unit_name, quantity, unit_price, discount_percent, tax_percent }
+     */
+    TransactionItemsTable.prototype.prefillAddRowSearch = function(itemTableShape) {
+        if (!itemTableShape || !itemTableShape.item_id || !this.useAddRow) return;
+        this.addRowItem = {
+            item_id: itemTableShape.item_id,
+            item_name: itemTableShape.item_name || '',
+            item_sku: itemTableShape.item_sku || itemTableShape.item_code,
+            item_code: itemTableShape.item_code || itemTableShape.item_sku,
+            unit_name: itemTableShape.unit_name || 'Unit',
+            quantity: itemTableShape.quantity != null ? itemTableShape.quantity : 1,
+            unit_price: parseFloat(itemTableShape.unit_price) || 0,
+            discount_percent: parseFloat(itemTableShape.discount_percent) || 0,
+            tax_percent: parseFloat(itemTableShape.tax_percent) || 0,
+            total: 0,
+            available_units: null,
+            purchase_price: null,
+            batches: [],
+            unit_multiplier: 1
+        };
+        this.recalculateAddRow();
+        this.render();
+        this.attachEventListeners();
+        this.loadUnitsForRow('add');
+    };
+
     /**
      * Close suggestions
      */

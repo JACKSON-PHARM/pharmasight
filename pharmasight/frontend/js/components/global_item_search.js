@@ -6,13 +6,15 @@
 (function () {
     'use strict';
 
-    const DEBOUNCE_MS = 150;
+    const DEBOUNCE_MS = 320;
     const SEARCH_MIN_LEN = 2;
     const SEARCH_LIMIT = 15;
 
     let searchTimeout = null;
     let selectedItem = null;
     let lastResults = [];
+    let currentSearchQuery = '';
+    let searchAbortController = null;
 
     function getBranchId() {
         if (typeof BranchContext !== 'undefined' && BranchContext.getBranch) {
@@ -75,9 +77,8 @@
     function clearSelection() {
         selectedItem = null;
         const row = document.getElementById('globalSelectedItemRow');
-        const input = document.getElementById('globalItemSearchInput');
         if (row) row.style.display = 'none';
-        if (input) input.value = '';
+        /* Do not clear input.value here – that was wiping the text as the user typed (when q.length < 2). */
     }
 
     function itemToTableShape(item) {
@@ -97,7 +98,7 @@
     }
 
     function goToDocument(type, item) {
-        const payload = { type: type, item: itemToTableShape(item) };
+        const payload = { type: type, item: itemToTableShape(item), prefillSearchOnly: true };
         try {
             sessionStorage.setItem('pendingLandingDocument', JSON.stringify(payload));
         } catch (_) {}
@@ -119,10 +120,17 @@
             }
             return;
         }
+        if (searchAbortController) {
+            searchAbortController.abort();
+        }
+        searchAbortController = new AbortController();
+        currentSearchQuery = q;
         showDropdownLoading();
         const branchId = getBranchId() || (typeof CONFIG !== 'undefined' ? CONFIG.BRANCH_ID : null);
-        API.items.search(q, CONFIG.COMPANY_ID, SEARCH_LIMIT, branchId, true)
+        var requestSignal = searchAbortController.signal;
+        API.items.search(q, CONFIG.COMPANY_ID, SEARCH_LIMIT, branchId, true, null, { signal: requestSignal })
             .then(function (items) {
+                if (currentSearchQuery !== q) return;
                 lastResults = items || [];
                 const dropdown = document.getElementById('globalItemSearchDropdown');
                 if (!dropdown) return;
@@ -144,15 +152,37 @@
                 dropdown.style.display = 'block';
                 dropdown.setAttribute('aria-hidden', 'false');
             })
-            .catch(function () {
+            .catch(function (err) {
+                if (err && err.name === 'AbortError') return;
+                if (currentSearchQuery !== q) return;
                 const dropdown = document.getElementById('globalItemSearchDropdown');
                 if (dropdown) {
-                    dropdown.innerHTML = '<div class="global-item-search-hit" style="color: var(--danger-color);">Search failed.</div>';
+                    dropdown.innerHTML = '<div class="global-item-search-hit" style="color: var(--danger-color);">Search failed. Try again.</div>';
                     dropdown.style.display = 'block';
                     dropdown.setAttribute('aria-hidden', 'false');
                 }
             });
     }
+
+    /**
+     * Called from inline oninput on the search field (same pattern as Items page filterItems()).
+     * Ensures typing always triggers search regardless of when/if addEventListener bound.
+     */
+    function handleGlobalSearchInput(inputEl) {
+        if (!inputEl) return;
+        var q = (inputEl.value || '').trim();
+        if (searchTimeout) clearTimeout(searchTimeout);
+        hideDropdown();
+        if (q.length < SEARCH_MIN_LEN) {
+            clearSelection();
+            return;
+        }
+        searchTimeout = setTimeout(function () {
+            searchTimeout = null;
+            runSearch(q);
+        }, DEBOUNCE_MS);
+    }
+    window.handleGlobalSearchInput = handleGlobalSearchInput;
 
     function bind() {
         const input = document.getElementById('globalItemSearchInput');
@@ -162,34 +192,41 @@
         const btnOrder = document.getElementById('globalCreateOrderBtn');
         if (!input || !dropdown) return;
 
-        input.addEventListener('input', function () {
-            const q = (this.value || '').trim();
-            if (searchTimeout) clearTimeout(searchTimeout);
-            hideDropdown();
-            if (q.length < SEARCH_MIN_LEN) {
-                clearSelection();
-                return;
-            }
-            searchTimeout = setTimeout(function () {
-                searchTimeout = null;
-                runSearch(q);
-            }, DEBOUNCE_MS);
-        });
+        input.removeAttribute('readonly');
+        input.removeAttribute('disabled');
+
+        // When user clicks anywhere in the search bar (not the dropdown), focus the input
+        // so focus is never on a wrapper div and typing always goes to the input
+        var bar = document.getElementById('globalItemSearchBar');
+        if (bar) {
+            bar.addEventListener('mousedown', function (e) {
+                if (e.target.closest && e.target.closest('#globalItemSearchDropdown')) return;
+                var inp = document.getElementById('globalItemSearchInput');
+                if (inp && e.target !== inp) {
+                    e.preventDefault();
+                    inp.focus();
+                }
+            }, true);
+        }
 
         input.addEventListener('blur', function () {
             setTimeout(hideDropdown, 180);
         });
 
-        dropdown.addEventListener('click', function (e) {
+        function selectDropdownItem(e) {
             const hit = e.target.closest('.global-item-search-hit');
             if (!hit || hit.dataset.idx === undefined) return;
             const idx = parseInt(hit.dataset.idx, 10);
             const item = lastResults[idx];
             if (!item) return;
+            e.preventDefault();
+            e.stopPropagation();
             input.value = (item.name || item.item_name || '') + (item.sku || item.item_code ? ' (' + (item.sku || item.item_code) + ')' : '');
             hideDropdown();
             showSelectedRow(item);
-        });
+        }
+        dropdown.addEventListener('mousedown', selectDropdownItem);
+        dropdown.addEventListener('click', selectDropdownItem);
 
         if (btnInvoice) btnInvoice.addEventListener('click', function () {
             if (!selectedItem) return;

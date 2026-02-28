@@ -561,6 +561,7 @@ def get_current_user(
             path = (request.url.path or "").strip()
             allowed = {
                 "/api/users/change-password-first-time",
+                "/api/auth/change-password",  # regular change-password also clears the flag
                 "/api/auth/logout",
                 "/api/auth/me",
             }

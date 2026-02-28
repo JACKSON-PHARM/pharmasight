@@ -649,24 +649,35 @@ body {
     gap: 1rem;
 }
 
-/* Global Item Search (sticky on all pages) */
+/* Global Item Search: inside top-bar (same row as logout) */
 .global-item-search-bar {
-    position: sticky;
-    top: 0;
-    z-index: 99;
-    background: var(--bg-secondary, #f8f9fa);
-    border-bottom: 1px solid var(--border-color);
-    padding: 0.5rem 2rem;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.75rem;
 }
-.global-item-search-wrap {
-    position: relative;
+.global-item-search-bar.top-bar-search {
     flex: 1;
     min-width: 200px;
     max-width: 360px;
+    position: relative;
+    z-index: 50;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+.global-item-search-bar.top-bar-search input#globalItemSearchInput {
+    pointer-events: auto;
+}
+.global-item-search-bar.top-bar-search input#globalItemSearchInput:focus {
+    outline: 2px solid var(--primary-color, #2563eb);
+    outline-offset: 2px;
+}
+.global-item-search-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 180px;
+    max-width: 320px;
 }
 .global-item-search-bar .form-input {
     width: 100%;

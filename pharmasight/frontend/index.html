@@ -155,6 +155,22 @@
                         <span id="statusBranch">Not Set</span>
                     </div>
                 </div>
+                <!-- Global Item Search: same row as logout so it behaves like other top-bar controls -->
+                <div id="globalItemSearchBar" class="global-item-search-bar top-bar-search">
+                    <div class="global-item-search-wrap">
+                        <input type="text" id="globalItemSearchInput" class="form-input" placeholder="Search item (name, SKU)…" autocomplete="off" aria-label="Search items" oninput="if(window.handleGlobalSearchInput)window.handleGlobalSearchInput(this);">
+                        <div id="globalItemSearchDropdown" class="global-item-search-dropdown" style="display: none;" aria-hidden="true"></div>
+                    </div>
+                    <div id="globalSelectedItemRow" class="global-selected-item-row" style="display: none;">
+                        <span id="globalSelectedItemName" class="global-selected-name"></span>
+                        <span id="globalSelectedItemMeta" class="global-selected-meta"></span>
+                        <div class="global-selected-actions">
+                            <button type="button" class="btn btn-icon btn-primary" id="globalCreateInvoiceBtn" title="New sales invoice"><i class="fas fa-file-invoice-dollar"></i></button>
+                            <button type="button" class="btn btn-icon btn-outline" id="globalCreateQuotationBtn" title="Quotation"><i class="fas fa-file-invoice"></i></button>
+                            <button type="button" class="btn btn-icon btn-outline" id="globalCreateOrderBtn" title="Purchase order"><i class="fas fa-shopping-bag"></i></button>
+                        </div>
+                    </div>
+                </div>
                 <div class="top-bar-right">
                     <button class="btn btn-primary" id="newPurchaseBtn" style="display: none;">
                         <i class="fas fa-plus"></i> New Purchase
@@ -164,23 +180,6 @@
                     </button>
                 </div>
             </header>
-
-            <!-- Global Item Search (sticky on all pages) -->
-            <div id="globalItemSearchBar" class="global-item-search-bar">
-                <div class="global-item-search-wrap">
-                    <input type="text" id="globalItemSearchInput" class="form-input" placeholder="Search item (name, SKU)…" autocomplete="off" aria-label="Search items">
-                    <div id="globalItemSearchDropdown" class="global-item-search-dropdown" style="display: none;" aria-hidden="true"></div>
-                </div>
-                <div id="globalSelectedItemRow" class="global-selected-item-row" style="display: none;">
-                    <span id="globalSelectedItemName" class="global-selected-name"></span>
-                    <span id="globalSelectedItemMeta" class="global-selected-meta"></span>
-                    <div class="global-selected-actions">
-                        <button type="button" class="btn btn-icon btn-primary" id="globalCreateInvoiceBtn" title="New sales invoice"><i class="fas fa-file-invoice-dollar"></i></button>
-                        <button type="button" class="btn btn-icon btn-outline" id="globalCreateQuotationBtn" title="Quotation"><i class="fas fa-file-invoice"></i></button>
-                        <button type="button" class="btn btn-icon btn-outline" id="globalCreateOrderBtn" title="Purchase order"><i class="fas fa-shopping-bag"></i></button>
-                    </div>
-                </div>
-            </div>
 
             <!-- Page Content (position: relative so overlay positions correctly) -->
             <div class="page-content" id="pageContent" style="position: relative;">
