@@ -1742,16 +1742,15 @@ async function editItem(itemId) {
                             <input 
                                 type="text" 
                                 class="form-input" 
-                                ${isLocked ? '' : 'name="retail_unit"'}
+                                name="retail_unit"
                                 list="editUnitOptions"
                                 value="${escapeHtml((item.retail_unit || 'tablet').trim())}"
                                 placeholder="e.g. tablet, vial, ampule"
                                 autocomplete="off"
-                                ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                             >
                         </div>
                     </div>
-                    ${isLocked ? '<input type="hidden" name="pack_size" value="' + (Math.max(1, parseInt(item.pack_size, 10) || 1)) + '"><input type="hidden" name="retail_unit" value="' + escapeHtml(item.retail_unit || 'tablet') + '">' : ''}
+                    ${isLocked ? '<input type="hidden" name="pack_size" value="' + (Math.max(1, parseInt(item.pack_size, 10) || 1)) + '">' : ''}
                 </div>
 
                 <!-- 3) Conversion to supplier -->
