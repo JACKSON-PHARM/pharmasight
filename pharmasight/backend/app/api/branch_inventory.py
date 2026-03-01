@@ -38,6 +38,7 @@ from app.schemas.branch_inventory import (
 )
 from app.services.inventory_service import InventoryService
 from app.services.snapshot_service import SnapshotService
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.document_service import DocumentService
 
 router = APIRouter()
@@ -755,6 +756,7 @@ def confirm_branch_receipt(
             SnapshotService.upsert_inventory_balance(
                 db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta
             )
+            SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
         receipt.status = "RECEIVED"
         receipt.received_at = datetime.utcnow()
         receipt.received_by = user.id

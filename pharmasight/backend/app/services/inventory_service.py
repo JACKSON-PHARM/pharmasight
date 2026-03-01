@@ -24,7 +24,11 @@ def _unit_for_display(unit: Optional[str], fallback: str = "piece") -> str:
 
 
 class InventoryService:
-    """Service for inventory calculations and FEFO allocation"""
+    """
+    Service for inventory calculations and FEFO allocation.
+    Numeric stock is ALWAYS retail/base quantity. stock_display shows multi-tier breakdown for UX.
+    Do NOT use item.base_unit as label for numeric stock — use retail_unit.
+    """
 
     @staticmethod
     def get_current_stock(
@@ -399,11 +403,19 @@ class InventoryService:
     def format_quantity_display(quantity_retail: float, item: Item) -> str:
         """
         Format a quantity (in retail/base units) for display using 3-tier breakdown.
-        E.g. 12 tablets -> "12 tablet"; 110 tablets (pack=100) -> "1 packet 10 tablet"
+        Single source of truth for stock display. E.g. 12 tablets -> "12 tablet";
+        110 tablets (pack=100) -> "1 packet 10 tablet".
+        When pack_size=1 and cannot break bulk, show single unit name only (e.g. "13 tube").
         """
         if not item or quantity_retail <= 0:
             return "0"
         total_retail = float(quantity_retail)
+        pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
+        can_break = getattr(item, "can_break_bulk", True)
+        if pack_size == 1 and not can_break:
+            from app.services.item_units_helper import get_stock_display_unit
+            single_unit = get_stock_display_unit(item, "piece")
+            return f"{int(total_retail)} {single_unit}"
         wholesale_unit = _unit_for_display(getattr(item, "wholesale_unit", None) or item.base_unit, "piece")
         retail_unit = _unit_for_display(getattr(item, "retail_unit", None), "piece")
         supplier_unit = _unit_for_display(getattr(item, "supplier_unit", None), "piece")

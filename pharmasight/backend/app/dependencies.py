@@ -14,6 +14,7 @@ import time as _time
 import logging
 import threading
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Generator, Optional, Tuple
 from uuid import UUID
 
@@ -31,7 +32,6 @@ from app.utils.auth_internal import (
     CLAIM_JTI,
     CLAIM_TENANT_SUBDOMAIN,
     decode_token_dual,
-    is_token_revoked_in_db,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,14 +45,19 @@ def get_effective_company_id_for_user(db: Session, user: User):
     Resolve the company_id for the authenticated user (single-DB multi-company).
     Uses: user's branch assignments (UserBranchRole -> Branch -> company_id), or the single company in DB.
     Returns None if no company can be resolved (caller should handle).
+    Single join query to avoid extra round-trips.
     """
     from app.models.user import UserBranchRole
     from app.models.company import Branch, Company
-    ubr = db.query(UserBranchRole).filter(UserBranchRole.user_id == user.id).first()
-    if ubr:
-        branch = db.query(Branch).filter(Branch.id == ubr.branch_id).first()
-        if branch:
-            return branch.company_id
+    row = (
+        db.query(Branch.company_id)
+        .join(UserBranchRole, UserBranchRole.branch_id == Branch.id)
+        .filter(UserBranchRole.user_id == user.id)
+        .limit(1)
+        .first()
+    )
+    if row:
+        return row[0]
     company = db.query(Company).limit(1).first()
     return company.id if company else None
 
@@ -68,6 +73,21 @@ _pool_lock = threading.Lock()
 
 # In-process cache for default tenant (key=url, value=(tenant, expiry_ts)); TTL 10 minutes
 _default_tenant_cache: dict = {}
+
+# Auth resolution cache: (jti, str(sub)) -> (user_id, company_id, tenant_database_url, expiry_ts)
+# Short TTL so repeat requests (e.g. item search) skip master + tenant lookups. Populated after full resolve.
+_auth_resolution_cache: dict = {}
+_auth_resolution_cache_ttl_seconds = 5.0
+
+
+def _stub_user_for_cache(user_id: UUID):
+    """Minimal user-like object for cache-hit fast path (e.g. /api/items/search). Avoids DB round-trip."""
+    return SimpleNamespace(
+        id=user_id,
+        is_active=True,
+        deleted_at=None,
+        must_change_password=False,
+    )
 _default_tenant_cache_ttl_seconds = 600
 
 # Supabase: transaction pooler port on db.xxx (IPv6); session pooler on pooler.supabase.com (IPv4).
@@ -430,7 +450,7 @@ def get_current_user_optional(
     if result is None:
         yield None
         return
-    user, db = result
+    user, db, _tenant = result
     try:
         company_id = get_effective_company_id_for_user(db, user)
         if company_id:
@@ -443,12 +463,37 @@ def get_current_user_optional(
         db.close()
 
 
+def _lookup_user_if_not_revoked(db: Session, sub: UUID, jti: Optional[str]) -> Optional[User]:
+    """
+    Single-query user lookup: return User only if not revoked and active.
+    Avoids separate revoked check + user query (one round-trip instead of two).
+    """
+    jti = jti or ""
+    try:
+        row = db.execute(
+            text(
+                "SELECT * FROM users WHERE id = :sub AND deleted_at IS NULL AND is_active = true "
+                "AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = :jti)"
+            ),
+            {"sub": str(sub), "jti": jti},
+        ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    # Build User from row and attach to session (single round-trip, no second SELECT)
+    data = dict(row._mapping)
+    user = User(**{k: data[k] for k in data if hasattr(User, k)})
+    db.add(user)
+    return user
+
+
 def _resolve_user_and_db_for_request(
     request: Request,
     master_db: Session,
     payload: dict,
     sub: UUID,
-) -> Tuple[User, Session]:
+) -> Tuple[User, Session, Optional[Tenant]]:
     """
     Resolve (user, db) for a valid token. Uses tenant DB when available and reachable;
     falls back to app DB for legacy/re-invited users (no tenant or tenant DB unreachable).
@@ -461,19 +506,14 @@ def _resolve_user_and_db_for_request(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
 
     def _lookup_in_db(db: Session) -> Optional[User]:
-        if is_token_revoked_in_db(db, payload.get(CLAIM_JTI)):
-            return None
-        user = db.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
-        if not user or not user.is_active:
-            return None
-        return user
+        return _lookup_user_if_not_revoked(db, sub, payload.get(CLAIM_JTI))
 
     # Prefer app DB when no tenant or tenant has no database_url (single-DB / re-invited legacy)
     if not tenant or not (tenant.database_url and tenant.database_url.strip()):
         db = SessionLocal()
         user = _lookup_in_db(db)
         if user:
-            return (user, db)
+            return (user, db, tenant)
         db.close()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -487,7 +527,7 @@ def _resolve_user_and_db_for_request(
         db = factory()
         user = _lookup_in_db(db)
         if user:
-            return (user, db)
+            return (user, db, tenant)
         db.close()
     except OperationalError as e:
         err_str = str(e)
@@ -495,7 +535,7 @@ def _resolve_user_and_db_for_request(
             db = SessionLocal()
             user = _lookup_in_db(db)
             if user:
-                return (user, db)
+                return (user, db, tenant)
             db.close()
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -509,11 +549,11 @@ def _resolve_user_and_db_optional(
     master_db: Session,
     payload: dict,
     sub: UUID,
-) -> Optional[Tuple[User, Session]]:
+) -> Optional[Tuple[User, Session, Optional[Tenant]]]:
     """Like _resolve_user_and_db_for_request but returns None instead of raising when user not found."""
     try:
-        user, db = _resolve_user_and_db_for_request(request, master_db, payload, sub)
-        return (user, db)
+        user, db, tenant = _resolve_user_and_db_for_request(request, master_db, payload, sub)
+        return (user, db, tenant)
     except HTTPException:
         return None
 
@@ -546,8 +586,68 @@ def get_current_user(
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    user, db = _resolve_user_and_db_for_request(request, master_db, payload, sub)
+    jti = payload.get(CLAIM_JTI)
+    cache_key = (jti, str(sub))
+    cached = None
+    with _pool_lock:
+        entry = _auth_resolution_cache.get(cache_key)
+        if entry:
+            user_id, company_id, tenant_url, expiry = entry
+            if expiry > _time.monotonic():
+                cached = (user_id, company_id, tenant_url)
+            else:
+                _auth_resolution_cache.pop(cache_key, None)
+
+    db = None
     try:
+        if cached:
+            user_id, company_id, tenant_url = cached
+            path = (request.url.path or "").strip().rstrip("/")
+            is_items_search = path == "/api/items/search"
+            # Fast path for item search: no SET LOCAL, no user fetch — one round-trip (search query only)
+            if is_items_search:
+                db = SessionLocal() if not tenant_url or not tenant_url.strip() else _session_factory_for_url(tenant_url)()
+                stub_user = _stub_user_for_cache(user_id)
+                yield (stub_user, db)
+                return
+            db = SessionLocal() if not tenant_url or not tenant_url.strip() else _session_factory_for_url(tenant_url)()
+            try:
+                db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
+            except Exception:
+                pass
+            user = db.get(User, user_id)
+            if user and getattr(user, "deleted_at", None) is None and getattr(user, "is_active", True):
+                if getattr(user, "must_change_password", False):
+                    allowed = {
+                        "/api/users/change-password-first-time",
+                        "/api/auth/change-password",
+                        "/api/auth/logout",
+                        "/api/auth/me",
+                    }
+                    if path not in allowed:
+                        parts = path.split("/")
+                        allow_read = (
+                            path == "/api/companies"
+                            or (path.startswith("/api/companies/") and len(parts) == 4 and "logo" not in path and "settings" not in path and "stamp" not in path)
+                            or (path.startswith("/api/companies/") and len(parts) == 5 and path.rstrip("/").endswith("/settings"))
+                            or (path.startswith("/api/branches/company/") and len(parts) == 5)
+                            or (path.startswith("/api/branches/") and len(parts) == 4)
+                        )
+                        if not allow_read:
+                            db.close()
+                            db = None
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                detail="You must change your password before accessing other resources.",
+                            )
+                yield (user, db)
+                return
+            with _pool_lock:
+                _auth_resolution_cache.pop(cache_key, None)
+            db.close()
+            db = None
+
+        user, db, tenant = _resolve_user_and_db_for_request(request, master_db, payload, sub)
         # Set RLS session GUC so all queries in this request are scoped to user's company
         company_id = get_effective_company_id_for_user(db, user)
         if company_id:
@@ -555,6 +655,14 @@ def get_current_user(
                 db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
             except Exception as e:
                 logger.debug("Could not set RLS GUC %s: %s", RLS_CLAIM_COMPANY_ID, e)
+        # Populate auth cache for repeat requests (e.g. item search) — short TTL
+        with _pool_lock:
+            _auth_resolution_cache[cache_key] = (
+                user.id,
+                company_id,
+                getattr(tenant, "database_url", None) if tenant else None,
+                _time.monotonic() + _auth_resolution_cache_ttl_seconds,
+            )
         # Enforce must_change_password: deny access except to change-password-first-time, logout, auth/me,
         # and read-only company/branch endpoints so branch-select and status bar can load
         if getattr(user, "must_change_password", False):
@@ -582,7 +690,8 @@ def get_current_user(
                     )
         yield (user, db)
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 def get_current_admin(request: Request):

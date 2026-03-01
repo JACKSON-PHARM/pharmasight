@@ -945,7 +945,7 @@ async function searchStockTakeItems() {
         try {
             resultsDiv.innerHTML = '<div style="text-align: center;"><div class="spinner"></div></div>';
             
-            const items = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 10, CONFIG.BRANCH_ID, false);
+            const items = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 50, CONFIG.BRANCH_ID, false);
             
             if (!items || items.length === 0) {
                 resultsDiv.innerHTML = `<p style="color: var(--text-secondary);">No items found for "${escapeHtml(searchTerm)}"</p>`;
@@ -986,7 +986,7 @@ async function searchStockTakeItems() {
             console.error('[STOCK TAKE] Search error:', error);
             resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
         }
-    }, 300);
+    }, 60);
 }
 
 // Select Item for Counting (with transaction check)

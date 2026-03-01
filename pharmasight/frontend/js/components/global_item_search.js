@@ -6,9 +6,9 @@
 (function () {
     'use strict';
 
-    const DEBOUNCE_MS = 320;
+    const DEBOUNCE_MS = 60;
     const SEARCH_MIN_LEN = 2;
-    const SEARCH_LIMIT = 15;
+    const SEARCH_LIMIT = 50;
 
     let searchTimeout = null;
     let selectedItem = null;
@@ -68,7 +68,7 @@
         const metaEl = document.getElementById('globalSelectedItemMeta');
         if (!row || !nameEl || !metaEl) return;
         nameEl.textContent = item.name || item.item_name || 'Item';
-        const stockStr = item.stock_display != null ? item.stock_display : (item.current_stock != null ? String(item.current_stock) : '—');
+        const stockStr = item.stock_display != null ? item.stock_display : (item.base_quantity != null || item.current_stock != null ? String(item.base_quantity != null ? item.base_quantity : item.current_stock) + ' ' + (item.retail_unit || 'piece') : '—');
         const priceStr = formatPrice(item.sale_price != null ? item.sale_price : item.price);
         metaEl.textContent = 'Stock: ' + stockStr + ' · Price: ' + priceStr;
         row.style.display = 'flex';
@@ -150,7 +150,7 @@
                     dropdown.innerHTML = items.map(function (it, idx) {
                         const name = (it.name || it.item_name || '').trim() || '—';
                         const sku = (it.sku || it.item_code || '').trim();
-                        const stock = it.stock_display != null ? it.stock_display : (it.current_stock != null ? String(it.current_stock) : '—');
+                        const stock = it.stock_display != null ? it.stock_display : (it.base_quantity != null || it.current_stock != null ? String(it.base_quantity != null ? it.base_quantity : it.current_stock) + ' ' + (it.retail_unit || 'piece') : '—');
                         const price = formatPrice(it.sale_price != null ? it.sale_price : it.price);
                         return '<div class="global-item-search-hit" data-idx="' + idx + '">' +
                             '<span class="hit-name">' + esc(name) + '</span>' +
@@ -221,6 +221,18 @@
 
         input.addEventListener('blur', function () {
             setTimeout(hideDropdown, 180);
+        });
+
+        // Prime auth cache on focus so first real search is fast (<200ms target)
+        input.addEventListener('focus', function () {
+            var companyId = (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) ? CONFIG.COMPANY_ID : null;
+            var branchId = getBranchId();
+            if (!companyId) return;
+            setTimeout(function () {
+                if (typeof API !== 'undefined' && API.items && typeof API.items.search === 'function') {
+                    API.items.search('aa', companyId, 1, branchId, false).catch(function () {});
+                }
+            }, 50);
         });
 
         function selectDropdownItem(e) {

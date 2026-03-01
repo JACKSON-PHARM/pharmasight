@@ -82,6 +82,22 @@ def validate_unit_for_item(item: "Item", unit_name: str) -> Tuple[bool, Optional
     return (mult is not None, mult)
 
 
+def get_stock_display_unit(item: Optional["Item"], fallback: str = "piece") -> str:
+    """
+    Unit name to use when labeling numeric stock (base_quantity).
+    When pack_size=1 and cannot break bulk, there is only one tier — use that single name everywhere
+    (wholesale_unit) so we never show e.g. "13 case" for 13 tubes. Otherwise use retail_unit.
+    """
+    if not item:
+        return (fallback or "piece").strip().lower()
+    pack = max(1, int(getattr(item, "pack_size", None) or 1))
+    can_break = getattr(item, "can_break_bulk", True)
+    if pack == 1 and not can_break:
+        # Single unit tier: use one name everywhere (wholesale = retail after enforcement)
+        return (item.wholesale_unit or item.base_unit or fallback or "piece").strip().lower()
+    return (item.retail_unit or fallback or "piece").strip().lower()
+
+
 def get_unit_display_short(item: Optional["Item"], unit_name: str) -> str:
     """
     Universal short form for display/printing only. Does not change stored unit_name.

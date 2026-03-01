@@ -432,14 +432,14 @@ function setupMovementReportHandlers(root, mode) {
                     itemDropdownEl.style.display = 'block';
                     return;
                 }
-                const res = await API.items.search(q, companyId, 15, bid, false);
+                const res = await API.items.search(q, companyId, 50, bid, false);
                 const items = Array.isArray(res) ? res : (res && res.items) || [];
                 if (!items.length) {
                     itemDropdownEl.innerHTML = '<div style="padding: 8px;">No items found.</div>';
                 } else {
                     itemDropdownEl.innerHTML = items.map(it => {
-                        const stockNum = typeof it.current_stock === 'number' ? it.current_stock : (it.stock != null ? Number(it.stock) : null);
-                        const stockDisplayStr = it.stock_display != null ? String(it.stock_display) : (stockNum != null ? stockNum + ' ' + (it.base_unit || '') : '');
+                        const stockNum = typeof it.base_quantity === 'number' ? it.base_quantity : (typeof it.current_stock === 'number' ? it.current_stock : (it.stock != null ? Number(it.stock) : null));
+                        const stockDisplayStr = it.stock_display != null ? String(it.stock_display) : (stockNum != null ? stockNum + ' ' + (it.retail_unit || 'piece') : '');
                         let stockColor = 'var(--text-secondary)';
                         if (stockNum !== null && stockNum !== undefined) {
                             if (stockNum <= 0) stockColor = 'var(--danger-color)';
@@ -471,7 +471,7 @@ function setupMovementReportHandlers(root, mode) {
                 itemDropdownEl.innerHTML = '<div style="padding: 8px; color: var(--danger-color);">Search failed.</div>';
                 itemDropdownEl.style.display = 'block';
             }
-        }, 300);
+        }, 60);
     });
     itemSearchEl.addEventListener('blur', () => {
         setTimeout(() => { itemDropdownEl.style.display = 'none'; }, 200);

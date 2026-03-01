@@ -13,6 +13,7 @@ from app.dependencies import get_tenant_db, get_current_user
 from app.models import Item, Branch, InventoryLedger
 from app.schemas.inventory import StockBalance, StockAvailability, BatchStock
 from app.services.inventory_service import InventoryService, _unit_for_display
+from app.services.item_units_helper import get_stock_display_unit
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.pricing_service import PricingService
 
@@ -26,12 +27,22 @@ def get_current_stock(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get current stock balance for an item"""
+    """
+    Get current stock balance for an item.
+    Numeric stock is ALWAYS retail/base quantity.
+    retail_unit is the correct label for the numeric value.
+    """
     stock = InventoryService.get_current_stock(db, item_id, branch_id)
+    item = db.query(Item).filter(Item.id == item_id).first()
+    retail_unit = _unit_for_display(get_stock_display_unit(item), "piece") if item else "piece"
+    stock_display = InventoryService.format_quantity_display(float(stock), item) if item else str(int(stock))
     return {
         "item_id": item_id,
         "branch_id": branch_id,
         "stock": stock,
+        "base_quantity": float(stock),
+        "retail_unit": retail_unit,
+        "stock_display": stock_display,
         "unit": "base_units"
     }
 
@@ -141,17 +152,20 @@ def get_all_stock(
     stock_map = {row.item_id: int(row.total_stock or 0) for row in stock_aggregates}
     item_ids = list(stock_map.keys())
 
-    # 2) Load only items that have stock
+    # 2) Load only items that have stock. Numeric stock is ALWAYS retail/base. Use retail_unit for labeling.
     items = db.query(Item).filter(Item.id.in_(item_ids)).all()
-    stock_list = [
-        {
+    stock_list = []
+    for item in items:
+        stock_val = stock_map.get(item.id, 0)
+        stock_list.append({
             "item_id": item.id,
             "item_name": item.name,
             "base_unit": item.base_unit or "piece",
-            "stock": stock_map.get(item.id, 0),
-        }
-        for item in items
-    ]
+            "retail_unit": _unit_for_display(get_stock_display_unit(item), "piece"),
+            "stock": stock_val,
+            "base_quantity": stock_val,
+            "stock_display": InventoryService.format_quantity_display(float(stock_val), item),
+        })
     return stock_list
 
 
@@ -380,39 +394,23 @@ def get_all_stock_overview(
     
     stock_map = {row.item_id: int(row.total_stock or 0) for row in stock_aggregates}
     
-    # Build response with unit breakdown from item columns (items table is source of truth)
+    # Use InventoryService.format_quantity_display — single source of truth for stock breakdown.
+    # Numeric stock is ALWAYS retail/base quantity. stock_display shows multi-tier breakdown.
+    # Do NOT use item.base_unit as label for numeric stock — use retail_unit.
     result = []
     for item in items:
         stock = stock_map.get(item.id, 0)
         if stock > 0:
-            wholesale_name = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
-            retail_name = (item.retail_unit or "").strip()
-            supplier_name = (item.supplier_unit or "").strip()
-            pack = max(1, int(item.pack_size or 1))
-            wups = max(0.0001, float(item.wholesale_units_per_supplier or 1))
-            units_list = [(wholesale_name, 1.0)]
-            if retail_name and (retail_name.lower() != wholesale_name.lower() or pack > 1):
-                units_list.append((item.retail_unit.strip(), 1.0 / pack))
-            if supplier_name and supplier_name.lower() != wholesale_name.lower():
-                units_list.append((item.supplier_unit.strip(), wups))
-            units_list.sort(key=lambda x: x[1], reverse=True)
-            unit_breakdown = []
-            remaining = stock
-            for unit_name, mult in units_list:
-                if mult > 0 and remaining >= mult:
-                    count = int(remaining / mult)
-                    remaining = remaining % int(mult) if mult >= 1 else remaining % mult
-                    if count > 0:
-                        unit_breakdown.append(f"{count} {unit_name}")
-            if remaining > 0:
-                unit_breakdown.append(f"{remaining} {item.base_unit}")
-            
+            stock_display = InventoryService.format_quantity_display(float(stock), item)
+            retail_unit = _unit_for_display(get_stock_display_unit(item), "piece")
             result.append({
                 "item_id": item.id,
                 "item_name": item.name,
                 "base_unit": item.base_unit,
+                "retail_unit": retail_unit,
                 "stock": stock,
-                "stock_display": ", ".join(unit_breakdown) if unit_breakdown else f"{stock} {item.base_unit}"
+                "base_quantity": stock,
+                "stock_display": stock_display
             })
     
     return result

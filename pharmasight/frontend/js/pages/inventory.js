@@ -1154,7 +1154,7 @@ async function filterItems() {
         `;
     }
     
-    // Debounce search (150ms for fast response)
+    // Debounce search (60ms — minimal delay so request fires quickly after typing)
     inventorySearchTimeout = setTimeout(async () => {
         isInventorySearching = true;
         
@@ -1165,7 +1165,7 @@ async function filterItems() {
             let searchResults = null;
             
             if (cache) {
-                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, branchId, 20);
+                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, branchId, 50);
                 // If we have a branch but cached results have no stock, refetch (avoid stale cache)
                 if (searchResults && branchId && searchResults.length > 0) {
                     const hasNoStock = searchResults.every(it => (it.current_stock == null && !(it.stock_display != null && it.stock_display !== '')));
@@ -1175,10 +1175,10 @@ async function filterItems() {
             
             if (!searchResults) {
                 // Search with branch_id for stock; include_pricing=true for last_supplier and costs
-                searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 20, branchId || null, true);
+                searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 50, branchId || null, true);
                 
                 if (cache && searchResults) {
-                    cache.set(searchTerm, CONFIG.COMPANY_ID, branchId, 20, searchResults);
+                    cache.set(searchTerm, CONFIG.COMPANY_ID, branchId, 50, searchResults);
                 }
             }
             
@@ -1197,7 +1197,7 @@ async function filterItems() {
         } finally {
             isInventorySearching = false;
         }
-    }, 300);
+    }, 60);
 }
 
 function renderItemsTable() {
@@ -1349,7 +1349,8 @@ async function showAdjustStockModal(itemId) {
         const units = (data && data.units && data.units.length) ? data.units : [{ unit_name: data.base_unit || 'piece', multiplier_to_base: 1 }];
         const lastCost = (data && (data.default_cost != null || data.default_cost_per_base != null)) ? (data.default_cost ?? data.default_cost_per_base) : 0;
         const unitOptions = units.map(u => `<option value="${escapeHtml(u.unit_name)}">${escapeHtml(u.unit_name)}</option>`).join('');
-        const currentStockDisplay = (data && data.stock_display) ? String(data.stock_display) : (data && data.current_stock != null ? String(data.current_stock) + ' ' + (data.base_unit || '') : '—');
+        // stock_display preferred; else base_quantity + retail_unit. Never use base_unit (wholesale) for numeric stock.
+        const currentStockDisplay = (data && data.stock_display) ? String(data.stock_display) : (data && (data.current_stock != null || data.base_quantity != null) ? String(data.base_quantity != null ? data.base_quantity : data.current_stock) + ' ' + (data.retail_unit || 'piece') : '—');
 
         const content = `
             <div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-secondary, #f5f5f5); border-radius: 6px;">
@@ -1651,7 +1652,7 @@ function setupManualAdjustmentsHandlers() {
                     dropdownEl.innerHTML = '<div style="padding: 8px;">Search not available.</div>';
                     return;
                 }
-                API.items.search(q, companyId, 20, branchIdRaw, true).then(function (items) {
+                API.items.search(q, companyId, 50, branchIdRaw, true).then(function (items) {
                     var list = Array.isArray(items) ? items : [];
                     if (!list.length) {
                         dropdownEl.innerHTML = '<div style="padding: 8px;">No items found. Type at least 2 characters.</div>';
@@ -1662,8 +1663,8 @@ function setupManualAdjustmentsHandlers() {
                             var sku = (it.sku || '').trim();
                             var safeName = String(name).replace(/"/g, '&quot;');
                             var safeSku = String(sku).replace(/"/g, '&quot;');
-                            var stockNum = it.current_stock != null ? it.current_stock : (it.stock != null ? Number(it.stock) : null);
-                            var stockDisplay = it.stock_display != null ? String(it.stock_display) : (stockNum != null ? stockNum + ' ' + (it.base_unit || '') : '—');
+                            var stockNum = it.base_quantity != null ? it.base_quantity : (it.current_stock != null ? it.current_stock : (it.stock != null ? Number(it.stock) : null));
+                            var stockDisplay = it.stock_display != null ? String(it.stock_display) : (stockNum != null ? stockNum + ' ' + (it.retail_unit || 'piece') : '—');
                             var priceDisplay = '—';
                             var costDisplay = '—';
                             if (it.pricing_3tier) {
@@ -1693,7 +1694,7 @@ function setupManualAdjustmentsHandlers() {
                 }).catch(function () {
                     dropdownEl.innerHTML = '<div style="padding: 8px; color: var(--danger-color);">Search failed.</div>';
                 });
-            }, 300);
+            }, 60);
         });
         searchInput.addEventListener('blur', function () {
             setTimeout(function () { dropdownEl.style.display = 'none'; }, 200);
@@ -1945,7 +1946,7 @@ async function runCurrentStockValuation(overrideBranchId) {
                     valuation: (res && res.valuation) ? res.valuation : 'last_cost'
                 };
                 var tableRows = rows.map(function (row) {
-                    return '<tr><td>' + escapeHtml(row.item_name || '—') + '</td><td>' + escapeHtml(row.stock_display || (formatNumber(row.stock) + ' ' + (row.base_unit || ''))) + '</td><td style="text-align: right;">' + formatNumber(row.unit_cost) + '</td><td style="text-align: right;">' + formatNumber(row.value) + '</td></tr>';
+                    return '<tr><td>' + escapeHtml(row.item_name || '—') + '</td><td>' + escapeHtml(row.stock_display || (formatNumber(row.stock) + ' ' + (row.retail_unit || 'piece'))) + '</td><td style="text-align: right;">' + formatNumber(row.unit_cost) + '</td><td style="text-align: right;">' + formatNumber(row.value) + '</td></tr>';
                 }).join('');
                 container.innerHTML =
                     '<div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">' +
@@ -1977,7 +1978,7 @@ async function runCurrentStockValuation(overrideBranchId) {
                 container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No stock on hand at this branch.</p>';
             } else {
                 var simpleRows = list.map(function (row) {
-                    return '<tr><td>' + escapeHtml(row.item_name || '—') + '</td><td style="text-align: right;">' + formatNumber(row.stock) + ' ' + escapeHtml(row.base_unit || '') + '</td></tr>';
+                    return '<tr><td>' + escapeHtml(row.item_name || '—') + '</td><td style="text-align: right;">' + formatNumber(row.stock) + ' ' + escapeHtml(row.retail_unit || 'piece') + '</td></tr>';
                 }).join('');
                 container.innerHTML =
                     '<div class="table-container" style="max-height: 60vh; overflow-y: auto;">' +
@@ -2015,7 +2016,7 @@ function exportCurrentStockCsv() {
     };
     var headers = ['Item', 'Stock', 'Unit cost', 'Value'];
     var rows = lastCurrentStockValuation.rows.map(function (r) {
-        var stockD = (r.stock_display != null) ? r.stock_display : (formatNumber(r.stock) + ' ' + (r.base_unit || ''));
+        var stockD = (r.stock_display != null) ? r.stock_display : (formatNumber(r.stock) + ' ' + (r.retail_unit || 'piece'));
         return [r.item_name || '—', stockD, r.unit_cost, r.value].map(escapeCsv).join(',');
     });
     var csv = [headers.map(escapeCsv).join(','), rows.join('\n')].join('\n');
@@ -2041,7 +2042,7 @@ function exportCurrentStockExcel() {
     };
     var headers = ['Item', 'Stock', 'Unit cost', 'Value'];
     var rows = lastCurrentStockValuation.rows.map(function (r) {
-        var stockD = (r.stock_display != null) ? r.stock_display : (formatNumber(r.stock) + ' ' + (r.base_unit || ''));
+        var stockD = (r.stock_display != null) ? r.stock_display : (formatNumber(r.stock) + ' ' + (r.retail_unit || 'piece'));
         return [r.item_name || '—', stockD, r.unit_cost, r.value].map(escapeCsv).join(',');
     });
     var csv = '\uFEFF' + [headers.map(escapeCsv).join(','), rows.join('\n')].join('\n');

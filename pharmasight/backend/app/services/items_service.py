@@ -87,6 +87,23 @@ def create_item(db: Session, data: ItemCreate) -> Item:
     if data.can_break_bulk and data.pack_size < 2:
         raise ValueError("Breakable items must have pack_size > 1")
 
+    # Single unit name when pack_size=1: adopt retail_unit everywhere (wholesale = retail)
+    if data.pack_size == 1:
+        single_name = (data.retail_unit or data.wholesale_unit or "piece").strip() or "piece"
+        single_name = _sanitize_base_unit(single_name, "piece")
+        dump = data.model_dump(exclude={"units", "company_id"}) if hasattr(data, "model_dump") else data.dict(exclude={"units", "company_id"})
+        dump["wholesale_unit"] = single_name
+        dump["retail_unit"] = single_name
+        if (data.wholesale_units_per_supplier or 1) <= 1:
+            dump["supplier_unit"] = single_name
+        elif (data.supplier_unit or "").strip().lower() == single_name.lower():
+            raise ValueError("When wholesale_units_per_supplier > 1, supplier unit name must differ from wholesale/retail (e.g. 'case' vs 'tube')")
+    else:
+        dump = data.model_dump(exclude={"units", "company_id"}) if hasattr(data, "model_dump") else data.dict(exclude={"units", "company_id"})
+        if data.can_break_bulk and (data.retail_unit or "").strip().lower() == (data.wholesale_unit or "").strip().lower():
+            raise ValueError("When can break bulk and pack_size > 1, retail unit and wholesale unit must have different names (e.g. tablet vs packet)")
+
+    dump["company_id"] = data.company_id
     name_normalized = (data.name or "").strip()
     if name_normalized:
         existing = (
@@ -99,9 +116,6 @@ def create_item(db: Session, data: ItemCreate) -> Item:
         )
         if existing:
             raise DuplicateItemNameError(name=name_normalized, company_id=data.company_id)
-
-    dump = data.model_dump(exclude={"units", "company_id"}) if hasattr(data, "model_dump") else data.dict(exclude={"units", "company_id"})
-    dump["company_id"] = data.company_id
 
     if not dump.get("sku") or (isinstance(dump.get("sku"), str) and not dump["sku"].strip()):
         sku = _generate_sku(data.company_id, db)
@@ -143,9 +157,34 @@ def update_item(db: Session, item_id: UUID, data: ItemUpdate) -> Item | None:
         if dump["can_break_bulk"] and dump["pack_size"] < 2:
             raise ValueError("Breakable items must have pack_size > 1")
 
+    # Resolve effective pack_size and wholesale_units_per_supplier for unit rules
+    pack_size = dump.get("pack_size", getattr(item, "pack_size", 1)) or 1
+    wups = dump.get("wholesale_units_per_supplier", getattr(item, "wholesale_units_per_supplier", 1)) or 1
+    try:
+        wups = float(wups)
+    except (TypeError, ValueError):
+        wups = 1
+
+    # Single unit name when pack_size=1: adopt one name everywhere (wholesale = retail)
+    if pack_size == 1:
+        single_name = (dump.get("retail_unit") or dump.get("wholesale_unit") or item.retail_unit or item.wholesale_unit or "piece")
+        single_name = _sanitize_base_unit(single_name, "piece")
+        dump["wholesale_unit"] = single_name
+        dump["retail_unit"] = single_name
+        if wups <= 1:
+            dump["supplier_unit"] = single_name
+        elif (dump.get("supplier_unit") or getattr(item, "supplier_unit", "") or "").strip().lower() == single_name.lower():
+            raise ValueError("When wholesale_units_per_supplier > 1, supplier unit name must differ from wholesale/retail (e.g. 'case' vs 'tube')")
+    else:
+        # Break bulk: enforce different retail vs wholesale names
+        retail = (dump.get("retail_unit") or getattr(item, "retail_unit", "") or "").strip().lower()
+        wholesale = (dump.get("wholesale_unit") or getattr(item, "wholesale_unit", "") or "").strip().lower()
+        if dump.get("can_break_bulk", getattr(item, "can_break_bulk", False)) and retail == wholesale:
+            raise ValueError("When can break bulk and pack_size > 1, retail unit and wholesale unit must have different names (e.g. tablet vs packet)")
+
     # Never persist a number as unit names
     if "base_unit" in dump:
-        dump["base_unit"] = _sanitize_base_unit(dump["base_unit"], item.wholesale_unit or "piece")
+        dump["base_unit"] = _sanitize_base_unit(dump["base_unit"], dump.get("wholesale_unit") or item.wholesale_unit or "piece")
     if "wholesale_unit" in dump:
         dump["wholesale_unit"] = _sanitize_base_unit(dump["wholesale_unit"], "piece")
     if "retail_unit" in dump:

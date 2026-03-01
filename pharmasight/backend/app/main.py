@@ -2,9 +2,11 @@
 PharmaSight - Main FastAPI Application
 """
 import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +14,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.config import settings
+
+
+class RequestTimingMiddleware(BaseHTTPMiddleware):
+    """Set request.state._req_start_time at entry so routes can report full request duration (e.g. /api/items/search)."""
+
+    async def dispatch(self, request: Request, call_next):
+        request.state._req_start_time = time.perf_counter()
+        return await call_next(request)
 
 # Frontend directory (pharmasight/frontend, relative to backend/app)
 _BACKEND_APP = Path(__file__).resolve().parent
@@ -34,7 +44,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Server-Timing", "X-Search-Path"],
 )
+app.add_middleware(RequestTimingMiddleware)
 
 
 @app.get("/health")

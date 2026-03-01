@@ -4,7 +4,7 @@ Precomputed inventory_balances, item_branch_purchase_snapshot, item_branch_searc
 Updated in same transaction as ledger writes.
 """
 import uuid
-from sqlalchemy import Column, Date, Numeric, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Date, Integer, Numeric, String, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -64,3 +64,56 @@ class ItemBranchSearchSnapshot(Base):
         {"comment": "Precomputed last order/sale/order_book. Updated from PO, Sales, OrderBook writes."},
     )
     __mapper_args__ = {"eager_defaults": True}
+
+
+class ItemBranchSnapshot(Base):
+    """
+    Item search snapshot: one row per (item_id, branch_id). Updated in same transaction as
+    ledger (GRN, sale, adjustment, pricing, item edit). Used for single-SELECT item search
+    across the app (sales, quotations, inventory, suppliers, etc.).
+    """
+    __tablename__ = "item_branch_snapshot"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    pack_size = Column(Integer, nullable=False, default=1)
+    base_unit = Column(String(50), nullable=True)
+    sku = Column(String(100), nullable=True)
+    vat_rate = Column(Numeric(5, 2), nullable=True)
+    vat_category = Column(String(20), nullable=True)
+    current_stock = Column(Numeric(20, 4), nullable=False, default=0)
+    average_cost = Column(Numeric(20, 4), nullable=True)
+    last_purchase_price = Column(Numeric(20, 4), nullable=True)
+    selling_price = Column(Numeric(20, 4), nullable=True)
+    margin_percent = Column(Numeric(10, 2), nullable=True)
+    next_expiry_date = Column(Date, nullable=True)
+    search_text = Column(String, nullable=False, default="")
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("item_id", "branch_id", name="item_branch_snapshot_item_id_branch_id_key"),
+        {"comment": "Item search snapshot. Single-SELECT when branch_id provided."},
+    )
+    __mapper_args__ = {"eager_defaults": True}
+
+
+class SnapshotRefreshQueue(Base):
+    """
+    Deduplicated queue for bulk POS snapshot refresh. Processed in background.
+    item_id NULL = refresh all items in branch; otherwise refresh that (item_id, branch_id).
+    claimed_at: set when worker starts branch-wide job so chunked commits can release lock.
+    reason: optional debug label (e.g. company_margin_change, promotion_update).
+    """
+    __tablename__ = "snapshot_refresh_queue"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE"), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    processed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    claimed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    reason = Column(String(255), nullable=True)

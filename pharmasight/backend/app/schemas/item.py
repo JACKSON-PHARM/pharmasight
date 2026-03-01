@@ -3,10 +3,31 @@ Item schemas for request/response validation.
 3-tier UNIT system: supplier_unit (what we buy), wholesale_unit (what pharmacies buy),
 retail_unit (what customers buy), pack_size (retail units per packet).
 """
+from decimal import Decimal
 from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
 from datetime import datetime, date
 from uuid import UUID
+
+
+class ItemSearchDTO(BaseModel):
+    """
+    Lightweight DTO for POS-level item search. No joins, no pricing/cost logic.
+    selling_price and total_stock are precomputed or 0 when using fast path without cache table.
+    """
+    id: UUID
+    name: str
+    strength: Optional[str] = None
+    pack_size: int = 1
+    selling_price: float = 0.0
+    total_stock: float = 0.0
+    # Optional fields from same row for backward compatibility (no extra query)
+    base_unit: Optional[str] = None
+    sku: Optional[str] = None
+    vat_rate: Optional[float] = None
+    vat_category: Optional[str] = None
+    current_stock: Optional[float] = None  # alias for total_stock when branch scoped
+    stock_display: Optional[str] = None
 
 
 class ItemUnitBase(BaseModel):
@@ -135,7 +156,8 @@ class ItemResponse(ItemBase):
     default_cost_per_base: Optional[float] = Field(None, description="Fallback cost per base unit when no ledger data")
     default_supplier_id: Optional[UUID] = Field(None, description="Fallback supplier ID when no purchase history")
     stock_display: Optional[str] = Field(None, description="3-tier stock string when branch_id provided (e.g. '2 packet (200 tablet)')")
-    current_stock: Optional[float] = Field(None, description="Current stock in base units when branch_id provided")
+    current_stock: Optional[float] = Field(None, description="Current stock in base units when branch_id provided (backward compat)")
+    base_quantity: Optional[float] = Field(None, description="Numeric stock in retail/base units. Use retail_unit for labeling.")
     has_transactions: Optional[bool] = Field(False, description="True if item has sales, purchases, or non–opening-balance ledger (locks unit fields)")
     floor_price_retail: Optional[float] = Field(None, description="Minimum allowed selling price (retail)")
     promo_price_retail: Optional[float] = Field(None, description="Temporary promo price (retail)")
@@ -256,6 +278,8 @@ class AdjustStockResponse(BaseModel):
     previous_stock: float = Field(..., description="Stock in base units before this adjustment")
     new_stock: float = Field(..., description="New total stock in base units after adjustment")
     new_stock_display: Optional[str] = Field(None, description="New stock in 3-tier form e.g. '1 packet + 1 sachet'")
+    base_quantity: Optional[float] = Field(None, description="Numeric stock in retail units (same as new_stock)")
+    retail_unit: Optional[str] = Field(None, description="Retail unit name for labeling base_quantity")
 
 
 # --- Inventory corrections (audit trail, no mutation of sales/FEFO) ---

@@ -2207,10 +2207,13 @@
             const stocks = res && res.stocks ? res.stocks : {};
             for (const [id, data] of Object.entries(stocks)) {
                 const rowIndex = rowByItemId[id];
-                if (rowIndex !== undefined && data && (data.stock_display != null || data.current_stock != null)) {
+                if (rowIndex !== undefined && data && (data.stock_display != null || data.current_stock != null || data.base_quantity != null)) {
                     const it = this.items[rowIndex];
                     if (data.stock_display != null) it.stock_display = data.stock_display;
-                    if (data.current_stock != null) it.available_stock = data.current_stock;
+                    var qty = data.base_quantity != null ? data.base_quantity : data.current_stock;
+                    if (qty != null) it.available_stock = qty;
+                    if (data.retail_unit != null) it.retail_unit = data.retail_unit;
+                    if (data.base_quantity != null) it.base_quantity = data.base_quantity;
                     this.updateRowDisplay(rowIndex);
                 }
             }

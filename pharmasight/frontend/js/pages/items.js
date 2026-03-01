@@ -274,7 +274,7 @@ async function filterItems() {
         `;
     }
     
-    // Debounce search (300ms)
+    // Debounce search (60ms — minimal delay so request fires quickly after typing)
     itemsSearchTimeout = setTimeout(async () => {
         isSearching = true;
         
@@ -285,7 +285,7 @@ async function filterItems() {
             let searchResults = null;
             
             if (cache) {
-                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, branchId, 20);
+                searchResults = cache.get(searchTerm, CONFIG.COMPANY_ID, branchId, 50);
                 // If we have a branch but cached results have no stock, refetch (avoid stale cache from before branch was set)
                 if (searchResults && branchId && searchResults.length > 0) {
                     const hasNoStock = searchResults.every(it => (it.current_stock == null && !it.stock_display));
@@ -308,7 +308,7 @@ async function filterItems() {
                 
                 try {
                     // Search with branch_id for stock (same as Sales); include_pricing=true for last_supplier and costs
-                    searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 20, branchId, true);
+                    searchResults = await API.items.search(searchTerm, CONFIG.COMPANY_ID, 50, branchId, true);
                 } catch (apiError) {
                     console.error('Search API error:', apiError);
                     // Check if it's a 422 validation error
@@ -329,7 +329,7 @@ async function filterItems() {
                 
                 // Cache the results (keyed by same branch so cache matches stock context)
                 if (cache && searchResults) {
-                    cache.set(searchTerm, CONFIG.COMPANY_ID, branchId, 20, searchResults);
+                    cache.set(searchTerm, CONFIG.COMPANY_ID, branchId, 50, searchResults);
                 }
             }
             
@@ -348,7 +348,7 @@ async function filterItems() {
         } finally {
             isSearching = false;
         }
-    }, 300);
+    }, 60);
 }
 
 function renderItemsTable() {
@@ -2235,8 +2235,9 @@ async function showItemFullDetailsModal(itemId) {
 
     const sessionBranch = stock.session_branch || {};
     const otherBranches = stock.other_branches || [];
-    const sessionRow = `<tr><td>${escapeHtml(sessionBranch.branch_name || 'Current branch')}</td><td>${escapeHtml(sessionBranch.code || '')}</td><td><strong>${sessionBranch.stock != null ? sessionBranch.stock : '—'}</strong> ${escapeHtml(item.base_unit || '')}</td></tr>`;
-    const otherRows = otherBranches.map(b => `<tr><td>${escapeHtml(b.branch_name)}</td><td>${escapeHtml(b.code)}</td><td>${b.stock != null ? b.stock : '—'} ${escapeHtml(item.base_unit || '')}</td></tr>`).join('');
+    const retailUnit = item.retail_unit || 'piece';
+    const sessionRow = `<tr><td>${escapeHtml(sessionBranch.branch_name || 'Current branch')}</td><td>${escapeHtml(sessionBranch.code || '')}</td><td><strong>${sessionBranch.stock != null ? sessionBranch.stock : '—'}</strong> ${escapeHtml(retailUnit)}</td></tr>`;
+    const otherRows = otherBranches.map(b => `<tr><td>${escapeHtml(b.branch_name)}</td><td>${escapeHtml(b.code)}</td><td>${b.stock != null ? b.stock : '—'} ${escapeHtml(retailUnit)}</td></tr>`).join('');
     const stockHtml = `
         <div class="form-section-title" style="margin-bottom: 0.5rem;"><i class="fas fa-warehouse"></i> Stock</div>
         <table class="table" style="width: 100%; font-size: 0.9rem;">

@@ -34,6 +34,7 @@ from app.services.document_service import DocumentService
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
 from app.services.snapshot_service import SnapshotService
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
@@ -1343,6 +1344,8 @@ def batch_sales_invoice(
             SnapshotService.upsert_search_snapshot_last_sale(
                 db, invoice.company_id, invoice.branch_id, inv_item.item_id, invoice.invoice_date
             )
+        for entry in ledger_entries:
+            SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
 
         db.commit()
     except HTTPException:

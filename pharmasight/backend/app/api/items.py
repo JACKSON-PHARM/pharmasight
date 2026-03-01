@@ -7,7 +7,7 @@ X-Tenant-Subdomain is set, else default DB). Same company/DB as rest of app.
 import logging
 import time
 from datetime import datetime, timezone, timedelta, date
-from fastapi import APIRouter, Body, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc, text
@@ -19,10 +19,12 @@ from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
     InventoryLedger, InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot,
+    ItemBranchSnapshot,
     SupplierInvoice, SupplierInvoiceItem, Supplier,
     PurchaseOrder, PurchaseOrderItem, Branch,
     UserRole, UserBranchRole, ItemMovement,
 )
+from app.models.settings import CompanySetting
 from app.models.permission import Permission, RolePermission
 from app.models.sale import SalesInvoice, SalesInvoiceItem
 from app.schemas.item import (
@@ -39,9 +41,12 @@ from app.services.pricing_service import PricingService
 from app.services.items_service import create_item as svc_create_item, DuplicateItemNameError
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.inventory_service import InventoryService, _unit_for_display
+from app.services.item_units_helper import get_stock_display_unit
 from app.services.excel_import_service import ExcelImportService
 from app.services.snapshot_service import SnapshotService
 from app.services.order_book_service import OrderBookService
+from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.item_search_service import ItemSearchService
 from app.utils.vat import vat_rate_to_percent
 from app.schemas.reports import ItemBatchesResponse
 from app.services.item_movement_report_service import get_item_batches
@@ -52,6 +57,83 @@ router = APIRouter()
 
 # Roles allowed to perform manual stock adjustment (add/reduce)
 ADJUST_STOCK_ALLOWED_ROLES = {"admin", "pharmacist", "auditor", "super admin"}
+
+# Company setting key for POS snapshot search (default False = use heavy search)
+POS_SNAPSHOT_SETTING_KEY = "pos_snapshot_enabled"
+
+
+def _is_pos_snapshot_enabled(db: Session, company_id: UUID) -> bool:
+    """True if company has pos_snapshot_enabled = true. Default False."""
+    row = db.query(CompanySetting).filter(
+        CompanySetting.company_id == company_id,
+        CompanySetting.setting_key == POS_SNAPSHOT_SETTING_KEY,
+    ).first()
+    if not row or not row.setting_value:
+        return False
+    return str(row.setting_value).strip().lower() in ("true", "1", "yes")
+
+
+def _log_snapshot_validation(
+    db: Session,
+    company_id: UUID,
+    branch_id: UUID,
+    snapshot_results: List[Dict],
+    limit: int,
+    include_pricing: bool,
+    context: Optional[str],
+) -> None:
+    """
+    Validation mode: compare snapshot result values vs heavy-path computed values.
+    Log mismatches only; do not return both to client.
+    """
+    if not snapshot_results:
+        return
+    item_ids = [UUID(r["id"]) for r in snapshot_results]
+    # Get heavy-path values: stock from inventory_balances, cost from snapshot + fallback, sale from pricing
+    stock_rows = (
+        db.query(InventoryBalance.item_id, InventoryBalance.current_stock)
+        .filter(
+            InventoryBalance.item_id.in_(item_ids),
+            InventoryBalance.company_id == company_id,
+            InventoryBalance.branch_id == branch_id,
+        )
+        .all()
+    )
+    heavy_stock = {r.item_id: int(float(r.current_stock or 0)) for r in stock_rows}
+    cost_rows = (
+        db.query(ItemBranchPurchaseSnapshot.item_id, ItemBranchPurchaseSnapshot.last_purchase_price)
+        .filter(
+            ItemBranchPurchaseSnapshot.item_id.in_(item_ids),
+            ItemBranchPurchaseSnapshot.company_id == company_id,
+            ItemBranchPurchaseSnapshot.branch_id == branch_id,
+        )
+        .all()
+    )
+    heavy_cost = {r.item_id: float(r.last_purchase_price or 0) for r in cost_rows}
+    default_cost_rows = (
+        db.query(Item.id, Item.default_cost_per_base)
+        .filter(Item.id.in_(item_ids), Item.company_id == company_id)
+        .all()
+    )
+    for r in default_cost_rows:
+        if r.id not in heavy_cost or heavy_cost[r.id] == 0:
+            heavy_cost[r.id] = float(r.default_cost_per_base or 0)
+    for r in snapshot_results:
+        iid = UUID(r["id"])
+        snap_stock = r.get("current_stock")
+        heavy_s = heavy_stock.get(iid, 0)
+        if snap_stock != heavy_s:
+            logger.info(
+                "[search] validate_snapshot mismatch item_id=%s current_stock snapshot=%s heavy=%s",
+                iid, snap_stock, heavy_s,
+            )
+        snap_price = r.get("price") or r.get("purchase_price")
+        heavy_c = heavy_cost.get(iid, 0)
+        if snap_price is not None and heavy_c is not None and abs(float(snap_price) - heavy_c) > 0.001:
+            logger.info(
+                "[search] validate_snapshot mismatch item_id=%s cost snapshot=%s heavy=%s",
+                iid, snap_price, heavy_c,
+            )
 
 
 def _get_user_role(user_id: UUID, branch_id: UUID, db: Session) -> Optional[str]:
@@ -225,7 +307,9 @@ def stock_batch(
 ):
     """
     Batch fetch stock for multiple items. Uses inventory_balances (snapshot) for fast lookup.
-    Returns stocks[item_id] = {current_stock, stock_display} for each item.
+    Returns stocks[item_id] = {base_quantity, retail_unit, stock_display} for each item.
+    Numeric stock is ALWAYS retail/base quantity. stock_display shows multi-tier breakdown for UX.
+    Do NOT use item.base_unit as label for numeric stock.
     """
     if not body.item_ids:
         return {"stocks": {}}
@@ -251,360 +335,52 @@ def stock_batch(
         qty = float(stock_map.get(iid, 0) or 0)
         item_obj = items_map.get(iid)
         stock_display = InventoryService.format_quantity_display(qty, item_obj) if item_obj else str(int(qty))
-        result[str(iid)] = {"current_stock": int(qty), "stock_display": stock_display}
+        retail_unit = _unit_for_display(get_stock_display_unit(item_obj), "piece") if item_obj else "piece"
+        result[str(iid)] = {
+            "base_quantity": qty,
+            "current_stock": qty,  # backward compat
+            "retail_unit": retail_unit,
+            "stock_display": stock_display,
+        }
     return {"stocks": result}
 
 
 @router.get("/search")
 def search_items(
+    request: Request,
     q: str = Query(..., min_length=2, description="Search query"),
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: Optional[UUID] = Query(None, description="Branch ID for pricing and stock (optional)"),
     limit: int = Query(50, ge=1, le=100, description="Maximum results"),
     include_pricing: bool = Query(False, description="Include pricing info (slower)"),
+    fast: bool = Query(False, description="Deprecated; ignored. Response shape is always canonical."),
     context: Optional[str] = Query(None, description="Context: 'purchase_order' for PO-specific fields"),
+    validate_snapshot: bool = Query(False, description="Log snapshot vs heavy search values (debug); no client change"),
     current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
 ):
     """
-    Item search: reads only from DB (items table). Joins with inventory_ledger for
-    stock and cost; if no ledger data, falls back to item default_cost_per_base.
-    Excel import only seeds the DB; this endpoint never uses Excel.
-    Returns: id, name, base_unit, prices, sku, stock, VAT info. Ordered by
-    best match then in-stock first when branch_id given.
+    Item search: single service path. Snapshot (item_branch_snapshot) is primary when branch_id is set;
+    heavy path is fallback only on exception or missing branch_id. Same response shape for both.
+    Returns: id, name, base_unit, prices, sku, stock, VAT, margin_percent, next_expiry_date.
+    Uses db from get_current_user to avoid a second tenant DB connection (get_tenant_db).
     """
-    t_start = time.perf_counter()
-    steps: List[tuple] = []  # (name, dur_ms) for Server-Timing header
-
-    search_term_lower = q.lower()
-    search_term_pattern = f"%{search_term_lower}%"
-    search_term_start = f"{search_term_lower}%"
-    
-    # OPTIMIZED: Use database-level ORDER BY and LIMIT for much better performance
-    # Calculate relevance score in SQL using CASE statements
-    from sqlalchemy import case
-    
-    # Build relevance score: name matches get highest priority, then SKU, then barcode (label so row.relevance_score works)
-    relevance_score = case(
-        (func.lower(Item.name).like(search_term_start), 1000),  # Name starts with (highest priority)
-        (func.lower(Item.name).like(search_term_pattern), 500),  # Name contains
-        (and_(Item.sku.isnot(None), func.lower(Item.sku).like(search_term_start)), 100),  # SKU starts with
-        (and_(Item.sku.isnot(None), func.lower(Item.sku).like(search_term_pattern)), 50),  # SKU contains
-        (and_(Item.barcode.isnot(None), func.lower(Item.barcode).like(search_term_start)), 100),  # Barcode starts with
-        (and_(Item.barcode.isnot(None), func.lower(Item.barcode).like(search_term_pattern)), 50),  # Barcode contains
-        else_=0
-    ).label("relevance_score")
-
-    # Combined search expression: must match idx_items_search_combined_gin (migration 045) for one fast GIN scan
-    search_combined = func.concat(
-        func.lower(func.coalesce(Item.name, "")),
-        " ",
-        func.lower(func.coalesce(Item.sku, "")),
-        " ",
-        func.lower(func.coalesce(Item.barcode, "")),
+    _user, db = current_user_and_db
+    result, path, server_timing = ItemSearchService.search(
+        db, q, company_id, branch_id, limit, include_pricing, context
     )
-
-    # Build base query: items from DB only (no Excel). Single GIN index scan on search_combined.
-    base_query = db.query(
-        Item.id,
-        Item.name,
-        Item.base_unit,
-        Item.sku,
-        Item.category,
-        Item.is_active,
-        Item.vat_rate,
-        Item.vat_category,
-        relevance_score,
-    ).filter(
-        Item.company_id == company_id,
-        Item.is_active == True,
-        search_combined.ilike(search_term_pattern),
-    )
-    
-    # OPTIMIZED: Order and limit at database level for maximum performance
-    # Order by relevance (best match first), then alphabetically
-    items = base_query.order_by(
-        relevance_score.desc(),
-        func.lower(Item.name).asc()
-    ).limit(limit).all()
-    t_base_search = time.perf_counter()
-    logger.info(f"[search] base_query: {(t_base_search - t_start) * 1000:.2f} ms (q={q}, results={len(items) if items else 0})")
-
-    if not items:
-        return []
-
-    steps.append(("1_base_query", round((t_base_search - t_start) * 1000, 2)))
-    item_ids = [item.id for item in items]
-
-    # Get stock from inventory_balances (snapshot - fast O(1) per item)
-    stock_map = {}
-    if branch_id:
-        stock_data = (
-            db.query(InventoryBalance.item_id, InventoryBalance.current_stock)
-            .filter(
-                InventoryBalance.item_id.in_(item_ids),
-                InventoryBalance.company_id == company_id,
-                InventoryBalance.branch_id == branch_id
-            )
-            .all()
-        )
-        stock_map = {row.item_id: int(float(row.current_stock) or 0) for row in stock_data}
-        # Order: in-stock first, then best match (relevance), then name
-        items = sorted(
-            items,
-            key=lambda r: (
-                0 if stock_map.get(r.id, 0) > 0 else 1,
-                -(getattr(r, "relevance_score", 0) or 0),
-                (r.name or "").lower(),
-            ),
-        )
-    t_stock = time.perf_counter()
-    logger.info(f"[search] stock_resolution: {(t_stock - t_base_search) * 1000:.2f} ms")
-    steps.append(("2_stock", round((t_stock - t_base_search) * 1000, 2)))
-
-    # OPTIMIZED: Only fetch purchase/order info if pricing is requested
-    purchase_price_map = {}
-    last_supplier_map = {}
-    last_order_date_map = {}
-    sale_price_map = {}
-    last_supply_date_map = {}
-    last_unit_cost_ledger_map = {}
-    cheapest_supplier_map = {}
-
-    t_pricing_start = time.perf_counter()
-    last_purchases = []  # For purchase_order context when branch_id set
-    if include_pricing:
-        if branch_id:
-            # One combined query: purchase snapshot + last_order_date (saves one round-trip vs two separate)
-            try:
-                rows = db.execute(
-                    text("""
-                    SELECT ids.item_id,
-                           p.last_purchase_price, p.last_supplier_id, p.last_purchase_date,
-                           s.last_order_date
-                    FROM unnest(CAST(:item_ids AS uuid[])) AS ids(item_id)
-                    LEFT JOIN item_branch_purchase_snapshot p
-                      ON p.item_id = ids.item_id AND p.branch_id = :branch_id AND p.company_id = :company_id
-                    LEFT JOIN item_branch_search_snapshot s
-                      ON s.item_id = ids.item_id AND s.branch_id = :branch_id AND s.company_id = :company_id
-                    """),
-                    {"item_ids": item_ids, "branch_id": branch_id, "company_id": company_id},
-                ).fetchall()
-                # Build last_purchases-like list (rows with purchase data) and last_order_date_map (all rows)
-                last_purchases = []
-                for row in rows:
-                    item_id = row[0]
-                    if row[1] is not None or row[2] is not None or row[3] is not None:
-                        last_purchases.append(SimpleNamespace(
-                            item_id=item_id,
-                            last_purchase_price=row[1],
-                            last_supplier_id=row[2],
-                            last_purchase_date=row[3],
-                        ))
-                    last_order_date_map[item_id] = row[4].isoformat() if row[4] else None
-            except Exception as e:
-                logger.warning("[search] combined snapshot query failed, falling back to two queries: %s", e)
-                last_purchases = (
-                    db.query(
-                        ItemBranchPurchaseSnapshot.item_id,
-                        ItemBranchPurchaseSnapshot.last_purchase_price,
-                        ItemBranchPurchaseSnapshot.last_supplier_id,
-                        ItemBranchPurchaseSnapshot.last_purchase_date,
-                    )
-                    .filter(
-                        ItemBranchPurchaseSnapshot.item_id.in_(item_ids),
-                        ItemBranchPurchaseSnapshot.company_id == company_id,
-                        ItemBranchPurchaseSnapshot.branch_id == branch_id,
-                    )
-                    .all()
-                )
-                last_order_rows = (
-                    db.query(ItemBranchSearchSnapshot.item_id, ItemBranchSearchSnapshot.last_order_date)
-                    .filter(
-                        ItemBranchSearchSnapshot.item_id.in_(item_ids),
-                        ItemBranchSearchSnapshot.company_id == company_id,
-                        ItemBranchSearchSnapshot.branch_id == branch_id,
-                    )
-                    .all()
-                )
-                last_order_date_map = {
-                    row.item_id: row.last_order_date.isoformat() if row.last_order_date else None
-                    for row in last_order_rows
-                }
-
-            purchase_price_map = {
-                row.item_id: float(row.last_purchase_price) if row.last_purchase_price else 0.0
-                for row in last_purchases
-            }
-            # Collect all supplier IDs we need, then one Supplier query (saves 2 round-trips)
-            supplier_ids = {row.last_supplier_id for row in last_purchases if row.last_supplier_id}
-            ids_without_supplier = [i for i in item_ids if i not in {row.item_id for row in last_purchases if row.last_supplier_id}]
-            default_rows = []
-            if ids_without_supplier:
-                default_rows = db.query(Item.id, Item.default_supplier_id).filter(
-                    Item.id.in_(ids_without_supplier),
-                    Item.default_supplier_id.isnot(None)
-                ).all()
-            default_supplier_ids = {r.default_supplier_id for r in default_rows if r.default_supplier_id}
-            cheapest_supplier_ids = {}
-            if context == 'purchase_order':
-                cheapest_supplier_ids = OrderBookService.get_cheapest_supplier_ids_batch(db, item_ids, company_id)
-                supplier_ids |= {sid for sid in cheapest_supplier_ids.values() if sid is not None}
-            supplier_ids |= default_supplier_ids
-            if supplier_ids:
-                suppliers = {s.id: s.name for s in db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()}
-                last_supplier_map = {row.item_id: suppliers.get(row.last_supplier_id, '') for row in last_purchases if row.last_supplier_id}
-                for r in default_rows:
-                    if r.default_supplier_id:
-                        last_supplier_map[r.id] = suppliers.get(r.default_supplier_id, '')
-                if context == 'purchase_order':
-                    cheapest_supplier_map.update({
-                        iid: suppliers.get(sid, '')
-                        for iid, sid in cheapest_supplier_ids.items()
-                        if sid is not None
-                    })
-
-        # For Purchase Order context, get additional fields from item_branch_purchase_snapshot
-        last_supply_date_map = {}
-        last_unit_cost_ledger_map = {}
-        if context == 'purchase_order' and branch_id:
-            # Use same snapshot as purchase_price - last_purchase_date = last supply, last_purchase_price = unit cost
-            for row in last_purchases:
-                last_supply_date_map[row.item_id] = row.last_purchase_date.isoformat() if row.last_purchase_date else None
-                last_unit_cost_ledger_map[row.item_id] = float(row.last_purchase_price) if row.last_purchase_price else 0.0
-        
-        # sale_price: computed later from cost + category margin (after cost_from_ledger_map is built)
-        for item in items:
-            sale_price_map[item.id] = 0.0
-    t_after_pricing = time.perf_counter()
-    logger.info(f"[search] pricing_resolution_total: {(t_after_pricing - t_pricing_start) * 1000:.2f} ms (include_pricing={include_pricing})")
-    steps.append(("3_pricing", round((t_after_pricing - t_pricing_start) * 1000, 2)))
-
-    # Best available cost: use snapshot first (fast). For items without snapshot use Item.default_cost_per_base
-    # to avoid slow ledger scans (get_best_available_cost_batch) and keep search under ~500ms.
-    cost_from_ledger_map = {}
-    if branch_id:
-        snapshot_costs = (
-            db.query(ItemBranchPurchaseSnapshot.item_id, ItemBranchPurchaseSnapshot.last_purchase_price)
-            .filter(
-                ItemBranchPurchaseSnapshot.item_id.in_(item_ids),
-                ItemBranchPurchaseSnapshot.company_id == company_id,
-                ItemBranchPurchaseSnapshot.branch_id == branch_id,
-                ItemBranchPurchaseSnapshot.last_purchase_price.isnot(None)
-            )
-            .all()
-        )
-        cost_from_ledger_map = {row.item_id: float(row.last_purchase_price) for row in snapshot_costs}
-        t_after_snapshot_costs = time.perf_counter()
-        missing_cost_ids = [iid for iid in item_ids if iid not in cost_from_ledger_map]
-        if missing_cost_ids:
-            # Fast path: single query to items.default_cost_per_base instead of ledger (4+ queries).
-            default_cost_rows = (
-                db.query(Item.id, Item.default_cost_per_base)
-                .filter(Item.id.in_(missing_cost_ids), Item.company_id == company_id)
-                .all()
-            )
-            for row in default_cost_rows:
-                if row.default_cost_per_base is not None:
-                    cost_from_ledger_map[row.id] = float(row.default_cost_per_base)
-                else:
-                    cost_from_ledger_map[row.id] = 0.0
-            for iid in missing_cost_ids:
-                if iid not in cost_from_ledger_map:
-                    cost_from_ledger_map[iid] = 0.0
-        for iid in item_ids:
-            if iid not in cost_from_ledger_map:
-                cost_from_ledger_map[iid] = 0.0
-        t_after_cost_fallback = time.perf_counter()
+    if validate_snapshot and path == "item_branch_snapshot" and result and branch_id:
+        _log_snapshot_validation(db, company_id, branch_id, result, limit, include_pricing, context)
+    # Full request time (from middleware, includes auth + get_tenant_db + search) for Network tab
+    t_start = getattr(request.state, "_req_start_time", None)
+    if t_start is not None:
+        t_total_ms = round((time.perf_counter() - t_start) * 1000, 2)
+        timing_header = f"total;dur={t_total_ms}, {server_timing}"
     else:
-        t_after_snapshot_costs = t_after_pricing
-        t_after_cost_fallback = t_after_pricing
-
-    # Get full item objects once (for stock_display and for markup tier resolution to avoid extra Item query)
-    items_full_map = {}
-    if branch_id:
-        items_full = db.query(Item).filter(Item.id.in_(item_ids)).all()
-        items_full_map = {item.id: item for item in items_full}
-    t_after_items_full = time.perf_counter()
-
-    # sale_price: from last unit cost + category-based margin (item_map avoids second Item query in get_markup_percent_batch)
-    if include_pricing and branch_id and item_ids:
-        markup_batch = PricingService.get_markup_percent_batch(
-            db, item_ids, company_id, item_map=items_full_map if items_full_map else None
-        )
-        for iid in item_ids:
-            cost = cost_from_ledger_map.get(iid, 0.0) or 0.0
-            margin = markup_batch.get(iid, Decimal("30"))
-            sale_price_map[iid] = round(float(Decimal(str(cost)) * (Decimal("1") + margin / Decimal("100"))), 4)
-        t_after_markup = time.perf_counter()
-    else:
-        t_after_markup = t_after_items_full if branch_id else t_after_pricing
-
-    t_after_cost_and_items = t_after_markup
-    logger.info(f"[search] cost_batch_and_items_full: {(t_after_cost_and_items - t_after_pricing) * 1000:.2f} ms")
-
-    result = []
-    for item in items:
-        price_from_ledger = float(cost_from_ledger_map.get(item.id, 0)) if branch_id else 0.0
-        purchase_price_val = purchase_price_map.get(item.id, price_from_ledger) if include_pricing else price_from_ledger
-        last_unit_cost_val = last_unit_cost_ledger_map.get(item.id, purchase_price_map.get(item.id, price_from_ledger)) if context == 'purchase_order' else None
-        
-        # Calculate stock_display using 3-tier units when branch_id is provided
-        # OPTIMIZED: Use format_quantity_display with already-fetched stock_map and items_full_map
-        # instead of get_stock_display per item (avoids N+1: 2 queries per result)
-        stock_display = None
-        if branch_id and item.id in items_full_map:
-            stock_qty = float(stock_map.get(item.id, 0) or 0)
-            stock_display = InventoryService.format_quantity_display(stock_qty, items_full_map[item.id])
-        
-        item_data = {
-            "id": str(item.id),
-            "name": item.name,
-            "base_unit": _unit_for_display(item.base_unit, "piece"),
-            "price": price_from_ledger,
-            "sku": item.sku or "",
-            "category": getattr(item, 'category', None) or "",
-            "is_active": getattr(item, 'is_active', True),
-            "current_stock": stock_map.get(item.id, 0) if branch_id else None,
-            "stock_display": stock_display,  # 3-tier formatted stock display
-            "vat_rate": vat_rate_to_percent(item.vat_rate),
-            "vat_category": getattr(item, 'vat_category', None) or "ZERO_RATED",
-            "purchase_price": purchase_price_val,
-            "sale_price": sale_price_map.get(item.id, 0.0) if include_pricing else 0.0,
-            "last_supplier": last_supplier_map.get(item.id, "") if include_pricing else "",
-            "last_order_date": last_order_date_map.get(item.id, None) if include_pricing else None
-        }
-        
-        if context == 'purchase_order':
-            item_data["last_supply_date"] = last_supply_date_map.get(item.id, None)
-            item_data["last_unit_cost"] = last_unit_cost_val if last_unit_cost_val is not None else purchase_price_val
-            item_data["cheapest_supplier"] = cheapest_supplier_map.get(item.id, "")
-
-        result.append(item_data)
-
-    t_after_result_loop = time.perf_counter()
-    logger.info(f"[search] result_assembly_and_stock_display: {(t_after_result_loop - t_after_cost_and_items) * 1000:.2f} ms (items={len(result)})")
-
-    t_total = time.perf_counter() - t_start
-
-    # Granular steps for Server-Timing (visible in browser DevTools > Network > request > Timing)
-    steps.append(("4_cost_snapshot", round((t_after_snapshot_costs - t_after_pricing) * 1000, 2)))
-    steps.append(("5_cost_fallback", round((t_after_cost_fallback - t_after_snapshot_costs) * 1000, 2)))
-    steps.append(("6_items_full", round((t_after_items_full - t_after_cost_fallback) * 1000, 2)))
-    steps.append(("7_markup", round((t_after_markup - t_after_items_full) * 1000, 2)))
-    steps.append(("8_result_loop", round((t_after_result_loop - t_after_cost_and_items) * 1000, 2)))
-
-    logger.info(
-        f"[search] TOTAL: {t_total * 1000:.2f} ms | breakdown: base={((t_base_search - t_start) * 1000):.0f}ms, "
-        f"stock={((t_stock - t_base_search) * 1000):.0f}ms, pricing={((t_after_pricing - t_pricing_start) * 1000):.0f}ms, "
-        f"cost_snap={((t_after_snapshot_costs - t_after_pricing) * 1000):.0f}ms, cost_fb={((t_after_cost_fallback - t_after_snapshot_costs) * 1000):.0f}ms, "
-        f"markup={((t_after_markup - t_after_cost_fallback) * 1000):.0f}ms, items_full={((t_after_cost_and_items - t_after_markup) * 1000):.0f}ms, "
-        f"result_loop={((t_after_result_loop - t_after_cost_and_items) * 1000):.0f}ms"
+        timing_header = server_timing
+    return JSONResponse(
+        content=result,
+        headers={"Server-Timing": timing_header, "X-Search-Path": path},
     )
-
-    # Server-Timing header: visible in Chrome DevTools > Network > select search request > Timing tab
-    server_timing = ", ".join(f"{name};dur={dur}" for name, dur in steps)
-    return JSONResponse(content=result, headers={"Server-Timing": server_timing})
 
 
 def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
@@ -630,7 +406,7 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "updated_at": item.updated_at,
         "supplier_unit": _unit_for_display(item.supplier_unit, "piece"),
         "wholesale_unit": _unit_for_display(item.wholesale_unit or item.base_unit, "piece"),
-        "retail_unit": _unit_for_display(item.retail_unit, "piece"),
+        "retail_unit": _unit_for_display(get_stock_display_unit(item), "piece"),
         "pack_size": int(item.pack_size) if item.pack_size is not None else 1,
         "wholesale_units_per_supplier": float(item.wholesale_units_per_supplier) if item.wholesale_units_per_supplier is not None else 1.0,
         "can_break_bulk": item.can_break_bulk,
@@ -704,8 +480,11 @@ def get_item(
     data["units"] = _display_units_from_item(item)
     data["has_transactions"] = item_id in ExcelImportService._get_items_with_real_transactions(db, item.company_id, [item_id])
     if branch_id:
+        qty = float(InventoryService.get_current_stock(db, item.id, branch_id))
         data["stock_display"] = InventoryService.get_stock_display(db, item.id, branch_id)
-        data["current_stock"] = float(InventoryService.get_current_stock(db, item.id, branch_id))
+        data["base_quantity"] = qty
+        data["current_stock"] = qty
+        data["retail_unit"] = _unit_for_display(get_stock_display_unit(item), "piece")
     resp = ItemResponse.model_validate(data)
     return resp
 
@@ -1047,8 +826,10 @@ def get_items_overview(
             'track_expiry': getattr(item, 'track_expiry', False),
             'is_controlled': getattr(item, 'is_controlled', False),
             'is_cold_chain': getattr(item, 'is_cold_chain', False),
+            'base_quantity': stock_qty,
             'current_stock': stock_qty,
-            'stock_display': stock_display_val,  # 3-tier formatted stock display (e.g. "1 packet + 8 pieces")
+            'retail_unit': _unit_for_display(get_stock_display_unit(item), "piece"),
+            'stock_display': stock_display_val,
             'last_supplier': last_supplier_map.get(item.id),
             'last_unit_cost': last_cost_map.get(item.id),
             'has_transactions': item.id in items_with_transactions,
@@ -1212,11 +993,13 @@ def adjust_stock(
     db.add(ledger_entry)
     db.flush()
     SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, quantity_delta)
+    SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
     db.commit()
 
     new_stock = InventoryService.get_current_stock(db, item_id, body.branch_id)
     new_stock_display = InventoryService.get_stock_display(db, item_id, body.branch_id)
     direction_label = "added" if quantity_delta > 0 else "reduced"
+    retail_unit = _unit_for_display(get_stock_display_unit(item), "piece")
     return AdjustStockResponse(
         success=True,
         message=f"Stock {direction_label}: {abs(quantity_delta):.0f} base units. Previous: {previous_stock:.0f} → New: {new_stock:.0f} ({new_stock_display}).",
@@ -1226,6 +1009,8 @@ def adjust_stock(
         previous_stock=previous_stock,
         new_stock=new_stock,
         new_stock_display=new_stock_display,
+        base_quantity=new_stock,
+        retail_unit=retail_unit,
     )
 
 
@@ -1287,6 +1072,7 @@ def update_item(
     
     db.commit()
     db.refresh(item)
+    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, item.company_id, item_id)
     return item
 
 
@@ -1791,6 +1577,7 @@ def post_batch_quantity_correction(
         )
         db.add(movement)
         SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, float(quantity_delta))
+        SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
         db.commit()
         db.refresh(movement)
         return CorrectionResponse(

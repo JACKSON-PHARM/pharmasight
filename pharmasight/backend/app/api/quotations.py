@@ -31,6 +31,7 @@ from app.services.document_items_helper import deduplicate_quotation_items
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
 from app.services.snapshot_service import SnapshotService
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.tenant_storage_service import get_signed_url
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
@@ -727,6 +728,8 @@ def convert_quotation_to_invoice(
         SnapshotService.upsert_search_snapshot_last_sale(
             db, quotation.company_id, quotation.branch_id, inv_item.item_id, invoice_date
         )
+    for entry in ledger_entries:
+        SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
 
     # Update quotation status
     quotation.status = "converted"

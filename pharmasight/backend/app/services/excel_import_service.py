@@ -18,6 +18,7 @@ from app.models import (
     Supplier, Company, Branch
 )
 from app.services.snapshot_service import SnapshotService
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,40 @@ def _sanitize_unit_label(value, default: str) -> str:
     if not s or _is_numeric_unit_value(s):
         return default.lower()
     return s.lower()
+
+
+def _normalize_units_for_excel_item(
+    wholesale_unit: str,
+    retail_unit: str,
+    supplier_unit: str,
+    pack_size: int,
+    wholesale_units_per_supplier,
+) -> Tuple[str, str, str]:
+    """
+    Enforce unit naming rules from Excel import:
+    - pack_size == 1: single name everywhere (wholesale = retail; supplier = same unless wups > 1).
+    - wholesale_units_per_supplier > 1: supplier unit name must differ from wholesale (e.g. case vs tube).
+    Returns (wholesale_unit, retail_unit, supplier_unit).
+    """
+    pack_size = max(1, int(pack_size or 1))
+    try:
+        wups = float(wholesale_units_per_supplier or 1)
+    except (TypeError, ValueError):
+        wups = 1
+    w = (wholesale_unit or "piece").strip().lower()
+    r = (retail_unit or "piece").strip().lower()
+    s = (supplier_unit or "piece").strip().lower()
+    if pack_size == 1:
+        single = r or w or "piece"
+        w = r = single
+        if wups <= 1:
+            s = single
+        elif s == single:
+            s = "case"  # enforce different name when conversion > 1
+    else:
+        if wups > 1 and s == w:
+            s = "case"  # enforce different supplier name when conversion > 1
+    return (w, r, s)
 
 
 def _cost_per_supplier_to_cost_per_base(
@@ -554,6 +589,10 @@ class ExcelImportService:
         pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack_size', 'Conversion Rate (n) (x = ny)', 'Conversion_To_Retail']) or '1'
         pack_size = int(ExcelImportService._parse_decimal(pack_size_raw)) if pack_size_raw else 1
         pack_size = max(1, int(pack_size))
+        wholesale_units_per_supplier = _parse_wholesale_units_per_supplier_from_row(row)
+        wholesale_unit, retail_unit, supplier_unit = _normalize_units_for_excel_item(
+            wholesale_unit, retail_unit, supplier_unit, pack_size, wholesale_units_per_supplier
+        )
 
         can_break_bulk_raw = _normalize_column_name(row, ['Can_Break_Bulk', 'Can Break Bulk', 'can_break_bulk'])
         can_break_bulk = str(can_break_bulk_raw).lower() in ['true', '1', 'yes', 'y'] if can_break_bulk_raw else True
@@ -1072,6 +1111,9 @@ class ExcelImportService:
         pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack_size', 'Conversion Rate (n) (x = ny)', 'Conversion_To_Retail']) or '1'
         pack_size = max(1, int(ExcelImportService._parse_decimal(pack_size_raw)) if pack_size_raw else 1)
         wholesale_units_per_supplier = _parse_wholesale_units_per_supplier_from_row(row)
+        wholesale_unit, retail_unit, supplier_unit = _normalize_units_for_excel_item(
+            wholesale_unit, retail_unit, supplier_unit, pack_size, wholesale_units_per_supplier
+        )
         can_break_bulk_raw = _normalize_column_name(row, ['Can_Break_Bulk', 'Can Break Bulk', 'can_break_bulk'])
         can_break_bulk = str(can_break_bulk_raw).lower() in ['true', '1', 'yes', 'y'] if can_break_bulk_raw else True
         
@@ -1243,6 +1285,7 @@ class ExcelImportService:
             existing.total_cost = quantity * unit_cost
             SnapshotService.upsert_inventory_balance_delta(db, company_id, branch_id, item_id, old_qty, quantity)
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
+            SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
         else:
             ledger_entry = InventoryLedger(
                 company_id=company_id,
@@ -1259,6 +1302,7 @@ class ExcelImportService:
             db.flush()
             SnapshotService.upsert_inventory_balance(db, company_id, branch_id, item_id, quantity)
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
+            SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
     
     @staticmethod
     def _process_batch_bulk(
@@ -1567,6 +1611,9 @@ class ExcelImportService:
                         db, ob['company_id'], ob['branch_id'], ob['item_id'],
                         ob.get('unit_cost'), ob.get('created_at'), None
                     )
+                    SnapshotRefreshService.refresh_item_sync(
+                        db, ob['company_id'], ob['branch_id'], ob['item_id']
+                    )
                 result['opening_balances_created'] = len(opening_balances)
                 logger.info(f"Bulk inserted {len(opening_balances)} opening balances")
             except Exception as e:
@@ -1578,6 +1625,14 @@ class ExcelImportService:
     def _create_item_dict_for_bulk(company_id: UUID, row: Dict, item_name: str) -> Dict:
         """Create item dictionary for bulk insert. Master data only; no price fields (from ledger)."""
         from uuid import uuid4
+        wholesale_unit = _sanitize_unit_label(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit']), 'piece')
+        retail_unit = _sanitize_unit_label(_normalize_column_name(row, ['Retail_Unit', 'Retail Unit']), 'tablet')
+        supplier_unit = _sanitize_unit_label(_normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit']), 'piece')
+        pack_size = max(1, int(ExcelImportService._parse_decimal(_normalize_column_name(row, ['Pack_Size', 'Pack Size', 'Conversion_To_Retail']) or '1')))
+        wholesale_units_per_supplier = _parse_wholesale_units_per_supplier_from_row(row)
+        wholesale_unit, retail_unit, supplier_unit = _normalize_units_for_excel_item(
+            wholesale_unit, retail_unit, supplier_unit, pack_size, wholesale_units_per_supplier
+        )
         return {
             'id': uuid4(),
             'company_id': company_id,
@@ -1586,14 +1641,14 @@ class ExcelImportService:
             'sku': _safe_strip(_normalize_column_name(row, ['Item_Code', 'SKU', 'Item Code', 'sku']) or ''),
             'barcode': _safe_strip(_normalize_column_name(row, ['Barcode', 'barcode']) or ''),
             'category': _safe_strip(_normalize_column_name(row, ['Category', 'category']) or ''),
-            'base_unit': _sanitize_unit_label(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit', 'Base_Unit', 'Base Unit', 'Base Unit (x)']), 'piece'),
+            'base_unit': wholesale_unit,
             **_vat_from_row(row),
             'is_active': True,
-            'supplier_unit': _sanitize_unit_label(_normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit']), 'piece'),
-            'wholesale_unit': _sanitize_unit_label(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit']), 'piece'),
-            'retail_unit': _sanitize_unit_label(_normalize_column_name(row, ['Retail_Unit', 'Retail Unit']), 'tablet'),
-            'pack_size': max(1, int(ExcelImportService._parse_decimal(_normalize_column_name(row, ['Pack_Size', 'Pack Size', 'Conversion_To_Retail']) or '1'))),
-            'wholesale_units_per_supplier': _parse_wholesale_units_per_supplier_from_row(row),
+            'supplier_unit': supplier_unit,
+            'wholesale_unit': wholesale_unit,
+            'retail_unit': retail_unit,
+            'pack_size': pack_size,
+            'wholesale_units_per_supplier': wholesale_units_per_supplier,
             'can_break_bulk': True,
             'track_expiry': _parse_bool_from_row(row, ['Track_Expiry', 'Track Expiry', 'track_expiry'], False),
             'is_controlled': _parse_bool_from_row(row, ['Is_Controlled', 'Is Controlled', 'is_controlled'], False),

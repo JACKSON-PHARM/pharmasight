@@ -2348,16 +2348,16 @@ async function searchItems(event) {
             let items = null;
             
             if (cache) {
-                items = cache.get(query, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20);
+                items = cache.get(query, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 50);
             }
             
             if (!items) {
                 // OPTIMIZED: Don't include pricing for faster search
-                items = await API.items.search(query, CONFIG.COMPANY_ID, 20, CONFIG.BRANCH_ID || null, false);
+                items = await API.items.search(query, CONFIG.COMPANY_ID, 50, CONFIG.BRANCH_ID || null, false);
                 
                 // Cache the results
                 if (cache && items) {
-                    cache.set(query, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 20, items);
+                    cache.set(query, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 50, items);
                 }
             }
             
@@ -2367,7 +2367,7 @@ async function searchItems(event) {
             document.getElementById('itemsList').innerHTML = 
                 `<p class="text-center" style="color: var(--danger-color);">Error: ${error.message || 'Search failed'}</p>`;
         }
-    }, 300);
+    }, 60);
 }
 
 function renderItemsList(items) {

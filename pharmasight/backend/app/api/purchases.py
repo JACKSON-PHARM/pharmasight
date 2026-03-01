@@ -27,6 +27,7 @@ from app.schemas.purchase import (
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.document_pdf_generator import build_po_pdf
 from app.services.tenant_storage_service import upload_po_pdf, get_signed_url, download_file
 from app.utils.vat import vat_rate_to_percent
@@ -266,6 +267,7 @@ def create_grn(
             entry.unit_cost, getattr(entry, "created_at", None) or datetime.now(timezone.utc),
             db_grn.supplier_id
         )
+        SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
 
     db.commit()
     db.refresh(db_grn)
@@ -1194,6 +1196,8 @@ def batch_supplier_invoice(
             db, invoice.company_id, invoice.branch_id, inv_item.item_id,
             inv_item.unit_cost_exclusive, invoice.created_at, invoice.supplier_id
         )
+    for entry in ledger_entries:
+        SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
 
     # Update invoice status to BATCHED
     invoice.status = "BATCHED"

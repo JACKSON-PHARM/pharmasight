@@ -10,17 +10,21 @@
     /**
      * Maps a raw item object from API.items.search() or API.items.overview()
      * to a consistent display object used in tables.
+     * Numeric stock is ALWAYS retail/base quantity. Use retail_unit for labeling, never base_unit (wholesale).
      */
     function mapApiItemToDisplay(item) {
+        var qty = item.base_quantity !== undefined && item.base_quantity !== null
+            ? Number(item.base_quantity)
+            : (item.current_stock !== undefined && item.current_stock !== null ? Number(item.current_stock) : null);
         return {
             id: item.id,
             name: item.name,
             sku: item.sku || '',
             base_unit: item.base_unit,
+            retail_unit: item.retail_unit || 'piece',
             category: item.category || '',
-            current_stock: item.current_stock !== undefined && item.current_stock !== null
-                ? Number(item.current_stock)
-                : null,
+            base_quantity: qty,
+            current_stock: qty,
             stock_display: item.stock_display !== undefined && item.stock_display !== null
                 ? String(item.stock_display)
                 : null,
@@ -43,24 +47,27 @@
      * Uses global escapeHtml and formatNumber.
      */
     function formatStockCell(item) {
-        if (item.current_stock === null && !item.stock_display) {
+        var qty = item.base_quantity != null ? item.base_quantity : item.current_stock;
+        if ((qty === null || qty === undefined) && !item.stock_display) {
             return '—';
         }
 
         var display = '';
         var isLowStock = item.minimum_stock !== null &&
-            item.current_stock !== null &&
-            item.current_stock < item.minimum_stock;
+            qty !== null && qty !== undefined &&
+            qty < item.minimum_stock;
         var warningStyle = isLowStock ? ' style="color: #dc3545;"' : '';
 
-        // Prefer stock_availability.unit_breakdown if present (items.js convention)
+        // Render stock_display if present; else base_quantity + retail_unit. Never use base_unit (wholesale) for numeric stock.
         if (item.stock_availability && item.stock_availability.unit_breakdown && item.stock_availability.unit_breakdown.length > 0) {
             var ub = item.stock_availability.unit_breakdown[0];
             display = '<strong' + warningStyle + '>' + (typeof escapeHtml === 'function' ? escapeHtml(ub.display) : String(ub.display)) + '</strong>';
         } else if (item.stock_display) {
             display = '<strong' + warningStyle + '>' + (typeof escapeHtml === 'function' ? escapeHtml(item.stock_display) : String(item.stock_display)) + '</strong>';
-        } else if (item.current_stock !== null) {
-            display = '<strong' + warningStyle + '>' + (typeof formatNumber === 'function' ? formatNumber(item.current_stock) : Number(item.current_stock)) + ' ' + (item.base_unit || '') + '</strong>';
+        } else if (item.current_stock !== null || item.base_quantity !== null) {
+            var num = item.base_quantity != null ? item.base_quantity : item.current_stock;
+            var unitLabel = item.retail_unit || 'piece';
+            display = '<strong' + warningStyle + '>' + (typeof formatNumber === 'function' ? formatNumber(num) : Number(num)) + ' ' + (typeof escapeHtml === 'function' ? escapeHtml(unitLabel) : unitLabel) + '</strong>';
         }
         return display;
     }

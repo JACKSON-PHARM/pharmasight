@@ -251,10 +251,11 @@ const API = {
 
     // Items
     items: {
-        search: (q, companyId, limit = 10, branchId = null, includePricing = false, context = null, requestOptions = {}) => {
+        search: (q, companyId, limit = 10, branchId = null, includePricing = false, context = null, requestOptions = {}, fast = false) => {
             const params = { q, company_id: companyId, limit, include_pricing: includePricing };
             if (branchId) params.branch_id = branchId;
             if (context) params.context = context;
+            if (fast) params.fast = true;
             return api.get(`${CONFIG.API_ENDPOINTS.items}/search`, params, requestOptions);
         },
         stockBatch: (itemIds, branchId, companyId, requestOptions = {}) => {

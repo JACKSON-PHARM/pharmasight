@@ -17,6 +17,7 @@ from app.schemas.company import (
     BranchCreate, BranchResponse, BranchUpdate,
     BranchSettingResponse, BranchSettingUpdate,
 )
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.tenant_storage_service import (
     upload_stamp,
     upload_logo,
@@ -28,6 +29,9 @@ from app.services.tenant_storage_service import (
 )
 
 router = APIRouter()
+
+# Company setting keys that affect POS snapshot (margin, VAT, category-level): enqueue bulk refresh
+BULK_IMPACT_SETTING_KEYS = frozenset({"pricing_settings", "report_settings"})
 
 
 class CompanySettingUpdate(BaseModel):
@@ -292,6 +296,11 @@ def update_company_setting(
         )
         db.add(row)
     db.commit()
+    if body.key in BULK_IMPACT_SETTING_KEYS:
+        branches = db.query(Branch.id).filter(Branch.company_id == company_id, Branch.is_active == True).all()
+        for (branch_id,) in branches:
+            SnapshotRefreshService.enqueue_branch_refresh(db, company_id, branch_id, reason="company_setting_change")
+        db.commit()
     return {"key": body.key, "value": val}
 
 
