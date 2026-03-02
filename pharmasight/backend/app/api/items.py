@@ -47,6 +47,12 @@ from app.services.snapshot_service import SnapshotService
 from app.services.order_book_service import OrderBookService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.item_search_service import ItemSearchService
+from app.services.pricing_config_service import check_stock_adjustment_requires_confirmation
+from app.services.stock_validation_service import (
+    get_stock_validation_config,
+    validate_stock_entry_with_config,
+    StockValidationError,
+)
 from app.utils.vat import vat_rate_to_percent
 from app.schemas.reports import ItemBatchesResponse
 from app.services.item_movement_report_service import get_item_batches
@@ -947,6 +953,30 @@ def adjust_stock(
         )
         if unit_cost is None or unit_cost <= 0:
             unit_cost = Decimal("0")
+
+    # Floor price / margin confirmation when adding stock
+    if body.direction.lower() == "add" and unit_cost and unit_cost > 0:
+        check = check_stock_adjustment_requires_confirmation(db, item_id, item.company_id, unit_cost)
+        if check.get("requires_confirmation"):
+            expected = float(unit_cost)
+            confirmed = body.confirm_unit_cost
+            if confirmed is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "PRICE_CONFIRMATION_REQUIRED",
+                        "message": check.get("reason") or "Item has a floor price. Please re-enter the unit cost to confirm.",
+                        "floor_price": check.get("floor_price"),
+                        "margin_below_standard": check.get("margin_below_standard", False),
+                        "expected_unit_cost": expected,
+                    },
+                )
+            if abs(float(confirmed) - expected) > 0.01:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Price confirmation does not match. Please re-enter the unit cost exactly to confirm.",
+                )
+
     # quantity_delta is float from convert_to_base_units; Decimal * float is invalid
     total_cost = unit_cost * Decimal(str(abs(quantity_delta)))
 
@@ -957,6 +987,25 @@ def adjust_stock(
             expiry_date_parsed = date_type.fromisoformat(body.expiry_date.strip())
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid expiry_date; use YYYY-MM-DD.")
+
+    # Central batch/expiry validation when adding stock for track_expiry items
+    if body.direction.lower() == "add" and getattr(item, "track_expiry", False):
+        config_adjust = get_stock_validation_config(db, item.company_id)
+        try:
+            result = validate_stock_entry_with_config(
+                config_adjust,
+                batch_number=body.batch_number.strip() if body.batch_number else None,
+                expiry_date=expiry_date_parsed,
+                track_expiry=True,
+                override=False,
+            )
+        except StockValidationError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=e.result.message if e.result else str(e),
+            )
+        if not result.valid:
+            raise HTTPException(status_code=400, detail=result.message or "Batch/expiry validation failed.")
 
     # Reject duplicate POST within same request window (e.g. double submit)
     window = datetime.now(timezone.utc) - timedelta(seconds=2)
@@ -1540,6 +1589,24 @@ def post_batch_quantity_correction(
             detail=f"Cannot reduce batch by {abs(difference)}: current quantity is {current_qty}. Would go below zero.",
         )
     quantity_delta = Decimal(str(difference))
+    # When adding stock (quantity_delta > 0) for track_expiry items, validate batch/expiry
+    if quantity_delta > 0 and getattr(item, "track_expiry", False):
+        config_bqc = get_stock_validation_config(db, item.company_id)
+        try:
+            result_bqc = validate_stock_entry_with_config(
+                config_bqc,
+                batch_number=body.batch_number.strip() if body.batch_number else None,
+                expiry_date=expiry_date_parsed,
+                track_expiry=True,
+                override=False,
+            )
+        except StockValidationError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=e.result.message if e.result else str(e),
+            )
+        if not result_bqc.valid:
+            raise HTTPException(status_code=400, detail=result_bqc.message or "Batch/expiry validation failed.")
     batches = InventoryService.get_stock_by_batch(db, item_id, body.branch_id)
     unit_cost = Decimal("0")
     for b in batches or []:

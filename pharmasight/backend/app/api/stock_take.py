@@ -28,6 +28,11 @@ from app.schemas.stock_take import (
 from app.services.inventory_service import InventoryService
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.stock_validation_service import (
+    get_stock_validation_config,
+    validate_stock_entry_with_config,
+    StockValidationError,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1768,6 +1773,8 @@ def complete_branch_stock_take(
 
         from app.services.canonical_pricing import CanonicalPricingService
 
+        stock_validation_config_st = get_stock_validation_config(db, branch.company_id)
+
         # 1) Update inventory for each count (variance adjustments)
         items_updated = 0
         errors = []
@@ -1779,6 +1786,35 @@ def complete_branch_stock_take(
                     if not item:
                         logger.warning(f"Item {count.item_id} not found when completing stock take")
                         continue
+                    # When adding stock (variance > 0) for track_expiry items, require batch/expiry from count and validate
+                    if variance > 0 and getattr(item, "track_expiry", False):
+                        bn = (count.batch_number or "").strip() or None
+                        ed = count.expiry_date
+                        if ed is not None and hasattr(ed, "date"):
+                            ed = ed.date() if callable(ed.date) else ed
+                        if not bn or not ed:
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"Item '{item.name or count.item_id}' has Track Expiry. Stock take count must include Batch Number and Expiry Date when adding stock. Missing on completion.",
+                            )
+                        try:
+                            res_st = validate_stock_entry_with_config(
+                                stock_validation_config_st,
+                                batch_number=bn,
+                                expiry_date=ed,
+                                track_expiry=True,
+                                override=False,
+                            )
+                        except StockValidationError as e:
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=e.result.message if e.result else str(e),
+                            )
+                        if not res_st.valid:
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=res_st.message or "Batch/expiry validation failed.",
+                            )
                     unit_cost = CanonicalPricingService.get_best_available_cost(db, count.item_id, branch_id, branch.company_id)
                     total_cost = abs(variance) * unit_cost
                     ledger_entry = InventoryLedger(
@@ -1792,7 +1828,9 @@ def complete_branch_stock_take(
                         unit_cost=unit_cost,
                         total_cost=total_cost,
                         created_by=completing_user_id,
-                        notes='Stock take count adjustment'
+                        notes='Stock take count adjustment',
+                        batch_number=count.batch_number,
+                        expiry_date=count.expiry_date,
                     )
                     db.add(ledger_entry)
                     SnapshotService.upsert_inventory_balance(db, branch.company_id, branch_id, count.item_id, variance)

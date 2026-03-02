@@ -9,7 +9,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, date
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, text
 
@@ -44,6 +44,8 @@ SYSTEM_TO_CANONICAL_HEADER: Dict[str, str] = {
     'wholesale_price_per_wholesale_unit': 'Wholesale_Price_per_Wholesale_Unit',
     'retail_price_per_retail_unit': 'Retail_Price_per_Retail_Unit',
     'current_stock_quantity': 'Current_Stock_Quantity',
+    'opening_batch_number': 'Opening_Batch_Number',
+    'opening_expiry_date': 'Opening_Expiry_Date',
     'wholesale_unit_price': 'Wholesale_Unit_Price',
     'supplier': 'Supplier',
     'vat_category': 'VAT_Category',
@@ -81,6 +83,8 @@ EXPECTED_EXCEL_FIELDS: List[Dict] = [
     {'id': 'wholesale_price_per_wholesale_unit', 'label': 'Wholesale Price', 'required': False},
     {'id': 'retail_price_per_retail_unit', 'label': 'Retail Price / Sale Price', 'required': False},
     {'id': 'current_stock_quantity', 'label': 'Current Stock Quantity', 'required': False},
+    {'id': 'opening_batch_number', 'label': 'Opening Batch Number (required when Track Expiry=Yes and opening stock > 0)', 'required': False},
+    {'id': 'opening_expiry_date', 'label': 'Opening Expiry Date YYYY-MM-DD (required when Track Expiry=Yes and opening stock > 0)', 'required': False},
     {'id': 'supplier', 'label': 'Supplier', 'required': False},
     {'id': 'vat_category', 'label': 'VAT Category', 'required': False},
     {'id': 'vat_rate', 'label': 'VAT Rate', 'required': False},
@@ -687,6 +691,13 @@ class ExcelImportService:
             ).delete(synchronize_session=False)
             logger.info(f"Deleted {deleted_count} existing opening balances")
             
+            stock_validation_config = None
+            try:
+                from app.services.stock_validation_service import get_stock_validation_config
+                stock_validation_config = get_stock_validation_config(db, company_id)
+            except Exception as e:
+                logger.warning("Could not load stock validation config: %s", e)
+            
             # Process in batches using OPTIMIZED bulk operations (fewer batches = fewer commits and less overhead)
             batch_size = 1000  # 10k items = 10 batches; keeps memory and transaction size reasonable
             total_rows = len(excel_data)
@@ -715,7 +726,8 @@ class ExcelImportService:
                 # OPTIMIZED: Process batch using bulk operations
                 try:
                     batch_result = ExcelImportService._process_batch_bulk(
-                        db, company_id, branch_id, user_id, batch, batch_start
+                        db, company_id, branch_id, user_id, batch, batch_start,
+                        stock_validation_config=stock_validation_config,
                     )
                     stats['items_created'] += batch_result.get('items_created', 0)
                     stats['items_updated'] += batch_result.get('items_updated', 0)
@@ -734,7 +746,8 @@ class ExcelImportService:
                         row_number = batch_start + batch_idx + 2
                         try:
                             result = ExcelImportService._process_excel_row_authoritative(
-                                db, company_id, branch_id, user_id, row
+                                db, company_id, branch_id, user_id, row,
+                                stock_validation_config=stock_validation_config,
                             )
                             stats['items_created'] += result.get('item_created', 0)
                             stats['items_updated'] += result.get('item_updated', 0)
@@ -902,9 +915,10 @@ class ExcelImportService:
         company_id: UUID,
         branch_id: UUID,
         user_id: UUID,
-        row: Dict
+        row: Dict,
+        stock_validation_config: Optional[object] = None,
     ) -> Dict:
-        """Process a single Excel row in AUTHORITATIVE mode"""
+        """Process a single Excel row in AUTHORITATIVE mode. stock_validation_config: from get_stock_validation_config (once per request)."""
         result = {
             'item_created': 0,
             'item_updated': 0,
@@ -1010,15 +1024,57 @@ class ExcelImportService:
                     'stock quantity'
                 ]) or '0'
                 stock_qty = ExcelImportService._parse_quantity(stock_qty_raw)
+                batch_number_open = None
+                expiry_date_open = None
+                if getattr(item, "track_expiry", False) and stock_qty > 0:
+                    batch_number_open = _normalize_column_name(row, [
+                        'Opening_Batch_Number', 'Opening Batch Number', 'opening_batch_number'
+                    ])
+                    batch_number_open = _safe_strip(batch_number_open) if batch_number_open else None
+                    expiry_date_raw = _normalize_column_name(row, [
+                        'Opening_Expiry_Date', 'Opening Expiry Date', 'opening_expiry_date'
+                    ])
+                    expiry_date_raw = _safe_strip(expiry_date_raw) if expiry_date_raw else None
+                    if not batch_number_open or not expiry_date_raw:
+                        raise ValueError(
+                            f"Item '{item_name}' has Track Expiry and opening stock. "
+                            "Provide Opening Batch Number and Opening Expiry Date (YYYY-MM-DD) columns."
+                        )
+                    try:
+                        from datetime import datetime as dt
+                        expiry_date_open = dt.fromisoformat(expiry_date_raw.replace("Z", "+00:00")).date()
+                    except (ValueError, TypeError):
+                        raise ValueError(
+                            f"Item '{item_name}': Invalid Opening Expiry Date '{expiry_date_raw}'. Use YYYY-MM-DD."
+                        )
+                    if stock_validation_config is not None:
+                        from app.services.stock_validation_service import (
+                            validate_stock_entry_with_config,
+                            StockValidationError,
+                        )
+                        try:
+                            res = validate_stock_entry_with_config(
+                                stock_validation_config,
+                                batch_number=batch_number_open,
+                                expiry_date=expiry_date_open,
+                                track_expiry=True,
+                                override=False,
+                            )
+                        except StockValidationError as e:
+                            raise ValueError(e.result.message if e.result else str(e))
+                        if not res.valid:
+                            raise ValueError(res.message or "Batch/expiry validation failed.")
                 ExcelImportService._create_opening_balance(
                     db, company_id, branch_id, item.id, stock_qty, user_id,
-                    unit_cost_per_base=default_cost_per_base
+                    unit_cost_per_base=default_cost_per_base,
+                    batch_number=batch_number_open,
+                    expiry_date=expiry_date_open,
                 )
                 if stock_qty > 0:
                     result['opening_balance_created'] = 1
             except Exception as stock_error:
                 logger.warning(f"Could not create opening balance for item '{item_name}': {stock_error}")
-                # Don't fail the entire row if stock creation fails
+                raise
         
         except Exception as e:
             # If item creation/update fails, rollback and re-raise
@@ -1259,9 +1315,12 @@ class ExcelImportService:
         item_id: UUID,
         quantity: int,
         user_id: UUID,
-        unit_cost_per_base: Optional[Decimal] = None
+        unit_cost_per_base: Optional[Decimal] = None,
+        batch_number: Optional[str] = None,
+        expiry_date: Optional[date] = None,
     ):
-        """Create opening balance entry in inventory_ledger. unit_cost_per_base = cost per base (wholesale) unit; from Excel (row) only."""
+        """Create opening balance entry in inventory_ledger. unit_cost_per_base = cost per base (wholesale) unit; from Excel (row) only.
+        For track_expiry items, pass batch_number and expiry_date."""
         # Check if opening balance already exists for this item+branch
         existing = db.query(InventoryLedger).filter(
             and_(
@@ -1283,6 +1342,10 @@ class ExcelImportService:
             existing.quantity_delta = quantity
             existing.unit_cost = unit_cost
             existing.total_cost = quantity * unit_cost
+            if batch_number is not None:
+                existing.batch_number = batch_number.strip() if batch_number else None
+            if expiry_date is not None:
+                existing.expiry_date = expiry_date if isinstance(expiry_date, date) else expiry_date
             SnapshotService.upsert_inventory_balance_delta(db, company_id, branch_id, item_id, old_qty, quantity)
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
             SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
@@ -1296,7 +1359,9 @@ class ExcelImportService:
                 quantity_delta=quantity,
                 unit_cost=unit_cost,
                 total_cost=quantity * unit_cost,
-                created_by=user_id
+                created_by=user_id,
+                batch_number=batch_number.strip() if batch_number and str(batch_number).strip() else None,
+                expiry_date=expiry_date if isinstance(expiry_date, date) else expiry_date,
             )
             db.add(ledger_entry)
             db.flush()
@@ -1311,7 +1376,8 @@ class ExcelImportService:
         branch_id: UUID,
         user_id: UUID,
         batch: List[Dict],
-        batch_start: int
+        batch_start: int,
+        stock_validation_config: Optional[object] = None,
     ) -> Dict:
         """
         Process a batch of Excel rows using BULK operations (50-100x faster)
@@ -1542,6 +1608,50 @@ class ExcelImportService:
                     ]) or '0'
                 )
                 if stock_qty > 0:
+                    batch_number_ob = None
+                    expiry_date_ob = None
+                    if getattr(item, 'track_expiry', False):
+                        batch_number_ob = _safe_strip(_normalize_column_name(row, [
+                            'Opening_Batch_Number', 'Opening Batch Number', 'opening_batch_number'
+                        ]) or '')
+                        expiry_date_raw = _safe_strip(_normalize_column_name(row, [
+                            'Opening_Expiry_Date', 'Opening Expiry Date', 'opening_expiry_date'
+                        ]) or '')
+                        if not batch_number_ob or not expiry_date_raw:
+                            result.setdefault('errors', []).append(
+                                f"Item '{item_name}' has Track Expiry and opening stock. Provide Opening Batch Number and Opening Expiry Date (YYYY-MM-DD). Skipping opening balance for this row."
+                            )
+                            raise ValueError("Skip opening balance")
+                        try:
+                            expiry_date_ob = datetime.fromisoformat(expiry_date_raw.replace("Z", "+00:00")).date()
+                        except (ValueError, TypeError):
+                            result.setdefault('errors', []).append(
+                                f"Item '{item_name}': Invalid Opening Expiry Date. Use YYYY-MM-DD. Skipping opening balance."
+                            )
+                            raise ValueError("Skip opening balance")
+                        if stock_validation_config is not None:
+                            from app.services.stock_validation_service import (
+                                validate_stock_entry_with_config,
+                                StockValidationError,
+                            )
+                            try:
+                                res = validate_stock_entry_with_config(
+                                    stock_validation_config,
+                                    batch_number=batch_number_ob,
+                                    expiry_date=expiry_date_ob,
+                                    track_expiry=True,
+                                    override=False,
+                                )
+                            except StockValidationError as e:
+                                result.setdefault('errors', []).append(
+                                    f"Item '{item_name}': {e.result.message if e.result else str(e)}. Skipping opening balance."
+                                )
+                                raise ValueError("Skip opening balance")
+                            if not res.valid:
+                                result.setdefault('errors', []).append(
+                                    f"Item '{item_name}': {res.message or 'Batch/expiry validation failed.'}. Skipping opening balance."
+                                )
+                                raise ValueError("Skip opening balance")
                     wholesale_price_raw = _normalize_column_name(row, [
                         'Wholesale_Price_per_Wholesale_Unit',
                         'Wholesale_Unit_Price',
@@ -1563,7 +1673,7 @@ class ExcelImportService:
                         purchase_per_supplier = ExcelImportService._parse_decimal(purchase_raw)
                         wups = getattr(item, 'wholesale_units_per_supplier', None) or Decimal('1')
                         unit_cost_per_base = _cost_per_supplier_to_cost_per_base(purchase_per_supplier, wups)
-                    opening_balances.append({
+                    ob_dict = {
                         'id': uuid4(),
                         'company_id': company_id,
                         'branch_id': branch_id,
@@ -1574,7 +1684,17 @@ class ExcelImportService:
                         'unit_cost': unit_cost_per_base,
                         'total_cost': stock_qty * unit_cost_per_base,
                         'created_by': user_id
-                    })
+                    }
+                    if batch_number_ob:
+                        ob_dict['batch_number'] = batch_number_ob
+                    if expiry_date_ob is not None:
+                        ob_dict['expiry_date'] = expiry_date_ob
+                    opening_balances.append(ob_dict)
+            except ValueError as e:
+                if str(e) == "Skip opening balance":
+                    pass
+                else:
+                    logger.warning(f"Could not prepare opening balance for {item_name}: {e}")
             except Exception as e:
                 logger.warning(f"Could not prepare opening balance for {item_name}: {e}")
             

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Item, PricingSettings
 from app.services.pricing_service import PricingService
+from app.services.item_units_helper import get_unit_multiplier_from_item
 
 
 # Behavior when selling below minimum margin (from pricing_settings.below_margin_behavior)
@@ -85,6 +86,33 @@ def get_effective_item_overrides(
     }
 
 
+def is_line_price_at_promo(
+    db: Session,
+    item_id: UUID,
+    unit_name: str,
+    unit_price_exclusive: Decimal,
+) -> bool:
+    """
+    True if the line is effectively selling at the item's active promo price.
+    Handles unit conversion: promo_price_retail is per retail; unit_price may be in any tier.
+    """
+    overrides = get_effective_item_overrides(db, item_id)
+    if not overrides.get("promo_active") or overrides.get("promo_price_retail") is None:
+        return False
+    promo_retail = Decimal(str(overrides["promo_price_retail"]))
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        return False
+    mult = get_unit_multiplier_from_item(item, unit_name or "")
+    if mult is None or mult <= 0:
+        return False
+    # mult = units of base (retail) per sale unit. Price per retail = unit_price / mult.
+    # (retail: mult=1; wholesale: mult=pack_size, so price/retail = price/mult)
+    price_per_retail = unit_price_exclusive / mult
+    tolerance = Decimal("0.01")
+    return abs(price_per_retail - promo_retail) <= tolerance
+
+
 def validate_line_price(
     db: Session,
     company_id: UUID,
@@ -113,14 +141,10 @@ def validate_line_price(
     config = get_global_pricing_config(db, company_id)
     overrides = get_effective_item_overrides(db, item_id)
     min_margin = PricingService.get_min_margin_percent(db, item_id, company_id)
-
-    # Optional: use company-level default min margin from pricing_settings when set
-    # (today we keep using tier/item logic via get_min_margin_percent; no override here)
-
     effective_min_margin = min_margin
     messages = []
 
-    # 1) Floor price (item-level)
+    # 1) Floor price (item-level) — hard block when below
     floor = overrides.get("floor_price_retail")
     if floor is not None and unit_price_exclusive < Decimal(str(floor)):
         return {
@@ -131,7 +155,11 @@ def validate_line_price(
             "messages": ["Below floor price"],
         }
 
-    # 2) Margin check (existing logic: min_margin from tier/item)
+    # 1b) Floor overrides margin — when item has floor_price_retail set and price >= floor,
+    # the floor IS the pricing rule for that item (e.g. constant 200 bob); skip margin check.
+    floor_overrides_margin = floor is not None and unit_price_exclusive >= Decimal(str(floor))
+
+    # 2) Margin check (existing logic: min_margin from tier/item) — skipped when floor overrides
     if cost_per_sale_unit <= 0:
         return {
             "allowed": True,
@@ -141,7 +169,7 @@ def validate_line_price(
             "messages": [],
         }
     margin_pct = (unit_price_exclusive - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
-    below_margin = margin_pct < effective_min_margin
+    below_margin = margin_pct < effective_min_margin and not floor_overrides_margin
     behavior = config.get("below_margin_behavior") or ALLOW_WARN
 
     if is_promo_price and config.get("promotions_can_go_below_margin"):
@@ -216,4 +244,51 @@ def validate_line_price(
         "message": "",
         "effective_min_margin": effective_min_margin,
         "messages": [],
+    }
+
+
+def check_stock_adjustment_requires_confirmation(
+    db: Session,
+    item_id: UUID,
+    company_id: UUID,
+    unit_cost_per_base: Decimal,
+) -> Dict[str, Any]:
+    """
+    For stock additions (manual adjustment or supplier invoice): determine if the user
+    must re-enter the unit cost to confirm awareness. Used when:
+    - Item has floor_price_retail (selling at floor price)
+    - Margin when selling at floor would be below standard (especially critical)
+
+    Returns: { requires_confirmation: bool, reason: str, floor_price: float|None,
+               margin_below_standard: bool, expected_unit_cost: float }
+    """
+    overrides = get_effective_item_overrides(db, item_id)
+    floor = overrides.get("floor_price_retail")
+    if floor is None:
+        return {
+            "requires_confirmation": False,
+            "reason": "",
+            "floor_price": None,
+            "margin_below_standard": False,
+            "expected_unit_cost": float(unit_cost_per_base),
+        }
+    floor_dec = Decimal(str(floor))
+    cost = unit_cost_per_base
+    margin_below_standard = False
+    if cost and cost > 0:
+        margin_at_floor_pct = (floor_dec - cost) / cost * Decimal("100")
+        min_margin = PricingService.get_min_margin_percent(db, item_id, company_id)
+        if margin_at_floor_pct < min_margin:
+            margin_below_standard = True
+
+    return {
+        "requires_confirmation": True,
+        "reason": (
+            "Item has a floor price. Margin may be below standard."
+            if margin_below_standard
+            else "Item is selling at floor price. Please confirm the cost is correct."
+        ),
+        "floor_price": float(floor),
+        "margin_below_standard": margin_below_standard,
+        "expected_unit_cost": float(unit_cost_per_base),
     }

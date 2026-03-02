@@ -8,6 +8,18 @@ from uuid import UUID
 from decimal import Decimal
 
 
+class BatchLineConfirmation(BaseModel):
+    """One confirmation: item_id and unit cost (per base) the user re-entered."""
+    item_id: UUID
+    unit_cost_base: float = Field(..., ge=0)
+
+
+class BatchSupplierInvoiceBody(BaseModel):
+    """Optional body for batch endpoint when items need floor-price confirmation or short-expiry override."""
+    confirmations: Optional[List[BatchLineConfirmation]] = None
+    short_expiry_override: Optional[bool] = Field(False, description="If True, allow short-expiry batches when validation is STRICT")
+
+
 class BatchDistribution(BaseModel):
     """Batch distribution for a single item"""
     batch_number: str = Field(..., description="Batch number (required)")
@@ -125,6 +137,8 @@ class SupplierInvoiceBase(BaseModel):
     supplier_invoice_number: Optional[str] = Field(None, description="Supplier's invoice number (from supplier - external document)")
     reference: Optional[str] = Field(None, description="Optional reference or comments")
     invoice_date: date
+    due_date: Optional[date] = Field(None, description="Payment due date for aging")
+    internal_reference: Optional[str] = Field(None, description="Internal reference/code")
     linked_grn_id: Optional[UUID] = None
     vat_rate: Decimal = Field(default=16.00, ge=0, le=100)
     status: Optional[str] = Field(default="DRAFT", description="DRAFT (saved), BATCHED (stock added)")

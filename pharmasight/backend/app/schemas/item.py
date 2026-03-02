@@ -252,6 +252,7 @@ class AdjustStockRequest(BaseModel):
     quantity: float = Field(..., gt=0, description="Quantity in the selected unit (always positive)")
     direction: str = Field(..., description="'add' or 'reduce'")
     unit_cost: Optional[float] = Field(None, ge=0, description="Cost per base unit; default = last purchase cost")
+    confirm_unit_cost: Optional[float] = Field(None, ge=0, description="Re-enter unit cost to confirm when item has floor price or margin below standard")
     batch_number: Optional[str] = Field(None, max_length=200, description="Batch/lot number (required when direction=add)")
     expiry_date: Optional[str] = Field(None, description="Expiry date YYYY-MM-DD (required when direction=add)")
     notes: Optional[str] = Field(None, max_length=2000, description="Comments or details (e.g. source, reason)")

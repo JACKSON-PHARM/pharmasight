@@ -235,6 +235,7 @@ from app.api.startup import router as startup_router
 from app.api.invite import router as invite_router
 from app.api.users import router as users_router
 from app.api.suppliers import router as suppliers_router
+from app.api.supplier_management import router as supplier_management_router
 from app.api.excel_import import router as excel_import_router
 from app.api.tenants import router as tenants_router
 from app.api.onboarding import router as onboarding_router
@@ -260,6 +261,8 @@ app.include_router(items_router, prefix="/api/items", tags=["Items"])
 app.include_router(sales_router, prefix="/api/sales", tags=["Sales"])
 app.include_router(purchases_router, prefix="/api/purchases", tags=["Purchases"])
 app.include_router(inventory_router, prefix="/api/inventory", tags=["Inventory"])
+# Supplier management (payments, returns, etc.) must come before suppliers_router so /payments matches before /{supplier_id}
+app.include_router(supplier_management_router, prefix="/api/suppliers", tags=["Supplier Management"])
 app.include_router(suppliers_router, prefix="/api/suppliers", tags=["Suppliers"])
 app.include_router(excel_import_router, prefix="/api/excel", tags=["Excel Import"])
 app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotations"])

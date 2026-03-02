@@ -1033,9 +1033,17 @@ window.subNavItems = {
     purchases: [
         { page: 'purchases', subPage: 'orders', label: 'Purchase Orders', icon: 'fa-file-invoice' },
         { page: 'purchases', subPage: 'order-book', label: 'Order Book', icon: 'fa-clipboard-list' },
-        { page: 'purchases', subPage: 'invoices', label: 'Supplier Invoices', icon: 'fa-file-invoice-dollar' },
         { page: 'purchases', subPage: 'credit-notes', label: 'Credit Notes', icon: 'fa-file-invoice' },
-        { page: 'purchases', subPage: 'suppliers', label: 'Suppliers', icon: 'fa-truck' }
+        {
+            header: 'Supplier',
+            icon: 'fa-truck',
+            items: [
+                { page: 'purchases', subPage: 'supplier-dashboard', label: 'Supplier Dashboard', icon: 'fa-chart-pie' },
+                { page: 'purchases', subPage: 'invoices', label: 'Supplier Invoices', icon: 'fa-file-invoice-dollar' },
+                { page: 'purchases', subPage: 'suppliers', label: 'Suppliers Management', icon: 'fa-truck' },
+                { page: 'purchases', subPage: 'supplier-payments', label: 'Supplier Payments', icon: 'fa-money-bill-wave' }
+            ]
+        }
     ],
     inventory: [
         { page: 'inventory', subPage: 'items', label: 'Items', icon: 'fa-box' },
@@ -1043,6 +1051,7 @@ window.subNavItems = {
         { page: 'inventory', subPage: 'expiry', label: 'Expiry Report', icon: 'fa-calendar-times' },
         { page: 'inventory', subPage: 'movement', label: 'Item Movement', icon: 'fa-exchange-alt' },
         { page: 'inventory', subPage: 'stock', label: 'Current Stock', icon: 'fa-chart-bar' },
+        { page: 'inventory', subPage: 'manual-adjustments', label: 'Adjustments', icon: 'fa-wrench' },
         { page: 'inventory', subPage: 'branch-orders', label: 'Branch Orders', icon: 'fa-list-alt' },
         { page: 'inventory', subPage: 'branch-transfers', label: 'Branch Transfers', icon: 'fa-truck-loading' },
         { page: 'inventory', subPage: 'branch-receipts', label: 'Branch Receipts', icon: 'fa-clipboard-check' },
@@ -1142,12 +1151,24 @@ function showSubNav(pageKey, title) {
     }
     
     subNavTitle.textContent = title;
-    subNavItemsContainer.innerHTML = items.map(item => `
-        <a href="#" class="sub-nav-item" data-page="${item.page}" ${item.subPage ? `data-sub-page="${item.subPage}"` : ''}>
-            <i class="fas ${item.icon}"></i>
-            <span>${item.label}</span>
-        </a>
-    `).join('');
+    let html = '';
+    items.forEach(item => {
+        if (item.header && item.items) {
+            html += `<div class="sub-nav-group-header"><i class="fas ${item.icon || 'fa-folder'}"></i><span>${item.header}</span></div>`;
+            (item.items || []).forEach(sub => {
+                html += `<a href="#" class="sub-nav-item sub-nav-item-nested" data-page="${sub.page}" ${sub.subPage ? `data-sub-page="${sub.subPage}"` : ''}>
+                    <i class="fas ${sub.icon}"></i>
+                    <span>${sub.label}</span>
+                </a>`;
+            });
+        } else if (item.page) {
+            html += `<a href="#" class="sub-nav-item" data-page="${item.page}" ${item.subPage ? `data-sub-page="${item.subPage}"` : ''}>
+                <i class="fas ${item.icon}"></i>
+                <span>${item.label}</span>
+            </a>`;
+        }
+    });
+    subNavItemsContainer.innerHTML = html;
     
     // Add click handlers to sub-nav items (use event delegation for better performance)
     subNavItemsContainer.addEventListener('click', function subNavClickHandler(e) {

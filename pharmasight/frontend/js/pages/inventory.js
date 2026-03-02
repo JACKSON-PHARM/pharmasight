@@ -1390,6 +1390,11 @@ async function showAdjustStockModal(itemId) {
                 <label>Comments / Details (source, reason — for tracking)</label>
                 <textarea id="adjustStockNotes" class="form-input" rows="2" maxlength="2000" placeholder="e.g. Received from store X, stock take correction"></textarea>
             </div>
+            <div id="adjustStockConfirmSection" style="display:none; margin-top:1rem; padding:0.75rem; background:var(--warning-bg,#fff3cd); border:1px solid var(--warning-border,#ffc107); border-radius:6px;">
+                <p id="adjustStockConfirmMessage" style="margin:0 0 0.5rem 0; font-weight:600; color:var(--warning-text,#856404);"></p>
+                <p style="margin:0 0 0.5rem 0; font-size:0.9rem;">Re-enter the unit cost below to confirm you are aware of the price:</p>
+                <input type="number" id="adjustStockConfirmCost" class="form-input" min="0" step="0.01" placeholder="Re-enter unit cost">
+            </div>
         `;
         const footer = `
             <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
@@ -1464,6 +1469,17 @@ async function submitAdjustStock(itemId) {
     const branchId = getBranchIdForStock();
     const branchIdRaw = branchId != null ? (typeof branchId === 'string' ? branchId : (branchId && (branchId.id || branchId))) : null;
     const userIdRaw = CONFIG.USER_ID != null ? (typeof CONFIG.USER_ID === 'string' ? CONFIG.USER_ID : (CONFIG.USER_ID && (CONFIG.USER_ID.id || CONFIG.USER_ID))) : null;
+    const confirmSection = document.getElementById('adjustStockConfirmSection');
+    const confirmCostEl = document.getElementById('adjustStockConfirmCost');
+    const needsConfirmation = confirmSection && confirmSection.style.display !== 'none';
+    const confirmUnitCost = confirmCostEl && confirmCostEl.value.trim() !== '' ? parseFloat(confirmCostEl.value) : null;
+    if (needsConfirmation && (confirmUnitCost == null || isNaN(confirmUnitCost) || confirmUnitCost < 0)) {
+        if (typeof showToast === 'function') showToast('Please re-enter the unit cost to confirm.', 'warning');
+        else alert('Please re-enter the unit cost to confirm.');
+        if (confirmCostEl) confirmCostEl.focus();
+        return;
+    }
+
     const payload = {
         branch_id: branchIdRaw,
         user_id: userIdRaw,
@@ -1475,6 +1491,9 @@ async function submitAdjustStock(itemId) {
         expiry_date: expiryEl && expiryEl.value ? expiryEl.value : null,
         notes: notesEl && notesEl.value.trim() ? notesEl.value.trim() : null
     };
+    if (needsConfirmation && confirmUnitCost != null && !isNaN(confirmUnitCost)) {
+        payload.confirm_unit_cost = confirmUnitCost;
+    }
     const submitBtn = document.getElementById('adjustStockSubmitBtn');
     if (submitBtn) {
         submitBtn.disabled = true;
@@ -1488,9 +1507,39 @@ async function submitAdjustStock(itemId) {
         else alert(msg);
         if (typeof filterItems === 'function') filterItems();
     } catch (err) {
-        const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Adjustment failed';
-        if (typeof showToast === 'function') showToast(msg, 'error');
-        else alert(msg);
+        const data = err.data || err.response?.data || {};
+        const detail = data.detail;
+        if (detail && typeof detail === 'object' && detail.code === 'PRICE_CONFIRMATION_REQUIRED') {
+            const confirmSection = document.getElementById('adjustStockConfirmSection');
+            const confirmMsg = document.getElementById('adjustStockConfirmMessage');
+            const confirmCostEl = document.getElementById('adjustStockConfirmCost');
+            if (confirmSection && confirmMsg && confirmCostEl) {
+                let msg = detail.message || 'This item is selling at floor price. Please confirm the unit cost.';
+                if (detail.margin_below_standard) {
+                    msg = 'This item has a floor price and the margin may be below standard. Please re-enter the unit cost to confirm you are aware.';
+                }
+                if (detail.floor_price != null) {
+                    msg += ' (Floor price: ' + String(detail.floor_price) + ')';
+                }
+                confirmMsg.textContent = msg;
+                confirmCostEl.placeholder = 'Re-enter: ' + (detail.expected_unit_cost != null ? String(detail.expected_unit_cost) : '');
+                confirmCostEl.value = '';
+                confirmCostEl.required = true;
+                confirmSection.style.display = 'block';
+                confirmCostEl.focus();
+                if (typeof showToast === 'function') showToast('Please re-enter the unit cost to confirm.', 'warning');
+                else alert('Please re-enter the unit cost to confirm.');
+            } else {
+                const msg = detail.message || (data.detail || err.message || 'Adjustment failed');
+                if (typeof showToast === 'function') showToast(msg, 'error');
+                else alert(msg);
+            }
+        } else {
+            const msg = (data.detail || (Array.isArray(data.detail) ? data.detail[0] : null) || err.message || 'Adjustment failed');
+            const msgStr = typeof msg === 'string' ? msg : (msg && msg.message) || JSON.stringify(msg);
+            if (typeof showToast === 'function') showToast(msgStr, 'error');
+            else alert(msgStr);
+        }
     } finally {
         if (submitBtn) {
             submitBtn.disabled = false;
@@ -1706,14 +1755,16 @@ function setupManualAdjustmentsHandlers() {
                 if (!raw) return;
                 var pre = JSON.parse(raw);
                 if (!pre || !pre.itemId) return;
+                if (!searchInput || !itemIdHidden) return;
                 sessionStorage.removeItem('pharmasight_adjustment_preselected');
-                itemIdHidden.value = pre.itemId;
+                itemIdHidden.value = String(pre.itemId);
                 searchInput.value = (pre.itemName || '') + (pre.itemSku ? ' (' + pre.itemSku + ')' : '');
                 loadBatchesForAdjustmentItem(pre.itemId);
             } catch (e) { /* ignore */ }
         }
-        applyPreselectedItem();
+        requestAnimationFrame(function () { applyPreselectedItem(); });
         setTimeout(applyPreselectedItem, 100);
+        setTimeout(applyPreselectedItem, 350);
     }
 
     // Submit Cost

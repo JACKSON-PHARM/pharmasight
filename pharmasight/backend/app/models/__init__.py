@@ -11,6 +11,13 @@ from .inventory import InventoryLedger, ItemMovement
 from .snapshot import InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot, ItemBranchSnapshot
 from .supplier import Supplier
 from .purchase import GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem, PurchaseOrder, PurchaseOrderItem
+from .supplier_financial import (
+    SupplierPayment,
+    SupplierPaymentAllocation,
+    SupplierReturn,
+    SupplierReturnLine,
+    SupplierLedgerEntry,
+)
 # Backward compatibility aliases
 PurchaseInvoice = SupplierInvoice
 PurchaseInvoiceItem = SupplierInvoiceItem
@@ -82,4 +89,9 @@ __all__ = [
     "BranchTransferLine",
     "BranchReceipt",
     "BranchReceiptLine",
+    "SupplierPayment",
+    "SupplierPaymentAllocation",
+    "SupplierReturn",
+    "SupplierReturnLine",
+    "SupplierLedgerEntry",
 ]

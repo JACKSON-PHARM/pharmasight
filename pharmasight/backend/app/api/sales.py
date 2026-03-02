@@ -36,7 +36,7 @@ from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
-from app.services.pricing_config_service import validate_line_price
+from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
 from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
@@ -241,18 +241,25 @@ def create_sales_invoice(
                 # unit_cost_used is stored as cost per wholesale unit (packet) - DO NOT CONVERT
                 # This is the architecture: cost per wholesale unit remains as-is
                 unit_cost_used = cost_info
-            # Enforce minimum margin unless user has sell_below_min_margin permission
+            # Price validation (floor + margin + promo)
             if unit_cost_used and float(unit_cost_used) > 0:
                 mult = get_unit_multiplier_from_item(item, item_data.unit_name)
                 if mult is not None and mult > 0:
                     cost_per_sale_unit = unit_cost_used * mult
+                    unit_price_val = Decimal(str(unit_price))
                     if cost_per_sale_unit > 0:
-                        margin_percent = (Decimal(str(unit_price)) - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
-                        min_margin = PricingService.get_min_margin_percent(db, item_data.item_id, invoice.company_id)
-                        if margin_percent < min_margin and not _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id):
+                        user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
+                        is_promo = is_line_price_at_promo(
+                            db, item_data.item_id, item_data.unit_name or "", unit_price_val
+                        )
+                        validation = validate_line_price(
+                            db, invoice.company_id, item_data.item_id,
+                            unit_price_val, cost_per_sale_unit, user_has_override, is_promo_price=is_promo
+                        )
+                        if not validation.get("allowed"):
                             raise HTTPException(
                                 status_code=400,
-                                detail=f"Price for {item.name} is below minimum allowed margin ({float(min_margin):.1f}%). Contact admin for permission to sell below margin."
+                                detail=validation.get("message", "Price validation failed.")
                             )
         
         # Calculate line totals
@@ -621,18 +628,25 @@ def add_sales_invoice_item(
         cost_info = PricingService.get_item_cost(db, item_data.item_id, invoice.branch_id)
         if cost_info:
             unit_cost_used = cost_info
-        # Enforce minimum margin unless user has sell_below_min_margin
+        # Price validation (floor + margin + promo)
         if unit_cost_used and float(unit_cost_used) > 0:
             mult = get_unit_multiplier_from_item(item, item_data.unit_name)
             if mult is not None and mult > 0:
                 cost_per_sale_unit = unit_cost_used * mult
+                unit_price_val = Decimal(str(unit_price))
                 if cost_per_sale_unit > 0:
-                    margin_percent = (Decimal(str(unit_price)) - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
-                    min_margin = PricingService.get_min_margin_percent(db, item_data.item_id, invoice.company_id)
-                    if margin_percent < min_margin and not _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id):
+                    user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
+                    is_promo = is_line_price_at_promo(
+                        db, item_data.item_id, item_data.unit_name or "", unit_price_val
+                    )
+                    validation = validate_line_price(
+                        db, invoice.company_id, item_data.item_id,
+                        unit_price_val, cost_per_sale_unit, user_has_override, is_promo_price=is_promo
+                    )
+                    if not validation.get("allowed"):
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Price for {item.name} is below minimum allowed margin ({float(min_margin):.1f}%). Contact admin for permission to sell below margin."
+                            detail=validation.get("message", "Price validation failed.")
                         )
 
     line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
@@ -1412,6 +1426,9 @@ def batch_sales_invoice(
                     unit_price_val = invoice_item.unit_price_exclusive or Decimal("0")
                     if cost_per_sale_unit > 0:
                         user_has_override = _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id)
+                        is_promo = is_line_price_at_promo(
+                            db, invoice_item.item_id, invoice_item.unit_name or "", unit_price_val
+                        )
                         validation = validate_line_price(
                             db,
                             invoice.company_id,
@@ -1419,6 +1436,7 @@ def batch_sales_invoice(
                             unit_price_val,
                             cost_per_sale_unit,
                             user_has_override,
+                            is_promo_price=is_promo,
                         )
                         if not validation.get("allowed"):
                             raise HTTPException(

@@ -119,14 +119,33 @@ async function loadPurchaseSubPage(subPage) {
         case 'credit-notes':
             await renderCreditNotesPage();
             break;
+        case 'supplier-dashboard':
+            await renderSupplierDashboardPage();
+            break;
         case 'suppliers':
             await renderSuppliersPage();
+            break;
+        case 'supplier-detail':
+            if (window.currentSupplierDetailId) {
+                await renderSupplierDetailPage(window.currentSupplierDetailId);
+            } else {
+                await renderSuppliersPage();
+            }
+            break;
+        case 'supplier-payments':
+            await renderSupplierPaymentsPage();
             break;
         case 'order-book':
             await renderOrderBookPage();
             break;
         default:
-            await renderPurchaseOrdersPage();
+            if (subPage && subPage.startsWith('suppliers-') && subPage !== 'suppliers') {
+                const supplierId = subPage.replace('suppliers-', '');
+                window.currentSupplierDetailId = supplierId;
+                await renderSupplierDetailPage(supplierId);
+            } else {
+                await renderPurchaseOrdersPage();
+            }
     }
     
     // Update sub-nav active state
@@ -431,23 +450,28 @@ function getSupplierInvoicesDateRange(preset) {
             dateFrom = dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
             break;
         case 'yesterday': {
-            const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
-            dateFrom = dateTo = yesterday.toISOString().split('T')[0];
+            const yesterday = new Date(now);
+            yesterday.setDate(yesterday.getDate() - 1);
+            const yy = yesterday.getFullYear(), mm = yesterday.getMonth(), dd = yesterday.getDate();
+            dateFrom = dateTo = [yy, String(mm + 1).padStart(2, '0'), String(dd).padStart(2, '0')].join('-');
             break;
         }
         case 'this_week': {
             const day = now.getDay();
             const mon = new Date(now); mon.setDate(d - (day === 0 ? 6 : day - 1));
-            dateFrom = mon.toISOString().split('T')[0];
+            const my = mon.getFullYear(), mm = mon.getMonth(), md = mon.getDate();
+            dateFrom = [my, String(mm + 1).padStart(2, '0'), String(md).padStart(2, '0')].join('-');
             dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
             break;
         }
         case 'last_week': {
             const day = now.getDay();
             const lastMon = new Date(now); lastMon.setDate(d - (day === 0 ? 6 : day - 1) - 7);
-            dateFrom = lastMon.toISOString().split('T')[0];
+            const lmy = lastMon.getFullYear(), lmm = lastMon.getMonth(), lmd = lastMon.getDate();
+            dateFrom = [lmy, String(lmm + 1).padStart(2, '0'), String(lmd).padStart(2, '0')].join('-');
             const lastSun = new Date(lastMon); lastSun.setDate(lastSun.getDate() + 6);
-            dateTo = lastSun.toISOString().split('T')[0];
+            const lsy = lastSun.getFullYear(), lsm = lastSun.getMonth(), lsd = lastSun.getDate();
+            dateTo = [lsy, String(lsm + 1).padStart(2, '0'), String(lsd).padStart(2, '0')].join('-');
             break;
         }
         case 'this_month':
@@ -1381,8 +1405,17 @@ async function renderCreateSupplierInvoicePage() {
     }
     
     const today = invoiceData ? invoiceData.invoice_date : new Date().toISOString().split('T')[0];
-    const supplierId = invoiceData ? invoiceData.supplier_id : '';
-    const supplierName = invoiceData ? invoiceData.supplier_name : '';
+    let supplierId = invoiceData ? invoiceData.supplier_id : '';
+    let supplierName = invoiceData ? invoiceData.supplier_name : '';
+    // Pre-fill supplier when opened from supplier detail "Record New Invoice"
+    if (!isEditMode && window.preferredSupplierForNewInvoice) {
+        supplierId = window.preferredSupplierForNewInvoice;
+        try {
+            const s = await API.suppliers.get(supplierId);
+            if (s) supplierName = s.name || s.company_name || '';
+        } catch (_) {}
+        window.preferredSupplierForNewInvoice = null; // Clear after use
+    }
     const supplierInvoiceNumber = invoiceData ? invoiceData.reference : '';
     const reference = invoiceData ? invoiceData.reference : '';
     
@@ -1515,8 +1548,8 @@ async function renderCreateSupplierInvoicePage() {
     // Set up zoom functionality for Supplier Invoice
     setupDocumentZoom('supplierInvoiceDocumentCard', 'supplierInvoiceZoomLevel');
     
-    // If in edit mode, populate supplier field
-    if (isEditMode && invoiceData && supplierId) {
+    // Populate supplier field (edit mode or pre-filled from supplier detail)
+    if (supplierId) {
         setTimeout(() => {
             const supplierSearchInput = document.getElementById('supplierSearchInvoice');
             const supplierHiddenInput = document.getElementById('supplierIdInvoice');
@@ -2991,11 +3024,12 @@ function updatePurchaseSubNavActiveState() {
     }
     
     // For list pages (orders, invoices, credit-notes, suppliers), highlight active one
+    const effectiveSubPage = (currentPurchaseSubPage === 'supplier-detail' || (currentPurchaseSubPage && currentPurchaseSubPage.startsWith('suppliers-'))) ? 'suppliers' : currentPurchaseSubPage;
     subNavItemsContainer.querySelectorAll('.sub-nav-item').forEach(subItem => {
         const page = subItem.dataset.page;
         const subPage = subItem.dataset.subPage;
-        
-        if (page === 'purchases' && subPage === currentPurchaseSubPage) {
+
+        if (page === 'purchases' && subPage === effectiveSubPage) {
             subItem.classList.add('active');
         } else {
             subItem.classList.remove('active');
@@ -3261,6 +3295,12 @@ function switchPurchaseSubPage(subPage) {
     loadPurchaseSubPage(subPage);
 }
 
+// Open create-invoice page with supplier pre-filled (from supplier detail)
+function openCreateInvoiceWithSupplier(supplierId) {
+    window.preferredSupplierForNewInvoice = supplierId || null;
+    loadPurchaseSubPage('create-invoice');
+}
+
 // When global item search opens "Purchase order" while already on #purchases, switch to create PO sub-page
 if (typeof window !== 'undefined') {
     window.addEventListener('pharmasight-open-pending-document', function (e) {
@@ -3276,8 +3316,8 @@ if (typeof window !== 'undefined') {
 }
 
 // Batch supplier invoice (add stock to inventory)
-async function batchSupplierInvoice(invoiceId, buttonEl) {
-    if (!confirm('Are you sure you want to batch this invoice? This will add stock to inventory and cannot be undone.')) {
+async function batchSupplierInvoice(invoiceId, buttonEl, confirmationsBody) {
+    if (!confirmationsBody && !confirm('Are you sure you want to batch this invoice? This will add stock to inventory and cannot be undone.')) {
         return;
     }
 
@@ -3288,8 +3328,9 @@ async function batchSupplierInvoice(invoiceId, buttonEl) {
             btn.disabled = true;
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Batching...';
         }
-        const result = await API.purchases.batchInvoice(invoiceId);
+        const result = await API.purchases.batchInvoice(invoiceId, confirmationsBody || null);
         showToast('Invoice batched successfully! Stock has been added to inventory.', 'success');
+        if (typeof closeModal === 'function') closeModal();
         // Reload invoices list
         await fetchAndRenderSupplierInvoicesData();
         // If user was on the edit/view page for this invoice, re-render so Batch button disappears
@@ -3303,13 +3344,70 @@ async function batchSupplierInvoice(invoiceId, buttonEl) {
         }
     } catch (error) {
         console.error('Error batching invoice:', error);
-        const msg = (error && error.message) ? error.message : 'Error batching invoice';
-        showToast(msg, 'error');
+        const data = error.data || error.response?.data || {};
+        const detail = data.detail;
+        if (detail && typeof detail === 'object' && detail.code === 'PRICE_CONFIRMATION_REQUIRED') {
+            const items = detail.items || [];
+            if (items.length === 0) {
+                showToast(detail.message || 'Price confirmation required', 'error');
+            } else {
+                showBatchPriceConfirmationModal(invoiceId, items, buttonEl);
+            }
+        } else {
+            const msg = (detail && (typeof detail === 'string' ? detail : detail.message)) || error.message || 'Error batching invoice';
+            showToast(msg, 'error');
+        }
     } finally {
         if (btn && originalHtml) {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
         }
+    }
+}
+
+function showBatchPriceConfirmationModal(invoiceId, items, buttonEl) {
+    const rows = items.map((it, idx) => {
+        const floorNote = it.floor_price != null ? ` (Floor: ${it.floor_price})` : '';
+        const marginNote = it.margin_below_standard ? ' — Margin below standard' : '';
+        return `
+            <div class="form-group" style="margin-bottom:0.75rem;">
+                <label for="batchConfirm_${idx}">${escapeHtml(it.item_name || it.item_id)}${floorNote}${marginNote}</label>
+                <input type="number" id="batchConfirm_${idx}" class="form-input" min="0" step="0.01" 
+                    data-item-id="${escapeHtml(it.item_id)}" data-expected="${it.unit_cost_base}"
+                    placeholder="Re-enter unit cost: ${it.unit_cost_base}">
+            </div>`;
+    }).join('');
+    const content = `
+        <div style="padding:0.5rem 0;">
+            <p style="margin-bottom:1rem; color:var(--warning-text,#856404); font-weight:600;">
+                <i class="fas fa-exclamation-triangle"></i> Some items have a floor price or margin below standard. 
+                Please re-enter the unit cost for each item to confirm you are aware of the price.
+            </p>
+            ${rows}
+        </div>`;
+    const footer = `
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" id="batchConfirmSubmitBtn"><i class="fas fa-check"></i> Confirm & Batch</button>`;
+    if (typeof showModal === 'function') {
+        showModal('Confirm Unit Costs', content, footer);
+    }
+    const submitBtn = document.getElementById('batchConfirmSubmitBtn');
+    if (submitBtn) {
+        submitBtn.onclick = async () => {
+            const confirmations = [];
+            for (let i = 0; i < items.length; i++) {
+                const inp = document.getElementById('batchConfirm_' + i);
+                if (!inp) continue;
+                const val = parseFloat(inp.value);
+                if (isNaN(val) || val < 0) {
+                    showToast('Please enter a valid unit cost for ' + (items[i].item_name || items[i].item_id), 'warning');
+                    inp.focus();
+                    return;
+                }
+                confirmations.push({ item_id: items[i].item_id, unit_cost_base: val });
+            }
+            await batchSupplierInvoice(invoiceId, buttonEl, { confirmations });
+        };
     }
 }
 
@@ -3368,7 +3466,18 @@ if (typeof window !== 'undefined') {
     window.applyPurchaseFilters = applyPurchaseFilters;
     window.renderSuppliersPage = renderSuppliersPage;
     window.filterSuppliers = filterSuppliers;
-    window.editSupplier = editSupplier;
+    window.navigateToSupplierDetail = navigateToSupplierDetail;
+    window.approveSupplierReturn = approveSupplierReturn;
+    window.showNewPaymentModal = showNewPaymentModal;
+    window.showNewPaymentModalWithSupplierSelect = showNewPaymentModalWithSupplierSelect;
+    window.fetchSupplierDashboardData = fetchSupplierDashboardData;
+    window.fetchSupplierPaymentsData = fetchSupplierPaymentsData;
+    window.submitNewPayment = submitNewPayment;
+    window.showAllocatePaymentModal = showAllocatePaymentModal;
+    window.showNewReturnModal = showNewReturnModal;
+    window.submitNewReturn = submitNewReturn;
+    window.viewSupplierInvoice = viewSupplierInvoice;
+    window.openCreateInvoiceWithSupplier = openCreateInvoiceWithSupplier;
     window.savePurchaseDocument = savePurchaseDocument;
     window.filterPurchaseDocuments = filterPurchaseDocuments;
     window.showPurchaseFilters = showPurchaseFilters;
@@ -3467,6 +3576,113 @@ if (typeof window !== 'undefined') {
     console.log('✓ Purchases functions exported to window');
 }
 
+// Supplier Dashboard — date range + metrics (default Today, auto-load on open)
+let supplierDashboardDatePreset = 'today';
+let supplierDashboardDateFrom = '';
+let supplierDashboardDateTo = '';
+
+function renderSupplierDashboardPage() {
+    const page = document.getElementById('purchases');
+    if (!page) return;
+    const range = getSupplierInvoicesDateRange(supplierDashboardDatePreset);
+    const defRange = getSupplierInvoicesDateRange('this_month');
+    const from = supplierDashboardDateFrom || (range ? range.dateFrom : (defRange?.dateFrom || new Date().toISOString().slice(0, 10)));
+    const to = supplierDashboardDateTo || (range ? range.dateTo : (defRange?.dateTo || new Date().toISOString().slice(0, 10)));
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header" style="padding: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-chart-pie"></i> Supplier Dashboard</h3>
+                <div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem;">
+                    <div class="form-group" style="margin: 0;"><label class="form-label" style="font-size: 0.75rem;">Date range</label>
+                    <select id="supplierDashboardPreset" class="form-select" style="min-width: 140px;">
+                        <option value="today" selected>Today</option>
+                        <option value="yesterday">Yesterday</option>
+                        <option value="this_week">This Week</option>
+                        <option value="last_week">Last Week</option>
+                        <option value="last_month">Last Month</option>
+                        <option value="this_month">This Month</option>
+                        <option value="this_year">This Year</option>
+                        <option value="last_year">Last Year</option>
+                        <option value="custom">Custom</option>
+                    </select></div>
+                    <div class="form-group" style="margin: 0; display: ${supplierDashboardDatePreset === 'custom' ? 'flex' : 'none'}; align-items: flex-end; gap: 0.5rem;" id="supplierDashboardCustomDates">
+                        <div><label class="form-label" style="font-size: 0.75rem;">From</label><input type="date" id="supplierDashboardFrom" class="form-input" value="${from}" style="width: 130px;"></div>
+                        <div><label class="form-label" style="font-size: 0.75rem;">To</label><input type="date" id="supplierDashboardTo" class="form-input" value="${to}" style="width: 130px;"></div>
+                    </div>
+                    <button type="button" class="btn btn-primary" id="supplierDashboardApply">Apply</button>
+                </div>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;">
+                <div id="supplierDashboardContent"><div class="spinner"></div></div>
+            </div>
+        </div>
+    `;
+    document.getElementById('supplierDashboardPreset').addEventListener('change', function () {
+        supplierDashboardDatePreset = this.value;
+        const r = getSupplierInvoicesDateRange(supplierDashboardDatePreset);
+        document.getElementById('supplierDashboardCustomDates').style.display = this.value === 'custom' ? 'block' : 'none';
+        if (r && this.value !== 'custom') {
+            document.getElementById('supplierDashboardFrom').value = r.dateFrom;
+            document.getElementById('supplierDashboardTo').value = r.dateTo;
+        }
+    });
+    document.getElementById('supplierDashboardApply').addEventListener('click', () => fetchSupplierDashboardData());
+    // Auto-load with Today on open to avoid empty state
+    fetchSupplierDashboardData();
+}
+
+async function fetchSupplierDashboardData() {
+    const preset = document.getElementById('supplierDashboardPreset')?.value || 'this_month';
+    supplierDashboardDatePreset = preset;
+    let from, to;
+    if (preset === 'custom') {
+        from = document.getElementById('supplierDashboardFrom')?.value;
+        to = document.getElementById('supplierDashboardTo')?.value;
+    } else {
+        const r = getSupplierInvoicesDateRange(preset);
+        from = r?.dateFrom;
+        to = r?.dateTo;
+    }
+    if (!from || !to) {
+        showToast('Select valid date range', 'warning');
+        return;
+    }
+    supplierDashboardDateFrom = from;
+    supplierDashboardDateTo = to;
+    const cont = document.getElementById('supplierDashboardContent');
+    if (!cont) return;
+    cont.innerHTML = '<div class="spinner"></div>';
+    try {
+        const params = { branch_id: CONFIG.BRANCH_ID };
+        const [aging, payments, invoices] = await Promise.all([
+            API.suppliers.getAging({ ...params, as_of_date: to }).catch(() => ({ suppliers: [] })),
+            API.suppliers.listPayments({ ...params, date_from: from, date_to: to, limit: 500 }).catch(() => []),
+            API.purchases.listInvoices({ company_id: CONFIG.COMPANY_ID, ...params, date_from: from, date_to: to }).catch(() => []),
+        ]);
+        const totalOutstanding = (aging.suppliers || []).reduce((s, r) => s + (parseFloat(r.total_outstanding) || 0), 0);
+        const totalOverdue = (aging.suppliers || []).reduce((s, r) => s + (parseFloat(r.overdue_amount) || 0), 0);
+        const purchasesInRange = (invoices || []).filter(inv => inv.status === 'BATCHED').reduce((s, inv) => s + (parseFloat(inv.total_inclusive) || 0), 0);
+        const paymentsInRange = (payments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+        cont.innerHTML = `
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
+                <div class="card" style="padding: 1rem; border-left: 4px solid var(--primary-color);"><div style="font-size: 0.75rem; color: var(--text-secondary);">Total Outstanding</div><div style="font-size: 1.5rem; font-weight: 600;">${fmt(totalOutstanding)}</div></div>
+                <div class="card" style="padding: 1rem; border-left: 4px solid var(--danger-color);"><div style="font-size: 0.75rem; color: var(--text-secondary);">Total Overdue</div><div style="font-size: 1.5rem; font-weight: 600; color: var(--danger-color);">${fmt(totalOverdue)}</div></div>
+                <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">Purchases (${from} to ${to})</div><div style="font-size: 1.5rem; font-weight: 600;">${fmt(purchasesInRange)}</div></div>
+                <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">Payments (${from} to ${to})</div><div style="font-size: 1.5rem; font-weight: 600;">${fmt(paymentsInRange)}</div></div>
+                <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">Suppliers with Balance</div><div style="font-size: 1.5rem; font-weight: 600;">${(aging.suppliers || []).length}</div></div>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 1rem;">
+                <a href="#" class="btn btn-primary" onclick="window.switchPurchaseSubPage && window.switchPurchaseSubPage('invoices'); return false;"><i class="fas fa-file-invoice-dollar"></i> Supplier Invoices</a>
+                <a href="#" class="btn btn-outline" onclick="window.switchPurchaseSubPage && window.switchPurchaseSubPage('suppliers'); return false;"><i class="fas fa-truck"></i> Suppliers Management</a>
+                <a href="#" class="btn btn-outline" onclick="window.switchPurchaseSubPage && window.switchPurchaseSubPage('supplier-payments'); return false;"><i class="fas fa-money-bill-wave"></i> Supplier Payments</a>
+            </div>
+        `;
+    } catch (e) {
+        console.error('Dashboard load error:', e);
+        cont.innerHTML = `<p style="color: var(--danger-color);">Failed to load: ${e.message || 'Unknown error'}</p><button class="btn btn-outline" onclick="fetchSupplierDashboardData()">Retry</button>`;
+    }
+}
+
 // Render suppliers page
 async function renderSuppliersPage() {
     console.log('renderSuppliersPage() called');
@@ -3512,7 +3728,7 @@ async function renderSuppliersPage() {
     renderSuppliersTable();
 }
 
-// Load suppliers from API
+// Load suppliers from API (prefer enriched list with balances)
 async function loadSuppliers() {
     try {
         if (!window.CONFIG || !window.CONFIG.COMPANY_ID) {
@@ -3520,24 +3736,57 @@ async function loadSuppliers() {
             allSuppliers = [];
             return;
         }
-        
-        if (!window.API || !window.API.suppliers || !window.API.suppliers.list) {
-            console.error('API.suppliers.list not available');
-            allSuppliers = [];
-            return;
+        const params = {};
+        if (window.CONFIG.BRANCH_ID) params.branch_id = window.CONFIG.BRANCH_ID;
+        try {
+            if (window.API?.suppliers?.listEnriched) {
+                allSuppliers = await window.API.suppliers.listEnriched(params);
+            } else {
+                throw new Error('listEnriched not available');
+            }
+        } catch (enrichErr) {
+            console.warn('listEnriched failed, falling back to list:', enrichErr?.message);
+            try {
+                const raw = await window.API.suppliers.list(window.CONFIG.COMPANY_ID);
+                const list = Array.isArray(raw) ? raw : (raw?.suppliers || raw || []);
+                allSuppliers = (list || []).map(s => ({
+                    ...(typeof s === 'object' ? s : { id: s?.id, name: s?.name }),
+                    id: s?.id,
+                    name: s?.name || s?.company_name,
+                    outstanding_balance: 0,
+                    overdue_amount: 0,
+                    this_month_purchases: 0
+                }));
+            } catch (listErr) {
+                console.error('list also failed:', listErr);
+                allSuppliers = [];
+            }
         }
-        
-        console.log('Loading suppliers for company:', window.CONFIG.COMPANY_ID);
-        allSuppliers = await window.API.suppliers.list(window.CONFIG.COMPANY_ID);
+        if (!Array.isArray(allSuppliers)) allSuppliers = [];
         console.log('✅ Loaded suppliers:', allSuppliers.length);
     } catch (error) {
         console.error('❌ Error loading suppliers:', error);
-        console.error('Error details:', error.message);
         allSuppliers = [];
     }
 }
 
-// Render suppliers table
+// Format KES for display
+function fmt(num) {
+    if (num == null || isNaN(num)) return '—';
+    return typeof formatCurrency === 'function' ? formatCurrency(num) : 'KES ' + Number(num).toLocaleString('en-KE', { minimumFractionDigits: 2 });
+}
+
+// Supplier row badge/indicator color
+function supplierBalanceBadge(outstanding, overdue) {
+    const ob = parseFloat(outstanding) || 0;
+    const ov = parseFloat(overdue) || 0;
+    if (ob > 0 && ov > 0) return { cls: 'badge-danger', icon: 'fa-exclamation-circle', text: 'Overdue' };
+    if (ob > 0) return { cls: 'badge-warning', icon: 'fa-clock', text: 'Outstanding' };
+    if (ob < 0) return { cls: 'badge-info', icon: 'fa-arrow-down', text: 'Credit Balance' };
+    return { cls: 'badge-success', icon: 'fa-check', text: 'Paid Up' };
+}
+
+// Render suppliers table (enhanced with balance columns, click to open detail)
 function renderSuppliersTable() {
     const container = document.getElementById('suppliersTable');
     if (!container) return;
@@ -3567,9 +3816,8 @@ function renderSuppliersTable() {
     if (filtered.length === 0) {
         container.innerHTML = `
             <div class="text-center" style="padding: 3rem;">
-                <i class="fas fa-truck" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
-                <p style="color: var(--text-secondary);">No suppliers found</p>
-                <p style="color: var(--text-secondary); font-size: 0.875rem;">Click "New Supplier" to create your first supplier</p>
+                <i class="fas fa-search" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
+                <p style="color: var(--text-secondary);">No suppliers match your search</p>
             </div>
         `;
         return;
@@ -3581,52 +3829,49 @@ function renderSuppliersTable() {
                 <thead style="position: sticky; top: 0; background: white; z-index: 20; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
                     <tr>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Name</th>
-                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Contact Person</th>
-                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Phone</th>
-                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Email</th>
-                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">PIN</th>
+                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Outstanding</th>
+                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Overdue</th>
+                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">This Month</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Credit Terms</th>
                         <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Status</th>
-                        <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${filtered.map(supplier => `
-                        <tr>
+                    ${filtered.map(supplier => {
+                        const ob = supplier.outstanding_balance ?? supplier.outstanding ?? 0;
+                        const ov = supplier.overdue_amount ?? supplier.overdue ?? 0;
+                        const tm = supplier.this_month_purchases ?? supplier.this_month ?? 0;
+                        const ct = supplier.credit_terms ?? supplier.default_payment_terms_days;
+                        const badge = supplierBalanceBadge(ob, ov);
+                        const rowClick = `onclick="navigateToSupplierDetail('${supplier.id}')" style="cursor: pointer;"`;
+                        return `
+                        <tr ${rowClick} title="Click to view supplier details">
                             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                                 <strong>${escapeHtml(supplier.name)}</strong>
+                                ${badge.text === 'Overdue' ? '<span class="badge badge-danger" style="margin-left: 0.5rem; font-size: 0.7rem;">Overdue</span>' : ''}
+                                ${badge.text === 'Credit Balance' ? '<span class="badge badge-info" style="margin-left: 0.5rem; font-size: 0.7rem;">Credit</span>' : ''}
                             </td>
+                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${fmt(ob)}</td>
+                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${fmt(ov)}</td>
+                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${fmt(tm)}</td>
+                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${ct ? ct + ' days' : '—'}</td>
                             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                ${escapeHtml(supplier.contact_person || '—')}
-                            </td>
-                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                ${escapeHtml(supplier.phone || '—')}
-                            </td>
-                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                ${escapeHtml(supplier.email || '—')}
-                            </td>
-                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                ${escapeHtml(supplier.pin || '—')}
-                            </td>
-                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                ${supplier.credit_terms ? `${supplier.credit_terms} days` : '—'}
-                            </td>
-                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                <span class="badge ${supplier.is_active ? 'badge-success' : 'badge-danger'}">
-                                    ${supplier.is_active ? 'Active' : 'Inactive'}
+                                <span class="badge ${supplier.is_active !== false ? 'badge-success' : 'badge-danger'}">
+                                    ${supplier.is_active !== false ? 'Active' : 'Inactive'}
                                 </span>
                             </td>
-                            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                <button class="btn btn-outline" onclick="editSupplier('${supplier.id}')" title="Edit">
-                                    <i class="fas fa-edit"></i>
-                                </button>
-                            </td>
                         </tr>
-                    `).join('')}
+                    `}).join('')}
                 </tbody>
             </table>
         </div>
     `;
+}
+
+// Navigate to supplier detail (hash triggers loadPage -> supplier detail)
+function navigateToSupplierDetail(supplierId) {
+    window.currentSupplierDetailId = supplierId;
+    window.location.hash = '#purchases-suppliers-' + supplierId;
 }
 
 // Filter suppliers
@@ -3642,10 +3887,1027 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Edit supplier (placeholder)
-function editSupplier(supplierId) {
-    // TODO: Implement supplier editing
-    showToast('Supplier editing coming soon', 'info');
+// =====================================================
+// SUPPLIER DETAIL PAGE
+// =====================================================
+let currentSupplierDetail = null;
+let currentSupplierTab = 'profile';
+
+async function renderSupplierDetailPage(supplierId) {
+    const page = document.getElementById('purchases');
+    if (!page || !supplierId) {
+        if (window.switchPurchaseSubPage) window.switchPurchaseSubPage('suppliers');
+        return;
+    }
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; gap: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <button class="btn btn-outline" onclick="window.currentSupplierDetailId=null; window.switchPurchaseSubPage('suppliers')" title="Back to suppliers">
+                        <i class="fas fa-arrow-left"></i>
+                    </button>
+                    <h3 class="card-title" style="margin: 0; font-size: 1.25rem;" id="supplierDetailTitle">Loading...</h3>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn btn-primary" onclick="showNewPaymentModal('${supplierId}')"><i class="fas fa-money-bill-wave"></i> New Payment</button>
+                    <button class="btn btn-outline" onclick="showNewReturnModal('${supplierId}')"><i class="fas fa-undo"></i> New Return</button>
+                    <button class="btn btn-outline" onclick="openCreateInvoiceWithSupplier('${supplierId}')"><i class="fas fa-file-invoice"></i> Record Invoice</button>
+                </div>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;">
+                <div id="supplierSummaryCards" class="summary-cards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;"></div>
+                <div class="tabs" style="border-bottom: 1px solid var(--border-color); margin-bottom: 1rem;">
+                    <button class="tab-btn active" data-tab="overview">Overview</button>
+                    <button class="tab-btn" data-tab="profile">Profile</button>
+                    <button class="tab-btn" data-tab="invoices">Invoices</button>
+                    <button class="tab-btn" data-tab="payments">Payments</button>
+                    <button class="tab-btn" data-tab="returns">Returns</button>
+                    <button class="tab-btn" data-tab="ledger">Ledger</button>
+                    <button class="tab-btn" data-tab="statement">Statement</button>
+                    <button class="tab-btn" data-tab="aging">Aging</button>
+                    <button class="tab-btn" data-tab="metrics">Metrics</button>
+                </div>
+                <div id="supplierTabContent"></div>
+            </div>
+        </div>
+    `;
+    currentSupplierTab = 'overview';
+    page.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            currentSupplierTab = btn.dataset.tab;
+            page.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderSupplierTabContent(supplierId, currentSupplierTab);
+        });
+    });
+    try {
+        const [supplier, aging] = await Promise.all([
+            API.suppliers.get(supplierId),
+            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }).catch(() => ({ suppliers: [] })),
+        ]);
+        currentSupplierDetail = supplier;
+        document.getElementById('supplierDetailTitle').textContent = supplier.name || 'Supplier';
+        const row = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
+        const ob = row ? parseFloat(row.total_outstanding) || 0 : 0;
+        const ov = row ? parseFloat(row.overdue_amount) || 0 : 0;
+        const metrics = await API.suppliers.getMetrics(new Date().toISOString().slice(0, 7), { branch_id: CONFIG.BRANCH_ID }).catch(() => ({}));
+        const topSupplier = (metrics.top_suppliers_by_purchase || []).find(s => String(s.supplier_id) === String(supplierId));
+        const thisMonth = topSupplier ? parseFloat(topSupplier.total) || 0 : 0;
+        const paymentsThisMonth = 0;
+        renderSupplierSummaryCards({ outstanding: ob, overdue: ov, thisMonthPurchases: thisMonth, thisMonthPayments: paymentsThisMonth, creditLimit: supplier.credit_limit });
+        renderSupplierTabContent(supplierId, currentSupplierTab);
+    } catch (e) {
+        console.error('Supplier detail load error:', e);
+        document.getElementById('supplierDetailTitle').textContent = 'Error loading supplier';
+        document.getElementById('supplierSummaryCards').innerHTML = '<p style="color: var(--danger-color);">Failed to load supplier data.</p>';
+    }
+}
+
+async function refreshSupplierDetailAfterAction(supplierId) {
+    if (!supplierId || !window.currentSupplierDetailId || String(window.currentSupplierDetailId) !== String(supplierId)) return;
+    const cont = document.getElementById('supplierSummaryCards');
+    if (!cont) return;
+    try {
+        const [supplier, aging, metrics] = await Promise.all([
+            API.suppliers.get(supplierId),
+            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }).catch(() => ({ suppliers: [] })),
+            API.suppliers.getMetrics(new Date().toISOString().slice(0, 7), { branch_id: CONFIG.BRANCH_ID }).catch(() => ({})),
+        ]);
+        currentSupplierDetail = supplier;
+        const row = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
+        const ob = row ? parseFloat(row.total_outstanding) || 0 : 0;
+        const ov = row ? parseFloat(row.overdue_amount) || 0 : 0;
+        const topSupplier = (metrics.top_suppliers_by_purchase || []).find(s => String(s.supplier_id) === String(supplierId));
+        const thisMonth = topSupplier ? parseFloat(topSupplier.total) || 0 : 0;
+        const paymentsThisMonth = 0;
+        renderSupplierSummaryCards({ outstanding: ob, overdue: ov, thisMonthPurchases: thisMonth, thisMonthPayments: paymentsThisMonth, creditLimit: supplier.credit_limit });
+        await renderSupplierTabContent(supplierId, currentSupplierTab);
+    } catch (_) {}
+}
+
+function renderSupplierSummaryCards(data) {
+    const cont = document.getElementById('supplierSummaryCards');
+    if (!cont) return;
+    const { outstanding, overdue, thisMonthPurchases, thisMonthPayments, creditLimit } = data || {};
+    const cards = [
+        { label: 'Outstanding Balance', value: outstanding, formatter: 'currency', cls: outstanding > 0 ? (overdue > 0 ? 'border-danger' : 'border-warning') : (outstanding < 0 ? 'border-info' : 'border-success') },
+        { label: 'Overdue Amount', value: overdue, formatter: 'currency', cls: overdue > 0 ? 'border-danger' : '' },
+        { label: 'This Month Purchases', value: thisMonthPurchases, formatter: 'currency' },
+        { label: 'This Month Payments', value: thisMonthPayments, formatter: 'currency' },
+    ];
+    if (creditLimit != null && creditLimit > 0) {
+        cards.push({ label: 'Credit Limit', value: creditLimit, formatter: 'currency' });
+    }
+    if (outstanding < 0) {
+        cards.push({ label: 'Credit Balance', value: Math.abs(outstanding), formatter: 'currency', cls: 'border-info' });
+    }
+    cont.innerHTML = cards.map(c => `
+        <div class="card" style="padding: 1rem; border-left: 4px solid var(--primary-color); ${c.cls ? 'border-left-color: var(--' + c.cls.replace('border-','') + '-color, #6c757d);' : ''}">
+            <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.25rem;">${c.label}</div>
+            <div style="font-size: 1.25rem; font-weight: 600;">${c.formatter === 'currency' ? fmt(c.value) : (c.value ?? '—')}</div>
+        </div>
+    `).join('');
+}
+
+async function renderSupplierTabContent(supplierId, tab) {
+    const cont = document.getElementById('supplierTabContent');
+    if (!cont) return;
+    cont.innerHTML = '<div class="spinner"></div>';
+    try {
+        if (tab === 'overview') {
+            await renderSupplierOverviewTab(supplierId, cont);
+        } else if (tab === 'profile') {
+            await renderSupplierProfileTab(supplierId, cont);
+        } else if (tab === 'invoices') {
+            await renderSupplierInvoicesTab(supplierId, cont);
+        } else if (tab === 'payments') {
+            await renderSupplierPaymentsTab(supplierId, cont);
+        } else if (tab === 'returns') {
+            await renderSupplierReturnsTab(supplierId, cont);
+        } else if (tab === 'ledger') {
+            await renderSupplierLedgerTab(supplierId, cont);
+        } else if (tab === 'statement') {
+            await renderSupplierStatementTab(supplierId, cont);
+        } else if (tab === 'aging') {
+            await renderSupplierAgingTab(supplierId, cont);
+        } else if (tab === 'metrics') {
+            await renderSupplierMetricsTab(supplierId, cont);
+        }
+    } catch (e) {
+        console.error('Tab load error:', e);
+        cont.innerHTML = '<p style="color: var(--danger-color);">Failed to load tab data.</p>';
+    }
+}
+
+async function renderSupplierOverviewTab(supplierId, cont) {
+    const now = new Date();
+    const month = now.toISOString().slice(0, 7);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+    let metrics = {};
+    let agingRow = null;
+    let lastPayment = null;
+    let paymentsList = [];
+    let returnsList = [];
+    try {
+        const [m, aging, payments, returns, lastPay] = await Promise.all([
+            API.suppliers.getMetrics(month, { branch_id: CONFIG.BRANCH_ID }),
+            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }),
+            API.suppliers.listPayments({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, date_from: monthStart, date_to: monthEnd, limit: 500 }),
+            API.suppliers.listReturns({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, limit: 500 }),
+            API.suppliers.listPayments({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, limit: 1 }),
+        ]);
+        metrics = m || {};
+        agingRow = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
+        paymentsList = payments || [];
+        returnsList = returns || [];
+        lastPayment = (lastPay && lastPay[0]) ? lastPay[0] : null;
+    } catch (_) {}
+    const topSupplier = (metrics.top_suppliers_by_purchase || []).find(s => String(s.supplier_id) === String(supplierId));
+    const outstanding = agingRow ? parseFloat(agingRow.total_outstanding) || 0 : 0;
+    const overdue = agingRow ? parseFloat(agingRow.overdue_amount) || 0 : 0;
+    const thisMonthPurchases = topSupplier ? parseFloat(topSupplier.total) || 0 : 0;
+    const thisMonthPayments = (paymentsList || []).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    const thisMonthReturns = (returnsList || []).filter(r => {
+        if (r.status !== 'credited') return false;
+        const d = r.return_date ? new Date(r.return_date) : null;
+        return d && d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    }).reduce((sum, r) => sum + (parseFloat(r.total_value) || 0), 0);
+    const lastPaymentDate = lastPayment && lastPayment.payment_date ? new Date(lastPayment.payment_date).toLocaleDateString('en-KE') : '—';
+    const avgPaymentDays = metrics.average_payment_days != null ? Number(metrics.average_payment_days).toFixed(1) : '—';
+    cont.innerHTML = `
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+            <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">Outstanding</div><div style="font-size: 1.25rem; font-weight: 600;">${fmt(outstanding)}</div></div>
+            <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">Overdue</div><div style="font-size: 1.25rem; font-weight: 600; color: var(--danger-color);">${fmt(overdue)}</div></div>
+            <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">This Month Purchases</div><div style="font-size: 1.25rem; font-weight: 600;">${fmt(thisMonthPurchases)}</div></div>
+            <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">This Month Payments</div><div style="font-size: 1.25rem; font-weight: 600;">${fmt(thisMonthPayments)}</div></div>
+            <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">This Month Returns</div><div style="font-size: 1.25rem; font-weight: 600;">${fmt(thisMonthReturns)}</div></div>
+            <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">Last Payment Date</div><div style="font-size: 1.1rem; font-weight: 600;">${lastPaymentDate}</div></div>
+            <div class="card" style="padding: 1rem;"><div style="font-size: 0.75rem; color: var(--text-secondary);">Avg Payment Days</div><div style="font-size: 1.1rem; font-weight: 600;">${avgPaymentDays}</div></div>
+        </div>
+    `;
+}
+
+async function renderSupplierProfileTab(supplierId, cont) {
+    const s = currentSupplierDetail || await API.suppliers.get(supplierId);
+    currentSupplierDetail = s;
+    cont.innerHTML = `
+        <form id="supplierProfileForm" style="max-width: 600px;">
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" name="name" value="${escapeHtml(s.name || '')}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">Contact Person</label><input type="text" class="form-input" name="contact_person" value="${escapeHtml(s.contact_person || '')}"></div>
+                <div class="form-group"><label class="form-label">Phone</label><input type="text" class="form-input" name="phone" value="${escapeHtml(s.phone || '')}"></div>
+            </div>
+            <div class="form-group"><label class="form-label">Email</label><input type="email" class="form-input" name="email" value="${escapeHtml(s.email || '')}"></div>
+            <div class="form-group"><label class="form-label">Address</label><textarea class="form-textarea" name="address" rows="2">${escapeHtml(s.address || '')}</textarea></div>
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">Credit Terms (days)</label><input type="number" class="form-input" name="credit_terms" value="${s.credit_terms ?? s.default_payment_terms_days ?? ''}" min="0" placeholder="e.g. 30"></div>
+                <div class="form-group"><label class="form-label">Credit Limit (KES)</label><input type="number" class="form-input" name="credit_limit" value="${s.credit_limit ?? ''}" min="0" step="0.01" placeholder="Optional"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">Opening Balance</label><input type="number" class="form-input" name="opening_balance" value="${s.opening_balance ?? 0}" step="0.01"></div>
+                <div class="form-group" style="display: flex; align-items: flex-end;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                        <input type="checkbox" name="allow_over_credit" ${(s.allow_over_credit || false) ? 'checked' : ''}> Allow over credit
+                    </label>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Changes</button>
+        </form>
+    `;
+    cont.querySelector('form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        try {
+            await API.suppliers.update(supplierId, {
+                name: fd.get('name'),
+                contact_person: fd.get('contact_person') || null,
+                phone: fd.get('phone') || null,
+                email: fd.get('email') || null,
+                address: fd.get('address') || null,
+                credit_terms: fd.get('credit_terms') ? parseInt(fd.get('credit_terms'), 10) : null,
+                credit_limit: fd.get('credit_limit') ? parseFloat(fd.get('credit_limit')) : null,
+                opening_balance: fd.get('opening_balance') != null ? parseFloat(fd.get('opening_balance')) : null,
+                allow_over_credit: fd.get('allow_over_credit') === 'on',
+            });
+            showToast('Supplier updated', 'success');
+            currentSupplierDetail = await API.suppliers.get(supplierId);
+        } catch (err) {
+            showToast(err.message || 'Failed to update', 'error');
+        }
+    });
+}
+
+async function renderSupplierInvoicesTab(supplierId, cont) {
+    const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId };
+    if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+    const invoices = await API.purchases.listInvoices(params);
+    if (!invoices || invoices.length === 0) {
+        cont.innerHTML = '<div class="text-center" style="padding: 2rem;"><i class="fas fa-file-invoice" style="font-size: 2rem; color: var(--text-secondary);"></i><p>No invoices</p><a href="#" class="btn btn-primary" onclick="window.openCreateInvoiceWithSupplier(\'' + supplierId + '\'); return false;">Record New Invoice</a></div>';
+        return;
+    }
+    cont.innerHTML = `
+        <div style="margin-bottom: 1rem;"><a href="#" class="btn btn-primary" onclick="window.openCreateInvoiceWithSupplier('${supplierId}'); return false;"><i class="fas fa-plus"></i> Record New Invoice</a></div>
+        <div class="table-container" style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead><tr><th>Date</th><th>Invoice No</th><th>Due Date</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>${invoices.map(inv => {
+                    const status = inv.status === 'DRAFT' ? 'Draft' : inv.payment_status === 'PAID' ? 'Paid' : inv.payment_status === 'PARTIAL' ? 'Partially Paid' : (inv.due_date && new Date(inv.due_date) < new Date() && (parseFloat(inv.balance) || 0) > 0 ? 'Overdue' : 'Posted');
+                    const statusCls = status === 'Draft' ? 'badge-secondary' : status === 'Overdue' ? 'badge-danger' : status === 'Paid' ? 'badge-success' : status === 'Partially Paid' ? 'badge-warning' : 'badge-info';
+                    return `<tr>
+                        <td>${inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString('en-KE') : '—'}</td>
+                        <td>${escapeHtml(inv.invoice_number || '—')}</td>
+                        <td>${inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-KE') : '—'}</td>
+                        <td>${fmt(inv.total_inclusive)}</td>
+                        <td>${fmt(inv.amount_paid)}</td>
+                        <td>${fmt(inv.balance)}</td>
+                        <td><span class="badge ${statusCls}">${status}</span></td>
+                        <td><button class="btn btn-outline btn-sm" onclick="viewSupplierInvoice('${inv.id}')">View</button> ${(parseFloat(inv.balance) || 0) > 0 ? `<button class="btn btn-primary btn-sm" onclick="showAllocatePaymentModal('${inv.id}','${supplierId}')">Allocate Payment</button>` : ''} <button class="btn btn-outline btn-sm" onclick="showNewReturnModal('${supplierId}', '${inv.id}')" title="New return linked to this invoice">Return</button></td>
+                    </tr>`;
+                }).join('')}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+async function renderSupplierPaymentsTab(supplierId, cont) {
+    const params = { supplier_id: supplierId };
+    if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+    let payments = [];
+    try { payments = await API.suppliers.listPayments(params); } catch (_) {}
+    cont.innerHTML = `
+        <div style="margin-bottom: 1rem; display: flex; justify-content: flex-end;"><button class="btn btn-primary" onclick="showNewPaymentModal('${supplierId}')"><i class="fas fa-plus"></i> New Payment</button></div>
+        <div class="table-container" style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th>Amount</th><th>Allocated</th><th>Actions</th></tr></thead>
+                <tbody>${(payments && payments.length) ? payments.map(p => `
+                    <tr>
+                        <td>${p.payment_date ? new Date(p.payment_date).toLocaleDateString('en-KE') : '—'}</td>
+                        <td>${escapeHtml(p.method || '—')}</td>
+                        <td>${escapeHtml(p.reference || '—')}</td>
+                        <td>${fmt(p.amount)}</td>
+                        <td>${p.is_allocated ? 'Yes' : 'No'}</td>
+                        <td>—</td>
+                    </tr>
+                `).join('') : '<tr><td colspan="6" style="text-align: center; padding: 2rem;">No payments recorded</td></tr>'}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+async function renderSupplierReturnsTab(supplierId, cont) {
+    const params = { supplier_id: supplierId };
+    if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+    let returns = [];
+    try { returns = await API.suppliers.listReturns(params); } catch (_) {}
+    cont.innerHTML = `
+        <div style="margin-bottom: 1rem;"><button class="btn btn-primary" onclick="showNewReturnModal('${supplierId}')"><i class="fas fa-plus"></i> New Return</button></div>
+        <div class="table-container" style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead><tr><th>Date</th><th>Linked Invoice</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>${(returns && returns.length) ? returns.map(r => {
+                    const statusCls = r.status === 'credited' ? 'badge-success' : r.status === 'pending' ? 'badge-warning' : r.status === 'rejected' ? 'badge-danger' : 'badge-info';
+                    return `<tr>
+                        <td>${r.return_date ? new Date(r.return_date).toLocaleDateString('en-KE') : '—'}</td>
+                        <td>${r.linked_invoice_id ? 'Yes' : '—'}</td>
+                        <td>${fmt(r.total_value)}</td>
+                        <td><span class="badge ${statusCls}">${r.status || '—'}</span></td>
+                        <td>${r.status === 'pending' ? `<button class="btn btn-primary btn-sm" onclick="approveSupplierReturn('${r.id}')">Approve</button>` : '—'}</td>
+                    </tr>`;
+                }).join('') : '<tr><td colspan="5" style="text-align: center; padding: 2rem;">No returns</td></tr>'}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+async function approveSupplierReturn(returnId) {
+    if (!confirm('Approve this return? Stock will be reduced and supplier balance credited.')) return;
+    const supplierId = window.currentSupplierDetailId;
+    try {
+        await API.suppliers.approveReturn(returnId);
+        showToast('Return approved', 'success');
+        if (supplierId) refreshSupplierDetailAfterAction(supplierId);
+        else if (document.getElementById('supplierTabContent')) renderSupplierTabContent(supplierId, 'returns');
+    } catch (e) {
+        showToast(e.message || 'Failed to approve', 'error');
+    }
+}
+
+const supplierLedgerDateFrom = {};
+const supplierLedgerDateTo = {};
+const SUPPLIER_LEDGER_PAGE_SIZE = 100;
+
+async function renderSupplierLedgerTab(supplierId, cont) {
+    const now = new Date();
+    const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const defaultTo = now.toISOString().slice(0, 10);
+    const from = supplierLedgerDateFrom[supplierId] || defaultFrom;
+    const to = supplierLedgerDateTo[supplierId] || defaultTo;
+    const params = { supplier_id: supplierId, date_from: from, date_to: to, limit: SUPPLIER_LEDGER_PAGE_SIZE, offset: 0 };
+    if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+    let entries = [];
+    try { entries = await API.suppliers.listLedger(params); } catch (_) {}
+    let bal = 0;
+    cont.innerHTML = `
+        <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem; align-items: flex-end;">
+            <div class="form-group" style="margin: 0;"><label class="form-label">From</label><input type="date" id="ledgerDateFrom" class="form-input" value="${from}"></div>
+            <div class="form-group" style="margin: 0;"><label class="form-label">To</label><input type="date" id="ledgerDateTo" class="form-input" value="${to}"></div>
+            <button type="button" class="btn btn-primary" id="ledgerApplyFilter">Apply</button>
+        </div>
+        <div class="table-container" style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>Debit</th><th>Credit</th><th>Balance</th></tr></thead>
+                <tbody>${(entries && entries.length) ? entries.map(e => {
+                    const runBal = e.running_balance != null ? parseFloat(e.running_balance) : (bal += (parseFloat(e.debit) || 0) - (parseFloat(e.credit) || 0));
+                    if (e.running_balance != null) bal = runBal;
+                    return `<tr>
+                        <td>${e.date ? new Date(e.date).toLocaleDateString('en-KE') : '—'}</td>
+                        <td>${escapeHtml(e.entry_type || '—')}</td>
+                        <td>${e.reference_id ? String(e.reference_id).slice(0, 8) : '—'}</td>
+                        <td style="color: ${(parseFloat(e.debit) || 0) > 0 ? 'var(--danger-color)' : ''}">${fmt(e.debit)}</td>
+                        <td style="color: ${(parseFloat(e.credit) || 0) > 0 ? 'var(--success-color)' : ''}">${fmt(e.credit)}</td>
+                        <td>${fmt(runBal)}</td>
+                    </tr>`;
+                }).join('') : '<tr><td colspan="6" style="text-align: center; padding: 2rem;">No ledger entries for this range</td></tr>'}</tbody>
+            </table>
+        </div>
+    `;
+    document.getElementById('ledgerApplyFilter').addEventListener('click', () => {
+        supplierLedgerDateFrom[supplierId] = document.getElementById('ledgerDateFrom').value;
+        supplierLedgerDateTo[supplierId] = document.getElementById('ledgerDateTo').value;
+        renderSupplierTabContent(supplierId, 'ledger');
+    });
+}
+
+const supplierStatementDateFrom = {};
+const supplierStatementDateTo = {};
+
+async function renderSupplierStatementTab(supplierId, cont) {
+    const today = new Date();
+    const defaultFrom = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+    const defaultTo = today.toISOString().slice(0, 10);
+    const fromDate = supplierStatementDateFrom[supplierId] || defaultFrom;
+    const toDate = supplierStatementDateTo[supplierId] || defaultTo;
+    cont.innerHTML = '<div class="spinner"></div>';
+    let agingRow = null;
+    try {
+        const [st, aging] = await Promise.all([
+            API.suppliers.getStatement({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, from_date: fromDate, to_date: toDate }),
+            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }),
+        ]);
+        agingRow = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
+        const systemOutstanding = agingRow ? parseFloat(agingRow.total_outstanding) || 0 : 0;
+        const closingBalance = parseFloat(st.closing_balance) || 0;
+        const matchNote = Math.abs(systemOutstanding - closingBalance) < 0.01
+            ? '<p style="font-size: 0.875rem; color: var(--success-color); margin-top: 0.5rem;">Statement matches system outstanding.</p>'
+            : '<p style="font-size: 0.875rem; color: var(--warning-color); margin-top: 0.5rem;">If this differs from the supplier\'s statement, investigate via the Ledger tab.</p>';
+        cont.innerHTML = `
+            <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem; align-items: flex-end;">
+                <div class="form-group" style="margin: 0;"><label class="form-label">From</label><input type="date" id="statementDateFrom" class="form-input" value="${fromDate}"></div>
+                <div class="form-group" style="margin: 0;"><label class="form-label">To</label><input type="date" id="statementDateTo" class="form-input" value="${toDate}"></div>
+                <button type="button" class="btn btn-primary" id="statementApplyFilter">Apply</button>
+            </div>
+            <div id="supplierStatementPrint" style="background: white; padding: 1.5rem;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 1.5rem;">
+                    <div><h4>${escapeHtml(st.supplier_name)}</h4><p>Period: ${st.from_date} to ${st.to_date}</p><p>Opening: ${fmt(st.opening_balance)}</p></div>
+                    <button class="btn btn-primary" onclick="window.print();"><i class="fas fa-print"></i> Print</button>
+                </div>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead><tr><th>Date</th><th>Description</th><th>Reference</th><th>Debit</th><th>Credit</th><th>Balance</th></tr></thead>
+                    <tbody>${(st.lines || []).map(l => `
+                        <tr>
+                            <td>${l.date ? new Date(l.date).toLocaleDateString('en-KE') : '—'}</td>
+                            <td>${escapeHtml(l.description || '')}</td>
+                            <td>${escapeHtml(l.reference || '')}</td>
+                            <td>${fmt(l.debit)}</td>
+                            <td>${fmt(l.credit)}</td>
+                            <td>${fmt(l.balance)}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>
+                <div style="margin-top: 1rem;">
+                    <div style="font-weight: 600;">Statement Closing Balance: ${fmt(closingBalance)}</div>
+                    <div style="font-size: 0.875rem; color: var(--text-secondary);">System Outstanding: ${fmt(systemOutstanding)}</div>
+                    ${matchNote}
+                </div>
+            </div>
+        `;
+        document.getElementById('statementApplyFilter').addEventListener('click', () => {
+            supplierStatementDateFrom[supplierId] = document.getElementById('statementDateFrom').value;
+            supplierStatementDateTo[supplierId] = document.getElementById('statementDateTo').value;
+            renderSupplierTabContent(supplierId, 'statement');
+        });
+    } catch (_) {
+        cont.innerHTML = '<p>Failed to load statement.</p>';
+    }
+}
+
+async function renderSupplierAgingTab(supplierId, cont) {
+    const aging = await API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID });
+    const row = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
+    if (!row) {
+        cont.innerHTML = '<p>No aging data for this supplier (no outstanding invoices).</p>';
+        return;
+    }
+    cont.innerHTML = `
+        <table style="width: 100%; max-width: 400px; border-collapse: collapse;">
+            <tr><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">Current (0–30 days)</td><td style="text-align: right; padding: 0.5rem;">${fmt(row.bucket_0_30)}</td></tr>
+            <tr><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">31–60 days</td><td style="text-align: right; padding: 0.5rem;">${fmt(row.bucket_31_60)}</td></tr>
+            <tr><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">61–90 days</td><td style="text-align: right; padding: 0.5rem;">${fmt(row.bucket_61_90)}</td></tr>
+            <tr><td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">90+ days</td><td style="text-align: right; padding: 0.5rem;">${fmt(row.bucket_90_plus)}</td></tr>
+            <tr style="font-weight: 600;"><td style="padding: 0.5rem;">Total Outstanding</td><td style="text-align: right; padding: 0.5rem;">${fmt(row.total_outstanding)}</td></tr>
+        </table>
+    `;
+}
+
+async function renderSupplierMetricsTab(supplierId, cont) {
+    const month = new Date().toISOString().slice(0, 7);
+    let metrics = {};
+    let agingRow = null;
+    try {
+        const [m, aging] = await Promise.all([
+            API.suppliers.getMetrics(month, { branch_id: CONFIG.BRANCH_ID }),
+            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }),
+        ]);
+        metrics = m || {};
+        agingRow = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
+    } catch (_) {}
+    const topSupplier = (metrics.top_suppliers_by_purchase || []).find(s => String(s.supplier_id) === String(supplierId));
+    const supplierTotal = topSupplier ? parseFloat(topSupplier.total) || 0 : 0;
+    cont.innerHTML = `
+        <div class="card" style="padding: 1rem; margin-bottom: 1rem;">
+            <h4 style="margin: 0 0 1rem 0;">Company metrics (${month})</h4>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem;">
+                <div><span style="font-size: 0.75rem; color: var(--text-secondary);">Total Purchases</span><div style="font-weight: 600;">${fmt(metrics.total_purchases)}</div></div>
+                <div><span style="font-size: 0.75rem; color: var(--text-secondary);">Total Payments</span><div style="font-weight: 600;">${fmt(metrics.total_payments)}</div></div>
+                <div><span style="font-size: 0.75rem; color: var(--text-secondary);">Total Returns</span><div style="font-weight: 600;">${fmt(metrics.total_returns)}</div></div>
+                <div><span style="font-size: 0.75rem; color: var(--text-secondary);">Net Outstanding</span><div style="font-weight: 600;">${fmt(metrics.net_outstanding)}</div></div>
+                <div><span style="font-size: 0.75rem; color: var(--text-secondary);">Overdue</span><div style="font-weight: 600; color: var(--danger-color);">${fmt(metrics.overdue_amount)}</div></div>
+                <div><span style="font-size: 0.75rem; color: var(--text-secondary);">Avg Payment Days</span><div style="font-weight: 600;">${metrics.average_payment_days != null ? Number(metrics.average_payment_days).toFixed(1) : '—'}</div></div>
+            </div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+            <h4 style="margin: 0 0 1rem 0;">This supplier (${month})</h4>
+            <p><strong>This month purchases:</strong> ${fmt(supplierTotal)}</p>
+            <p><strong>Outstanding (from aging):</strong> ${fmt(agingRow ? agingRow.total_outstanding : 0)}</p>
+            <p><strong>Overdue:</strong> ${fmt(agingRow ? agingRow.overdue_amount : 0)}</p>
+        </div>
+    `;
+}
+
+// New Payment Modal with full allocation UI
+async function showNewPaymentModal(supplierId) {
+    const payDate = new Date().toISOString().slice(0, 10);
+    let unpaidInvoices = [];
+    try {
+        const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId };
+        if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+        const list = await API.purchases.listInvoices(params);
+        unpaidInvoices = (list || []).filter(inv => inv.status === 'BATCHED' && (parseFloat(inv.balance) || 0) > 0);
+    } catch (e) {
+        console.warn('Could not load invoices for allocation:', e);
+    }
+    const allocationRows = unpaidInvoices.map(inv => {
+        const bal = parseFloat(inv.balance) || 0;
+        return {
+            id: inv.id,
+            invoice_number: inv.invoice_number || '—',
+            due_date: inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-KE') : '—',
+            total: parseFloat(inv.total_inclusive) || 0,
+            balance: bal,
+        };
+    });
+    const tableBody = allocationRows.length === 0
+        ? '<tr><td colspan="6" style="padding: 1rem; color: var(--text-secondary);">No unpaid (posted) invoices. Unallocated amount will become supplier credit.</td></tr>'
+        : allocationRows.map((row, i) => `
+            <tr data-invoice-id="${row.id}" data-balance="${row.balance}">
+                <td style="padding: 0.5rem;">${escapeHtml(row.invoice_number)}</td>
+                <td style="padding: 0.5rem;">${row.due_date}</td>
+                <td style="padding: 0.5rem; text-align: right;">${fmt(row.total)}</td>
+                <td style="padding: 0.5rem; text-align: right;">${fmt(row.balance)}</td>
+                <td style="padding: 0.5rem;"><input type="checkbox" class="alloc-check" data-idx="${i}" data-balance="${row.balance}"></td>
+                <td style="padding: 0.5rem;"><input type="number" class="form-input alloc-amount" data-invoice-id="${row.id}" data-balance="${row.balance}" step="0.01" min="0" max="${row.balance}" placeholder="0" style="width: 100px; text-align: right;"></td>
+            </tr>
+        `).join('');
+    const content = `
+        <form id="newPaymentForm">
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">Payment Date *</label><input type="date" class="form-input" name="payment_date" value="${payDate}" required></div>
+                <div class="form-group"><label class="form-label">Method *</label><select class="form-select" name="method" id="newPaymentMethod" required><option value="cash">Cash</option><option value="bank">Bank</option><option value="mpesa">MPesa</option><option value="card">Card</option><option value="cheque">Cheque</option></select></div>
+            </div>
+            <div class="form-group" id="newPaymentRefGroup"><label class="form-label" id="newPaymentRefLabel">Reference</label><input type="text" class="form-input" name="reference" id="newPaymentRefInput" placeholder="Optional"></div>
+            <div class="form-group"><label class="form-label">Amount (KES) *</label><input type="number" id="newPaymentAmount" class="form-input" name="amount" step="0.01" min="0.01" required></div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label class="form-label">Allocate to invoices</label>
+                <div class="table-container" style="overflow-x: auto; max-height: 220px; overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                        <thead><tr><th>Invoice</th><th>Due Date</th><th>Total</th><th>Balance</th><th>Allocate?</th><th>Amount (KES)</th></tr></thead>
+                        <tbody id="newPaymentAllocTbody">${tableBody}</tbody>
+                    </table>
+                </div>
+                <div id="newPaymentAllocSummary" style="margin-top: 0.75rem; padding: 0.5rem; background: var(--bg-secondary, #f5f5f5); border-radius: 0.25rem; font-size: 0.875rem;">
+                    Payment Amount: KES 0.00 &nbsp;|&nbsp; Total Allocated: KES 0.00 &nbsp;|&nbsp; Unallocated: KES 0.00
+                </div>
+                <p id="newPaymentUnallocatedWarning" style="display: none; font-size: 0.875rem; color: var(--warning-color, #856404); margin-top: 0.5rem;">Unallocated amount will remain as supplier credit.</p>
+            </div>
+        </form>
+    `;
+    const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="submitNewPaymentBtn" onclick="submitNewPayment('${supplierId}')">Record Payment</button>`;
+    showModal('New Payment', content, footer);
+    const CASHLESS_METHODS = ['mpesa', 'bank', 'card', 'cheque'];
+    const methodEl = document.getElementById('newPaymentMethod');
+    const refInput = document.getElementById('newPaymentRefInput');
+    const refLabel = document.getElementById('newPaymentRefLabel');
+    function updateRefRequired() {
+        const m = (methodEl?.value || '').toLowerCase();
+        const needsRef = CASHLESS_METHODS.includes(m);
+        if (refInput) { refInput.required = needsRef; refInput.placeholder = needsRef ? 'M-Pesa code, transaction ID, cheque number, etc. *' : 'Optional'; }
+        if (refLabel) refLabel.textContent = needsRef ? 'Reference *' : 'Reference';
+    }
+    if (methodEl) methodEl.addEventListener('change', updateRefRequired);
+    updateRefRequired();
+    const amountEl = document.getElementById('newPaymentAmount');
+    const summaryEl = document.getElementById('newPaymentAllocSummary');
+    const warningEl = document.getElementById('newPaymentUnallocatedWarning');
+    function updateAllocSummary() {
+        const amount = parseFloat(amountEl?.value) || 0;
+        let totalAlloc = 0;
+        document.querySelectorAll('.alloc-amount').forEach(input => {
+            totalAlloc += parseFloat(input.value) || 0;
+        });
+        const unallocated = Math.max(0, amount - totalAlloc);
+        if (summaryEl) summaryEl.innerHTML = `Payment Amount: ${fmt(amount)} &nbsp;|&nbsp; Total Allocated: ${fmt(totalAlloc)} &nbsp;|&nbsp; Unallocated: ${fmt(unallocated)}`;
+        if (warningEl) warningEl.style.display = (amount > 0 && unallocated > 0) ? 'block' : 'none';
+    }
+    document.querySelectorAll('.alloc-check').forEach(cb => {
+        cb.addEventListener('change', function () {
+            const row = this.closest('tr');
+            const input = row && row.querySelector('.alloc-amount');
+            if (input) {
+                input.value = this.checked ? (row.dataset.balance || '0') : '';
+                updateAllocSummary();
+            }
+        });
+    });
+    document.querySelectorAll('.alloc-amount').forEach(input => {
+        input.addEventListener('input', updateAllocSummary);
+    });
+    if (amountEl) amountEl.addEventListener('input', updateAllocSummary);
+}
+
+async function submitNewPayment(supplierId) {
+    const form = document.getElementById('newPaymentForm');
+    if (!form) return;
+    const fd = new FormData(form);
+    const amount = parseFloat(fd.get('amount')) || 0;
+    if (amount <= 0) {
+        showToast('Enter a valid payment amount', 'error');
+        return;
+    }
+    const method = (fd.get('method') || '').toLowerCase();
+    const reference = (fd.get('reference') || '').trim();
+    const cashlessMethods = ['mpesa', 'bank', 'card', 'cheque'];
+    if (cashlessMethods.includes(method) && !reference) {
+        showToast('Reference is required for MPesa, Bank, Card, and Cheque payments (e.g. transaction ID, M-Pesa code)', 'error');
+        return;
+    }
+    const allocations = [];
+    let totalAlloc = 0;
+    document.querySelectorAll('.alloc-amount').forEach(input => {
+        const val = parseFloat(input.value) || 0;
+        if (val <= 0) return;
+        const balance = parseFloat(input.dataset.balance) || 0;
+        if (val > balance) {
+            showToast(`Allocation ${val} exceeds invoice balance ${balance}`, 'error');
+            return;
+        }
+        allocations.push({ supplier_invoice_id: input.dataset.invoiceId, allocated_amount: val });
+        totalAlloc += val;
+    });
+    if (totalAlloc > amount) {
+        showToast('Total allocated cannot exceed payment amount', 'error');
+        return;
+    }
+    if (!CONFIG.BRANCH_ID) {
+        showToast('Branch context required. Select a branch in Settings.', 'error');
+        return;
+    }
+    const btn = document.getElementById('submitNewPaymentBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+    try {
+        await API.suppliers.createPayment({
+            branch_id: CONFIG.BRANCH_ID,
+            supplier_id: supplierId,
+            payment_date: fd.get('payment_date'),
+            method: fd.get('method'),
+            reference: fd.get('reference') || null,
+            amount,
+            allocations: allocations.length ? allocations : undefined,
+        });
+        showToast('Payment recorded', 'success');
+        closeModal();
+        if (window.currentSupplierDetailId && String(window.currentSupplierDetailId) === String(supplierId)) {
+            refreshSupplierDetailAfterAction(supplierId);
+        }
+        if (document.getElementById('supplierPaymentsTable')) fetchSupplierPaymentsData();
+        else renderSupplierTabContent(supplierId, 'payments');
+    } catch (e) {
+        showToast(e.message || (e.detail && (Array.isArray(e.detail) ? e.detail.map(x => x.msg || x).join(' ') : e.detail)) || 'Failed to record payment', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Record Payment'; }
+    }
+}
+
+function showAllocatePaymentModal(invoiceId, supplierId) {
+    if (supplierId) {
+        showNewPaymentModal(supplierId);
+    } else {
+        showToast('Open the supplier first, then use New Payment to allocate.', 'info');
+    }
+}
+
+// New Return Modal — full flow: supplier, optional link invoice, items (search + quantity + cost), reason
+async function showNewReturnModal(supplierId, linkedInvoiceId = null) {
+    if (!supplierId) {
+        showToast('Select a supplier first (open supplier detail).', 'warning');
+        return;
+    }
+    let supplier = null;
+    let invoices = [];
+    try {
+        supplier = await API.suppliers.get(supplierId);
+        const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId };
+        if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+        invoices = await API.purchases.listInvoices(params);
+        invoices = (invoices || []).filter(inv => inv.status === 'BATCHED');
+    } catch (e) {
+        showToast('Could not load supplier or invoices', 'error');
+        return;
+    }
+    const invoiceOptions = invoices.map(inv => `<option value="${inv.id}" ${inv.id === linkedInvoiceId ? 'selected' : ''}>${escapeHtml(inv.invoice_number || inv.id)} - ${fmt(inv.total_inclusive)}</option>`).join('');
+    const returnLines = []; // { item_id, item_name, quantity, unit_cost, line_total, batch_number?, expiry_date? }
+    const today = new Date().toISOString().slice(0, 10);
+    const content = `
+        <form id="newReturnForm">
+            <div class="form-group">
+                <label class="form-label">Supplier</label>
+                <input type="text" class="form-input" value="${escapeHtml(supplier.name || '')}" readonly>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Link to invoice (optional)</label>
+                <select class="form-select" name="linked_invoice_id" id="newReturnLinkedInvoice">
+                    <option value="">— None —</option>
+                    ${invoiceOptions}
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">Return Date *</label><input type="date" class="form-input" name="return_date" value="${today}" required></div>
+                <div class="form-group" style="flex: 1;"><label class="form-label">Reason</label><input type="text" class="form-input" name="reason" placeholder="e.g. Expired, Damaged"></div>
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label class="form-label">Items to return</label>
+                <div style="margin-bottom: 0.5rem;">
+                    <input type="text" id="newReturnItemSearch" class="form-input" placeholder="Search item by name or SKU..." style="max-width: 300px;" autocomplete="off">
+                    <span id="newReturnItemStock" style="font-size: 0.875rem; color: var(--text-secondary); margin-left: 0.5rem;"></span>
+                </div>
+                <div class="table-container" style="overflow-x: auto; max-height: 200px;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                        <thead><tr><th>Item</th><th>Qty</th><th>Unit cost (KES)</th><th>Total (KES)</th><th></th></tr></thead>
+                        <tbody id="newReturnLinesTbody"></tbody>
+                    </table>
+                </div>
+                <p id="newReturnLineError" style="display: none; color: var(--danger-color); font-size: 0.875rem; margin-top: 0.5rem;"></p>
+            </div>
+        </form>
+    `;
+    const footer = `<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button><button type="button" class="btn btn-primary" id="submitNewReturnBtn" onclick="submitNewReturn('${supplierId}')">Save Return (Pending)</button>`;
+    showModal('New Return', content, footer);
+    const tbody = document.getElementById('newReturnLinesTbody');
+    const searchInput = document.getElementById('newReturnItemSearch');
+    const stockSpan = document.getElementById('newReturnItemStock');
+    let searchDropdown = null;
+    let selectedReturnItem = null; // { id, name, sku }
+
+    function renderReturnLines() {
+        if (!tbody) return;
+        if (returnLines.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="padding: 1rem; color: var(--text-secondary);">Search and add items above.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = returnLines.map((line, i) => `
+            <tr data-idx="${i}">
+                <td style="padding: 0.5rem;">${escapeHtml(line.item_name || '—')}</td>
+                <td style="padding: 0.5rem;"><input type="number" class="form-input return-line-qty" data-idx="${i}" value="${line.quantity}" min="0.01" step="0.01" style="width: 80px;"></td>
+                <td style="padding: 0.5rem;"><input type="number" class="form-input return-line-cost" data-idx="${i}" value="${line.unit_cost}" min="0" step="0.01" style="width: 90px;"></td>
+                <td style="padding: 0.5rem;">${fmt(line.quantity * line.unit_cost)}</td>
+                <td style="padding: 0.5rem;"><button type="button" class="btn btn-outline btn-sm" onclick="window.removeNewReturnLine(${i})">Remove</button></td>
+            </tr>
+        `).join('');
+        tbody.querySelectorAll('.return-line-qty').forEach(el => el.addEventListener('input', recalcReturnLine));
+        tbody.querySelectorAll('.return-line-cost').forEach(el => el.addEventListener('input', recalcReturnLine));
+    }
+    function recalcReturnLine() {
+        const idx = parseInt(this.dataset.idx, 10);
+        const row = returnLines[idx];
+        if (!row) return;
+        const qtyEl = tbody.querySelector(`.return-line-qty[data-idx="${idx}"]`);
+        const costEl = tbody.querySelector(`.return-line-cost[data-idx="${idx}"]`);
+        row.quantity = parseFloat(qtyEl?.value) || 0;
+        row.unit_cost = parseFloat(costEl?.value) || 0;
+        row.line_total = row.quantity * row.unit_cost;
+        renderReturnLines();
+    }
+    window.removeNewReturnLine = function (idx) {
+        returnLines.splice(idx, 1);
+        renderReturnLines();
+    };
+
+    searchInput.addEventListener('input', debounceReturnSearch);
+    searchInput.addEventListener('focus', function () {
+        if (searchInput.value.trim().length >= 2) debounceReturnSearch();
+    });
+    let returnSearchTimeout = null;
+    function debounceReturnSearch() {
+        clearTimeout(returnSearchTimeout);
+        returnSearchTimeout = setTimeout(async () => {
+            const q = searchInput.value.trim();
+            if (q.length < 2) {
+                if (searchDropdown) { searchDropdown.remove(); searchDropdown = null; }
+                stockSpan.textContent = '';
+                return;
+            }
+            try {
+                const items = await API.items.search(q, CONFIG.COMPANY_ID, 20, CONFIG.BRANCH_ID, true);
+                if (!items || items.length === 0) {
+                    showReturnItemDropdown([]);
+                    return;
+                }
+                showReturnItemDropdown(items);
+            } catch (_) {
+                stockSpan.textContent = 'Search failed';
+            }
+        }, 200);
+    }
+    function showReturnItemDropdown(items) {
+        if (searchDropdown) searchDropdown.remove();
+        searchDropdown = document.createElement('div');
+        searchDropdown.setAttribute('id', 'newReturnItemDropdown');
+        searchDropdown.style.cssText = 'position: absolute; background: white; border: 1px solid var(--border-color); border-radius: 0.25rem; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-height: 220px; overflow-y: auto; z-index: 1050;';
+        searchDropdown.innerHTML = items.map(it => {
+            const name = (it.name || '').trim() || '—';
+            const sku = (it.sku || it.item_code || '') || '';
+            const stock = it.base_quantity != null ? it.base_quantity : (it.current_stock != null ? it.current_stock : '—');
+            return `<div class="new-return-item-option" data-id="${it.id}" data-name="${escapeHtml(name)}" data-sku="${escapeHtml(sku)}" data-stock="${stock}" data-cost="${it.last_unit_cost != null ? it.last_unit_cost : (it.default_cost != null ? it.default_cost : 0)}" style="padding: 0.5rem 0.75rem; cursor: pointer; border-bottom: 1px solid var(--border-color);">${escapeHtml(name)} ${sku ? '(' + escapeHtml(sku) + ')' : ''} — Stock: ${stock}</div>`;
+        }).join('');
+        searchInput.parentElement.style.position = 'relative';
+        searchInput.parentElement.appendChild(searchDropdown);
+        searchDropdown.querySelectorAll('.new-return-item-option').forEach(el => {
+            el.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+                const id = el.dataset.id;
+                const name = el.dataset.name || '';
+                const sku = el.dataset.sku || '';
+                const stock = parseFloat(el.dataset.stock) || 0;
+                const cost = parseFloat(el.dataset.cost) || 0;
+                searchInput.value = name + (sku ? ' (' + sku + ')' : '');
+                if (searchDropdown) { searchDropdown.remove(); searchDropdown = null; }
+                const existing = returnLines.find(l => String(l.item_id) === String(id));
+                if (existing) {
+                    showToast('Item already in list', 'info');
+                    return;
+                }
+                if (stock <= 0) {
+                    document.getElementById('newReturnLineError').style.display = 'block';
+                    document.getElementById('newReturnLineError').textContent = 'Item has no stock; cannot return.';
+                    return;
+                }
+                returnLines.push({ item_id: id, item_name: name + (sku ? ' (' + sku + ')' : ''), quantity: 1, unit_cost: cost, line_total: cost });
+                renderReturnLines();
+                document.getElementById('newReturnLineError').style.display = 'none';
+                searchInput.value = '';
+            });
+        });
+    }
+    searchInput.addEventListener('blur', () => setTimeout(() => { if (searchDropdown) { searchDropdown.remove(); searchDropdown = null; } }, 150));
+    window._newReturnLines = returnLines;
+    renderReturnLines();
+}
+
+async function submitNewReturn(supplierId) {
+    const form = document.getElementById('newReturnForm');
+    if (!form) return;
+    const fd = new FormData(form);
+    const returnDate = fd.get('return_date');
+    const reason = fd.get('reason') || null;
+    const linkedInvoiceId = fd.get('linked_invoice_id') || null;
+    const lines = window._newReturnLines || [];
+    const tbody = document.getElementById('newReturnLinesTbody');
+    if (tbody && lines.length > 0) {
+        lines.forEach((line, idx) => {
+            const qtyEl = tbody.querySelector(`.return-line-qty[data-idx="${idx}"]`);
+            const costEl = tbody.querySelector(`.return-line-cost[data-idx="${idx}"]`);
+            if (qtyEl) line.quantity = parseFloat(qtyEl.value) || 0;
+            if (costEl) line.unit_cost = parseFloat(costEl.value) || 0;
+            line.line_total = line.quantity * line.unit_cost;
+        });
+    }
+    if (!Array.isArray(lines) || lines.length === 0) {
+        showToast('Add at least one item to return', 'error');
+        return;
+    }
+    const branchId = CONFIG.BRANCH_ID;
+    if (!branchId) {
+        showToast('Branch context required', 'error');
+        return;
+    }
+    const payload = {
+        branch_id: branchId,
+        supplier_id: supplierId,
+        return_date: returnDate,
+        reason: reason || null,
+        linked_invoice_id: linkedInvoiceId || null,
+        lines: lines.map(l => ({
+            item_id: l.item_id,
+            batch_number: l.batch_number || null,
+            expiry_date: l.expiry_date || null,
+            quantity: l.quantity,
+            unit_cost: l.unit_cost,
+            line_total: l.quantity * l.unit_cost,
+        })),
+    };
+    const btn = document.getElementById('submitNewReturnBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+    try {
+        await API.suppliers.createReturn(payload);
+        showToast('Return saved (Pending). Approve from Returns tab to credit supplier.', 'success');
+        closeModal();
+        if (window.currentSupplierDetailId && String(window.currentSupplierDetailId) === String(supplierId)) {
+            refreshSupplierDetailAfterAction(supplierId);
+            await renderSupplierTabContent(supplierId, 'returns');
+        }
+    } catch (e) {
+        showToast(e.message || (e.detail && (Array.isArray(e.detail) ? e.detail.map(x => x.msg || x).join(' ') : e.detail)) || 'Failed to save return', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save Return (Pending)'; }
+    }
+}
+
+// =====================================================
+// SUPPLIER PAYMENTS GLOBAL PAGE
+// =====================================================
+let supplierPaymentsDatePreset = 'this_month';
+let supplierPaymentsDateFrom = '';
+let supplierPaymentsDateTo = '';
+
+async function renderSupplierPaymentsPage() {
+    const page = document.getElementById('purchases');
+    if (!page) return;
+    const range = getSupplierInvoicesDateRange(supplierPaymentsDatePreset);
+    const from = supplierPaymentsDateFrom || (range ? range.dateFrom : '');
+    const to = supplierPaymentsDateTo || (range ? range.dateTo : '');
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header" style="padding: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                <h3 class="card-title" style="margin: 0;"><i class="fas fa-money-bill-wave"></i> Supplier Payments</h3>
+                <div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem;">
+                    <select id="supplierPaymentsPreset" class="form-select" style="min-width: 130px;">
+                        <option value="today">Today</option><option value="yesterday">Yesterday</option>
+                        <option value="this_week">This Week</option><option value="last_week">Last Week</option>
+                        <option value="last_month">Last Month</option><option value="this_month" selected>This Month</option>
+                        <option value="this_year">This Year</option><option value="last_year">Last Year</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                    <span id="supplierPaymentsCustomSpan" style="display: none;">
+                        <input type="date" id="supplierPaymentsFrom" class="form-input" value="${from}" style="width: 120px;">
+                        <input type="date" id="supplierPaymentsTo" class="form-input" value="${to}" style="width: 120px;">
+                    </span>
+                    <button type="button" class="btn btn-outline" id="supplierPaymentsApply">Apply</button>
+                    <button type="button" class="btn btn-primary" onclick="showNewPaymentModalWithSupplierSelect()"><i class="fas fa-plus"></i> New Payment</button>
+                </div>
+            </div>
+            <div class="card-body" style="padding: 1.5rem;"><div id="supplierPaymentsTable"><div class="spinner"></div></div></div>
+        </div>
+    `;
+    document.getElementById('supplierPaymentsPreset').addEventListener('change', function () {
+        supplierPaymentsDatePreset = this.value;
+        document.getElementById('supplierPaymentsCustomSpan').style.display = this.value === 'custom' ? 'inline' : 'none';
+    });
+    document.getElementById('supplierPaymentsApply').addEventListener('click', () => fetchSupplierPaymentsData());
+    await fetchSupplierPaymentsData();
+}
+
+async function fetchSupplierPaymentsData() {
+    const preset = document.getElementById('supplierPaymentsPreset')?.value || 'this_month';
+    supplierPaymentsDatePreset = preset;
+    let from, to;
+    if (preset === 'custom') {
+        from = document.getElementById('supplierPaymentsFrom')?.value;
+        to = document.getElementById('supplierPaymentsTo')?.value;
+    } else {
+        const r = getSupplierInvoicesDateRange(preset);
+        from = r?.dateFrom;
+        to = r?.dateTo;
+    }
+    if (from) supplierPaymentsDateFrom = from;
+    if (to) supplierPaymentsDateTo = to;
+    const cont = document.getElementById('supplierPaymentsTable');
+    if (!cont) return;
+    cont.innerHTML = '<div class="spinner"></div>';
+    try {
+        const params = {};
+        if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+        if (from) params.date_from = from;
+        if (to) params.date_to = to;
+        const payments = await API.suppliers.listPayments(params);
+        if (!payments || payments.length === 0) {
+            cont.innerHTML = '<div class="text-center" style="padding: 3rem;"><i class="fas fa-money-bill-wave" style="font-size: 3rem; color: var(--text-secondary);"></i><p>No payments in this period</p><p style="font-size: 0.875rem; color: var(--text-secondary);">Click "New Payment" to record a supplier payment.</p></div>';
+            return;
+        }
+        cont.innerHTML = `
+            <div class="table-container" style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead><tr><th>Supplier</th><th>Date</th><th>Method</th><th>Amount</th><th>Allocated</th></tr></thead>
+                    <tbody>${payments.map(p => `
+                        <tr style="cursor: pointer;" onclick="navigateToSupplierDetail('${p.supplier_id}')">
+                            <td>${escapeHtml(p.supplier_name || '—')}</td>
+                            <td>${p.payment_date ? new Date(p.payment_date).toLocaleDateString('en-KE') : '—'}</td>
+                            <td>${escapeHtml(p.method || '—')}</td>
+                            <td>${fmt(p.amount)}</td>
+                            <td>${p.is_allocated ? 'Yes' : 'No'}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>
+            </div>
+        `;
+    } catch (e) {
+        console.error('Payments load error:', e);
+        cont.innerHTML = `<p style="color: var(--danger-color);">Failed to load payments: ${e.message || 'Unknown error'}</p><button class="btn btn-outline" onclick="fetchSupplierPaymentsData()">Retry</button>`;
+    }
+}
+
+// New Payment from global page — select supplier first, then open payment modal
+async function showNewPaymentModalWithSupplierSelect() {
+    let suppliers = [];
+    try {
+        suppliers = await API.suppliers.list(CONFIG.COMPANY_ID) || [];
+        if (!Array.isArray(suppliers)) suppliers = suppliers.suppliers || [];
+    } catch (e) {
+        showToast('Could not load suppliers', 'error');
+        return;
+    }
+    if (suppliers.length === 0) {
+        showToast('Create a supplier first (Suppliers Management)', 'warning');
+        return;
+    }
+    const options = suppliers.map(s => `<option value="${s.id}">${escapeHtml(s.name || 'Supplier')}</option>`).join('');
+    const content = `
+        <div class="form-group"><label class="form-label">Select Supplier *</label>
+        <select class="form-select" id="newPaymentSupplierSelect" required>${options}</select></div>
+    `;
+    const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="const sid = document.getElementById('newPaymentSupplierSelect').value; closeModal(); showNewPaymentModal(sid);">Continue</button>`;
+    showModal('New Payment — Select Supplier', content, footer);
 }
 
 // =====================================================
@@ -3775,23 +5037,29 @@ function getOrderBookDateRange(filter) {
         case 'today':
             dateFrom = dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
             break;
-        case 'yesterday':
-            const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
-            dateFrom = dateTo = yesterday.toISOString().split('T')[0];
+        case 'yesterday': {
+            const yesterday = new Date(now);
+            yesterday.setDate(yesterday.getDate() - 1);
+            const yy = yesterday.getFullYear(), mm = yesterday.getMonth(), dd = yesterday.getDate();
+            dateFrom = dateTo = [yy, String(mm + 1).padStart(2, '0'), String(dd).padStart(2, '0')].join('-');
             break;
+        }
         case 'this_week': {
             const day = now.getDay();
             const mon = new Date(now); mon.setDate(d - (day === 0 ? 6 : day - 1));
-            dateFrom = mon.toISOString().split('T')[0];
+            const my = mon.getFullYear(), mm = mon.getMonth(), md = mon.getDate();
+            dateFrom = [my, String(mm + 1).padStart(2, '0'), String(md).padStart(2, '0')].join('-');
             dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
             break;
         }
         case 'last_week': {
             const day = now.getDay();
             const lastMon = new Date(now); lastMon.setDate(d - (day === 0 ? 6 : day - 1) - 7);
-            dateFrom = lastMon.toISOString().split('T')[0];
+            const lmy = lastMon.getFullYear(), lmm = lastMon.getMonth(), lmd = lastMon.getDate();
+            dateFrom = [lmy, String(lmm + 1).padStart(2, '0'), String(lmd).padStart(2, '0')].join('-');
             const lastSun = new Date(lastMon); lastSun.setDate(lastSun.getDate() + 6);
-            dateTo = lastSun.toISOString().split('T')[0];
+            const lsy = lastSun.getFullYear(), lsm = lastSun.getMonth(), lsd = lastSun.getDate();
+            dateTo = [lsy, String(lsm + 1).padStart(2, '0'), String(lsd).padStart(2, '0')].join('-');
             break;
         }
         case 'this_month':

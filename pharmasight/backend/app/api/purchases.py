@@ -1,7 +1,7 @@
 """
 Purchases API routes (GRN and Supplier Invoices)
 """
-from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from uuid import UUID
@@ -22,12 +22,20 @@ from app.schemas.purchase import (
     SupplierInvoiceCreate, SupplierInvoiceResponse,
     SupplierInvoiceItemCreate, SupplierInvoiceItemUpdate,
     PurchaseOrderCreate, PurchaseOrderResponse,
-    PurchaseOrderItemCreate
+    PurchaseOrderItemCreate,
+    BatchSupplierInvoiceBody,
 )
 from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.supplier_ledger_service import SupplierLedgerService
+from app.services.pricing_config_service import check_stock_adjustment_requires_confirmation
+from app.services.stock_validation_service import (
+    get_stock_validation_config,
+    validate_stock_entry_with_config,
+    StockValidationError,
+)
 from app.services.document_pdf_generator import build_po_pdf
 from app.services.tenant_storage_service import upload_po_pdf, get_signed_url, download_file
 from app.utils.vat import vat_rate_to_percent
@@ -36,6 +44,60 @@ from app.services.document_pdf_generator import build_grn_pdf, build_supplier_in
 import json
 
 router = APIRouter()
+
+
+def _parse_expiry_date(expiry) -> Optional[date]:
+    """Parse expiry from batch (date, datetime, or ISO string)."""
+    if expiry is None:
+        return None
+    if isinstance(expiry, date):
+        return expiry if not isinstance(expiry, datetime) else expiry.date()
+    if isinstance(expiry, datetime):
+        return expiry.date()
+    if isinstance(expiry, str) and expiry.strip():
+        try:
+            return datetime.fromisoformat(expiry.replace("Z", "+00:00")).date()
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _validate_batches_central(
+    item_name: str,
+    item,
+    batches: List,
+    config,
+    override: bool = False,
+    from_dict: bool = True,
+) -> None:
+    """
+    Validate each batch with central StockValidationService. Raises HTTPException on expired or invalid.
+    Keeps existing _require_batch_and_expiry_for_track_expiry_item for presence; this adds expiry/short-expiry checks.
+    """
+    if not getattr(item, "track_expiry", False):
+        return
+    for batch in batches:
+        if from_dict:
+            bn = batch.get("batch_number") or None
+            if bn is not None and not str(bn).strip():
+                bn = None
+            ed = _parse_expiry_date(batch.get("expiry_date"))
+        else:
+            bn = (getattr(batch, "batch_number", None) or "").strip() or None
+            ed = getattr(batch, "expiry_date", None)
+            if ed is not None and isinstance(ed, datetime):
+                ed = ed.date()
+        try:
+            result = validate_stock_entry_with_config(
+                config, batch_number=bn, expiry_date=ed, track_expiry=True, override=override
+            )
+        except StockValidationError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=e.result.message if e.result else str(e),
+            )
+        if not result.valid:
+            raise HTTPException(status_code=400, detail=result.message or "Batch/expiry validation failed.")
 
 
 def _require_batch_and_expiry_for_track_expiry_item(
@@ -99,13 +161,19 @@ def create_grn(
         db, grn.company_id, grn.branch_id
     )
     
+    # Preload items and config once (no N+1)
+    grn_item_ids = [item_data.item_id for item_data in grn.items]
+    grn_items_preloaded = db.query(Item).filter(Item.id.in_(grn_item_ids), Item.company_id == grn.company_id).all()
+    grn_items_map = {item.id: item for item in grn_items_preloaded}
+    grn_stock_config = get_stock_validation_config(db, grn.company_id)
+    
     total_cost = Decimal("0")
     grn_items = []
     ledger_entries = []
     
     for item_data in grn.items:
-        # Get item
-        item = db.query(Item).filter(Item.id == item_data.item_id).first()
+        # Get item from preloaded map
+        item = grn_items_map.get(item_data.item_id)
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
         
@@ -113,6 +181,21 @@ def create_grn(
         multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
+        
+        # Central validation when track_expiry: require batch/expiry and reject expired/short (per config)
+        if getattr(item, "track_expiry", False):
+            if item_data.batches and len(item_data.batches) > 0:
+                _validate_batches_central(
+                    item.name or str(item_data.item_id), item, item_data.batches,
+                    grn_stock_config, override=False, from_dict=False,
+                )
+            else:
+                # Legacy single batch: validate (batch_number, expiry_date) if provided; else validation will require them
+                legacy_batch = [{"batch_number": item_data.batch_number or "", "expiry_date": item_data.expiry_date}]
+                _validate_batches_central(
+                    item.name or str(item_data.item_id), item, legacy_batch,
+                    grn_stock_config, override=False, from_dict=True,
+                )
         
         # Handle batch distribution: if batches array is provided, use it; otherwise use legacy single batch
         if item_data.batches and len(item_data.batches) > 0:
@@ -356,14 +439,20 @@ def create_supplier_invoice(
         db, invoice.company_id, invoice.branch_id
     )
     
+    # Preload all items in one query (no N+1)
+    item_ids = [item_data.item_id for item_data in invoice.items]
+    items_preloaded = db.query(Item).filter(Item.id.in_(item_ids), Item.company_id == invoice.company_id).all()
+    items_map = {item.id: item for item in items_preloaded}
+    stock_validation_config = get_stock_validation_config(db, invoice.company_id)
+    
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
     invoice_items = []
     # NO ledger entries here - stock is added when batching
     
     for item_data in invoice.items:
-        # Get item
-        item = db.query(Item).filter(Item.id == item_data.item_id).first()
+        # Get item from preloaded map
+        item = items_map.get(item_data.item_id)
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
         
@@ -371,13 +460,23 @@ def create_supplier_invoice(
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
         
-        # Enforce batch + expiry for items with Track Expiry enabled
+        # Enforce batch + expiry for items with Track Expiry enabled (existing validation)
         if getattr(item, "track_expiry", False):
             _require_batch_and_expiry_for_track_expiry_item(
                 item.name or str(item_data.item_id),
                 item_data.batches,
                 from_dict=False,
             )
+            # Central validation: expired reject, short-expiry per config
+            if item_data.batches:
+                _validate_batches_central(
+                    item.name or str(item_data.item_id),
+                    item,
+                    item_data.batches,
+                    stock_validation_config,
+                    override=False,
+                    from_dict=False,
+                )
         
         # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%); use item master VAT if request sent 0
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
@@ -429,6 +528,8 @@ def create_supplier_invoice(
         pin_number=None,  # Deprecated field
         reference=invoice.supplier_invoice_number or invoice.reference,  # Store supplier's invoice number (external) in reference
         invoice_date=invoice.invoice_date,
+        due_date=invoice.due_date,
+        internal_reference=invoice.internal_reference,
         linked_grn_id=invoice.linked_grn_id,
         total_exclusive=total_exclusive,
         vat_rate=invoice.vat_rate,
@@ -701,6 +802,17 @@ def add_supplier_invoice_item(
                 detail="Item already exists on this invoice. Edit the existing line or remove it first."
             )
     inv_item, line_excl, line_vat, new_item = _supplier_invoice_item_to_totals(db, invoice_id, item_data)
+    # Central batch/expiry validation (expired reject, short-expiry per config)
+    stock_validation_config = get_stock_validation_config(db, invoice.company_id)
+    if new_item and getattr(new_item, "track_expiry", False) and item_data.batches:
+        _validate_batches_central(
+            new_item.name or str(item_data.item_id),
+            new_item,
+            item_data.batches,
+            stock_validation_config,
+            override=False,
+            from_dict=False,
+        )
     db.add(inv_item)
     db.flush()
     invoice.total_exclusive += line_excl
@@ -807,6 +919,11 @@ def update_supplier_invoice_item(
             _require_batch_and_expiry_for_track_expiry_item(
                 item.name or str(item_id), payload.batches, from_dict=False
             )
+            stock_validation_config = get_stock_validation_config(db, invoice.company_id)
+            _validate_batches_central(
+                item.name or str(item_id), item, payload.batches,
+                stock_validation_config, override=False, from_dict=False,
+            )
         line.batch_data = json.dumps([{
             "batch_number": b.batch_number or "",
             "expiry_date": b.expiry_date.isoformat() if getattr(b, "expiry_date", None) else None,
@@ -871,6 +988,8 @@ def update_supplier_invoice(
     db_invoice.supplier_id = invoice_update.supplier_id
     db_invoice.invoice_date = invoice_update.invoice_date
     db_invoice.reference = invoice_update.supplier_invoice_number or invoice_update.reference
+    db_invoice.due_date = invoice_update.due_date
+    db_invoice.internal_reference = invoice_update.internal_reference
     db_invoice.linked_grn_id = invoice_update.linked_grn_id
     db_invoice.vat_rate = invoice_update.vat_rate
     db_invoice.payment_status = invoice_update.payment_status or "UNPAID"
@@ -883,11 +1002,17 @@ def update_supplier_invoice(
     # Delete existing items
     db.query(SupplierInvoiceItem).filter(SupplierInvoiceItem.purchase_invoice_id == invoice_id).delete()
     
+    # Preload all items (no N+1)
+    item_ids_update = [item_data.item_id for item_data in invoice_update.items]
+    items_preloaded = db.query(Item).filter(Item.id.in_(item_ids_update), Item.company_id == db_invoice.company_id).all()
+    items_map_update = {item.id: item for item in items_preloaded}
+    stock_validation_config_update = get_stock_validation_config(db, db_invoice.company_id)
+    
     # Add new items
     invoice_items = []
     for item_data in invoice_update.items:
-        # Get item
-        item = db.query(Item).filter(Item.id == item_data.item_id).first()
+        # Get item from preloaded map
+        item = items_map_update.get(item_data.item_id)
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
         
@@ -902,6 +1027,11 @@ def update_supplier_invoice(
                 item_data.batches,
                 from_dict=False,
             )
+            if item_data.batches:
+                _validate_batches_central(
+                    item.name or str(item_data.item_id), item, item_data.batches,
+                    stock_validation_config_update, override=False, from_dict=False,
+                )
         
         # Calculate line totals (VAT) — normalize vat_rate; use item master VAT if request sent 0
         line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
@@ -989,6 +1119,7 @@ def update_supplier_invoice(
 def batch_supplier_invoice(
     invoice_id: UUID,
     request: Request,
+    body: Optional[BatchSupplierInvoiceBody] = Body(None),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -1057,10 +1188,94 @@ def batch_supplier_invoice(
             status_code=400,
             detail="Invoice has no line items. Add items before batching."
         )
-    
+
+    stock_validation_config_batch = get_stock_validation_config(db, invoice.company_id)
+    short_expiry_override_batch = bool(body and getattr(body, "short_expiry_override", False))
+
+    # Pre-pass: collect (item_id, unit_cost_base) pairs that need floor-price confirmation
+    needs_confirm = []  # [(item_id, unit_cost_base, item_name, floor_price, margin_below_standard)]
+    seen = set()
+
+    for invoice_item in invoice.items:
+        item = invoice_item.item
+        if not item:
+            continue
+        multiplier = get_unit_multiplier_from_item(item, invoice_item.unit_name)
+        if multiplier is None or multiplier <= 0:
+            continue
+        unit_costs_base = []
+        if invoice_item.batch_data:
+            try:
+                batches = json.loads(invoice_item.batch_data)
+                if batches:
+                    for batch in batches:
+                        qty = batch.get("quantity", 0)
+                        uc = batch.get("unit_cost")
+                        if uc is not None and float(qty) > 0:
+                            unit_cost_base = Decimal(str(uc)) / multiplier
+                            unit_costs_base.append(float(unit_cost_base))
+                else:
+                    unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
+                    unit_costs_base.append(float(unit_cost_base))
+            except (json.JSONDecodeError, TypeError):
+                unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
+                unit_costs_base.append(float(unit_cost_base))
+        else:
+            unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
+            unit_costs_base.append(float(unit_cost_base))
+
+        item_name = getattr(item, "name", None) or str(invoice_item.item_id)
+        for uc in unit_costs_base:
+            if uc <= 0:
+                continue
+            key = (str(invoice_item.item_id), round(uc, 4))
+            if key in seen:
+                continue
+            check = check_stock_adjustment_requires_confirmation(
+                db, invoice_item.item_id, invoice.company_id, Decimal(str(uc))
+            )
+            if check.get("requires_confirmation"):
+                seen.add(key)
+                needs_confirm.append({
+                    "item_id": str(invoice_item.item_id),
+                    "item_name": item_name,
+                    "unit_cost_base": uc,
+                    "floor_price": check.get("floor_price"),
+                    "margin_below_standard": check.get("margin_below_standard", False),
+                })
+
+    if needs_confirm:
+        confirm_map = {}
+        if body and body.confirmations:
+            for c in body.confirmations:
+                k = (str(c.item_id), round(float(c.unit_cost_base), 4))
+                confirm_map[k] = float(c.unit_cost_base)
+        missing = []
+        for nc in needs_confirm:
+            k = (nc["item_id"], round(nc["unit_cost_base"], 4))
+            if k not in confirm_map:
+                missing.append(nc)
+                continue
+            if abs(confirm_map[k] - nc["unit_cost_base"]) > 0.01:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "PRICE_CONFIRMATION_MISMATCH",
+                        "message": f"Confirmation for {nc['item_name']} does not match. Expected unit cost {nc['unit_cost_base']}.",
+                    },
+                )
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "PRICE_CONFIRMATION_REQUIRED",
+                    "message": "Some items have a floor price or margin below standard. Re-enter the unit cost for each to confirm.",
+                    "items": missing,
+                },
+            )
+
     # Process each item and add stock based on batch data
     ledger_entries = []
-    import json
     
     for invoice_item in invoice.items:
         item = invoice_item.item
@@ -1108,6 +1323,14 @@ def batch_supplier_invoice(
             _require_batch_and_expiry_for_track_expiry_item(
                 item.name or str(invoice_item.item_id),
                 batches_validate,
+                from_dict=True,
+            )
+            _validate_batches_central(
+                item.name or str(invoice_item.item_id),
+                item,
+                batches_validate,
+                stock_validation_config_batch,
+                override=short_expiry_override_batch,
                 from_dict=True,
             )
         
@@ -1247,6 +1470,19 @@ def batch_supplier_invoice(
 
         # Update invoice status to BATCHED
         invoice.status = "BATCHED"
+
+        # Supplier ledger: debit = we owe (invoice posted)
+        SupplierLedgerService.create_entry(
+            db,
+            company_id=invoice.company_id,
+            branch_id=invoice.branch_id,
+            supplier_id=invoice.supplier_id,
+            entry_date=invoice.invoice_date,
+            entry_type="invoice",
+            reference_id=invoice.id,
+            debit=invoice.total_inclusive or Decimal("0"),
+            credit=Decimal("0"),
+        )
 
         db.commit()
         db.refresh(invoice)

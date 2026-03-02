@@ -9,7 +9,7 @@ from uuid import UUID
 from decimal import Decimal, ROUND_HALF_UP
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier,
-    InventoryLedger, ItemBranchPurchaseSnapshot
+    InventoryLedger, ItemBranchPurchaseSnapshot, PricingSettings
 )
 from app.services.inventory_service import InventoryService
 from app.services.item_units_helper import get_unit_multiplier_from_item
@@ -185,6 +185,11 @@ class PricingService:
         )
         if margin_tier:
             return Decimal(str(margin_tier.min_margin_percent))
+
+        # PricingSettings: simple company-wide "no sell below X%" when set (e.g. Settings > Pricing)
+        ps = db.query(PricingSettings).filter(PricingSettings.company_id == company_id).first()
+        if ps and ps.default_min_margin_retail_pct is not None:
+            return Decimal(str(ps.default_min_margin_retail_pct))
 
         company_defaults = db.query(CompanyPricingDefault).filter(
             CompanyPricingDefault.company_id == company_id

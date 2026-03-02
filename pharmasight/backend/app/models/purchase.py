@@ -68,6 +68,8 @@ class SupplierInvoice(Base):
     pin_number = Column(String(100))  # Deprecated - kept for backward compatibility
     reference = Column(String(255))  # Optional reference or comments
     invoice_date = Column(Date, nullable=False)
+    due_date = Column(Date)  # payment due for aging
+    internal_reference = Column(String(255))  # internal reference/code
     linked_grn_id = Column(UUID(as_uuid=True), ForeignKey("grns.id"))
     total_exclusive = Column(Numeric(20, 4), default=0)
     vat_rate = Column(Numeric(5, 2), default=16.00)

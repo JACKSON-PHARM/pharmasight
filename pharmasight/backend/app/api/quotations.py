@@ -33,6 +33,7 @@ from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
 from app.services.tenant_storage_service import get_signed_url
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
@@ -722,19 +723,30 @@ def convert_quotation_to_invoice(
         total_qty = sum(a["quantity"] for a in allocations)
         unit_cost_used = total_cost / total_qty if total_qty > 0 else Decimal("0")
         
-        # Margin validation at convert (same as sales batch): no line below min margin unless user has permission
+        # Price validation at convert (floor + margin + promo) — same logic as sales batch
         if unit_cost_used and unit_cost_used > 0 and item:
             mult = get_unit_multiplier_from_item(item, q_item.unit_name)
             if mult is not None and float(mult) > 0:
                 cost_per_sale_unit = unit_cost_used * mult
                 unit_price_val = q_item.unit_price_exclusive or Decimal("0")
-                if cost_per_sale_unit > 0 and unit_price_val > 0:
-                    margin_percent = (unit_price_val - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
-                    min_margin = PricingService.get_min_margin_percent(db, q_item.item_id, quotation.company_id)
-                    if margin_percent < min_margin and not user_has_sell_below_min_margin(db, quotation.created_by, quotation.branch_id):
+                if cost_per_sale_unit > 0:
+                    user_has_override = user_has_sell_below_min_margin(db, quotation.created_by, quotation.branch_id)
+                    is_promo = is_line_price_at_promo(
+                        db, q_item.item_id, q_item.unit_name or "", unit_price_val
+                    )
+                    validation = validate_line_price(
+                        db,
+                        quotation.company_id,
+                        q_item.item_id,
+                        unit_price_val,
+                        cost_per_sale_unit,
+                        user_has_override,
+                        is_promo_price=is_promo,
+                    )
+                    if not validation.get("allowed"):
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Price for {item.name} is below minimum allowed margin ({float(min_margin):.1f}%). Contact admin for permission to sell below margin."
+                            detail=validation.get("message", "Price validation failed.")
                         )
         
         # Use quotation item prices

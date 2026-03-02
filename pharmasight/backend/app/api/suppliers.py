@@ -23,6 +23,25 @@ class SupplierBase(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     credit_terms: Optional[int] = None  # days
+    default_payment_terms_days: Optional[int] = None
+    credit_limit: Optional[float] = None
+    allow_over_credit: Optional[bool] = None
+    opening_balance: Optional[float] = None
+
+
+class SupplierUpdate(BaseModel):
+    """Supplier update schema - all optional"""
+    name: Optional[str] = None
+    pin: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    credit_terms: Optional[int] = None
+    default_payment_terms_days: Optional[int] = None
+    credit_limit: Optional[float] = None
+    allow_over_credit: Optional[bool] = None
+    opening_balance: Optional[float] = None
 
 
 class SupplierCreate(SupplierBase):
@@ -136,7 +155,7 @@ def get_supplier(
 @router.put("/{supplier_id}", response_model=SupplierResponse)
 def update_supplier(
     supplier_id: UUID,
-    supplier: SupplierBase,
+    supplier: SupplierUpdate,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -145,8 +164,10 @@ def update_supplier(
     if not db_supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
     
-    for key, value in supplier.dict(exclude_unset=True).items():
-        setattr(db_supplier, key, value)
+    data = supplier.model_dump(exclude_unset=True) if hasattr(supplier, 'model_dump') else supplier.dict(exclude_unset=True)
+    for key, value in data.items():
+        if hasattr(db_supplier, key):
+            setattr(db_supplier, key, value)
     
     db.commit()
     db.refresh(db_supplier)

@@ -594,8 +594,8 @@ const API = {
             api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`, data),
         deleteInvoice: (invoiceId) => 
             api.delete(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`),
-        batchInvoice: (invoiceId) => 
-            api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/batch`, null),
+        batchInvoice: (invoiceId, body = null) => 
+            api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/batch`, body || {}),
         updateInvoicePayment: (invoiceId, amountPaid) => 
             api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/payment?amount_paid=${amountPaid}`, null),
         /** Download supplier invoice as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
@@ -671,9 +671,68 @@ const API = {
         search: (q, companyId, limit = 10) => 
             api.get(`${CONFIG.API_ENDPOINTS.suppliers}/search`, { q, company_id: companyId, limit }),
         list: (companyId) => api.get(`${CONFIG.API_ENDPOINTS.suppliers}/company/${companyId}`),
+        /** Enriched list with outstanding, overdue, this_month_purchases */
+        listEnriched: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/enriched-list?${qs.toString()}`);
+        },
         get: (supplierId) => api.get(`${CONFIG.API_ENDPOINTS.suppliers}/${supplierId}`),
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.suppliers}/`, data),
         update: (supplierId, data) => api.put(`${CONFIG.API_ENDPOINTS.suppliers}/${supplierId}`, data),
+        // Supplier management (payments, returns, ledger, reports)
+        listPayments: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.supplier_id) qs.append('supplier_id', params.supplier_id);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.date_from) qs.append('date_from', params.date_from);
+            if (params.date_to) qs.append('date_to', params.date_to);
+            if (params.limit != null) qs.append('limit', params.limit);
+            if (params.offset != null) qs.append('offset', params.offset);
+            return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/payments?${qs.toString()}`);
+        },
+        createPayment: (data) => api.post(`${CONFIG.API_ENDPOINTS.suppliers}/payments`, data),
+        listReturns: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.supplier_id) qs.append('supplier_id', params.supplier_id);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.status) qs.append('status', params.status);
+            if (params.limit != null) qs.append('limit', params.limit);
+            if (params.offset != null) qs.append('offset', params.offset);
+            return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/returns?${qs.toString()}`);
+        },
+        createReturn: (data) => api.post(`${CONFIG.API_ENDPOINTS.suppliers}/returns`, data),
+        approveReturn: (returnId) => api.patch(`${CONFIG.API_ENDPOINTS.suppliers}/returns/${returnId}/approve`),
+        listLedger: (params) => {
+            const qs = new URLSearchParams();
+            if (params.supplier_id) qs.append('supplier_id', params.supplier_id);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.date_from) qs.append('date_from', params.date_from);
+            if (params.date_to) qs.append('date_to', params.date_to);
+            if (params.limit != null) qs.append('limit', params.limit);
+            if (params.offset != null) qs.append('offset', params.offset);
+            return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/ledger?${qs.toString()}`);
+        },
+        getAging: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.as_of_date) qs.append('as_of_date', params.as_of_date);
+            return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/reports/aging?${qs.toString()}`);
+        },
+        getMetrics: (month, params = {}) => {
+            const qs = new URLSearchParams();
+            qs.append('month', month);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/reports/metrics?${qs.toString()}`);
+        },
+        getStatement: (params) => {
+            const qs = new URLSearchParams();
+            if (params.supplier_id) qs.append('supplier_id', params.supplier_id);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.from_date) qs.append('from_date', params.from_date);
+            if (params.to_date) qs.append('to_date', params.to_date);
+            return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/statement?${qs.toString()}`);
+        },
     },
     
     // Excel Import (supports Vyper-style column mapping)
