@@ -1001,6 +1001,18 @@ def batch_supplier_invoice(
     """
     user = current_user_and_db[0]
     from sqlalchemy.orm import joinedload
+
+    # Lock the invoice row first (no joins) - PostgreSQL disallows FOR UPDATE with LEFT OUTER JOIN.
+    invoice = (
+        db.query(SupplierInvoice)
+        .filter(SupplierInvoice.id == invoice_id)
+        .with_for_update()
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Load relationships (row already locked; no FOR UPDATE to avoid outer-join error)
     invoice = (
         db.query(SupplierInvoice)
         .options(
@@ -1010,11 +1022,8 @@ def batch_supplier_invoice(
             selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item),
         )
         .filter(SupplierInvoice.id == invoice_id)
-        .with_for_update()
         .first()
     )
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
 
     if invoice.status == "BATCHED":
