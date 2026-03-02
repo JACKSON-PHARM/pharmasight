@@ -18,6 +18,15 @@ MASTER_DATABASE_URL = os.getenv(
     settings.database_connection_string  # Default to same database, but we'll use different schema
 )
 
+# Transaction mode (port 6543 / pgbouncer) does not support prepared statements
+_master_use_pooler = ":6543" in MASTER_DATABASE_URL or "pgbouncer=true" in MASTER_DATABASE_URL.lower()
+_master_connect_args = {
+    "connect_timeout": 10,
+    "options": "-c statement_timeout=120000",
+}
+if _master_use_pooler:
+    _master_connect_args["prepare_threshold"] = None
+
 # Create engine with connection pooling
 master_engine = create_engine(
     MASTER_DATABASE_URL,
@@ -26,10 +35,7 @@ master_engine = create_engine(
     max_overflow=10,
     pool_pre_ping=True,
     pool_recycle=3600,
-    connect_args={
-        "connect_timeout": 10,
-        "options": "-c statement_timeout=120000"
-    },
+    connect_args=_master_connect_args,
     echo=settings.DEBUG,
 )
 

@@ -185,6 +185,14 @@ def _get_pooler_host() -> Optional[str]:
     return None
 
 
+def _get_pooler_port() -> str:
+    """Use 6543 (transaction mode) when master uses it, else 5432 (session mode). Avoids MaxClientsInSessionMode."""
+    master_url = getattr(settings, "database_connection_string", "") or ""
+    if ":6543" in master_url or "pgbouncer=true" in master_url.lower():
+        return _SUPABASE_TRANSACTION_POOLER_PORT
+    return _SESSION_POOLER_PORT
+
+
 def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
     """
     Resolve tenant DB URL for Render (IPv4). When USE_SUPABASE_POOLER_FOR_TENANTS is true:
@@ -210,9 +218,13 @@ def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
                 dbname = (parsed.path or "/postgres").lstrip("/") or "postgres"
                 new_user = f"postgres.{project_ref}"
                 safe_pass = quote(password, safe=".-_~") if password else ""
-                netloc = f"{new_user}:{safe_pass}@{pooler_host}:{_SESSION_POOLER_PORT}"
+                port = _get_pooler_port()
+                netloc = f"{new_user}:{safe_pass}@{pooler_host}:{port}"
                 new_url = f"{parsed.scheme or 'postgresql'}://{netloc}/{dbname}"
-                logger.debug("Using Supabase session pooler (%s) for tenant DB (IPv4).", pooler_host)
+                if port == _SUPABASE_TRANSACTION_POOLER_PORT and "pgbouncer=true" not in new_url.lower():
+                    new_url = new_url + ("&pgbouncer=true" if "?" in new_url else "?pgbouncer=true")
+                mode = "transaction" if port == _SUPABASE_TRANSACTION_POOLER_PORT else "session"
+                logger.debug("Using Supabase %s pooler (%s:%s) for tenant DB (IPv4).", mode, pooler_host, port)
                 return new_url
         except Exception as e:
             logger.warning("Session pooler rewrite failed, falling back to transaction pooler: %s", e)
