@@ -464,7 +464,7 @@ def get_sales_invoice(
                     cost_per_sale_unit = float(invoice_item.unit_cost_base) * float(mult)
                     price = float(invoice_item.unit_price_exclusive or 0)
                     if price > 0:
-                        invoice_item.margin_percent = (price - cost_per_sale_unit) / price * Decimal("100")
+                        invoice_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
     request.state.timings["CostEnrichMs"] = round((_time.perf_counter() - t2) * 1000, 1)
     t3 = _time.perf_counter()
     for invoice_item in invoice.items:
