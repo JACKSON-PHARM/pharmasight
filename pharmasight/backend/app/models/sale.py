@@ -45,6 +45,7 @@ class SalesInvoice(Base):
     # Relationships
     company = relationship("Company")
     branch = relationship("Branch")
+    creator = relationship("User", primaryjoin="SalesInvoice.created_by==User.id", foreign_keys="[SalesInvoice.created_by]")
     items = relationship("SalesInvoiceItem", back_populates="sales_invoice", cascade="all, delete-orphan")
     payments = relationship("Payment", back_populates="sales_invoice", cascade="all, delete-orphan")
     invoice_payments = relationship("InvoicePayment", back_populates="sales_invoice", cascade="all, delete-orphan")
@@ -191,6 +192,7 @@ class Quotation(Base):
     # Relationships
     company = relationship("Company")
     branch = relationship("Branch")
+    creator = relationship("User", primaryjoin="Quotation.created_by==User.id", foreign_keys="[Quotation.created_by]")
     items = relationship("QuotationItem", back_populates="quotation", cascade="all, delete-orphan")
     converted_invoice = relationship("SalesInvoice", foreign_keys=[converted_to_invoice_id])
 

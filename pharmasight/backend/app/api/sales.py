@@ -2,7 +2,8 @@
 Sales API routes (KRA Compliant)
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+import time
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
@@ -11,7 +12,7 @@ from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
-from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user, require_document_belongs_to_user_company
 from app.services.document_pdf_generator import build_sales_invoice_pdf
 from app.services.tenant_storage_service import download_file, get_signed_url
 from app.models import (
@@ -332,6 +333,7 @@ def create_sales_invoice(
 @router.get("/invoice/{invoice_id}/pdf")
 def get_sales_invoice_pdf(
     invoice_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
@@ -339,11 +341,11 @@ def get_sales_invoice_pdf(
     """Generate and return sales invoice as PDF (Download PDF). On-demand only.
     Logo on right, company on left; footer: prepared by, printed by, served by, till/paybill from branch. No status."""
     from sqlalchemy.orm import selectinload
+    user = current_user_and_db[0]
     invoice = db.query(SalesInvoice).options(
         selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item)
     ).filter(SalesInvoice.id == invoice_id).first()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     items_data = []
@@ -402,20 +404,26 @@ def get_sales_invoice_pdf(
 @router.get("/invoice/{invoice_id}", response_model=SalesInvoiceResponse)
 def get_sales_invoice(
     invoice_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Get sales invoice by ID with full item details. Works without tenant (no tenant-assets logo URL)."""
+    import time as _time
+    t0 = _time.perf_counter()
+    request.state.timings = {}
     from sqlalchemy.orm import selectinload
+    user = current_user_and_db[0]
     # Load invoice with items and item relationships
     invoice = db.query(SalesInvoice).options(
         selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item)
     ).filter(SalesInvoice.id == invoice_id).first()
-    
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    request.state.timings["LoadMs"] = round((_time.perf_counter() - t0) * 1000, 1)
+    t1 = _time.perf_counter()
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    request.state.timings["CompanyCheckMs"] = round((_time.perf_counter() - t1) * 1000, 1)
+    t2 = _time.perf_counter()
     # Handle backward compatibility - set defaults for missing fields
     if not hasattr(invoice, 'status') or invoice.status is None:
         if hasattr(invoice, 'payment_status') and invoice.payment_status == 'PAID':
@@ -443,13 +451,23 @@ def get_sales_invoice(
             invoice_item.unit_display_short = get_unit_display_short(
                 invoice_item.item, invoice_item.unit_name or ''
             )
-            # Provide base-unit cost for consistent unit-aware margin calculations in UI
+            # Provide base-unit cost and margin % for consistent unit-aware margin display in UI
             try:
                 invoice_item.unit_cost_base = PricingService.get_item_cost(
                     db, invoice_item.item_id, invoice.branch_id
                 )
             except Exception:
                 invoice_item.unit_cost_base = None
+            if getattr(invoice_item, "unit_cost_base", None) is not None and float(invoice_item.unit_cost_base) > 0:
+                mult = get_unit_multiplier_from_item(invoice_item.item, invoice_item.unit_name or "")
+                if mult is not None and mult > 0:
+                    cost_per_sale_unit = float(invoice_item.unit_cost_base) * mult
+                    price = float(invoice_item.unit_price_exclusive or 0)
+                    if price > 0:
+                        invoice_item.margin_percent = (price - cost_per_sale_unit) / price * Decimal("100")
+    request.state.timings["CostEnrichMs"] = round((_time.perf_counter() - t2) * 1000, 1)
+    t3 = _time.perf_counter()
+    for invoice_item in invoice.items:
         # Batch/expiry for receipt/PDF (from ledger when batched); build full batch_allocations for multi-batch FEFO
         sale_ledgers = db.query(InventoryLedger).filter(
             InventoryLedger.reference_type == "sales_invoice",
@@ -488,6 +506,8 @@ def get_sales_invoice(
                 invoice_item.batch_number = None
                 invoice_item.expiry_date = None
 
+    request.state.timings["LedgerMs"] = round((_time.perf_counter() - t3) * 1000, 1)
+    t4 = _time.perf_counter()
     # Print letterhead: company, branch, user, logo URL for print (all documents)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     if company:
@@ -508,6 +528,8 @@ def get_sales_invoice(
     if creator:
         invoice.created_by_username = creator.username or getattr(creator, "full_name", None) or ""
 
+    request.state.timings["BuildMs"] = round((_time.perf_counter() - t4) * 1000, 1)
+    request.state.timings["TotalMs"] = round((_time.perf_counter() - t0) * 1000, 1)
     return invoice
 
 
@@ -515,24 +537,38 @@ def get_sales_invoice(
 def add_sales_invoice_item(
     invoice_id: UUID,
     item_data: SalesInvoiceItemCreate,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """
     Add one line item to an existing DRAFT invoice. Auto-save.
     Returns 400 "Item already exists in this invoice" if that item is already on the invoice.
+    O(1) w.r.t. line count; single load with joinedload/selectinload.
     """
-    from sqlalchemy.orm import selectinload
+    from sqlalchemy.orm import selectinload, joinedload
     from sqlalchemy.exc import IntegrityError
 
+    t0 = time.perf_counter()
+    request.state.timings = {}
+    user = current_user_and_db[0]
     invoice = (
         db.query(SalesInvoice)
-        .options(selectinload(SalesInvoice.items))
+        .options(
+            joinedload(SalesInvoice.company),
+            joinedload(SalesInvoice.branch),
+            joinedload(SalesInvoice.creator),
+            selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item),
+        )
         .filter(SalesInvoice.id == invoice_id)
         .first()
     )
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    request.state.timings["LoadMs"] = round((time.perf_counter() - t0) * 1000, 1)
+    t1 = time.perf_counter()
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    request.state.timings["CompanyCheckMs"] = round((time.perf_counter() - t1) * 1000, 1)
+    t2 = time.perf_counter()
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -634,19 +670,91 @@ def add_sales_invoice_item(
     if total_exclusive > 0:
         invoice.vat_rate = (total_vat / total_exclusive * Decimal("100"))
 
+    request.state.timings["InsertMs"] = round((time.perf_counter() - t2) * 1000, 1)
+    t3 = time.perf_counter()
+
     try:
+        # Build response: use already-loaded inv_item.item (selectinload) for existing lines; single `item` for the new line. O(1).
+        for inv_item in invoice.items:
+            it = inv_item.item if inv_item.item_id != item_data.item_id else item
+            if it:
+                inv_item.item = it
+                if not getattr(inv_item, "item_name", None):
+                    inv_item.item_name = it.name or ""
+                if not getattr(inv_item, "item_code", None):
+                    inv_item.item_code = it.sku or ""
+                inv_item.unit_display_short = get_unit_display_short(it, inv_item.unit_name or "")
+            if inv_item.item_id == item_data.item_id:
+                # Carry cost/margin from client when provided (item search + user price); margin validated at batch
+                if getattr(item_data, "unit_cost_base", None) is not None:
+                    inv_item.unit_cost_base = Decimal(str(item_data.unit_cost_base))
+                    if it:
+                        mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
+                        if mult is not None and mult > 0:
+                            inv_item.unit_cost_used = inv_item.unit_cost_base * mult
+                    if getattr(item_data, "margin_percent", None) is not None:
+                        inv_item.margin_percent = Decimal(str(item_data.margin_percent))
+                    elif it:
+                        mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
+                        if mult is not None and mult > 0:
+                            cost_per_sale_unit = float(inv_item.unit_cost_base) * mult
+                            price = float(inv_item.unit_price_exclusive or 0)
+                            if price > 0:
+                                inv_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
+                else:
+                    try:
+                        inv_item.unit_cost_base = PricingService.get_item_cost_from_snapshot(db, inv_item.item_id, invoice.branch_id, invoice.company_id)
+                        if inv_item.unit_cost_base is None:
+                            inv_item.unit_cost_base = PricingService.get_item_cost(db, inv_item.item_id, invoice.branch_id, use_fefo=True)
+                    except Exception:
+                        inv_item.unit_cost_base = None
+                if getattr(inv_item, "unit_cost_base", None) is not None and float(inv_item.unit_cost_base) > 0 and it:
+                    mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
+                    if mult is not None and mult > 0:
+                        cost_per_sale_unit = float(inv_item.unit_cost_base) * mult
+                        price = float(inv_item.unit_price_exclusive or 0)
+                        if price > 0:
+                            inv_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
+            inv_item.batch_allocations = None
+            inv_item.batch_number = None
+            inv_item.expiry_date = None
+        request.state.timings["CostMs"] = round((time.perf_counter() - t3) * 1000, 1)
+        t4 = time.perf_counter()
+        if not getattr(invoice, "status", None):
+            invoice.status = "DRAFT"
+        if not hasattr(invoice, "batched"):
+            invoice.batched = invoice.status in ["BATCHED", "PAID"]
+        if not hasattr(invoice, "cashier_approved"):
+            invoice.cashier_approved = invoice.status == "PAID"
+        # Use eagerly loaded company, branch, creator (no extra queries)
+        if invoice.company:
+            invoice.company_name = invoice.company.name
+            invoice.company_address = getattr(invoice.company, "address", None) or ""
+            logo_path = getattr(invoice.company, "logo_url", None)
+            if logo_path and str(logo_path).strip():
+                if str(logo_path).startswith("tenant-assets/") and tenant is not None:
+                    invoice.logo_url = get_signed_url(logo_path, tenant=tenant)
+                elif str(logo_path).startswith("http://") or str(logo_path).startswith("https://"):
+                    invoice.logo_url = str(logo_path).strip()
+        if invoice.branch:
+            invoice.branch_name = invoice.branch.name
+            invoice.branch_address = getattr(invoice.branch, "address", None) or ""
+            invoice.branch_phone = getattr(invoice.branch, "phone", None) or ""
+        if invoice.creator:
+            invoice.created_by_username = invoice.creator.username or getattr(invoice.creator, "full_name", None) or ""
+
+        request.state.timings["BuildMs"] = round((time.perf_counter() - t4) * 1000, 1)
+        request.state.timings["TotalMs"] = round((time.perf_counter() - t0) * 1000, 1)
+        t5 = time.perf_counter()
         db.commit()
-        # Expire invoice so get_sales_invoice refetches from DB and returns all items (including the new line)
-        db.expire(invoice)
+        request.state.timings["CommitMs"] = round((time.perf_counter() - t5) * 1000, 1)
+        return invoice
     except IntegrityError:
         db.rollback()
         raise HTTPException(
             status_code=400,
             detail="Item already exists in this invoice. Edit the existing line or remove it first."
         )
-
-    # Return full invoice (same shape as get)
-    return get_sales_invoice(invoice_id, db)
 
 
 @router.delete("/invoice/{invoice_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)

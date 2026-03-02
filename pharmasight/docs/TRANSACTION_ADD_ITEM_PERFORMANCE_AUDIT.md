@@ -202,4 +202,254 @@
 
 ---
 
-*End of audit. No code was modified.*
+## 7. Add-Item Refactor (Post-Implementation)
+
+The following changes were applied to **add-item endpoints only** (no new endpoints, no schema changes, no change to create endpoints).
+
+### 7.1 Changes made
+
+- **Removed full document refetch:** Each add-item endpoint no longer calls `get_quotation` / `get_sales_invoice` / `get_supplier_invoice` / `get_purchase_order` after commit.
+- **Response built in-memory:** After flush and incremental totals update, the response is built from the already-loaded document and its `items` relationship. One batch query loads `Item` for all line `item_id`s; header (company/branch/user, logo) is filled with minimal queries. Cost/margin enrichment runs **only for the newly added line** where required.
+- **Single transaction:** Load → validate → insert line → update totals → build response → single `db.commit()` → return. No nested commits, no DocumentService commit in add-item path.
+- **Sales:** Added `tenant: Optional[Tenant] = Depends(get_tenant_optional)` so logo_url can be built the same way as in get_sales_invoice (dependency only; request/response schema unchanged).
+
+### 7.2 Before vs after approximate DB query count (add one item)
+
+| Document        | Before (add one item) | After (add one item) |
+|-----------------|-----------------------|------------------------|
+| **Quotation**   | 1 doc+items + 1 Item + insert + commit + **get_quotation** (1 doc+items+item + **N get_item_cost** + 1 Company + 1 Branch + 1 User) ≈ **5 + N** (N = total lines) | 1 doc+items + 1 Item + insert + **1 batch Item** + **1 get_item_cost (new line only)** + 1 Company + 1 Branch + 1 User + commit ≈ **8** (fixed) |
+| **Sales invoice** | 1 doc+items + 1 Item + stock check + pricing/margin + insert + commit + **get_sales_invoice** (1 doc+items+item + **N get_item_cost** + **N InventoryLedger** + Company + Branch + User) ≈ **7 + 2N** | 1 doc+items + 1 Item + stock check + pricing/margin + insert + **1 batch Item** + **1 get_item_cost (new line only)** + Company + Branch + User + commit ≈ **10** (fixed) |
+| **Supplier invoice** | 1 doc+items + _supplier_invoice_item_to_totals (1 Item) + insert + commit + refresh + **get_supplier_invoice** (1 doc+items+item + 1 User + supplier/branch from relation) ≈ **4 + 1** | 1 doc+items + _supplier_invoice_item_to_totals (1 Item) + insert + **1 batch Item** + User + supplier/branch (lazy or 2) + commit ≈ **6–7** (no get_*) |
+| **Purchase order** | 1 doc+items + insert + DailyOrderBook lookup/upsert + commit + **get_purchase_order** (1 doc+items+item + **N get_best_available_cost** + Company + 2 User + supplier/branch) ≈ **5 + N** | 1 doc+items + insert + DailyOrderBook + **1 batch Item** + **1 get_best_available_cost (new line only)** + Company + 2 User + supplier/branch + commit ≈ **9** (fixed) |
+
+So after refactor, add-item cost is **independent of document size** (no N+1 in response build).
+
+### 7.3 Confirmations
+
+| Requirement | Status |
+|-------------|--------|
+| Stock validation (sales) still runs before insert | ✅ `InventoryService.check_stock_availability` unchanged before insert. |
+| Batch validation (supplier invoice) still runs | ✅ `_supplier_invoice_item_to_totals` still calls `_require_batch_and_expiry_for_track_expiry_item` and unit multiplier validation. |
+| Duplicate item check (all) still runs | ✅ Same loop over `document.items` / duplicate check before insert. |
+| Order book / DailyOrderBook rules (PO) still apply | ✅ Same `existing` lookup and update or new `DailyOrderBook` insert. |
+| SnapshotService / snapshot logic untouched | ✅ Not used in add-item paths; no changes. |
+| Response schema unchanged | ✅ Same `QuotationResponse` / `SalesInvoiceResponse` / `SupplierInvoiceResponse` / `PurchaseOrderResponse`; built from in-memory document. |
+| Each add still committed immediately | ✅ Single `db.commit()` after building response; no batching, no delayed commit. |
+| No new endpoints, no fast/light variants | ✅ Only `POST /.../{id}/items` handlers changed. |
+| Create endpoints not modified | ✅ No changes to create_quotation, create_sales_invoice, create_supplier_invoice, create_purchase_order. |
+
+### 7.4 Performance expectation
+
+- **Quotations, supplier invoice, purchase order:** add-item should be in the **sub-500 ms** range (write + batch Item + 1 cost query for new line + header lookups).
+- **Sales:** add-item should be in the **sub-800 ms** range (write + stock check + pricing/margin + batch Item + 1 cost for new line + header lookups).
+
+---
+
+## 8. Single-DB / No-Tenant Readiness (Testing Without Tenant Header)
+
+So that add-item and document retrieval work when **no X-Tenant-ID / X-Tenant-Subdomain** is sent (e.g. single database, or no tenant in `sessionStorage`), the following endpoints were switched from **get_tenant_or_default** (which raises 400 when no tenant) to **get_tenant_optional** (returns `None` when no tenant):
+
+| Area | Endpoints | Change |
+|------|-----------|--------|
+| **Quotations** | get_quotation_pdf, get_quotation, add_quotation_item | Tenant optional; logo/signed URL only when `tenant is not None`. |
+| **Sales** | get_sales_invoice, get_sales_invoice_pdf, add_sales_invoice_item | Already used get_tenant_optional. |
+| **Supplier invoices** | get_supplier_invoice, get_supplier_invoice_pdf | Already optional or no tenant. |
+| **Purchase orders** | get_purchase_order, add_purchase_order_item, approve_purchase_order, get_purchase_order_pdf_url | Tenant optional; logo/PDF upload/PDF URL only when tenant present. Approve without tenant: PO is approved but no PDF is stored. PDF URL returns 400 if tenant is None and path is tenant-assets. |
+
+With this, the red banner *"This operation requires a tenant..."* should no longer appear for add-item or normal get-document when no tenant header is sent. Logo and tenant-assets URLs are simply omitted when tenant is missing.
+
+---
+
+## 9. How to Test Add-Item Request Duration (Browser Network Tab)
+
+1. **Open the app** (e.g. Sales at `localhost:3000/#sales`).
+2. **Open DevTools** → **Network** tab; enable **Preserve log** and **Disable cache**; filter **Fetch/XHR**.
+3. **Create or open a draft** (e.g. new sales invoice or open existing draft).
+4. **Add the first item** (e.g. search, select, set qty/price, Add). Note the request that hits `POST /api/sales/invoice/{id}/items` (or the equivalent for quotations/purchases/supplier invoices).
+5. **Add the second item** the same way. Again find the `POST .../items` request.
+6. **Measure:** Click the request → **Timing** (or look at the duration column). You should see a single round-trip; duration is the add-item latency (target: &lt;500 ms for quotation/supplier/PO, &lt;800 ms for sales). For a server-side breakdown, see step 7 and §10.
+
+If the tenant banner appeared before, ensure you’re on the latest backend (tenant optional on document endpoints). If you use a single DB and never set a tenant, you can leave headers as-is; add-item and get-document should succeed without the banner.
+
+7. **Breakdown:** Click the request → **Headers** → **Response Headers**. Look for `X-Timing-*` headers (see §10).
+
+---
+
+## 10. Server Response Timing Breakdown (X-Timing-* Headers)
+
+Add-item endpoints (quotation and sales invoice) set **`request.state.timings`** so **RequestTimingMiddleware** adds **response headers** with a per-phase breakdown. In the **Network** tab you can see where the total response time (e.g. 3.56 s) is consumed.
+
+**Where to see it (Chrome DevTools):**
+1. Open **Network** tab → **Fetch/XHR**.
+2. Trigger the slow action (e.g. **Add item** = POST `.../items`, or **open document** = GET `.../invoice/{id}` or `.../quotations/{id}`).
+3. Click the **request** that took ~3+ seconds.
+4. Open the **Timing** sub-tab. A **Server Timing** block appears when the response includes the `Server-Timing` header, with each phase (Load document, Cost lookup, etc.) and duration in ms.
+5. Alternatively, **Headers** → **Response Headers** → **`X-Timing-*`** and **`Server-Timing`** for the same breakdown.
+
+| Header | Meaning |
+|--------|--------|
+| **X-Timing-LoadMs** | Load document (quotation/invoice with items) from DB. |
+| **X-Timing-CompanyCheckMs** | Application-level company check. |
+| **X-Timing-InsertMs** | Insert new line, flush, update document totals. |
+| **X-Timing-ItemsMapMs** | Batch load Item rows for all line item_ids. |
+| **X-Timing-CostMs** | Cost lookup for the new line only: snapshot first, then FEFO/ledger; margin calc. |
+| **X-Timing-BuildMs** | Load company, branch, user; build logo URL. |
+| **X-Timing-TotalMs** | Total server-side time (matches "Waiting for server response" in Timing tab). |
+
+**Cost lookup:** Add-item uses **item_branch_purchase_snapshot** (updated in same transaction as ledger) for **last_purchase_price** when available; one fast query. If snapshot has no cost, it falls back to **get_item_cost(use_fefo=True)** (FEFO batch, then ledger, then canonical). Snapshot is trusted; expiry is maintained in item_branch_snapshot.
+
+---
+
+## 11. Carry Cost/Margin from Client; Validate at Batch
+
+**Flow:** User loads an item in the search row (item search returns cost, e.g. from snapshot). User may adjust price; margin is then calculated on the client from (price − cost) / price. When adding the item, we **carry** that cost and margin so the server does not need to look up cost again for display.
+
+- **Add-item request** may include optional **`unit_cost_base`** and **`margin_percent`** (from client: search cost + user-adjusted price). When present, the backend uses them for the new line in the response and **skips** cost lookup (snapshot/FEFO) for that line. This keeps add-item fast and keeps the margin the user saw.
+- **Margin and floor validation** are **not** done at add-item. They are done when the document is **batched** (or, for quotations, when **converting to invoice**):
+  - **Sales invoice:** On **batch** (DRAFT → BATCHED), each line’s margin is computed from the **allocated batch cost** (FEFO). If margin &lt; company/item minimum and the user does not have **sales.sell_below_min_margin**, the batch is rejected.
+  - **Quotation:** On **convert to invoice**, after FEFO allocation, each line’s margin is computed from quotation price and allocated cost. Same minimum-margin check and permission apply.
+
+So: add-item is fast and carries the user’s price and margin; the only moment we **validate** margin (and floor) is at **batch** (sales) or **convert** (quotation), when we have real allocated cost.
+
+---
+
+## 12. Add-Item 200 ms Audit and Optimization Plan
+
+**Measured breakdown (Server Timing, add-item request):**
+
+| Phase | Measured (ms) | % of TotalMs |
+|-------|----------------|--------------|
+| **LoadMs** (Load document) | **632.70** | 36% |
+| InsertMs (Insert line) | 328.90 | 19% |
+| BuildMs (Build response) | 168.80 | 10% |
+| CompanyCheckMs | 162.30 | 9% |
+| ItemsMapMs (Items batch) | 157.30 | 9% |
+| CostMs (Cost lookup) | 0.10 | &lt;1% |
+| **TotalMs (server)** | **1.75 s** | 100% |
+| **Browser “Waiting for server response”** | **3.47 s** | — |
+
+**Gap (3.47 s − 1.75 s ≈ 1.7 s):** Not captured in current timers. Likely: `db.commit()`, response serialization (Pydantic → JSON), middleware, and/or DB connection/session setup before `t0`. Next step: add **CommitMs** (and optionally **SerializeMs**) and move `t0` to the very start of the handler (after deps) to see if auth/tenant/session dominate.
+
+---
+
+### Phase-by-phase audit
+
+1. **Load document (632.70 ms)**  
+   - **What runs:** `db.query(Quotation).options(selectinload(Quotation.items)).filter(Quotation.id == quotation_id).first()`.  
+   - One query (or two with selectinload) by primary key; `quotation_items` has `idx_quotation_items_quotation_id`.  
+   - **Why it can be slow:** Round-trip to DB (latency), large result set if many lines, or connection pool wait.  
+   - **Levers:** Reduce rows (e.g. only load `id`/`company_id`/`branch_id`/`status` + `item_id` list for duplicate check and totals; then load full items only for response build), ensure index on `quotations.id` (PK), consider connection pooler (e.g. PgBouncer) if connection acquisition is slow.
+
+2. **CompanyCheckMs (162.30 ms)**  
+   - **What runs:** `require_document_belongs_to_user_company` → `get_effective_company_id_for_user(db, user)` (Branch ↔ UserBranchRole join, or fallback `Company.limit(1)`), then compare `document.company_id` to result.  
+   - **Why it can be slow:** Two possible queries (Branch+UBR, then maybe Company); no caching of “user’s company” per request.  
+   - **Levers:** Cache `effective_company_id` per (user_id, request) for the request lifecycle; or resolve once in `get_current_user` / auth dependency and pass into the helper so company check is a single in-memory compare.
+
+3. **InsertMs (328.90 ms)**  
+   - **What runs:** Duplicate check (in memory), `db.query(Item).filter(Item.id == item_data.item_id).first()`, build `QuotationItem`, `db.add(quotation_item)`, `db.flush()`, update quotation totals in memory.  
+   - **Why it can be slow:** Extra **Item** fetch (separate query); `flush()` triggers INSERT + any RETURNING/defaults and FK checks.  
+   - **Levers:** Reuse one Item load for both “item exists” and “ItemsMap” (see below). Ensure `quotation_items` INSERT is single row; check for triggers or heavy indexes; measure commit separately (CommitMs).
+
+4. **ItemsMapMs (157.30 ms)**  
+   - **What runs:** `db.query(Item).filter(Item.id.in_(item_ids)).all()` to build `items_map` for all line item_ids (existing + new).  
+   - **Why it can be slow:** Second full Item fetch for the new line (we already load Item in Insert phase); IN-list over N item_ids.  
+   - **Levers:** For add-item, **load only the new line’s Item** (single `Item.id == item_data.item_id`); attach to new line; for existing lines, use **already-loaded** items from `quotation.items[].item` (selectinload already loads `QuotationItem.item`). So replace “batch Item by all item_ids” with “one Item by item_data.item_id” and in-memory attach for existing lines from relationship. That removes the large IN query and cuts ItemsMapMs sharply.
+
+5. **BuildMs (168.80 ms)**  
+   - **What runs:** Three queries: `Company` by `quotation.company_id`, `Branch` by `quotation.branch_id`, `User` by `quotation.created_by`; optional `get_signed_url(logo_path)` (network call if tenant storage).  
+   - **Why it can be slow:** Three sequential round-trips; logo URL can be slow if external.  
+   - **Levers:** Single query returning company/branch/creator (e.g. raw SQL or joined load), or cache company/branch/user by id for the request (or short TTL). Defer or lazy-load logo URL for add-item response (e.g. omit or return placeholder) so add-item path does not block on storage.
+
+6. **CostMs (0.10 ms)**  
+   - Already negligible (client sends cost/margin; snapshot path when used is fast).
+
+7. **Unaccounted (~1.7 s)**  
+   - **Likely:** `db.commit()`, JSON serialization of full `QuotationResponse` (nested items), and time before `t0` (auth, tenant, session).  
+   - **Levers:** Add **CommitMs** (timer around `db.commit()`); optionally **SerializeMs** (timer around response build/serialization). Move `t0` to the first line of the handler (after dependencies) to include session/auth cost in TotalMs, or add a **PreMs** timer in middleware to quantify “time before route”.
+
+---
+
+### Target: 200 ms end-to-end (browser “Waiting for server response”)
+
+**Assumption:** After optimizations, “Waiting for server response” should align with server TotalMs + Commit + Serialize; target total **&lt; 200 ms**.
+
+**Suggested order of work**
+
+| # | Change | Phase(s) affected | Expected saving |
+|---|--------|-------------------|------------------|
+| 1 | **ItemsMap:** Load only new line’s Item; use `quotation.items[].item` for existing lines (selectinload already loads it). | ItemsMapMs | ~100–150 ms |
+| 2 | **Build:** One query or cached lookup for company + branch + user (or cache by id per request). Defer logo URL for add-item (omit or lazy). | BuildMs | ~100–150 ms |
+| 3 | **CompanyCheck:** Cache `effective_company_id` per request (or resolve once in auth deps); company check = in-memory compare. | CompanyCheckMs | ~100–160 ms |
+| 4 | **Load:** Consider “light load” for add-item: load quotation header + only `item_id` list (or count) for duplicate check; then load full items in one go only for response (or keep current load but ensure indexes and pooler). | LoadMs | ~200–400 ms if load is reduced |
+| 5 | **Insert:** Reuse single Item fetch for “exists” and for “items_map” (no second Item query). Add **CommitMs** (and optionally SerializeMs); optimize commit (single INSERT, no triggers if possible). | InsertMs, unaccounted | ~50–100 ms + visibility into commit/serialize |
+| 6 | **Timing:** Add CommitMs (and optionally SerializeMs); optionally move t0 to start of handler to include auth/session in TotalMs. | Gap, TotalMs | No direct saving; clarifies where remaining time goes |
+
+**Rough target after optimizations**
+
+- LoadMs: &lt; 100 ms (light load or indexed single query).  
+- CompanyCheckMs: &lt; 5 ms (cached company, compare only).  
+- InsertMs: &lt; 80 ms (one Item fetch, one INSERT, no redundant work).  
+- ItemsMapMs: &lt; 20 ms (single Item for new line; rest from relationship).  
+- CostMs: &lt; 1 ms (unchanged).  
+- BuildMs: &lt; 30 ms (one query or cache; no blocking logo).  
+- CommitMs: &lt; 50 ms (measured; optimize if needed).  
+- **Total server:** &lt; 200 ms, leaving room for serialization and network so browser “Waiting for server response” can meet 200 ms.
+
+**Risks / constraints**
+
+- Do not remove duplicate-item or company checks; only make them faster (caching, single compare).  
+- Response schema and validation rules must remain the same; only reduce work (fewer queries, cached data, deferred logo).  
+- If DB is remote, connection and round-trip latency will dominate; then prioritize fewer round-trips (combined queries, cache) and consider a connection pooler.
+
+---
+
+## 13. Add-Item Optimization Refactor (Query Structure & Identity) — Summary
+
+**Scope:** Quotation, Sales Invoice, Supplier Invoice, Purchase Order add-item endpoints. No caching, no new services, no schema changes.
+
+### Queries removed or avoided
+
+| Change | Before | After |
+|--------|--------|--------|
+| **Tenant validation** | `require_document_belongs_to_user_company` called `get_effective_company_id_for_user(db, user)` → 1–2 queries (UserBranchRole + Branch, or Company) every time. | `effective_company_id` is set once in `get_current_user` on `request.state.effective_company_id`. When endpoints pass `request` into `require_document_belongs_to_user_company`, it uses that value; **zero extra DB round-trips** for company check. |
+| **Document load** | Single query with `selectinload(document.items)` only. | Single query with **joinedload(company, branch, creator)** and **selectinload(items).selectinload(item)** so one round-trip loads document + header relations + all line items + each line’s Item. |
+| **Items batch** | After insert: `db.query(Item).filter(Item.id.in_(item_ids)).all()` — one query per add-item to fetch all items for response. | **Removed.** Existing lines use already-loaded `line.item` (from selectinload). New line uses the single `Item` already fetched for validation (or returned from helper). **No second Item query.** |
+| **Company / Branch / User** | After building lines: separate `db.query(Company)`, `db.query(Branch)`, `db.query(User)` for response header (3 queries). | **Removed.** Response uses eagerly loaded `document.company`, `document.branch`, `document.creator` (no extra queries). |
+
+### Tenant identity resolution
+
+- **Where:** `get_current_user` in `dependencies.py` (both cache path and full-resolve path).
+- **What:** After resolving `company_id` (from cache or from `get_effective_company_id_for_user`), it sets `request.state.effective_company_id = company_id` before yielding `(user, db)`.
+- **Usage:** All document endpoints that call `require_document_belongs_to_user_company(..., request)` now pass `request`. The helper uses `getattr(request.state, "effective_company_id", None)` when `request` is provided; if set, it skips `get_effective_company_id_for_user`. No duplication of company resolution; identity remains derived from the JWT/session only.
+
+### Model changes (ORM only)
+
+- **SalesInvoice, Quotation (sale.py):** Added `creator = relationship("User", primaryjoin="...created_by==User.id", foreign_keys="[...]")` so document load can use `joinedload(creator)`.
+- **SupplierInvoice, PurchaseOrder (purchase.py):** Added `creator` relationship (PurchaseOrder already had `approved_by_user`). No DB schema change; no new columns or indexes.
+
+### Instrumentation
+
+- **CommitMs** added for add-item endpoints (Quotation, Sales): timer around `db.commit()`; reported in `request.state.timings` and exposed via `Server-Timing` / `X-Timing-*` headers.
+- **Existing phases** (LoadMs, CompanyCheckMs, InsertMs, CostMs, BuildMs, TotalMs) unchanged; ItemsMapMs removed where the batch Item query was removed.
+
+### Estimated performance gain
+
+- **CompanyCheckMs:** ~100–160 ms → &lt; 1 ms when request has `effective_company_id` (typical for all authenticated document requests).
+- **ItemsMapMs:** ~100–150 ms → 0 ms (batch Item query removed).
+- **BuildMs:** ~100–150 ms → &lt; 20 ms (no separate Company/Branch/User queries; in-memory attribute assignment only).
+- **Load:** One larger query (with joins) instead of 1 + 3 + 1 (document + company + branch + user + items batch); fewer round-trips, often lower total load time.
+- **Target:** Handler total (Load + CompanyCheck + Insert + Cost + Build + Commit) in the **~200–300 ms** range for co-located DB, depending on network and DB load.
+
+### Confirmation: no business logic changed
+
+- Stock validation (sales): still performed before insert; unchanged.
+- Margin validation: still applied when user provides price (sales add-item); batch/convert margin checks unchanged.
+- Permission checks: `_user_has_sell_below_min_margin` and RLS unchanged.
+- Batch validation (supplier invoice): unchanged; `_supplier_invoice_item_to_totals` still enforces batch/expiry where required.
+- Duplicate item checks: unchanged (still in-memory over `document.items`).
+- Transaction atomicity: single `db.flush()` and `db.commit()` per add-item; no change.
+- Response schema and validation rules: unchanged; only the source of data (eager load vs. extra queries) changed.
+
+---
+
+*End of audit. Add-item refactor as in §7; single-DB as in §8; timing and snapshot as in §10; carry margin and validate at batch as in §11; 200 ms audit and plan as in §12; optimization refactor summary as in §13.*

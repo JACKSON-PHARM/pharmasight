@@ -1,13 +1,13 @@
 """
 Purchases API routes (GRN and Supplier Invoices)
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
-from app.dependencies import get_tenant_db, get_current_user, get_tenant_or_default, get_tenant_optional
+from app.dependencies import get_tenant_db, get_current_user, get_tenant_optional, require_document_belongs_to_user_company
 from app.models.tenant import Tenant
 from app.models.settings import CompanySetting
 from app.models import (
@@ -529,16 +529,17 @@ def list_supplier_invoices(
 @router.get("/invoice/{invoice_id}/pdf")
 def get_supplier_invoice_pdf(
     invoice_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Generate and return supplier invoice as PDF (Download PDF). On-demand only. Logo when tenant is set."""
+    user = current_user_and_db[0]
     invoice = db.query(SupplierInvoice).options(
         selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
     ).filter(SupplierInvoice.id == invoice_id).first()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     supplier_name = invoice.supplier.name if invoice.supplier else "—"
@@ -585,18 +586,17 @@ def get_supplier_invoice_pdf(
 @router.get("/invoice/{invoice_id}", response_model=SupplierInvoiceResponse)
 def get_supplier_invoice(
     invoice_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """Get supplier invoice by ID with full item details"""
+    user = current_user_and_db[0]
     # Load invoice with items and item relationships (similar to get_purchase_order)
     invoice = db.query(SupplierInvoice).options(
         selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
     ).filter(SupplierInvoice.id == invoice_id).first()
-    
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
     # Load supplier and branch names
     if invoice.supplier:
         invoice.supplier_name = invoice.supplier.name
@@ -625,7 +625,7 @@ def get_supplier_invoice(
 
 
 def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierInvoiceItemCreate):
-    """Build SupplierInvoiceItem and return (invoice_item, line_total_exclusive, line_vat)."""
+    """Build SupplierInvoiceItem and return (invoice_item, line_total_exclusive, line_vat, item)."""
     item = db.query(Item).filter(Item.id == item_data.item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
@@ -663,25 +663,32 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
         line_total_inclusive=line_total_inclusive,
         batch_data=batch_data_json
     )
-    return invoice_item, line_total_exclusive, line_vat
+    return invoice_item, line_total_exclusive, line_vat, item
 
 
 @router.post("/invoice/{invoice_id}/items", response_model=SupplierInvoiceResponse)
 def add_supplier_invoice_item(
     invoice_id: UUID,
     item_data: SupplierInvoiceItemCreate,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Add one line to an existing DRAFT supplier invoice. Rejects duplicate item_id."""
+    """Add one line to an existing DRAFT supplier invoice. Rejects duplicate item_id. O(1) load with joinedload/selectinload."""
+    from sqlalchemy.orm import joinedload
+    user = current_user_and_db[0]
     invoice = (
         db.query(SupplierInvoice)
-        .options(selectinload(SupplierInvoice.items))
+        .options(
+            joinedload(SupplierInvoice.company),
+            joinedload(SupplierInvoice.branch),
+            joinedload(SupplierInvoice.creator),
+            selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item),
+        )
         .filter(SupplierInvoice.id == invoice_id)
         .first()
     )
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -693,16 +700,34 @@ def add_supplier_invoice_item(
                 status_code=400,
                 detail="Item already exists on this invoice. Edit the existing line or remove it first."
             )
-    inv_item, line_excl, line_vat = _supplier_invoice_item_to_totals(db, invoice_id, item_data)
+    inv_item, line_excl, line_vat, new_item = _supplier_invoice_item_to_totals(db, invoice_id, item_data)
     db.add(inv_item)
     db.flush()
     invoice.total_exclusive += line_excl
     invoice.vat_amount += line_vat
     invoice.total_inclusive = invoice.total_exclusive + invoice.vat_amount
     invoice.balance = invoice.total_inclusive - (invoice.amount_paid or Decimal("0"))
+
+    # Build response: use already-loaded invoice_item.item for existing lines; new_item for the new line. O(1).
+    for invoice_item in invoice.items:
+        it = invoice_item.item if invoice_item.item_id != item_data.item_id else new_item
+        if it:
+            invoice_item.item = it
+            invoice_item.item_code = it.sku or ''
+            invoice_item.item_name = it.name or ''
+            invoice_item.item_category = getattr(it, "category", None) or ''
+            invoice_item.base_unit = getattr(it, "base_unit", None) or ''
+            if (invoice_item.vat_rate is None or float(invoice_item.vat_rate) == 0) and getattr(it, "vat_rate", None) is not None:
+                invoice_item.vat_rate = Decimal(str(vat_rate_to_percent(it.vat_rate)))
+    if invoice.supplier:
+        invoice.supplier_name = invoice.supplier.name
+    if invoice.branch:
+        invoice.branch_name = invoice.branch.name
+    if invoice.creator:
+        invoice.created_by_name = invoice.creator.full_name or invoice.creator.email
+
     db.commit()
-    db.refresh(invoice)
-    return get_supplier_invoice(invoice_id, current_user_and_db, db)
+    return invoice
 
 
 @router.delete("/invoice/{invoice_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1491,19 +1516,18 @@ def list_purchase_orders(
 @router.get("/order/{order_id}", response_model=PurchaseOrderResponse)
 def get_purchase_order(
     order_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Get purchase order by ID with full item details"""
+    user = current_user_and_db[0]
     # Load order with items and item relationships
     order = db.query(PurchaseOrder).options(
         selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.item)
     ).filter(PurchaseOrder.id == order_id).first()
-    
-    if not order:
-        raise HTTPException(status_code=404, detail="Purchase order not found")
-    
+    require_document_belongs_to_user_company(db, user, order, "Purchase order", request)
     # Load supplier, branch, and user names
     if order.supplier:
         order.supplier_name = order.supplier.name
@@ -1511,7 +1535,7 @@ def get_purchase_order(
         order.branch_name = order.branch.name
     # Logo URL for print (when company has tenant-assets logo)
     company = getattr(order, "company", None) or db.query(Company).filter(Company.id == order.company_id).first()
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
         order.logo_url = get_signed_url(company.logo_url, tenant=tenant)
     # Load created_by user name
     created_by_user = db.query(User).filter(User.id == order.created_by).first()
@@ -1541,19 +1565,28 @@ def get_purchase_order(
 def add_purchase_order_item(
     order_id: UUID,
     item_data: PurchaseOrderItemCreate,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
-    """Add one line to an existing PENDING purchase order. Rejects duplicate item_id."""
+    """Add one line to an existing PENDING purchase order. Rejects duplicate item_id. O(1) load with joinedload/selectinload."""
+    from sqlalchemy.orm import joinedload
+    user = current_user_and_db[0]
     order = (
         db.query(PurchaseOrder)
-        .options(selectinload(PurchaseOrder.items))
+        .options(
+            joinedload(PurchaseOrder.company),
+            joinedload(PurchaseOrder.branch),
+            joinedload(PurchaseOrder.supplier),
+            joinedload(PurchaseOrder.creator),
+            joinedload(PurchaseOrder.approved_by_user),
+            selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.item),
+        )
         .filter(PurchaseOrder.id == order_id)
         .first()
     )
-    if not order:
-        raise HTTPException(status_code=404, detail="Purchase order not found")
+    require_document_belongs_to_user_company(db, user, order, "Purchase order", request)
     if order.status != "PENDING":
         raise HTTPException(
             status_code=400,
@@ -1615,8 +1648,38 @@ def add_purchase_order_item(
             created_by=order.created_by,
         )
         db.add(ob_entry)
+
+    # Build response: use already-loaded order_item.item for existing lines; single Item fetch for new line only. O(1).
+    new_item = db.query(Item).filter(Item.id == item_data.item_id).first()
+    for order_item in order.items:
+        it = order_item.item if order_item.item_id != item_data.item_id else new_item
+        if it:
+            order_item.item = it
+            order_item.item_code = it.sku or ''
+            order_item.item_name = it.name or ''
+            order_item.item_category = getattr(it, "category", None) or ''
+            order_item.base_unit = getattr(it, "base_unit", None) or ''
+            order_item.is_controlled = getattr(it, "is_controlled", False)
+            if order_item.item_id == item_data.item_id and order.branch_id:
+                from app.services.canonical_pricing import CanonicalPricingService
+                order_item.default_cost = float(CanonicalPricingService.get_best_available_cost(db, order_item.item_id, order.branch_id, order.company_id))
+            else:
+                order_item.default_cost = 0.0
+        else:
+            order_item.default_cost = 0.0
+    if order.supplier:
+        order.supplier_name = order.supplier.name
+    if order.branch:
+        order.branch_name = order.branch.name
+    if order.company and getattr(order.company, "logo_url", None) and str(order.company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
+        order.logo_url = get_signed_url(order.company.logo_url, tenant=tenant)
+    if order.creator:
+        order.created_by_name = order.creator.full_name or order.creator.email
+    if order.approved_by_user:
+        order.approved_by_name = order.approved_by_user.full_name or order.approved_by_user.email
+
     db.commit()
-    return get_purchase_order(order_id, current_user_and_db, tenant, db)
+    return order
 
 
 @router.delete("/order/{order_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1710,7 +1773,7 @@ def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db:
 @router.patch("/order/{order_id}/approve", response_model=PurchaseOrderResponse)
 def approve_purchase_order(
     order_id: UUID,
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -1767,14 +1830,14 @@ def approve_purchase_order(
 
     # Download logo, stamp, signature from tenant storage for embedding in PDF (live/Render)
     company_logo_bytes = None
-    if company.logo_url and str(company.logo_url or "").startswith("tenant-assets/"):
+    if company.logo_url and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
         company_logo_bytes = download_file(company.logo_url, tenant=tenant)
     stamp_bytes = None
-    if stamp_path and str(stamp_path).startswith("tenant-assets/"):
+    if stamp_path and str(stamp_path).startswith("tenant-assets/") and tenant is not None:
         stamp_bytes = download_file(stamp_path, tenant=tenant)
     signature_bytes = None
     approver_sig_path = getattr(approver, "signature_path", None)
-    if approver_sig_path and str(approver_sig_path).startswith("tenant-assets/"):
+    if approver_sig_path and str(approver_sig_path).startswith("tenant-assets/") and tenant is not None:
         signature_bytes = download_file(approver_sig_path, tenant=tenant)
 
     pdf_bytes = build_po_pdf(
@@ -1802,9 +1865,10 @@ def approve_purchase_order(
         signature_bytes=signature_bytes,
         approved_at=now,
     )
-    stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes, tenant=tenant)
-    if stored_path:
-        db_order.pdf_path = stored_path
+    if tenant is not None:
+        stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes, tenant=tenant)
+        if stored_path:
+            db_order.pdf_path = stored_path
     db.commit()
     db.refresh(db_order)
     # Load names for response
@@ -1829,14 +1893,22 @@ def approve_purchase_order(
 @router.get("/order/{order_id}/pdf-url")
 def get_purchase_order_pdf_url(
     order_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Return signed URL for the stored PO PDF (only when approved and pdf_path set). Expires in 1 hour."""
+    user = current_user_and_db[0]
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
-    if not order or not order.pdf_path:
+    require_document_belongs_to_user_company(db, user, order, "Purchase order", request)
+    if not order.pdf_path:
         raise HTTPException(status_code=404, detail="No PDF available for this order")
+    if tenant is None and str(order.pdf_path or "").startswith("tenant-assets/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Tenant required to generate PDF URL. Send X-Tenant-ID or X-Tenant-Subdomain, or add your database as a tenant.",
+        )
     url = get_signed_url(order.pdf_path, tenant=tenant)  # Uses 10 min expiry; never expose raw path
     if not url:
         raise HTTPException(

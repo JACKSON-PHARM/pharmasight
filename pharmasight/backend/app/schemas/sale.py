@@ -19,8 +19,9 @@ class SalesInvoiceItemBase(BaseModel):
 
 
 class SalesInvoiceItemCreate(SalesInvoiceItemBase):
-    """Create sales invoice item"""
-    pass
+    """Create sales invoice item. Optional unit_cost_base/margin_percent from client (item search + user price) to avoid cost lookup on add-item."""
+    unit_cost_base: Optional[Decimal] = Field(None, ge=0, description="Cost per base unit from search; when set, used for response and margin validation is deferred to batch.")
+    margin_percent: Optional[Decimal] = Field(None, description="Margin % from client (user-adjusted price vs search cost); when set, echoed in response.")
 
 
 class SalesInvoiceItemUpdate(BaseModel):
@@ -58,6 +59,7 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     line_total_inclusive: Decimal
     unit_cost_used: Optional[Decimal]
     unit_cost_base: Optional[Decimal] = None  # Cost per base (wholesale) unit for accurate unit-aware calculations
+    margin_percent: Optional[Decimal] = None  # Margin % for UI display (sale/quotation)
     item_name: Optional[str] = None
     item_code: Optional[str] = None
     unit_display_short: Optional[str] = None  # P/W/S for display/print only
@@ -241,8 +243,9 @@ class QuotationItemBase(BaseModel):
 
 
 class QuotationItemCreate(QuotationItemBase):
-    """Create quotation item"""
-    pass
+    """Create quotation item. Optional unit_cost_base/margin_percent from client (item search + user price) to avoid cost lookup on add-item."""
+    unit_cost_base: Optional[Decimal] = Field(None, ge=0, description="Cost per base unit from search; when set, used for response; margin validation deferred to convert.")
+    margin_percent: Optional[Decimal] = Field(None, description="Margin % from client (user-adjusted price vs search cost); when set, echoed in response.")
 
 
 class QuotationItemResponse(QuotationItemBase):

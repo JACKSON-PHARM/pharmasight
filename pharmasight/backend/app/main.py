@@ -17,11 +17,41 @@ from app.config import settings
 
 
 class RequestTimingMiddleware(BaseHTTPMiddleware):
-    """Set request.state._req_start_time at entry so routes can report full request duration (e.g. /api/items/search)."""
+    """Set request.state._req_start_time at entry; if route set request.state.timings, add X-Timing-* and Server-Timing response headers for Network tab."""
+
+    # Short descriptions for Chrome DevTools Server Timing display
+    _TIMING_DESCS = {
+        "LoadMs": "Load document",
+        "CompanyCheckMs": "Company check",
+        "InsertMs": "Insert line",
+        "ItemsMapMs": "Items batch",
+        "CostMs": "Cost lookup",
+        "BuildMs": "Build response",
+        "TotalMs": "Total",
+        "CommitMs": "Commit",
+        "CostEnrichMs": "Cost/margin per line",
+        "LedgerMs": "Batch allocations",
+    }
 
     async def dispatch(self, request: Request, call_next):
         request.state._req_start_time = time.perf_counter()
-        return await call_next(request)
+        response = await call_next(request)
+        timings = getattr(request.state, "timings", None)
+        if timings and isinstance(timings, dict):
+            parts = []
+            for key, value in timings.items():
+                try:
+                    response.headers[f"X-Timing-{key}"] = str(value)
+                    desc = self._TIMING_DESCS.get(key, key)
+                    parts.append(f"{key};dur={value};desc=\"{desc}\"")
+                except Exception:
+                    pass
+            if parts:
+                try:
+                    response.headers["Server-Timing"] = ", ".join(parts)
+                except Exception:
+                    pass
+        return response
 
 # Frontend directory (pharmasight/frontend, relative to backend/app)
 _BACKEND_APP = Path(__file__).resolve().parent
@@ -44,7 +74,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Server-Timing", "X-Search-Path"],
+    expose_headers=["Server-Timing", "X-Search-Path", "X-Timing-LoadMs", "X-Timing-CompanyCheckMs", "X-Timing-InsertMs", "X-Timing-ItemsMapMs", "X-Timing-CostMs", "X-Timing-BuildMs", "X-Timing-TotalMs"],
 )
 app.add_middleware(RequestTimingMiddleware)
 

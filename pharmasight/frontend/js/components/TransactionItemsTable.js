@@ -180,21 +180,36 @@
         return (out === '=' ? '—' : out);
     };
 
+    /** Treat "=" and "—" as empty so we never show them as item name/code. */
+    TransactionItemsTable.prototype._emptyDisplay = function(v) {
+        if (v == null || typeof v !== 'string') return true;
+        const t = v.trim();
+        return t === '' || t === '=' || t === '—' || t === '-';
+    };
+
     /**
      * Normalize items array
      */
     TransactionItemsTable.prototype.normalizeItems = function(items) {
         if (!Array.isArray(items)) return [];
+        const self = this;
         return items.map(item => {
+            let name = (item.item_name || item.name || '').trim();
+            let code = (item.item_code || item.code || item.item_sku || item.sku || '').trim();
+            if (self._emptyDisplay(name)) name = '';
+            if (self._emptyDisplay(code)) code = '';
+            const costBase = item.purchase_price != null && !isNaN(Number(item.purchase_price))
+                ? Number(item.purchase_price)
+                : (item.unit_cost_base != null && !isNaN(Number(item.unit_cost_base)) ? Number(item.unit_cost_base) : 0);
             const normalized = {
                 item_id: item.item_id || item.id || null,
-                item_name: item.item_name || item.name || '',
-                item_sku: item.item_sku || item.sku || '',
-                item_code: item.item_code || item.code || '',
+                item_name: name,
+                item_sku: code,
+                item_code: code,
                 unit_name: item.unit_name || item.unit || '',
                 quantity: item.quantity || 1,
-                unit_price: item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : (item.price || 0),
-                purchase_price: item.purchase_price || 0, // Cost per base (wholesale) unit
+                unit_price: item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : (item.price || (item.unit_price_exclusive != null ? Number(item.unit_price_exclusive) : 0)),
+                purchase_price: costBase, // Cost per base (wholesale) unit (from API unit_cost_base or purchase_price)
                 unit_cost_used: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null, // Cost per sale unit when from API (reload)
                 discount_percent: item.discount_percent || 0,
                 tax_percent: this.vatRateToPercent(item.tax_percent ?? item.vat_rate ?? 0),
@@ -205,6 +220,7 @@
                 batch_number: item.batch_number != null && item.batch_number !== '' ? item.batch_number : null,
                 expiry_date: item.expiry_date != null && item.expiry_date !== '' ? item.expiry_date : null,
                 branch_order_line_id: item.branch_order_line_id || null,
+                margin_percent: item.margin_percent != null ? parseFloat(item.margin_percent) : null,
                 is_empty: false
             };
             // Calculate nett and vat_amount for normalized items
@@ -333,8 +349,8 @@
                 <tr data-item-index="add" class="add-row-tr">
                     <td style="padding: 0.2rem 0.35rem; position: relative;">
                         <input type="text" class="form-input item-search-input add-row-search ${ar.item_id ? 'item-selected' : ''}"
-                               id="${this.instanceId}_item_add" value="${escapeHtml(ar.item_name || '')}"
-                               placeholder="Search item..."
+                               id="${this.instanceId}_item_add" value="${escapeHtml((ar.item_name && ar.item_name.trim() && ar.item_name !== '—' && ar.item_name !== '-') ? ar.item_name : '')}"
+                               placeholder="Search item (name or SKU)"
                                autocomplete="off" data-row="add" data-item-id="${ar.item_id || ''}"
                                style="width: 100%; box-sizing: border-box; border: ${isSearching ? '2px solid var(--primary-color, #007bff)' : '1px solid var(--border-color, #dee2e6)'}; padding: 0.35rem 0.5rem; font-size: 0.8rem;"
                                ${!this.canEdit ? 'disabled' : ''}>
@@ -408,7 +424,9 @@
             const qtyVal = (item.quantity != null && !isNaN(Number(item.quantity)) ? Number(item.quantity) : 1);
             const priceVal = (item.unit_price != null && !isNaN(Number(item.unit_price)) ? this.roundMoney(Number(item.unit_price)) : 0).toFixed(2);
             const totalVal = (item.total != null && !isNaN(Number(item.total)) ? this.roundMoney(Number(item.total)) : 0).toFixed(2);
-            const marginVal = (this.calculateMargin(item) || 0).toFixed(1);
+            const marginNum = (item.margin_percent != null ? Number(item.margin_percent) : (this.calculateMargin(item) || 0));
+            const marginVal = marginNum.toFixed(1);
+            const marginColor = marginNum >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)';
             const discountVal = this.roundMoney(item.discount_percent);
             const costVal = (item.unit_price != null && !isNaN(Number(item.unit_price)) ? this.roundMoney(Number(item.unit_price)) : 0).toFixed(2);
             const branchCellsAddRow = this.isBranchOrderMode()
@@ -454,7 +472,7 @@
                     </td>
                     <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>
                     <td style="padding: 0.25rem; text-align: right;"><span class="price-display" data-row="${index}">${priceVal}</span></td>
-                    ${(this.mode === 'sale' || this.mode === 'quotation') ? `<td style="padding: 0.25rem; text-align: right;"><span class="margin-display" data-row="${index}" style="font-weight: 500; color: ${this.calculateMargin(item) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};">${marginVal}</span></td>` : ''}
+                    ${(this.mode === 'sale' || this.mode === 'quotation') ? `<td style="padding: 0.25rem; text-align: right;"><span class="margin-display" data-row="${index}" style="font-weight: 500; color: ${marginColor};">${marginVal}</span></td>` : ''}
                     <td style="padding: 0.25rem; text-align: right;"><span class="discount-display" data-row="${index}">${discountVal}</span></td>
                     <td style="padding: 0.25rem; text-align: right;">
                         <span class="vat-percent-display" data-row="${index}" style="font-size: 0.75rem; color: var(--text-secondary, #666);">${(item.tax_percent || 0).toFixed(1)}%</span>
@@ -497,7 +515,7 @@
                     </td>
                     ${(this.mode === 'sale' || this.mode === 'quotation') ? `
                     <td style="padding: 0.25rem; text-align: right;">
-                        <input type="number" class="form-input input-direct margin-input" value="${marginVal}" step="0.1" data-row="${index}" style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 500; color: ${this.calculateMargin(item) >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)'};" ${!this.canEdit ? 'disabled' : ''}>
+                        <input type="number" class="form-input input-direct margin-input" value="${marginVal}" step="0.1" data-row="${index}" style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 500; color: ${marginColor};" ${!this.canEdit ? 'disabled' : ''}>
                     </td>
                     ` : ''}
                     <td style="padding: 0.25rem;">
@@ -653,6 +671,13 @@
                     if (this.addRowItem && this.addRowItem.item_id) {
                         e.preventDefault();
                         this.showSelectedItemDropdown('add');
+                    } else {
+                        // Select all on focus so typing replaces; clear placeholder dash
+                        const inp = e.target;
+                        setTimeout(function() {
+                            if (inp && (inp.value === '\u2014' || inp.value === '—' || inp.value === '-')) inp.value = '';
+                            if (inp) inp.setSelectionRange(0, (inp.value || '').length);
+                        }, 0);
                     }
                     return;
                 }
@@ -695,6 +720,29 @@
         });
         
         el.addEventListener('keydown', (e) => {
+            const inAddRow = e.target.closest && e.target.closest('.add-row-section');
+            if (e.key === 'Enter' && inAddRow) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.target.classList.contains('item-search-input')) {
+                    const dropdown = document.getElementById(this.instanceId + '_suggestions_add');
+                    if (!dropdown || dropdown.style.display === 'none') {
+                        if (this.addRowItem && this.addRowItem.item_id) {
+                            const qty = this.mountEl.querySelector('.add-row-qty');
+                            if (qty) {
+                                qty.focus();
+                                qty.setSelectionRange(0, (qty.value || '').length);
+                            }
+                        }
+                    } else {
+                        this.handleItemSearchKeydown(e, 'add');
+                    }
+                    return;
+                }
+                this.updateAddRowFromDom();
+                this.moveAddRowToNextField(e.target);
+                return;
+            }
             if (e.target.classList.contains('item-search-input')) {
                 if (e.key === 'Escape') {
                     this.closeSelectedItemDropdown();
@@ -702,24 +750,18 @@
                 }
                 const row = e.target.dataset.row;
                 this.handleItemSearchKeydown(e, row === 'add' ? 'add' : parseInt(row, 10));
-            } else if (e.target.classList.contains('qty-input') || 
-                       e.target.classList.contains('price-input') || 
-                       e.target.classList.contains('discount-input')) {
+            } else if (!inAddRow && (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || e.target.classList.contains('discount-input') ||
+                       e.target.classList.contains('margin-input') || e.target.classList.contains('nett-input'))) {
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     const row = e.target.dataset.row;
-                    if (row === 'add') {
-                        this.updateAddRowFromDom();
-                    } else {
-                        this.handleFieldChange(parseInt(row, 10), e.target.dataset.field, e.target.value);
-                        this.moveToNextField(e.target);
-                    }
+                    this.handleFieldChange(parseInt(row, 10), e.target.dataset.field, e.target.value);
+                    this.moveToNextField(e.target);
                 }
-            } else if (e.target.classList.contains('total-input')) {
+            } else if (!inAddRow && e.target.classList.contains('total-input')) {
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    const row = e.target.dataset.row;
-                    if (row !== 'add') this.handleTotalChange(parseInt(row, 10), e.target.value);
+                    this.handleTotalChange(parseInt(e.target.dataset.row, 10), e.target.value);
                 }
             }
         });
@@ -1320,7 +1362,10 @@
             this.loadUnitsForRow('add');
             setTimeout(() => {
                 const qtyInput = this.mountEl.querySelector('.add-row-qty');
-                if (qtyInput) qtyInput.focus();
+                if (qtyInput) {
+                    qtyInput.focus();
+                    qtyInput.setSelectionRange(0, (qtyInput.value || '').length);
+                }
             }, 100);
             return;
         }
@@ -1752,6 +1797,14 @@
     TransactionItemsTable.prototype.getAddRowData = function() {
         if (!this.addRowItem || !this.addRowItem.item_id) return null;
         this.updateAddRowFromDom();
+        var costBase = this.addRowItem.purchase_price;
+        var mult = this.addRowItem.unit_multiplier;
+        var price = this.addRowItem.unit_price || 0;
+        var marginPct = this.addRowItem.margin_percent;
+        if (marginPct == null && costBase != null && price > 0 && mult != null && mult > 0) {
+            var costPerSale = costBase * mult;
+            marginPct = costPerSale > 0 ? ((price - costPerSale) / price * 100) : null;
+        }
         return {
             item_id: this.addRowItem.item_id,
             item_name: this.addRowItem.item_name,
@@ -1762,7 +1815,9 @@
             discount_percent: this.addRowItem.discount_percent || 0,
             tax_percent: this.addRowItem.tax_percent || 0,
             total: this.addRowItem.total || 0,
-            batches: this.addRowItem.batches || []
+            batches: this.addRowItem.batches || [],
+            unit_cost_base: costBase != null ? costBase : undefined,
+            margin_percent: marginPct != null ? marginPct : undefined
         };
     };
     
@@ -2344,6 +2399,51 @@
             );
             if (nextInput) nextInput.focus();
         }
+    };
+
+    /**
+     * For add-row mode: focus next editable field (qty → unit → price → margin → discount → nett → total → Add then search).
+     * Highlights (selects) the field content so user can type immediately. Returns true if moved.
+     */
+    TransactionItemsTable.prototype.moveAddRowToNextField = function(currentEl) {
+        if (!this.useAddRow || !currentEl) return false;
+        const section = document.getElementById(this.instanceId + '_add_row_section');
+        if (!section) return false;
+        const selectors = [
+            '.add-row-qty',
+            '.add-row-unit',
+            '.add-row-price',
+            (this.mode === 'sale' || this.mode === 'quotation') ? '.add-row-margin' : null,
+            '.add-row-discount',
+            '.add-row-nett',
+            '.add-row-total'
+        ].filter(Boolean);
+        const focusables = [];
+        selectors.forEach(function(sel) {
+            const el = section.querySelector(sel);
+            if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT')) focusables.push(el);
+        });
+        const idx = focusables.indexOf(currentEl);
+        if (idx >= 0 && idx < focusables.length - 1) {
+            const next = focusables[idx + 1];
+            next.focus();
+            if (next.tagName === 'INPUT' && next.type !== 'number') next.setSelectionRange(0, (next.value || '').length);
+            else if (next.tagName === 'INPUT') next.setSelectionRange(0, (next.value || '').length);
+            return true;
+        }
+        if (idx === focusables.length - 1) {
+            const addBtn = section.querySelector('.add-item-btn');
+            if (addBtn && !addBtn.disabled) {
+                addBtn.click();
+            }
+            const searchInput = document.getElementById(this.instanceId + '_item_add');
+            if (searchInput) {
+                searchInput.focus();
+                searchInput.setSelectionRange(0, (searchInput.value || '').length);
+            }
+            return true;
+        }
+        return false;
     };
     
     /**

@@ -3,14 +3,15 @@ Quotations API routes
 Quotations are non-stock-affecting sales documents that can be converted to invoices
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+import time
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime
-from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user
+from app.dependencies import get_tenant_db, get_tenant_optional, get_current_user, require_document_belongs_to_user_company, user_has_sell_below_min_margin
 
 logger = logging.getLogger(__name__)
 from app.models import (
@@ -152,17 +153,18 @@ def create_quotation(
 @router.get("/{quotation_id}/pdf")
 def get_quotation_pdf(
     quotation_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Generate and return quotation as PDF (Download PDF). Logo right, company left; footer: prepared/printed/served."""
     from sqlalchemy.orm import selectinload
+    user = current_user_and_db[0]
     quotation = db.query(Quotation).options(
         selectinload(Quotation.items).selectinload(QuotationItem.item)
     ).filter(Quotation.id == quotation_id).first()
-    if not quotation:
-        raise HTTPException(status_code=404, detail="Quotation not found")
+    require_document_belongs_to_user_company(db, user, quotation, "Quotation", request)
     company = db.query(Company).filter(Company.id == quotation.company_id).first()
     branch = db.query(Branch).filter(Branch.id == quotation.branch_id).first()
     company_name = company.name if company else "—"
@@ -170,7 +172,7 @@ def get_quotation_pdf(
     branch_name = branch.name if branch else None
     branch_address = getattr(branch, "address", None) if branch else None
     company_logo_bytes = None
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
         company_logo_bytes = download_file(company.logo_url, tenant=tenant)
     prepared_by = None
     served_by = None
@@ -225,20 +227,25 @@ def get_quotation_pdf(
 @router.get("/{quotation_id}", response_model=QuotationResponse)
 def get_quotation(
     quotation_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Get quotation by ID with full item details, margin, and print header (company/branch/user)"""
     from sqlalchemy.orm import selectinload
+    t0 = time.perf_counter()
+    request.state.timings = {}
+    user = current_user_and_db[0]
     # Load quotation with items and item relationships
     quotation = db.query(Quotation).options(
         selectinload(Quotation.items).selectinload(QuotationItem.item)
     ).filter(Quotation.id == quotation_id).first()
-    
-    if not quotation:
-        raise HTTPException(status_code=404, detail="Quotation not found")
-    
+    request.state.timings["LoadMs"] = round((time.perf_counter() - t0) * 1000, 1)
+    t1 = time.perf_counter()
+    require_document_belongs_to_user_company(db, user, quotation, "Quotation", request)
+    request.state.timings["CompanyCheckMs"] = round((time.perf_counter() - t1) * 1000, 1)
+    t2 = time.perf_counter()
     # Enhance items with item name/code, margin, and unit_display_short (P/W/S for print)
     for quotation_item in quotation.items:
         if quotation_item.item:
@@ -264,7 +271,8 @@ def get_quotation(
                     quotation_item.margin_percent = (
                         (price - cost_per_sale_unit) / price * Decimal("100")
                     )
-    
+    request.state.timings["CostEnrichMs"] = round((time.perf_counter() - t2) * 1000, 1)
+    t3 = time.perf_counter()
     # Print header: company, branch, user, logo URL for print (all documents)
     company = db.query(Company).filter(Company.id == quotation.company_id).first()
     if company:
@@ -272,7 +280,7 @@ def get_quotation(
         quotation.company_address = getattr(company, "address", None) or ""
         logo_path = getattr(company, "logo_url", None)
         if logo_path and str(logo_path).strip():
-            if str(logo_path).startswith("tenant-assets/"):
+            if str(logo_path).startswith("tenant-assets/") and tenant is not None:
                 quotation.logo_url = get_signed_url(logo_path, tenant=tenant)
             elif str(logo_path).startswith("http://") or str(logo_path).startswith("https://"):
                 quotation.logo_url = str(logo_path).strip()
@@ -284,7 +292,9 @@ def get_quotation(
     creator = db.query(User).filter(User.id == quotation.created_by).first()
     if creator:
         quotation.created_by_username = creator.username or getattr(creator, "full_name", None) or ""
-    
+
+    request.state.timings["BuildMs"] = round((time.perf_counter() - t3) * 1000, 1)
+    request.state.timings["TotalMs"] = round((time.perf_counter() - t0) * 1000, 1)
     return quotation
 
 
@@ -411,20 +421,32 @@ def update_quotation(
 def add_quotation_item(
     quotation_id: UUID,
     item_data: QuotationItemCreate,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
-    """Add one line to an existing draft quotation. Rejects duplicate item_id."""
-    from sqlalchemy.orm import selectinload
+    """Add one line to an existing draft quotation. Rejects duplicate item_id. O(1) w.r.t. line count; single load with joinedload/selectinload."""
+    from sqlalchemy.orm import selectinload, joinedload
+    t0 = time.perf_counter()
+    request.state.timings = {}
+    user = current_user_and_db[0]
     quotation = (
         db.query(Quotation)
-        .options(selectinload(Quotation.items))
+        .options(
+            joinedload(Quotation.company),
+            joinedload(Quotation.branch),
+            joinedload(Quotation.creator),
+            selectinload(Quotation.items).selectinload(QuotationItem.item),
+        )
         .filter(Quotation.id == quotation_id)
         .first()
     )
-    if not quotation:
-        raise HTTPException(status_code=404, detail="Quotation not found")
+    request.state.timings["LoadMs"] = round((time.perf_counter() - t0) * 1000, 1)
+    t1 = time.perf_counter()
+    require_document_belongs_to_user_company(db, user, quotation, "Quotation", request)
+    request.state.timings["CompanyCheckMs"] = round((time.perf_counter() - t1) * 1000, 1)
+    t2 = time.perf_counter()
     if quotation.status != "draft":
         raise HTTPException(
             status_code=400,
@@ -468,8 +490,69 @@ def add_quotation_item(
     quotation.total_inclusive = (quotation.total_inclusive or Decimal("0")) + line_total_inclusive
     if quotation.total_exclusive and quotation.total_exclusive > 0:
         quotation.vat_rate = quotation.vat_amount / quotation.total_exclusive * Decimal("100")
+
+    request.state.timings["InsertMs"] = round((time.perf_counter() - t2) * 1000, 1)
+    t3 = time.perf_counter()
+
+    # Build response: use already-loaded line.item (selectinload) for existing lines; single `item` for the new line. O(1) Item access.
+    for line in quotation.items:
+        it = line.item if line.item_id != item_data.item_id else item
+        if it:
+            line.item = it
+            line.item_code = it.sku or ''
+            line.item_name = it.name or ''
+            line.unit_display_short = get_unit_display_short(it, line.unit_name or '')
+        if line.item_id == item_data.item_id:
+            # Carry cost/margin from client when provided (item search already returned cost; user adjusted price; margin validated at convert/batch)
+            if getattr(item_data, "unit_cost_base", None) is not None:
+                line.unit_cost_base = Decimal(str(item_data.unit_cost_base))
+                mult = get_unit_multiplier_from_item(it, line.unit_name or '') if it else None
+                if mult is not None:
+                    line.unit_cost_used = line.unit_cost_base * mult
+                if getattr(item_data, "margin_percent", None) is not None:
+                    line.margin_percent = Decimal(str(item_data.margin_percent))
+                else:
+                    price = line.unit_price_exclusive or Decimal("0")
+                    if price > 0 and getattr(line, "unit_cost_used", None) and float(line.unit_cost_used) > 0:
+                        line.margin_percent = (price - line.unit_cost_used) / price * Decimal("100")
+            else:
+                cost_base = PricingService.get_item_cost_from_snapshot(db, line.item_id, quotation.branch_id, quotation.company_id)
+                if cost_base is None:
+                    cost_base = PricingService.get_item_cost(db, line.item_id, quotation.branch_id, use_fefo=True)
+                if cost_base is not None:
+                    line.unit_cost_base = cost_base
+                    mult = get_unit_multiplier_from_item(it, line.unit_name or '') if it else None
+                    if mult is not None:
+                        cost_per_sale_unit = cost_base * mult
+                        line.unit_cost_used = cost_per_sale_unit
+                        price = line.unit_price_exclusive or Decimal("0")
+                        if price > 0:
+                            line.margin_percent = (price - cost_per_sale_unit) / price * Decimal("100")
+    request.state.timings["CostMs"] = round((time.perf_counter() - t3) * 1000, 1)
+    t4 = time.perf_counter()
+    # Use eagerly loaded company, branch, creator (no extra queries)
+    if quotation.company:
+        quotation.company_name = quotation.company.name
+        quotation.company_address = getattr(quotation.company, "address", None) or ""
+        logo_path = getattr(quotation.company, "logo_url", None)
+        if logo_path and str(logo_path).strip():
+            if str(logo_path).startswith("tenant-assets/") and tenant is not None:
+                quotation.logo_url = get_signed_url(logo_path, tenant=tenant)
+            elif str(logo_path).startswith("http://") or str(logo_path).startswith("https://"):
+                quotation.logo_url = str(logo_path).strip()
+    if quotation.branch:
+        quotation.branch_name = quotation.branch.name
+        quotation.branch_address = getattr(quotation.branch, "address", None) or ""
+        quotation.branch_phone = getattr(quotation.branch, "phone", None) or ""
+    if quotation.creator:
+        quotation.created_by_username = quotation.creator.username or getattr(quotation.creator, "full_name", None) or ""
+
+    request.state.timings["BuildMs"] = round((time.perf_counter() - t4) * 1000, 1)
+    request.state.timings["TotalMs"] = round((time.perf_counter() - t0) * 1000, 1)
+    t5 = time.perf_counter()
     db.commit()
-    return get_quotation(quotation_id, current_user_and_db, tenant, db)
+    request.state.timings["CommitMs"] = round((time.perf_counter() - t5) * 1000, 1)
+    return quotation
 
 
 @router.delete("/{quotation_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -639,6 +722,21 @@ def convert_quotation_to_invoice(
         total_cost = sum(Decimal(str(a["unit_cost"])) * a["quantity"] for a in allocations)
         total_qty = sum(a["quantity"] for a in allocations)
         unit_cost_used = total_cost / total_qty if total_qty > 0 else Decimal("0")
+        
+        # Margin validation at convert (same as sales batch): no line below min margin unless user has permission
+        if unit_cost_used and unit_cost_used > 0 and item:
+            mult = get_unit_multiplier_from_item(item, q_item.unit_name)
+            if mult is not None and float(mult) > 0:
+                cost_per_sale_unit = unit_cost_used * mult
+                unit_price_val = q_item.unit_price_exclusive or Decimal("0")
+                if cost_per_sale_unit > 0 and unit_price_val > 0:
+                    margin_percent = (unit_price_val - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
+                    min_margin = PricingService.get_min_margin_percent(db, q_item.item_id, quotation.company_id)
+                    if margin_percent < min_margin and not user_has_sell_below_min_margin(db, quotation.created_by, quotation.branch_id):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Price for {item.name} is below minimum allowed margin ({float(min_margin):.1f}%). Contact admin for permission to sell below margin."
+                        )
         
         # Use quotation item prices
         line_subtotal = q_item.quantity * q_item.unit_price_exclusive

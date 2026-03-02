@@ -9,7 +9,7 @@ from uuid import UUID
 from decimal import Decimal, ROUND_HALF_UP
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier,
-    InventoryLedger
+    InventoryLedger, ItemBranchPurchaseSnapshot
 )
 from app.services.inventory_service import InventoryService
 from app.services.item_units_helper import get_unit_multiplier_from_item
@@ -92,6 +92,32 @@ class PricingService:
         if not item:
             return None
         return CanonicalPricingService.get_best_available_cost(db, item_id, branch_id, item.company_id)
+
+    @staticmethod
+    def get_item_cost_from_snapshot(
+        db: Session,
+        item_id: UUID,
+        branch_id: UUID,
+        company_id: UUID,
+    ) -> Optional[Decimal]:
+        """
+        Fast cost lookup from item_branch_purchase_snapshot (updated in same transaction as
+        inventory ledger). Use for add-item responses where FEFO is not required and snapshot
+        is trusted. Returns last_purchase_price per base unit, or None if not in snapshot.
+        """
+        row = (
+            db.query(ItemBranchPurchaseSnapshot.last_purchase_price)
+            .filter(
+                ItemBranchPurchaseSnapshot.item_id == item_id,
+                ItemBranchPurchaseSnapshot.branch_id == branch_id,
+                ItemBranchPurchaseSnapshot.company_id == company_id,
+                ItemBranchPurchaseSnapshot.last_purchase_price.isnot(None),
+            )
+            .first()
+        )
+        if row and row[0] is not None:
+            return Decimal(str(row[0]))
+        return None
 
     @staticmethod
     def get_markup_percent(

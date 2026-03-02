@@ -62,6 +62,34 @@ def get_effective_company_id_for_user(db: Session, user: User):
     return company.id if company else None
 
 
+def require_document_belongs_to_user_company(
+    db: Session,
+    user: User,
+    document,
+    document_name: str = "Document",
+    request: Optional[Request] = None,
+) -> None:
+    """
+    Enforce that the loaded document belongs to the authenticated user's company.
+    Single-DB multi-company: prevents cross-company access (e.g. opening another company's
+    invoice). Raises 404 if document is None or document.company_id != user's effective company.
+    When request is provided and request.state.effective_company_id is set (by get_current_user),
+    uses that value and avoids an extra DB round-trip for tenant validation.
+    """
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"{document_name} not found")
+    effective_company_id = (
+        getattr(request.state, "effective_company_id", None) if request else None
+    )
+    if effective_company_id is None:
+        effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None:
+        return
+    doc_company_id = getattr(document, "company_id", None)
+    if doc_company_id is not None and str(doc_company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail=f"{document_name} not found")
+
+
 # -----------------------------------------------------------------------------
 # Tenant engine pool (Step 2)
 # One engine + session factory per tenant database_url. Legacy uses existing
@@ -232,30 +260,21 @@ def get_tenant_from_header(
     db: Session = Depends(get_master_db),
 ) -> Optional[Tenant]:
     """
-    Resolve tenant from X-Tenant-Subdomain or X-Tenant-ID header, or from JWT when no header.
-    Ensures authenticated tenant users always get the correct DB (tenant isolation).
+    Resolve tenant from X-Tenant-Subdomain or X-Tenant-ID header only.
 
-    - Header present → use it.
-    - No header but Bearer token present → use tenant_subdomain from JWT (so Grace/Harte never gets Pharmasight DB).
-    - No header, no token → None (legacy/default DB).
+    Single-DB design: identity is company/branch/user; tenant is only used for storage paths
+    (e.g. logo, PDFs). When no header is sent we return None so get_tenant_db uses the app DB.
+    We do NOT resolve tenant from JWT when no header is sent, so document and user data
+    always come from the same (app) database and company isolation is enforced via
+    get_effective_company_id_for_user + RLS/application checks.
+
+    - Header present → resolve tenant (for storage/logo when needed).
+    - No header → None (app DB; company scoping via user's branches).
     """
     subdomain = request.headers.get("X-Tenant-Subdomain")
     tenant_id_raw = request.headers.get("X-Tenant-ID")
 
     if not subdomain and not tenant_id_raw:
-        auth = request.headers.get("Authorization")
-        token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
-        if token:
-            try:
-                payload = decode_token_dual(token)
-                if payload:
-                    subdomain = (payload.get(CLAIM_TENANT_SUBDOMAIN) or "").strip()
-                    if subdomain and subdomain != "__default__":
-                        tenant = db.query(Tenant).filter(Tenant.subdomain == subdomain).first()
-                        if tenant and (tenant.status or "").lower() not in ("suspended", "cancelled"):
-                            return tenant
-            except Exception:
-                pass
         return None
 
     tenant = None
@@ -640,6 +659,7 @@ def get_current_user(
                                 status_code=status.HTTP_403_FORBIDDEN,
                                 detail="You must change your password before accessing other resources.",
                             )
+                setattr(request.state, "effective_company_id", company_id)
                 yield (user, db)
                 return
             with _pool_lock:
@@ -688,6 +708,7 @@ def get_current_user(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="You must change your password before accessing other resources.",
                     )
+        setattr(request.state, "effective_company_id", company_id)
         yield (user, db)
     finally:
         if db is not None:
@@ -803,6 +824,33 @@ def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bo
         & (UserBranchRole.user_id == user_id)
     ).filter(Permission.name == permission_name).first()
     return has_perm is not None
+
+
+def user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID) -> bool:
+    """True if user has permission sales.sell_below_min_margin for this branch (via their role). Used at batch/convert to allow selling below min margin."""
+    from app.models.user import UserBranchRole, UserRole
+    from app.models.permission import Permission, RolePermission
+    perm = db.query(Permission).filter(Permission.name == "sales.sell_below_min_margin").first()
+    if not perm:
+        return False
+    ubr = (
+        db.query(UserBranchRole)
+        .join(UserRole, UserBranchRole.role_id == UserRole.id)
+        .filter(UserBranchRole.user_id == user_id, UserBranchRole.branch_id == branch_id)
+        .first()
+    )
+    if not ubr:
+        return False
+    rp = (
+        db.query(RolePermission)
+        .filter(
+            RolePermission.role_id == ubr.role_id,
+            RolePermission.permission_id == perm.id,
+            RolePermission.branch_id.is_(None),
+        )
+        .first()
+    )
+    return rp is not None
 
 
 def require_settings_edit(

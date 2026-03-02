@@ -963,7 +963,7 @@ function getSalesInvoiceFormData() {
 }
 
 function mapTableItemToApiItem(item) {
-    return {
+    var payload = {
         item_id: item.item_id,
         unit_name: item.unit_name,
         quantity: parseFloat(item.quantity) || 1,
@@ -971,6 +971,9 @@ function mapTableItemToApiItem(item) {
         discount_percent: item.discount_percent || 0,
         discount_amount: item.discount_amount || 0
     };
+    if (item.unit_cost_base != null) payload.unit_cost_base = parseFloat(item.unit_cost_base);
+    if (item.margin_percent != null) payload.margin_percent = parseFloat(item.margin_percent);
+    return payload;
 }
 
 async function createSalesDraftWithFirstItem(firstItem) {
@@ -1034,59 +1037,36 @@ async function onSalesInvoiceAddItem(item) {
         }
         const updated = await API.sales.addInvoiceItem(draftId, mapTableItemToApiItem(item));
         salesInvoiceSyncedItemIds.add(item.item_id);
-        const itemsFromResponse = updated && updated.items ? updated.items : [];
-        // Refetch invoice so table always matches server (handles stale response or missing items)
-        const fresh = await API.sales.getInvoice(draftId);
-        const freshItems = (fresh && fresh.items) ? fresh.items : [];
-        const updatedItems = itemsFromResponse;
-        // Use whichever source has the expected count (current + 1) to avoid losing existing lines
-        const currentCount = salesInvoiceItemsTable && typeof salesInvoiceItemsTable.getItems === 'function'
-            ? salesInvoiceItemsTable.getItems().length
-            : documentItems.filter(i => i.item_id).length;
-        const expectedCount = currentCount + 1;
-        let apiItems = (freshItems.length >= expectedCount) ? freshItems
-            : (updatedItems.length >= expectedCount) ? updatedItems
-            : (updatedItems.length > 0) ? updatedItems
-            : freshItems;
-        // If API returned fewer items than expected, merge existing table items with API list so we don't lose the first
-        if (apiItems.length < expectedCount && salesInvoiceItemsTable && typeof salesInvoiceItemsTable.getItems === 'function') {
-            const current = salesInvoiceItemsTable.getItems();
-            const apiIds = new Set((apiItems || []).map(i => i.item_id && i.item_id.toString()));
-            const missing = current.filter(c => c.item_id && !apiIds.has(c.item_id.toString()));
-            if (missing.length > 0) {
-                const missingAsApi = missing.map(c => ({
-                    item_id: c.item_id,
-                    item_name: c.item_name,
-                    item_sku: c.item_sku,
-                    item_code: c.item_code || c.item_sku,
-                    unit_name: c.unit_name,
-                    quantity: c.quantity,
-                    unit_price_exclusive: c.unit_price,
-                    vat_rate: c.tax_percent,
-                    line_total_inclusive: c.total,
-                    discount_percent: c.discount_percent || 0,
-                    batch_allocations: c.batch_allocations || null,
-                    batch_number: c.batch_number || null,
-                    expiry_date: c.expiry_date || null
-                }));
-                apiItems = [...missingAsApi, ...apiItems];
+        const apiItems = updated && updated.items ? updated.items : [];
+        const prevItems = documentItems || [];
+        const itemsToSet = apiItems.map((i, idx) => {
+            const unitCostBase = i.unit_cost_base != null ? parseFloat(i.unit_cost_base) : null;
+            const marginPercent = i.margin_percent != null ? parseFloat(i.margin_percent) : null;
+            let purchase_price = unitCostBase;
+            let margin_percent = marginPercent;
+            if ((purchase_price == null || margin_percent == null) && prevItems[idx] && prevItems[idx].item_id === i.item_id) {
+                if (purchase_price == null && prevItems[idx].purchase_price != null) purchase_price = prevItems[idx].purchase_price;
+                if (margin_percent == null && prevItems[idx].margin_percent != null) margin_percent = prevItems[idx].margin_percent;
             }
-        }
-        const itemsToSet = (apiItems || []).map(i => ({
-            item_id: i.item_id,
-            item_name: i.item_name,
-            item_sku: i.item_code,
-            item_code: i.item_code,
-            unit_name: i.unit_name,
-            quantity: i.quantity,
-            unit_price: i.unit_price_exclusive != null ? i.unit_price_exclusive : i.unit_price,
-            discount_percent: i.discount_percent || 0,
-            tax_percent: i.vat_rate != null ? i.vat_rate : (i.tax_percent || 0),
-            total: i.line_total_inclusive != null ? i.line_total_inclusive : i.total,
-            batch_allocations: i.batch_allocations || null,
-            batch_number: i.batch_number || null,
-            expiry_date: i.expiry_date || null
-        }));
+            return {
+                item_id: i.item_id,
+                item_name: i.item_name,
+                item_sku: i.item_code,
+                item_code: i.item_code,
+                unit_name: i.unit_name,
+                quantity: i.quantity,
+                unit_price: i.unit_price_exclusive != null ? i.unit_price_exclusive : i.unit_price,
+                discount_percent: i.discount_percent || 0,
+                tax_percent: i.vat_rate != null ? i.vat_rate : (i.tax_percent || 0),
+                total: i.line_total_inclusive != null ? i.line_total_inclusive : i.total,
+                batch_allocations: i.batch_allocations || null,
+                batch_number: i.batch_number || null,
+                expiry_date: i.expiry_date || null,
+                purchase_price: purchase_price,
+                margin_percent: margin_percent,
+                unit_cost_base: i.unit_cost_base
+            };
+        });
         documentItems = itemsToSet;
         lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(apiItems);
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
@@ -1665,19 +1645,35 @@ async function renderCreateSalesQuotationPage() {
     }
 }
 
-function mapQuotationResponseItems(quotation) {
+/**
+ * @param {object} quotation - API quotation response
+ * @param {Array} [prevItems] - Previous mapped items (from last response). Used after add-item so we keep cost/margin for existing lines when API only returns them for the new line.
+ */
+function mapQuotationResponseItems(quotation, prevItems) {
     const items = quotation && quotation.items ? quotation.items : [];
     const cache = quotationItemDisplayCache || {};
-    return items.map(i => {
+    const prev = Array.isArray(prevItems) ? prevItems : [];
+    function emptyDisplay(v) {
+        if (v == null || typeof v !== 'string') return true;
+        const t = v.trim();
+        return t === '' || t === '=' || t === '—' || t === '-';
+    }
+    return items.map((i, idx) => {
         const idKey = i.item_id != null ? String(i.item_id) : '';
-        let name = (i.item_name && i.item_name !== '=' && i.item_name.trim() ? i.item_name : (i.item && i.item.name ? i.item.name : (i.item_code && i.item_code !== '=' ? i.item_code : ''))) || '';
-        let code = (i.item_code && i.item_code !== '=' && i.item_code !== '—' && String(i.item_code).trim() ? i.item_code : '') || '';
+        let name = (i.item_name && !emptyDisplay(i.item_name) ? i.item_name : (i.item && i.item.name && !emptyDisplay(i.item.name) ? i.item.name : (i.item_code && !emptyDisplay(i.item_code) ? i.item_code : ''))) || '';
+        let code = (i.item_code && !emptyDisplay(i.item_code) ? String(i.item_code).trim() : '') || '';
         if (!name && cache[idKey] && cache[idKey].item_name) name = cache[idKey].item_name;
         if (!code && cache[idKey] && cache[idKey].item_code) code = cache[idKey].item_code;
         if (name || code) {
             if (!quotationItemDisplayCache[idKey]) quotationItemDisplayCache[idKey] = {};
             if (name) quotationItemDisplayCache[idKey].item_name = name;
             if (code) quotationItemDisplayCache[idKey].item_code = code;
+        }
+        let unitCostBase = i.unit_cost_base != null ? parseFloat(i.unit_cost_base) : null;
+        let marginPercent = i.margin_percent != null ? parseFloat(i.margin_percent) : null;
+        if ((unitCostBase == null || marginPercent == null) && prev[idx] && prev[idx].item_id === i.item_id) {
+            if (unitCostBase == null && prev[idx].purchase_price != null) unitCostBase = prev[idx].purchase_price;
+            if (marginPercent == null && prev[idx].margin_percent != null) marginPercent = prev[idx].margin_percent;
         }
         return {
             item_id: i.item_id,
@@ -1689,19 +1685,24 @@ function mapQuotationResponseItems(quotation) {
             unit_price: i.unit_price_exclusive != null ? parseFloat(i.unit_price_exclusive) : 0,
             discount_percent: i.discount_percent != null ? parseFloat(i.discount_percent) : 0,
             total: i.line_total_inclusive != null ? parseFloat(i.line_total_inclusive) : 0,
+            purchase_price: unitCostBase != null ? unitCostBase : (i.unit_cost_used != null ? parseFloat(i.unit_cost_used) : 0),
+            margin_percent: marginPercent,
             is_empty: false
         };
     });
 }
 
 function mapTableItemToQuotationItem(item) {
-    return {
+    var payload = {
         item_id: item.item_id,
         unit_name: item.unit_name || 'unit',
         quantity: parseFloat(item.quantity) || 1,
         unit_price_exclusive: parseFloat(item.unit_price) || 0,
         discount_percent: parseFloat(item.discount_percent) || 0
     };
+    if (item.unit_cost_base != null) payload.unit_cost_base = parseFloat(item.unit_cost_base);
+    if (item.margin_percent != null) payload.margin_percent = parseFloat(item.margin_percent);
+    return payload;
 }
 
 async function onQuotationAddItem(item) {
@@ -1761,7 +1762,7 @@ async function onQuotationAddItem(item) {
         }
         const quotation = await API.quotations.addItem(quotationId, mapTableItemToQuotationItem(item));
         quotationSyncedItemIds.add(item.item_id);
-        quotationItems = mapQuotationResponseItems(quotation);
+        quotationItems = mapQuotationResponseItems(quotation, quotationItems);
         currentQuotation.quotationData = quotation;
         if (salesQuotationItemsTable && typeof salesQuotationItemsTable.setItems === 'function') {
             salesQuotationItemsTable.setItems(quotationItems);

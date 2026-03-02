@@ -87,6 +87,7 @@ class SupplierInvoice(Base):
     company = relationship("Company")
     branch = relationship("Branch")
     supplier = relationship("Supplier")
+    creator = relationship("User", primaryjoin="SupplierInvoice.created_by==User.id", foreign_keys="[SupplierInvoice.created_by]")
     linked_grn = relationship("GRN")
     items = relationship("SupplierInvoiceItem", back_populates="supplier_invoice", cascade="all, delete-orphan")
 
@@ -142,9 +143,10 @@ class PurchaseOrder(Base):
 
     # Relationships
     company = relationship("Company")
-    approved_by_user = relationship("User", foreign_keys=[approved_by_user_id])
     branch = relationship("Branch")
     supplier = relationship("Supplier")
+    creator = relationship("User", primaryjoin="PurchaseOrder.created_by==User.id", foreign_keys="[PurchaseOrder.created_by]")
+    approved_by_user = relationship("User", foreign_keys=[approved_by_user_id])
     items = relationship("PurchaseOrderItem", back_populates="purchase_order", cascade="all, delete-orphan")
 
     __table_args__ = (
