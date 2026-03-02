@@ -15,6 +15,8 @@ let supplierInvoiceItemDisplayCache = {};
 let poSyncedItemIds = new Set();
 /** Same for purchase order items */
 let poItemDisplayCache = {};
+/** Supplier Invoices list date preset: today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year | custom */
+let supplierInvoicesDateFilter = 'this_month';
 
 function getSupplierInvoiceItemDisplay(i, cache) {
     const idKey = i.item_id != null ? String(i.item_id) : '';
@@ -418,6 +420,62 @@ async function renderPurchaseOrdersPage() {
 // PAGE-SHELL FIRST PATTERN: Supplier Invoices
 // =====================================================
 
+/** Returns { dateFrom, dateTo } for the given preset, or null for 'custom' (caller should use From/To inputs). */
+function getSupplierInvoicesDateRange(preset) {
+    if (preset === 'custom') return null;
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+    let dateFrom, dateTo;
+    switch (preset) {
+        case 'today':
+            dateFrom = dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            break;
+        case 'yesterday': {
+            const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+            dateFrom = dateTo = yesterday.toISOString().split('T')[0];
+            break;
+        }
+        case 'this_week': {
+            const day = now.getDay();
+            const mon = new Date(now); mon.setDate(d - (day === 0 ? 6 : day - 1));
+            dateFrom = mon.toISOString().split('T')[0];
+            dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            break;
+        }
+        case 'last_week': {
+            const day = now.getDay();
+            const lastMon = new Date(now); lastMon.setDate(d - (day === 0 ? 6 : day - 1) - 7);
+            dateFrom = lastMon.toISOString().split('T')[0];
+            const lastSun = new Date(lastMon); lastSun.setDate(lastSun.getDate() + 6);
+            dateTo = lastSun.toISOString().split('T')[0];
+            break;
+        }
+        case 'this_month':
+            dateFrom = [y, String(m + 1).padStart(2, '0'), '01'].join('-');
+            dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            break;
+        case 'last_month': {
+            const lastM = m === 0 ? 11 : m - 1;
+            const lastY = m === 0 ? y - 1 : y;
+            dateFrom = [lastY, String(lastM + 1).padStart(2, '0'), '01'].join('-');
+            const lastDay = new Date(lastY, lastM + 1, 0).getDate();
+            dateTo = [lastY, String(lastM + 1).padStart(2, '0'), String(lastDay).padStart(2, '0')].join('-');
+            break;
+        }
+        case 'this_year':
+            dateFrom = [y, '01', '01'].join('-');
+            dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+            break;
+        case 'last_year':
+            dateFrom = [y - 1, '01', '01'].join('-');
+            dateTo = [y - 1, '12', '31'].join('-');
+            break;
+        default:
+            dateFrom = dateTo = [y, String(m + 1).padStart(2, '0'), String(d).padStart(2, '0')].join('-');
+    }
+    return { dateFrom, dateTo };
+}
+
 function renderSupplierInvoicesShell() {
     console.log('renderSupplierInvoicesShell() called');
     const page = document.getElementById('purchases');
@@ -446,14 +504,27 @@ function renderSupplierInvoicesShell() {
             
             <div class="card-body" style="padding: 1.5rem;">
                 <div style="margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: 1rem; background: #f8f9fa; border-radius: 0.5rem;">
-                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <label style="font-weight: 500;">Date:</label>
+                    <select id="supplierInvoicesDateFilter" class="form-input" style="width: 160px;" onchange="if(window.toggleSupplierInvoicesCustomDates) window.toggleSupplierInvoicesCustomDates()">
+                        <option value="today" ${supplierInvoicesDateFilter === 'today' ? 'selected' : ''}>Today</option>
+                        <option value="yesterday" ${supplierInvoicesDateFilter === 'yesterday' ? 'selected' : ''}>Yesterday</option>
+                        <option value="this_week" ${supplierInvoicesDateFilter === 'this_week' ? 'selected' : ''}>This Week</option>
+                        <option value="last_week" ${supplierInvoicesDateFilter === 'last_week' ? 'selected' : ''}>Last Week</option>
+                        <option value="this_month" ${supplierInvoicesDateFilter === 'this_month' ? 'selected' : ''}>This Month</option>
+                        <option value="last_month" ${supplierInvoicesDateFilter === 'last_month' ? 'selected' : ''}>Last Month</option>
+                        <option value="this_year" ${supplierInvoicesDateFilter === 'this_year' ? 'selected' : ''}>This Year</option>
+                        <option value="last_year" ${supplierInvoicesDateFilter === 'last_year' ? 'selected' : ''}>Last Year</option>
+                        <option value="custom" ${supplierInvoicesDateFilter === 'custom' ? 'selected' : ''}>Custom</option>
+                    </select>
+                    <div id="supplierInvoicesCustomDateRange" style="display: ${supplierInvoicesDateFilter === 'custom' ? 'flex' : 'none'}; gap: 0.5rem; align-items: center;">
                         <label style="font-weight: 500; min-width: 50px;">From:</label>
-                        <input type="date" class="form-input" id="filterDateFrom" value="${today}" onchange="if(window.applyDateFilter) window.applyDateFilter()" style="width: 150px;">
-                    </div>
-                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <input type="date" class="form-input" id="filterDateFrom" value="${today}" style="width: 150px;">
                         <label style="font-weight: 500; min-width: 30px;">To:</label>
-                        <input type="date" class="form-input" id="filterDateTo" value="${today}" onchange="if(window.applyDateFilter) window.applyDateFilter()" style="width: 150px;">
+                        <input type="date" class="form-input" id="filterDateTo" value="${today}" style="width: 150px;">
                     </div>
+                    <button class="btn btn-primary" onclick="if(window.applyDateFilter) window.applyDateFilter()">
+                        <i class="fas fa-check"></i> Apply
+                    </button>
                     <button class="btn btn-outline" onclick="if(window.clearDateFilter) window.clearDateFilter()">
                         <i class="fas fa-times"></i> Clear
                     </button>
@@ -494,6 +565,14 @@ function renderSupplierInvoicesShell() {
         </div>
     `;
     console.log('✅ Supplier Invoices shell rendered');
+}
+
+function toggleSupplierInvoicesCustomDates() {
+    const sel = document.getElementById('supplierInvoicesDateFilter');
+    const customRange = document.getElementById('supplierInvoicesCustomDateRange');
+    if (!sel || !customRange) return;
+    supplierInvoicesDateFilter = sel.value || 'this_month';
+    customRange.style.display = supplierInvoicesDateFilter === 'custom' ? 'flex' : 'none';
 }
 
 async function fetchAndRenderSupplierInvoicesData() {
@@ -747,8 +826,22 @@ async function loadPurchaseDocuments(documentType = 'order') {
         const dateFromEl = document.getElementById('filterDateFrom');
         const dateToEl = document.getElementById('filterDateTo');
         const today = new Date().toISOString().split('T')[0];
-        const dateFrom = dateFromEl?.value?.trim() || (documentType === 'order' ? today : null);
-        const dateTo = dateToEl?.value?.trim() || (documentType === 'order' ? today : null);
+        let dateFrom, dateTo;
+        if (documentType === 'invoice') {
+            const presetEl = document.getElementById('supplierInvoicesDateFilter');
+            const preset = (presetEl && presetEl.value) ? presetEl.value : supplierInvoicesDateFilter;
+            const range = getSupplierInvoicesDateRange(preset);
+            if (range) {
+                dateFrom = range.dateFrom;
+                dateTo = range.dateTo;
+            } else {
+                dateFrom = dateFromEl?.value?.trim() || today;
+                dateTo = dateToEl?.value?.trim() || today;
+            }
+        } else {
+            dateFrom = dateFromEl?.value?.trim() || (documentType === 'order' ? today : null);
+            dateTo = dateToEl?.value?.trim() || (documentType === 'order' ? today : null);
+        }
         const supplierId = document.getElementById('filterSupplier')?.value || null;
         const status = document.getElementById('filterStatus')?.value || null;
         
@@ -932,6 +1025,14 @@ function clearDateFilter() {
     const dateToInput = document.getElementById('filterDateTo');
     if (dateFromInput) dateFromInput.value = today;
     if (dateToInput) dateToInput.value = today;
+    // On Supplier Invoices page, reset preset to This Month
+    const presetEl = document.getElementById('supplierInvoicesDateFilter');
+    if (presetEl) {
+        supplierInvoicesDateFilter = 'this_month';
+        presetEl.value = 'this_month';
+        const customRange = document.getElementById('supplierInvoicesCustomDateRange');
+        if (customRange) customRange.style.display = 'none';
+    }
     applyDateFilter();
 }
 
@@ -3240,6 +3341,7 @@ if (typeof window !== 'undefined') {
     window.createSupplier = createSupplier;
     window.applyDateFilter = applyDateFilter;
     window.clearDateFilter = clearDateFilter;
+    window.toggleSupplierInvoicesCustomDates = toggleSupplierInvoicesCustomDates;
     window.applyPurchaseFilters = applyPurchaseFilters;
     window.renderSuppliersPage = renderSuppliersPage;
     window.filterSuppliers = filterSuppliers;
