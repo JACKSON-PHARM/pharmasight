@@ -79,12 +79,19 @@ def _discover_migration_files() -> List[tuple[str, Path]]:
     return out
 
 
+def _psycopg2_dsn(url: str) -> str:
+    """Strip query params (e.g. pgbouncer=true) - psycopg2 rejects them in URI."""
+    if "?" in url:
+        return url.split("?")[0]
+    return url
+
+
 def get_public_table_count(database_url: str) -> int:
     """
     Return number of tables in public schema.
     Used to enforce initialize-only on empty DBs and to verify migrations created tables.
     """
-    conn = psycopg2.connect(database_url)
+    conn = psycopg2.connect(_psycopg2_dsn(database_url))
     try:
         cur = conn.cursor()
         cur.execute(
@@ -130,7 +137,7 @@ def run_migrations_for_url(database_url: str) -> List[str]:
     Returns list of versions applied this run. Always brings DB to latest version.
     """
     applied_this_run: List[str] = []
-    conn = psycopg2.connect(database_url)
+    conn = psycopg2.connect(_psycopg2_dsn(database_url))
 
     try:
         _ensure_schema_migrations(conn)
@@ -182,7 +189,7 @@ def ensure_master_tenant_storage_columns(database_url: str) -> bool:
     Returns True if run (and no error), False if skipped (e.g. no tenants table).
     """
     try:
-        conn = psycopg2.connect(database_url)
+        conn = psycopg2.connect(_psycopg2_dsn(database_url))
         cur = conn.cursor()
         cur.execute("""
             SELECT EXISTS (
@@ -238,7 +245,7 @@ class MigrationService:
     def get_tenant_schema_version(self, database_url: str) -> Optional[str]:
         """Get current schema version from tenant database"""
         try:
-            conn = psycopg2.connect(database_url)
+            conn = psycopg2.connect(_psycopg2_dsn(database_url))
             cursor = conn.cursor()
             
             # Check if migrations table exists
@@ -324,7 +331,7 @@ class MigrationService:
             }
         
         try:
-            conn = psycopg2.connect(tenant.database_url)
+            conn = psycopg2.connect(_psycopg2_dsn(tenant.database_url))
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             cursor = conn.cursor()
             
