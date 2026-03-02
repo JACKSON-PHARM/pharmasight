@@ -33,7 +33,9 @@ def normalize_postgres_url(url: str) -> str:
         return url
     u = url.strip()
     if u.startswith("postgres://"):
-        return "postgresql://" + u[10:]
+        # IMPORTANT: keep the `//` intact; otherwise libpq/psycopg2 will think
+        # there's no host and try a local unix socket (/var/run/postgresql/.s.PGSQL.5432).
+        return u.replace("postgres://", "postgresql://", 1)
     return u
 
 
