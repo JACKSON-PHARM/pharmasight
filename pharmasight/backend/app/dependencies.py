@@ -23,7 +23,7 @@ from sqlalchemy import create_engine, pool, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.config import settings
+from app.config import settings, normalize_postgres_url
 from app.database import SessionLocal
 from app.database_master import get_master_db
 from app.models.tenant import Tenant
@@ -202,7 +202,7 @@ def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
     """
     if not raw_url or not raw_url.strip():
         return raw_url or ""
-    url = raw_url.strip()
+    url = normalize_postgres_url(raw_url.strip())
     if not getattr(settings, "USE_SUPABASE_POOLER_FOR_TENANTS", False):
         return url
     if "db." not in url or ".supabase.co" not in url or ":5432" not in url:
@@ -220,7 +220,7 @@ def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
                 safe_pass = quote(password, safe=".-_~") if password else ""
                 port = _get_pooler_port()
                 netloc = f"{new_user}:{safe_pass}@{pooler_host}:{port}"
-                new_url = f"{parsed.scheme or 'postgresql'}://{netloc}/{dbname}"
+                new_url = f"postgresql://{netloc}/{dbname}"
                 if port == _SUPABASE_TRANSACTION_POOLER_PORT and "pgbouncer=true" not in new_url.lower():
                     new_url = new_url + ("&pgbouncer=true" if "?" in new_url else "?pgbouncer=true")
                 mode = "transaction" if port == _SUPABASE_TRANSACTION_POOLER_PORT else "session"
@@ -231,7 +231,7 @@ def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
     if ".supabase.co:5432" in url or ".supabase.co:5432/" in url:
         url = url.replace(".supabase.co:5432", ".supabase.co:" + _SUPABASE_TRANSACTION_POOLER_PORT)
         logger.debug("Using Supabase transaction pooler (port %s) for tenant DB.", _SUPABASE_TRANSACTION_POOLER_PORT)
-    return url
+    return normalize_postgres_url(url)
 
 
 def _session_factory_for_url(database_url: str) -> sessionmaker:

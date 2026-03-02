@@ -27,6 +27,16 @@ except Exception:
     pass
 
 
+def normalize_postgres_url(url: str) -> str:
+    """Convert postgres:// to postgresql:// for SQLAlchemy (NoSuchModuleError: postgres)."""
+    if not url:
+        return url
+    u = url.strip()
+    if u.startswith("postgres://"):
+        return "postgresql://" + u[10:]
+    return u
+
+
 class Settings(BaseSettings):
     """Application settings"""
     
@@ -64,10 +74,10 @@ class Settings(BaseSettings):
     # Build connection string if not provided
     @property
     def database_connection_string(self) -> str:
-        """Build database connection string"""
+        """Build database connection string. Normalizes postgres:// to postgresql:// for SQLAlchemy."""
         if self.DATABASE_URL:
-            return self.DATABASE_URL
-        
+            return normalize_postgres_url(self.DATABASE_URL)
+
         # Build from Supabase components
         return (
             f"postgresql://{self.SUPABASE_DB_USER}:{self.SUPABASE_DB_PASSWORD}"
