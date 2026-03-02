@@ -1028,10 +1028,9 @@ async function onSalesInvoiceAddItem(item) {
                 total: i.line_total_inclusive
             }));
             lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(invoice.items);
-            if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
-                salesInvoiceItemsTable.setItems(documentItems);
-            }
             showToast('Draft invoice created. Add more items or click Batch when ready.', 'success');
+            // Re-render the page so the header shows Update/Batch & Print/Convert/Delete/Back buttons (same as when reopening a draft)
+            await renderCreateSalesInvoicePage();
             updateSalesInvoiceSummary();
             return;
         }
