@@ -988,6 +988,7 @@ def update_supplier_invoice(
 @router.post("/invoice/{invoice_id}/batch", response_model=SupplierInvoiceResponse)
 def batch_supplier_invoice(
     invoice_id: UUID,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -998,16 +999,24 @@ def batch_supplier_invoice(
     Only DRAFT invoices can be batched. Once batched, status changes to BATCHED.
     Ensures invoice has a system document number (SPV...) before batching; assigns one if missing.
     """
+    user = current_user_and_db[0]
+    from sqlalchemy.orm import joinedload
     invoice = (
         db.query(SupplierInvoice)
-        .options(selectinload(SupplierInvoice.items))
+        .options(
+            joinedload(SupplierInvoice.supplier),
+            joinedload(SupplierInvoice.branch),
+            joinedload(SupplierInvoice.creator),
+            selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item),
+        )
         .filter(SupplierInvoice.id == invoice_id)
         .with_for_update()
         .first()
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+
     if invoice.status == "BATCHED":
         raise HTTPException(
             status_code=400,
@@ -1043,7 +1052,7 @@ def batch_supplier_invoice(
     import json
     
     for invoice_item in invoice.items:
-        item = db.query(Item).filter(Item.id == invoice_item.item_id).first()
+        item = invoice_item.item
         if not item:
             raise HTTPException(
                 status_code=400,
@@ -1230,14 +1239,13 @@ def batch_supplier_invoice(
     db.commit()
     db.refresh(invoice)
     
-    # Load relationships for response
+    # Response from eagerly loaded relations (no extra queries)
     if invoice.supplier:
         invoice.supplier_name = invoice.supplier.name
     if invoice.branch:
         invoice.branch_name = invoice.branch.name
-    created_by_user = db.query(User).filter(User.id == invoice.created_by).first()
-    if created_by_user:
-        invoice.created_by_name = created_by_user.full_name or created_by_user.email
+    if invoice.creator:
+        invoice.created_by_name = invoice.creator.full_name or invoice.creator.email
     
     return invoice
 

@@ -624,6 +624,7 @@ def delete_quotation(
 def convert_quotation_to_invoice(
     quotation_id: UUID,
     convert_request: QuotationConvertRequest,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -632,15 +633,17 @@ def convert_quotation_to_invoice(
     Row-level lock on quotation prevents concurrent convert; status checked after lock.
     """
     from sqlalchemy.orm import selectinload
+    user = current_user_and_db[0]
     quotation = (
         db.query(Quotation)
-        .options(selectinload(Quotation.items))
+        .options(selectinload(Quotation.items).selectinload(QuotationItem.item))
         .filter(Quotation.id == quotation_id)
         .with_for_update()
         .first()
     )
     if not quotation:
         raise HTTPException(status_code=404, detail="Quotation not found")
+    require_document_belongs_to_user_company(db, user, quotation, "Quotation", request)
     if quotation.status == "converted":
         raise HTTPException(
             status_code=400,
@@ -655,9 +658,7 @@ def convert_quotation_to_invoice(
             db, q_item.item_id, quotation.branch_id, q_item.quantity, q_item.unit_name
         )
         if not is_available:
-            item = db.query(Item).filter(Item.id == q_item.item_id).first()
-            # Convert available_base back to sale unit for display (items table is source of truth)
-            item = db.query(Item).filter(Item.id == q_item.item_id).first()
+            item = q_item.item
             mult = get_unit_multiplier_from_item(item, q_item.unit_name) if item else None
             if mult and float(mult) > 0:
                 available_in_sale_unit = available_base / float(mult)
@@ -697,9 +698,7 @@ def convert_quotation_to_invoice(
     ledger_entries = []
     
     for q_item in quotation.items:
-        # Get item details
-        item = db.query(Item).filter(Item.id == q_item.item_id).first()
-        
+        item = q_item.item
         # Allocate stock using FEFO (unit from items table)
         quantity_base_units = InventoryService.convert_to_base_units(
             db, q_item.item_id, q_item.quantity, q_item.unit_name

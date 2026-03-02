@@ -452,4 +452,31 @@ So: add-item is fast and carries the user’s price and margin; the only moment 
 
 ---
 
-*End of audit. Add-item refactor as in §7; single-DB as in §8; timing and snapshot as in §10; carry margin and validate at batch as in §11; 200 ms audit and plan as in §12; optimization refactor summary as in §13.*
+## 14. Document Batching — Audit and Optimization (Single-DB, No Multi-Tenant DB References)
+
+**Scope:** Endpoints that "batch" or convert documents (DRAFT → BATCHED / converted): sales invoice batch, supplier invoice batch, quotation convert-to-invoice, branch order batch. Goal: same as add-item — tenant identity from token, no redundant DB for company check, no N+1 Item queries, no multi-tenant DB assumptions.
+
+### 14.1 Findings (pre-refactor)
+
+| Endpoint | Tenant / company check | Item loading | Other |
+|----------|------------------------|--------------|--------|
+| **POST …/invoice/{id}/batch** (sales) | **Missing** — no `require_document_belongs_to_user_company` | N+1: `db.query(Item)` per line in body sync loop and per line in allocation loop | Uses `get_tenant_db`. Returns in-memory invoice after refresh. |
+| **POST …/invoice/{id}/batch** (supplier) | **Missing** | N+1: `db.query(Item)` per `invoice_item` | After commit: separate `db.query(User)` for `created_by_name`; supplier/branch from relation (lazy). |
+| **POST …/{quotation_id}/convert-to-invoice** | **Missing** | N+1: `db.query(Item)` per `q_item`; stock_errors loop has **duplicate** Item fetch | Uses `get_tenant_db`. Creates new invoice and returns it. |
+| **POST …/orders/{order_id}/batch** (branch order) | **Missing** | No Item per line needed for batch logic | Uses `get_tenant_db`, `get_current_user`. No company check. |
+
+**Multi-tenant DB:** None of these endpoints reference `tenant.database_url` or switch DB by tenant; they use `get_tenant_db` and `get_current_user` (correct for single shared DB). The gap is **missing tenant isolation**: an authenticated user could batch another company's document if they knew the ID.
+
+### 14.2 Changes applied (same pattern as add-item)
+
+1. **Tenant identity:** Add `request: Request` and call `require_document_belongs_to_user_company(db, user, document, "Invoice"|"Quotation"|"Branch order", request)` after loading the document (uses `request.state.effective_company_id` from `get_current_user`).
+2. **Sales batch:** Load with `selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item)`. Use `line.item` / `invoice_item.item` instead of `db.query(Item)` in both loops.
+3. **Supplier batch:** Load with `selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)` and `joinedload(supplier, branch, creator)`. Use `invoice_item.item` in loop; response uses `invoice.creator` (no separate User query).
+4. **Convert quotation:** Load with `selectinload(Quotation.items).selectinload(QuotationItem.item)`. Use `q_item.item` in stock_errors and main loop; remove duplicate Item fetch.
+5. **Branch order batch:** Add tenant check only (no Item eager load needed for batch).
+
+Business logic (stock, margin, allocations, ledger, snapshots) unchanged.
+
+---
+
+*End of audit. Add-item refactor as in §7; single-DB as in §8; timing and snapshot as in §10; carry margin and validate at batch as in §11; 200 ms audit and plan as in §12; optimization refactor summary as in §13; document batching as in §14.*

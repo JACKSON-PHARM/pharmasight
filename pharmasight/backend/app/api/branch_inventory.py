@@ -9,10 +9,10 @@ from typing import List, Optional
 from uuid import UUID
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session, selectinload
 
-from app.dependencies import get_tenant_db, get_current_user
+from app.dependencies import get_tenant_db, get_current_user, require_document_belongs_to_user_company
 from app.models import (
     BranchOrder,
     BranchOrderLine,
@@ -393,6 +393,7 @@ def update_branch_order(
 @router.post("/orders/{order_id}/batch", response_model=BranchOrderResponse)
 def batch_branch_order(
     order_id: UUID,
+    request: Request,
     db: Session = Depends(get_tenant_db),
     user_db=Depends(get_current_user),
 ):
@@ -407,6 +408,7 @@ def batch_branch_order(
     )
     if not order:
         raise HTTPException(status_code=404, detail="Branch order not found")
+    require_document_belongs_to_user_company(db, user, order, "Branch order", request)
     if order.status == "BATCHED":
         raise HTTPException(status_code=400, detail="Order is already batched (locked)")
     if order.status != "DRAFT":

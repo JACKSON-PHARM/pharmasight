@@ -1284,6 +1284,7 @@ def batch_sales_invoice(
     invoice_id: UUID,
     batched_by: UUID,
     body: Optional[BatchSalesInvoiceRequest] = None,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -1297,16 +1298,18 @@ def batch_sales_invoice(
     from sqlalchemy.orm import selectinload
     from datetime import datetime
 
-    # Lock invoice row for update so concurrent batch requests for same invoice are serialized
+    user = current_user_and_db[0]
+    # Lock invoice row for update so concurrent batch requests for same invoice are serialized; eager-load items.item to avoid N+1
     invoice = (
         db.query(SalesInvoice)
-        .options(selectinload(SalesInvoice.items))
+        .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
         .filter(SalesInvoice.id == invoice_id)
         .with_for_update()
         .first()
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
 
     if invoice.status == "BATCHED":
         raise HTTPException(
@@ -1337,7 +1340,7 @@ def batch_sales_invoice(
                 total_exclusive += line.line_total_exclusive
                 total_vat += line.vat_amount
                 continue
-            item = db.query(Item).filter(Item.id == line.item_id).first()
+            item = line.item
             if not item:
                 total_exclusive += line.line_total_exclusive
                 total_vat += line.vat_amount
@@ -1373,7 +1376,7 @@ def batch_sales_invoice(
 
     try:
         for invoice_item in invoice.items:
-            item = db.query(Item).filter(Item.id == invoice_item.item_id).first()
+            item = invoice_item.item
             if not item:
                 raise HTTPException(
                     status_code=400,
