@@ -461,7 +461,7 @@ def get_sales_invoice(
             if getattr(invoice_item, "unit_cost_base", None) is not None and float(invoice_item.unit_cost_base) > 0:
                 mult = get_unit_multiplier_from_item(invoice_item.item, invoice_item.unit_name or "")
                 if mult is not None and mult > 0:
-                    cost_per_sale_unit = float(invoice_item.unit_cost_base) * mult
+                    cost_per_sale_unit = float(invoice_item.unit_cost_base) * float(mult)
                     price = float(invoice_item.unit_price_exclusive or 0)
                     if price > 0:
                         invoice_item.margin_percent = (price - cost_per_sale_unit) / price * Decimal("100")
@@ -697,7 +697,7 @@ def add_sales_invoice_item(
                     elif it:
                         mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
                         if mult is not None and mult > 0:
-                            cost_per_sale_unit = float(inv_item.unit_cost_base) * mult
+                            cost_per_sale_unit = float(inv_item.unit_cost_base) * float(mult)
                             price = float(inv_item.unit_price_exclusive or 0)
                             if price > 0:
                                 inv_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
@@ -711,7 +711,7 @@ def add_sales_invoice_item(
                 if getattr(inv_item, "unit_cost_base", None) is not None and float(inv_item.unit_cost_base) > 0 and it:
                     mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
                     if mult is not None and mult > 0:
-                        cost_per_sale_unit = float(inv_item.unit_cost_base) * mult
+                        cost_per_sale_unit = float(inv_item.unit_cost_base) * float(mult)
                         price = float(inv_item.unit_price_exclusive or 0)
                         if price > 0:
                             inv_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
@@ -1283,8 +1283,8 @@ def update_sales_invoice(
 def batch_sales_invoice(
     invoice_id: UUID,
     batched_by: UUID,
-    body: Optional[BatchSalesInvoiceRequest] = None,
     request: Request,
+    body: Optional[BatchSalesInvoiceRequest] = None,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
