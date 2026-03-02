@@ -287,6 +287,8 @@ def create_item(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # Load new item into item_branch_snapshot for all branches (same transaction) so it appears in search
+    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, db_item.company_id, db_item.id)
     db.commit()
     db.refresh(db_item)
     return db_item
@@ -1070,9 +1072,10 @@ def update_item(
     for field, value in update_data.items():
         setattr(item, field, value)
     
+    # Refresh snapshot in same transaction (e.g. floor_price, name, search_text) so search/stocks stay in sync
+    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, item.company_id, item_id)
     db.commit()
     db.refresh(item)
-    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, item.company_id, item_id)
     return item
 
 
@@ -1263,6 +1266,11 @@ def bulk_create_items(
                     })
             
             # Units are item characteristics (columns on items table only); no item_units table to insert.
+            # Load new items into item_branch_snapshot for all branches (same transaction) so they appear in search
+            for inserted_item in inserted_items:
+                SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(
+                    db, bulk_data.company_id, inserted_item.id
+                )
         
         # Commit all at once
         db.commit()
@@ -1480,6 +1488,7 @@ def post_cost_adjustment(
         ledger_row.unit_cost = new_cost
         ledger_row.total_cost = new_cost * ledger_row.quantity_delta
         db.flush()
+        SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
         db.commit()
         db.refresh(movement)
         return CorrectionResponse(

@@ -36,6 +36,7 @@ from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.pricing_config_service import validate_line_price
 from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
@@ -1402,20 +1403,27 @@ def batch_sales_invoice(
                 quantity_base, invoice_item.unit_name
             )
 
-            # Model B: post-allocation margin validation and cost alignment
+            # Model B: post-allocation margin and floor price validation
             if allocations:
                 batch_cost = Decimal(str(allocations[0]["unit_cost"]))  # per base unit
                 mult = get_unit_multiplier_from_item(item, invoice_item.unit_name)
                 if mult is not None and mult > 0:
                     cost_per_sale_unit = batch_cost * mult
+                    unit_price_val = invoice_item.unit_price_exclusive or Decimal("0")
                     if cost_per_sale_unit > 0:
-                        unit_price_val = invoice_item.unit_price_exclusive or Decimal("0")
-                        margin_percent = (unit_price_val - cost_per_sale_unit) / cost_per_sale_unit * Decimal("100")
-                        min_margin = PricingService.get_min_margin_percent(db, invoice_item.item_id, invoice.company_id)
-                        if margin_percent < min_margin and not _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id):
+                        user_has_override = _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id)
+                        validation = validate_line_price(
+                            db,
+                            invoice.company_id,
+                            invoice_item.item_id,
+                            unit_price_val,
+                            cost_per_sale_unit,
+                            user_has_override,
+                        )
+                        if not validation.get("allowed"):
                             raise HTTPException(
                                 status_code=400,
-                                detail="Price below minimum margin for allocated batch."
+                                detail=validation.get("message", "Price validation failed.")
                             )
                 # Model B: overwrite unit_cost_used with allocated batch cost (per base unit)
                 invoice_item.unit_cost_used = batch_cost

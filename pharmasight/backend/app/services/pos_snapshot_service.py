@@ -139,12 +139,15 @@ def refresh_pos_snapshot_for_item(
     )
     last_purchase_price = float(snap.last_purchase_price) if snap and snap.last_purchase_price is not None else None
 
-    # selling_price and margin_percent from pricing logic
+    # selling_price and margin_percent from pricing logic; enforce floor_price_retail minimum
     margin_percent = PricingService.get_markup_percent(db, item_id, company_id)
     if average_cost is not None and margin_percent is not None:
         selling_price = float(Decimal(str(average_cost)) * (Decimal("1") + Decimal(str(margin_percent)) / Decimal("100")))
     else:
         selling_price = None
+    floor_price = float(item.floor_price_retail) if getattr(item, "floor_price_retail", None) is not None else None
+    if floor_price is not None and (selling_price is None or selling_price < floor_price):
+        selling_price = floor_price
     margin_val = float(margin_percent) if margin_percent is not None else None
 
     next_expiry = _get_next_expiry_date(db, item_id, branch_id, company_id)
