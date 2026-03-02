@@ -999,6 +999,8 @@ def batch_supplier_invoice(
     Only DRAFT invoices can be batched. Once batched, status changes to BATCHED.
     Ensures invoice has a system document number (SPV...) before batching; assigns one if missing.
     """
+    import logging
+    _log = logging.getLogger(__name__)
     user = current_user_and_db[0]
     from sqlalchemy.orm import joinedload
 
@@ -1225,28 +1227,35 @@ def batch_supplier_invoice(
             )
             ledger_entries.append(ledger_entry)
     
-    # Add all ledger entries
-    for entry in ledger_entries:
-        db.add(entry)
+    try:
+        # Add all ledger entries
+        for entry in ledger_entries:
+            db.add(entry)
 
-    db.flush()
+        db.flush()
 
-    # Update snapshots in same transaction
-    for entry in ledger_entries:
-        SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
-    for inv_item in invoice.items:
-        SnapshotService.upsert_purchase_snapshot(
-            db, invoice.company_id, invoice.branch_id, inv_item.item_id,
-            inv_item.unit_cost_exclusive, invoice.created_at, invoice.supplier_id
-        )
-    for entry in ledger_entries:
-        SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
+        # Update snapshots in same transaction
+        for entry in ledger_entries:
+            SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+        for inv_item in invoice.items:
+            SnapshotService.upsert_purchase_snapshot(
+                db, invoice.company_id, invoice.branch_id, inv_item.item_id,
+                inv_item.unit_cost_exclusive, invoice.created_at, invoice.supplier_id
+            )
+        for entry in ledger_entries:
+            SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
 
-    # Update invoice status to BATCHED
-    invoice.status = "BATCHED"
+        # Update invoice status to BATCHED
+        invoice.status = "BATCHED"
 
-    db.commit()
-    db.refresh(invoice)
+        db.commit()
+        db.refresh(invoice)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        _log.exception("Batch supplier invoice failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
     
     # Response from eagerly loaded relations (no extra queries)
     if invoice.supplier:

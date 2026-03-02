@@ -522,7 +522,7 @@ function renderSupplierInvoicesShell() {
                         <label style="font-weight: 500; min-width: 30px;">To:</label>
                         <input type="date" class="form-input" id="filterDateTo" value="${today}" style="width: 150px;">
                     </div>
-                    <button class="btn btn-primary" onclick="if(window.applyDateFilter) window.applyDateFilter()">
+                    <button id="applyDateFilterBtn" class="btn btn-primary" onclick="if(window.applyDateFilter) window.applyDateFilter()">
                         <i class="fas fa-check"></i> Apply
                     </button>
                     <button class="btn btn-outline" onclick="if(window.clearDateFilter) window.clearDateFilter()">
@@ -648,7 +648,7 @@ function renderSupplierInvoicesTableBody() {
                 </td>
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                     ${docStatus === 'DRAFT' ? `
-                        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); if(window.batchSupplierInvoice) window.batchSupplierInvoice('${doc.id}')" title="Batch Invoice (Add Stock)">
+                        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); if(window.batchSupplierInvoice) window.batchSupplierInvoice('${doc.id}', this)" title="Batch Invoice (Add Stock)">
                             <i class="fas fa-boxes"></i> Batch
                         </button>
                     ` : ''}
@@ -998,7 +998,13 @@ function applyPurchaseFilters() {
 async function applyDateFilter() {
     const docType = currentPurchaseSubPage === 'orders' ? 'order' : 
                    currentPurchaseSubPage === 'invoices' ? 'invoice' : 'credit-note';
+    const applyBtn = document.getElementById('applyDateFilterBtn');
+    const originalBtnHtml = applyBtn ? applyBtn.innerHTML : null;
     try {
+        if (applyBtn) {
+            applyBtn.disabled = true;
+            applyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Applying...';
+        }
         await loadPurchaseDocuments(docType);
         // Re-render the appropriate table body
         switch(currentPurchaseSubPage) {
@@ -1015,6 +1021,11 @@ async function applyDateFilter() {
     } catch (error) {
         console.error('Error applying date filter:', error);
         showToast('Error applying filter', 'error');
+    } finally {
+        if (applyBtn && originalBtnHtml) {
+            applyBtn.disabled = false;
+            applyBtn.innerHTML = originalBtnHtml;
+        }
     }
 }
 
@@ -1404,7 +1415,7 @@ async function renderCreateSupplierInvoicePage() {
                             <i class="fas fa-file-pdf"></i> Download PDF
                         </button>
                         ${invoiceData.status === 'DRAFT' ? `
-                            <button type="button" class="btn btn-primary" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${invoiceData.id}')" title="Batch Invoice (Add Stock)">
+                            <button type="button" class="btn btn-primary" id="batchInvoiceBtn" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${invoiceData.id}', this)" title="Batch Invoice (Add Stock)">
                                 <i class="fas fa-boxes"></i> Batch Invoice
                             </button>
                             <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deleteSupplierInvoice) window.deleteSupplierInvoice('${invoiceData.id}')" title="Delete Invoice (Only for DRAFT)">
@@ -3265,12 +3276,18 @@ if (typeof window !== 'undefined') {
 }
 
 // Batch supplier invoice (add stock to inventory)
-async function batchSupplierInvoice(invoiceId) {
+async function batchSupplierInvoice(invoiceId, buttonEl) {
     if (!confirm('Are you sure you want to batch this invoice? This will add stock to inventory and cannot be undone.')) {
         return;
     }
-    
+
+    const btn = buttonEl || document.getElementById('batchInvoiceBtn');
+    const originalHtml = btn ? btn.innerHTML : null;
     try {
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Batching...';
+        }
         const result = await API.purchases.batchInvoice(invoiceId);
         showToast('Invoice batched successfully! Stock has been added to inventory.', 'success');
         // Reload invoices list
@@ -3286,7 +3303,13 @@ async function batchSupplierInvoice(invoiceId) {
         }
     } catch (error) {
         console.error('Error batching invoice:', error);
-        showToast(error.message || 'Error batching invoice', 'error');
+        const msg = (error && error.message) ? error.message : 'Error batching invoice';
+        showToast(msg, 'error');
+    } finally {
+        if (btn && originalHtml) {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
     }
 }
 
