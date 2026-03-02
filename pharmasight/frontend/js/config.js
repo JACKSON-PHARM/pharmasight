@@ -28,6 +28,8 @@ const CONFIG = {
     VAT_RATE: 16.00,
     // Print: 'normal' (A4) or 'thermal' (80mm receipt). Default thermal so receipt printers work without setup.
     PRINT_TYPE: 'thermal',
+    // Printer output: 'A4' (browser window.print) | 'THERMAL' (QZ Tray ESC/POS). Default A4 preserves existing behavior.
+    PRINTER_MODE: 'A4',
     // Optional message shown on printed documents (quotations, sales invoices, credit notes)
     TRANSACTION_MESSAGE: '',
     // Minimize margins on thermal print (thermal layout is already tight; this is extra)
@@ -119,6 +121,7 @@ function buildPrintConfigForApi() {
     const bool = (k) => CONFIG[k] === true;
     return {
         PRINT_TYPE: CONFIG.PRINT_TYPE || 'thermal',
+        PRINTER_MODE: CONFIG.PRINTER_MODE || 'A4',
         TRANSACTION_MESSAGE: CONFIG.TRANSACTION_MESSAGE || '',
         PRINT_REMOVE_MARGIN: bool('PRINT_REMOVE_MARGIN'),
         PRINT_COPIES: Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1),
@@ -196,6 +199,7 @@ function saveConfig() {
         USER_ID: CONFIG.USER_ID,
         VAT_RATE: CONFIG.VAT_RATE,
         PRINT_TYPE: CONFIG.PRINT_TYPE,
+        PRINTER_MODE: CONFIG.PRINTER_MODE || 'A4',
         TRANSACTION_MESSAGE: CONFIG.TRANSACTION_MESSAGE || '',
         PRINT_REMOVE_MARGIN: printBool('PRINT_REMOVE_MARGIN'),
         PRINT_COPIES: Math.max(1, parseInt(CONFIG.PRINT_COPIES, 10) || 1),

@@ -2712,6 +2712,13 @@ async function printPurchaseOrder(orderId, printType) {
             return;
         }
 
+        const mode = (typeof window.PrintService !== 'undefined' && window.PrintService.getEffectiveMode)
+            ? window.PrintService.getEffectiveMode(layout) : 'A4';
+        if (mode === 'THERMAL') {
+            await window.PrintService.printDocument({ type: 'PURCHASE_ORDER', mode: 'THERMAL', data: order });
+            return;
+        }
+
         // Load company print settings so thermal/regular and margins are correct
         if (typeof window.loadCompanyPrintSettings === 'function') {
             await window.loadCompanyPrintSettings().catch(() => {});

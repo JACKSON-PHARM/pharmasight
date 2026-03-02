@@ -3008,12 +3008,30 @@ async function printSalesInvoice(invoiceId, printType) {
     if (layout == null) return;
     try {
         const invoice = await API.sales.getInvoice(invoiceId);
+        const mode = (typeof window.PrintService !== 'undefined' && window.PrintService.getEffectiveMode)
+            ? window.PrintService.getEffectiveMode(layout) : 'A4';
+
+        if (mode === 'THERMAL') {
+            await window.PrintService.printDocument({
+                type: 'INVOICE',
+                mode: 'THERMAL',
+                data: invoice,
+                a4Handler: (d) => {
+                    const html = generateInvoicePrintHTML(d.invoice, d.layout);
+                    const w = window.open('', '_blank');
+                    w.document.write(html);
+                    w.document.close();
+                    w.onload = () => setTimeout(() => w.print(), 250);
+                }
+            });
+            return;
+        }
+
+        // A4: existing window.print() flow (unchanged)
         const printContent = generateInvoicePrintHTML(invoice, layout);
-        
         const printWindow = window.open('', '_blank');
         printWindow.document.write(printContent);
         printWindow.document.close();
-        
         const copies = Math.max(1, parseInt((typeof CONFIG !== 'undefined' && CONFIG.PRINT_COPIES), 10) || 1);
         printWindow.onload = function() {
             setTimeout(() => {
@@ -3340,12 +3358,30 @@ async function printQuotation(quotationId, printType) {
     if (layout == null) return;
     try {
         const quotation = await API.quotations.get(quotationId);
+        const mode = (typeof window.PrintService !== 'undefined' && window.PrintService.getEffectiveMode)
+            ? window.PrintService.getEffectiveMode(layout) : 'A4';
+
+        if (mode === 'THERMAL') {
+            await window.PrintService.printDocument({
+                type: 'QUOTATION',
+                mode: 'THERMAL',
+                data: quotation,
+                a4Handler: (d) => {
+                    const html = generateQuotationPrintHTML(d.quotation, d.layout);
+                    const w = window.open('', '_blank');
+                    w.document.write(html);
+                    w.document.close();
+                    w.onload = () => setTimeout(() => w.print(), 250);
+                }
+            });
+            return;
+        }
+
+        // A4: existing window.print() flow (unchanged)
         const printWindow = window.open('', '_blank');
         const printContent = generateQuotationPrintHTML(quotation, layout);
-        
         printWindow.document.write(printContent);
         printWindow.document.close();
-        
         printWindow.onload = function() {
             setTimeout(() => {
                 printWindow.print();

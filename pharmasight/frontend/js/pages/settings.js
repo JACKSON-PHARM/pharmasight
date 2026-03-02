@@ -2172,6 +2172,7 @@ function getPrintConfigFromForm(form) {
     const bool = (name) => fd.get(name) === 'on';
     return {
         print_type: fd.get('print_type') || 'normal',
+        printer_mode: fd.get('printer_mode') || 'A4',
         transaction_message: fd.get('transaction_message') || '',
         print_remove_margin: bool('print_remove_margin'),
         print_copies: Math.max(1, parseInt(fd.get('print_copies'), 10) || 1),
@@ -2209,6 +2210,7 @@ function getPrintConfigFromForm(form) {
 function applyPrintConfigToCONFIG(opts) {
     if (!opts) return;
     CONFIG.PRINT_TYPE = opts.print_type || CONFIG.PRINT_TYPE;
+    CONFIG.PRINTER_MODE = opts.printer_mode || 'A4';
     CONFIG.TRANSACTION_MESSAGE = opts.transaction_message != null ? opts.transaction_message : CONFIG.TRANSACTION_MESSAGE;
     CONFIG.PRINT_REMOVE_MARGIN = !!opts.print_remove_margin;
     CONFIG.PRINT_COPIES = Math.max(1, parseInt(opts.print_copies, 10) || 1);
@@ -2529,6 +2531,15 @@ async function renderPrintSettingsPage() {
                         </div>
 
                         <div id="thermalOptions" style="display: ${thermalActive ? 'block' : 'none'};">
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label class="form-label">Print output (when Thermal layout selected)</label>
+                                <div style="display: flex; gap: 0.5rem;">
+                                    <button type="button" class="btn ${(typeof CONFIG !== 'undefined' && CONFIG.PRINTER_MODE) !== 'THERMAL' ? 'btn-primary' : 'btn-outline'}" data-printer-mode="A4" onclick="window._setPrinterMode && window._setPrinterMode('A4')">A4 (Browser)</button>
+                                    <button type="button" class="btn ${(typeof CONFIG !== 'undefined' && CONFIG.PRINTER_MODE) === 'THERMAL' ? 'btn-primary' : 'btn-outline'}" data-printer-mode="THERMAL" onclick="window._setPrinterMode && window._setPrinterMode('THERMAL')">Thermal (QZ Tray)</button>
+                                </div>
+                                <input type="hidden" name="printer_mode" value="${(typeof CONFIG !== 'undefined' && CONFIG.PRINTER_MODE) || 'A4'}">
+                                <small style="color: var(--text-secondary);">A4: browser print dialog. Thermal: ESC/POS via QZ Tray (requires QZ Tray app running).</small>
+                            </div>
                             <h4 style="margin: 1rem 0 0.5rem 0;">Layout / Theme</h4>
                             <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;">
                                 <label class="form-checkbox" style="margin-right: 0.5rem;"><input type="radio" name="print_theme" value="theme1" ${theme === 'theme1' ? 'checked' : ''}> Default</label>
@@ -2662,6 +2673,19 @@ async function renderPrintSettingsPage() {
         }
     };
 
+    window._setPrinterMode = function(mode) {
+        const form = document.getElementById('printSettingsForm');
+        if (form) {
+            const el = form.querySelector('input[name="printer_mode"]');
+            if (el) el.value = mode;
+            form.querySelectorAll('[data-printer-mode]').forEach(btn => {
+                btn.classList.toggle('btn-primary', btn.dataset.printerMode === mode);
+                btn.classList.toggle('btn-outline', btn.dataset.printerMode !== mode);
+            });
+            refreshPrintPreview();
+        }
+    };
+
     refreshPrintPreview();
 }
 
@@ -2669,6 +2693,7 @@ async function savePrintSettingsFromForm(form) {
     if (!form) return;
     const opts = getPrintConfigFromForm(form);
     CONFIG.PRINT_TYPE = opts.print_type || 'normal';
+    CONFIG.PRINTER_MODE = opts.printer_mode || 'A4';
     CONFIG.TRANSACTION_MESSAGE = opts.transaction_message || '';
     CONFIG.PRINT_REMOVE_MARGIN = !!opts.print_remove_margin;
     CONFIG.PRINT_COPIES = Math.max(1, parseInt(opts.print_copies, 10) || 1);
