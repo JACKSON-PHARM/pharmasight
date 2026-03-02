@@ -617,6 +617,9 @@ def complete_branch_transfer(
             SnapshotService.upsert_inventory_balance(
                 db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta
             )
+            SnapshotRefreshService.schedule_snapshot_refresh(
+                db, entry.company_id, entry.branch_id, item_id=entry.item_id
+            )
 
         # Inventory sanity guard: balance after deduction must be >= 0 for each affected (branch, item)
         for item_id in item_qty_base:

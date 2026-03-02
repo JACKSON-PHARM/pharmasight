@@ -1673,6 +1673,9 @@ def post_batch_metadata_correction(
             if new_expiry_parsed is not None:
                 row.expiry_date = new_expiry_parsed
         db.flush()
+        SnapshotRefreshService.schedule_snapshot_refresh(
+            db, item.company_id, body.branch_id, item_id=item_id
+        )
         db.commit()
         db.refresh(movement)
         return CorrectionResponse(

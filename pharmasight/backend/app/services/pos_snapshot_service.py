@@ -107,7 +107,9 @@ def refresh_pos_snapshot_for_item(
         Item.company_id == company_id,
     ).first()
     if not item:
-        return
+        raise ValueError(
+            f"Item {item_id} not found for company {company_id}; cannot refresh item_branch_snapshot"
+        )
 
     # current_stock from inventory_balances
     bal = (
