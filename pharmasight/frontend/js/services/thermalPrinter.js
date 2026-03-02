@@ -2,7 +2,7 @@
  * Thermal Printer Service — QZ Tray ESC/POS
  * Sends raw ESC/POS commands to thermal printers via QZ Tray.
  * Requires QZ Tray desktop app to be running.
- * Format for 80mm (576 dots width assumption).
+ * Format for 80mm: max 32 chars/line to avoid right-edge overflow (~3mm margin).
  */
 (function () {
     'use strict';
@@ -21,6 +21,25 @@
 
     let _connected = false;
     let _defaultPrinterName = null;
+
+    function getMaxLineChars() {
+        return Math.min(48, Math.max(28, parseInt((typeof CONFIG !== 'undefined' && CONFIG.PRINT_THERMAL_MAX_CHARS), 10) || 32));
+    }
+
+    /** Truncate for center display; max chars per line */
+    function centerLine(str, maxChars) {
+        const m = maxChars || getMaxLineChars();
+        const s = String(str || '').trim();
+        if (s.length <= m) return s;
+        return s.substring(0, m - 1) + '.';
+    }
+
+    /** Truncate for left-aligned display */
+    function truncate(str, len) {
+        const s = String(str || '').trim();
+        if (s.length <= len) return s;
+        return s.substring(0, len - 1) + '.';
+    }
 
     /**
      * Connect to QZ Tray and optionally find thermal printer.
@@ -90,25 +109,38 @@
     function buildEscPosReceipt(data) {
         const lines = [];
         const add = (str) => lines.push(str + LF);
+        const addCenter = (str) => { add(CMD_CENTER); add(centerLine(str)); };
         const fmt = (val) => (val != null && val !== '' ? String(val) : '—');
 
         add(CMD_INIT);
+        add(CMD_LEFT);
+
+        // Header — center each line explicitly (some printers need alignment before every line)
         add(CMD_CENTER);
         add(CMD_BOLD_ON);
-        if (data.companyName) add(fmt(data.companyName));
-        if (data.branchName) add(fmt(data.branchName));
+        if (data.companyName) addCenter(data.companyName);
+        if (data.branchName) addCenter(data.branchName);
         add(CMD_BOLD_OFF);
+        add(CMD_CENTER);
         add('');
         add(CMD_LEFT);
-        add('SALES INVOICE');
-        add(`Invoice #: ${fmt(data.invoiceNo)}  Date: ${fmt(data.date)}`);
-        if (data.customerName) add(`Customer: ${fmt(data.customerName)}`);
-        if (data.customerPhone) add(`Phone: ${fmt(data.customerPhone)}`);
+
+        const maxChars = getMaxLineChars();
+        add(truncate('SALES INVOICE', maxChars));
+        add(truncate(`Inv: ${fmt(data.invoiceNo)} ${fmt(data.date)}`, maxChars));
+        if (data.customerName) add(truncate(`Customer: ${fmt(data.customerName)}`, maxChars));
+        if (data.customerPhone) add(truncate(`Phone: ${fmt(data.customerPhone)}`, maxChars));
         add('');
+
+        // Item table — compact layout, max chars/line to avoid right-edge overflow
+        const colName = Math.min(16, Math.floor(maxChars * 0.45));
+        const colQty = 5;
+        const colPrice = 7;
+        const colTotal = Math.max(6, maxChars - colName - colQty - colPrice);
         add(CMD_BOLD_ON);
-        add('Item                    Qty   Price    VAT    Total');
+        add(truncate('Item'.padEnd(colName) + 'Qty'.padStart(colQty) + 'Price'.padStart(colPrice) + 'Total'.padStart(colTotal), maxChars));
         add(CMD_BOLD_OFF);
-        add('------------------------------------------------');
+        add('-'.repeat(maxChars));
 
         const items = data.items || [];
         const formatCurrency = (n) => {
@@ -123,27 +155,27 @@
         };
 
         for (const item of items) {
-            const name = (item.item_name || item.item?.name || 'Item').substring(0, 22).padEnd(22);
+            const name = truncate(item.item_name || item.item?.name || 'Item', colName).padEnd(colName);
             const qty = formatQty(item.quantity);
             const unit = (item.unit_display_short || item.unit_name || '').trim();
-            const qtyUnit = unit ? `${qty} ${unit}` : qty;
+            const qtyStr = unit ? `${qty} ${unit}` : qty;
             const price = formatCurrency(item.unit_price_exclusive || 0);
-            const vat = formatCurrency(item.vat_amount || 0);
             const total = formatCurrency(item.line_total_inclusive != null ? item.line_total_inclusive : (parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0)));
-            add(`${name} ${qtyUnit.padStart(6)} ${price.padStart(8)} ${vat.padStart(6)} ${total.padStart(10)}`);
+            const line = name + qtyStr.padStart(colQty) + price.padStart(colPrice) + total.padStart(Math.max(6, colTotal));
+            add(truncate(line, maxChars));
         }
 
-        add('------------------------------------------------');
+        add('-'.repeat(maxChars));
         add(CMD_BOLD_ON);
-        add(`Total: ${formatCurrency(data.total || 0)}`);
+        add(truncate(`Total: ${formatCurrency(data.total || 0)}`, maxChars));
         add(CMD_BOLD_OFF);
         add('');
-        if (data.transactionMessage) add(fmt(data.transactionMessage));
-        if (data.servedBy) add(`Served by: ${fmt(data.servedBy)}`);
-        add(`Generated: ${fmt(data.generatedTime)}`);
+        if (data.transactionMessage) add(truncate(fmt(data.transactionMessage), maxChars));
+        if (data.servedBy) add(truncate(`Served by: ${fmt(data.servedBy)}`, maxChars));
+        add(truncate(`Generated: ${fmt(data.generatedTime)}`, maxChars));
         add('');
         add(CMD_CENTER);
-        add('powered by pharmaSight solutions');
+        add(centerLine('powered by pharmaSight solutions', maxChars));
         add(CMD_LEFT);
         add('');
         add(CMD_CUT);

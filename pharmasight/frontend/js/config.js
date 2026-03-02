@@ -42,6 +42,8 @@ const CONFIG = {
     PRINT_THEME: 'theme2',
     // Thermal page width in mm: 58 (2"), 68 (3"), 80, 88 (4")
     PRINT_PAGE_WIDTH_MM: 80,
+    // Thermal ESC/POS max chars per line (default 32 avoids ~3mm right-edge overflow on many printers)
+    PRINT_THERMAL_MAX_CHARS: 32,
     // Thermal font sizes (pt): header text and table/items
     PRINT_THERMAL_HEADER_FONT_PT: 9,
     PRINT_THERMAL_ITEM_FONT_PT: 8,
@@ -128,6 +130,7 @@ function buildPrintConfigForApi() {
         PRINT_AUTO_CUT: bool('PRINT_AUTO_CUT'),
         PRINT_THEME: CONFIG.PRINT_THEME || 'theme2',
         PRINT_PAGE_WIDTH_MM: Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80)),
+        PRINT_THERMAL_MAX_CHARS: Math.min(48, Math.max(28, parseInt(CONFIG.PRINT_THERMAL_MAX_CHARS, 10) || 32)),
         PRINT_THERMAL_HEADER_FONT_PT: Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9)),
         PRINT_THERMAL_ITEM_FONT_PT: Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8)),
         PRINT_LOGO_SIZE_A4: (CONFIG.PRINT_LOGO_SIZE_A4 === 'small' || CONFIG.PRINT_LOGO_SIZE_A4 === 'large' || CONFIG.PRINT_LOGO_SIZE_A4 === 'xlarge') ? CONFIG.PRINT_LOGO_SIZE_A4 : 'medium',
@@ -206,6 +209,7 @@ function saveConfig() {
         PRINT_AUTO_CUT: printBool('PRINT_AUTO_CUT'),
         PRINT_THEME: CONFIG.PRINT_THEME || 'theme2',
         PRINT_PAGE_WIDTH_MM: Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80)),
+        PRINT_THERMAL_MAX_CHARS: Math.min(48, Math.max(28, parseInt(CONFIG.PRINT_THERMAL_MAX_CHARS, 10) || 32)),
         PRINT_THERMAL_HEADER_FONT_PT: Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9)),
         PRINT_THERMAL_ITEM_FONT_PT: Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8)),
         PRINT_LOGO_SIZE_A4: (CONFIG.PRINT_LOGO_SIZE_A4 === 'small' || CONFIG.PRINT_LOGO_SIZE_A4 === 'large' || CONFIG.PRINT_LOGO_SIZE_A4 === 'xlarge') ? CONFIG.PRINT_LOGO_SIZE_A4 : 'medium',

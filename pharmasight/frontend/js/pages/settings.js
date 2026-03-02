@@ -2173,6 +2173,7 @@ function getPrintConfigFromForm(form) {
     return {
         print_type: fd.get('print_type') || 'normal',
         printer_mode: fd.get('printer_mode') || 'A4',
+        print_thermal_max_chars: Math.min(48, Math.max(28, parseInt(fd.get('print_thermal_max_chars'), 10) || 32)),
         transaction_message: fd.get('transaction_message') || '',
         print_remove_margin: bool('print_remove_margin'),
         print_copies: Math.max(1, parseInt(fd.get('print_copies'), 10) || 1),
@@ -2211,6 +2212,7 @@ function applyPrintConfigToCONFIG(opts) {
     if (!opts) return;
     CONFIG.PRINT_TYPE = opts.print_type || CONFIG.PRINT_TYPE;
     CONFIG.PRINTER_MODE = opts.printer_mode || 'A4';
+    CONFIG.PRINT_THERMAL_MAX_CHARS = Math.min(48, Math.max(28, parseInt(opts.print_thermal_max_chars, 10) || 32));
     CONFIG.TRANSACTION_MESSAGE = opts.transaction_message != null ? opts.transaction_message : CONFIG.TRANSACTION_MESSAGE;
     CONFIG.PRINT_REMOVE_MARGIN = !!opts.print_remove_margin;
     CONFIG.PRINT_COPIES = Math.max(1, parseInt(opts.print_copies, 10) || 1);
@@ -2500,6 +2502,7 @@ async function renderPrintSettingsPage() {
     const autoCut = CONFIG.PRINT_AUTO_CUT === true;
     const theme = CONFIG.PRINT_THEME || 'theme2';
     const pageWidthMm = Math.min(88, Math.max(58, parseInt(CONFIG.PRINT_PAGE_WIDTH_MM, 10) || 80));
+    const thermalMaxChars = Math.min(48, Math.max(28, parseInt(CONFIG.PRINT_THERMAL_MAX_CHARS, 10) || 32));
     const thermalHeaderFontPt = Math.min(12, Math.max(6, parseInt(CONFIG.PRINT_THERMAL_HEADER_FONT_PT, 10) || 9));
     const thermalItemFontPt = Math.min(10, Math.max(5, parseInt(CONFIG.PRINT_THERMAL_ITEM_FONT_PT, 10) || 8));
     const logoSizeA4 = (CONFIG.PRINT_LOGO_SIZE_A4 === 'small' || CONFIG.PRINT_LOGO_SIZE_A4 === 'large' || CONFIG.PRINT_LOGO_SIZE_A4 === 'xlarge') ? CONFIG.PRINT_LOGO_SIZE_A4 : 'medium';
@@ -2556,6 +2559,11 @@ async function renderPrintSettingsPage() {
                                     <option value="88" ${pageWidthMm === 88 ? 'selected' : ''}>4 inch (88mm)</option>
                                 </select>
                                 <small style="color: var(--text-secondary);">Receipt width. Print height auto-adjusts to content (no wasted margin).</small>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Max chars per line (QZ Tray ESC/POS)</label>
+                                <input type="number" class="form-input" name="print_thermal_max_chars" min="28" max="48" value="${thermalMaxChars}" style="max-width: 5rem;">
+                                <small style="color: var(--text-secondary);">32 = safe for 80mm (avoids ~3mm right overflow). Increase for wider printers.</small>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Thermal header font size (pt)</label>
@@ -2694,6 +2702,7 @@ async function savePrintSettingsFromForm(form) {
     const opts = getPrintConfigFromForm(form);
     CONFIG.PRINT_TYPE = opts.print_type || 'normal';
     CONFIG.PRINTER_MODE = opts.printer_mode || 'A4';
+    CONFIG.PRINT_THERMAL_MAX_CHARS = Math.min(48, Math.max(28, parseInt(opts.print_thermal_max_chars, 10) || 32));
     CONFIG.TRANSACTION_MESSAGE = opts.transaction_message || '';
     CONFIG.PRINT_REMOVE_MARGIN = !!opts.print_remove_margin;
     CONFIG.PRINT_COPIES = Math.max(1, parseInt(opts.print_copies, 10) || 1);
