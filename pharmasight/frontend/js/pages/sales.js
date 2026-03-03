@@ -3309,13 +3309,14 @@ function generateInvoicePrintHTML(invoice, printType) {
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
     const showItemCode = isThermal ? false : getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
-    const showVat = isThermal ? true : getPrintOpt('PRINT_SHOW_VAT', false); // Thermal: always show VAT
+    const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
+    const showDiscount = getPrintOpt('PRINT_SHOW_DISCOUNT', false);
     const showBatch = !isThermal && getPrintOpt('PRINT_ITEM_BATCH', true); // Batch/expiry only on A4, not thermal
     const showExp = !isThermal && getPrintOpt('PRINT_ITEM_EXP', true);
     const thermalHeaderFontPt = Math.min(12, Math.max(6, parseInt(getPrintOpt('PRINT_THERMAL_HEADER_FONT_PT', 9), 10) || 9));
     const thermalItemFontPt = Math.min(10, Math.max(5, parseInt(getPrintOpt('PRINT_THERMAL_ITEM_FONT_PT', 8), 10) || 8));
 
-    const colCount = showVat ? 6 : 5;
+    const colCount = 4 + (showDiscount ? 1 : 0) + (showVat ? 1 : 0);
 
     // Dedupe items for print so total always matches printed rows
     const rawInvItems = invoice.items && invoice.items.length > 0 ? invoice.items : [];
@@ -3343,7 +3344,7 @@ function generateInvoicePrintHTML(invoice, printType) {
             const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
             const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
             const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
-            const discountCell = `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>`;
+            const discountCell = showDiscount ? `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>` : '';
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
@@ -3362,7 +3363,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         }).join('')
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
 
-    const discountHeader = '<th style="text-align: right;">Discount</th>';
+    const discountHeader = showDiscount ? '<th style="text-align: right;">Discount</th>' : '';
     const vatHeader = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const colSpanTotal = colCount - 1;
 
@@ -3392,12 +3393,7 @@ function generateInvoicePrintHTML(invoice, printType) {
            .footer .powered-by { font-size: 6pt; color: #bbb; margin-top: 3mm; font-weight: normal; }
            table { margin: 2mm 0; table-layout: fixed; width: 100%; font-size: ${thermalItemFontPt}pt; }
            table.thermal-receipt th, table.thermal-receipt td { padding: 1mm 0.5mm; font-size: ${thermalItemFontPt}pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; white-space: normal; }
-           table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 42%; min-width: 0; }
-           table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 10%; }
-           table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 14%; }
-           table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 8%; }
-           table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 12%; }
-           table.thermal-receipt th:nth-child(6), table.thermal-receipt td:nth-child(6) { width: 14%; }
+           ${colCount === 4 ? 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 45%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 15%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 20%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 20%; }' : colCount === 5 ? 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 38%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 12%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 18%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 12%; } table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 20%; }' : 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 35%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 10%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 14%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 10%; } table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 12%; } table.thermal-receipt th:nth-child(6), table.thermal-receipt td:nth-child(6) { width: 19%; }'}
            .item-sub { font-size: 7pt; color: #555; }
            .batch-faint { font-size: 6pt; color: #999; opacity: 0.9; }
            .total { font-size: ${thermalItemFontPt + 1}pt; }
@@ -3429,16 +3425,10 @@ function generateInvoicePrintHTML(invoice, printType) {
     const logoOy = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_Y_A4', 0), 10) || 0;
     const logoImg = logoUrl ? `<img src="${logoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${logoW}px; height: ${logoH}px; max-width: ${logoW}px; max-height: ${logoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
     const logoWrapStyle = !isThermal && logoImg ? `flex-shrink: 0; position: relative; right: ${logoOx}px; top: ${logoOy}px;` : '';
-    const companyBlockStyle = 'flex: 1; min-width: 0; text-align: right; margin-left: auto;';
-    const headerBlock = `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
-        ${!isThermal && logoImg ? `<div class="print-header-logo-wrap" style="${logoWrapStyle}">${logoImg}</div>` : ''}
-        <div style="${companyBlockStyle}">
-            ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
-            ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
-            ${branchLine}
-            <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
-        </div>
-    </div>`;
+    const companyBlockStyle = isThermal ? '' : `flex: 1; min-width: 0; text-align: ${headerAlign}; ${headerAlign === 'right' ? 'margin-left: auto;' : ''}`;
+    const headerBlock = isThermal
+        ? `<div class="header">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLine}<p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p></div>`
+        : `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">${logoImg ? `<div class="print-header-logo-wrap" style="${logoWrapStyle}">${logoImg}</div>` : ''}<div style="${companyBlockStyle}">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLine}<p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p></div></div>`;
 
     return `
 <!DOCTYPE html>
@@ -3601,7 +3591,7 @@ async function downloadQuotationPdf(quotationId, quotationNo) {
 }
 
 function generateQuotationPrintHTML(quotation, printType) {
-    const isThermal = printType === 'thermal';
+    const isThermal = (printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal') === 'thermal';
     const noMargin = getPrintOpt('PRINT_REMOVE_MARGIN', false);
     const autoCut = getPrintOpt('PRINT_AUTO_CUT', false);
     const theme = getPrintOpt('PRINT_THEME', 'theme1');
@@ -3611,7 +3601,8 @@ function generateQuotationPrintHTML(quotation, printType) {
     const showPhone = getPrintOpt('PRINT_HEADER_PHONE', true);
     const showItemCode = isThermal ? false : getPrintOpt('PRINT_ITEM_CODE', true);
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
-    const showVat = isThermal ? true : getPrintOpt('PRINT_SHOW_VAT', false);
+    const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
+    const showDiscount = getPrintOpt('PRINT_SHOW_DISCOUNT', false);
     const showBatch = !isThermal && getPrintOpt('PRINT_ITEM_BATCH', true); // Batch/expiry only on A4
     const showExp = !isThermal && getPrintOpt('PRINT_ITEM_EXP', true);
     const pageWidthMm = isThermal ? (getPrintOpt('PRINT_PAGE_WIDTH_MM', 80) || 80) : 210;
@@ -3630,7 +3621,7 @@ function generateQuotationPrintHTML(quotation, printType) {
     const createdByUser = quotation.created_by_username || '';
     const transactionMessage = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
 
-    const colCount = showVat ? 6 : 5;
+    const colCount = 4 + (showDiscount ? 1 : 0) + (showVat ? 1 : 0);
 
     // Dedupe items for print so total always matches printed rows (no duplicate rows, no wrong total)
     const rawItems = quotation.items && quotation.items.length > 0 ? quotation.items : [];
@@ -3656,7 +3647,7 @@ function generateQuotationPrintHTML(quotation, printType) {
             const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
             const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
             const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
-            const discountCell = `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>`;
+            const discountCell = showDiscount ? `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>` : '';
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
             const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
@@ -3675,7 +3666,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         }).join('')
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
 
-    const discountHeader = '<th style="text-align: right;">Discount</th>';
+    const discountHeader = showDiscount ? '<th style="text-align: right;">Discount</th>' : '';
     const vatHeader = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const colSpanTotal = colCount - 1;
 
@@ -3695,12 +3686,7 @@ function generateQuotationPrintHTML(quotation, printType) {
            .footer .powered-by { font-size: 6pt; color: #bbb; margin-top: 3mm; font-weight: normal; }
            table { margin: 2mm 0; table-layout: fixed; width: 100%; font-size: ${thermalItemFontPt}pt; }
            table.thermal-receipt th, table.thermal-receipt td { padding: 1mm 0.5mm; font-size: ${thermalItemFontPt}pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; white-space: normal; }
-           table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 42%; min-width: 0; }
-           table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 10%; }
-           table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 14%; }
-           table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 8%; }
-           table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 12%; }
-           table.thermal-receipt th:nth-child(6), table.thermal-receipt td:nth-child(6) { width: 14%; }
+           ${colCount === 4 ? 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 45%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 15%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 20%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 20%; }' : colCount === 5 ? 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 38%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 12%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 18%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 12%; } table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 20%; }' : 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 35%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 10%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 14%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 10%; } table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 12%; } table.thermal-receipt th:nth-child(6), table.thermal-receipt td:nth-child(6) { width: 19%; }'}
            .item-sub { font-size: 7pt; color: #555; }
            .batch-faint { font-size: 6pt; color: #999; opacity: 0.9; }
            .total { font-size: ${thermalItemFontPt + 1}pt; }`
@@ -3724,17 +3710,11 @@ function generateQuotationPrintHTML(quotation, printType) {
     const quotationLogoOy = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_Y_A4', 0), 10) || 0;
     const quotationLogoImg = quotationLogoUrl ? `<img src="${quotationLogoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${quotationLogoW}px; height: ${quotationLogoH}px; max-width: ${quotationLogoW}px; max-height: ${quotationLogoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
     const quotationLogoWrapStyle = !isThermal && quotationLogoImg ? `flex-shrink: 0; position: relative; right: ${quotationLogoOx}px; top: ${quotationLogoOy}px;` : '';
-    const quotationCompanyBlockStyle = 'flex: 1; min-width: 0; text-align: right; margin-left: auto;';
+    const quotationCompanyBlockStyle = isThermal ? '' : `flex: 1; min-width: 0; text-align: ${headerAlign}; ${headerAlign === 'right' ? 'margin-left: auto;' : ''}`;
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
-    const headerBlock = `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
-        ${!isThermal && quotationLogoImg ? `<div class="print-header-logo-wrap" style="${quotationLogoWrapStyle}">${quotationLogoImg}</div>` : ''}
-        <div style="${quotationCompanyBlockStyle}">
-            ${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}
-            ${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}
-            ${branchLine}
-            <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
-        </div>
-    </div>`;
+    const headerBlock = isThermal
+        ? `<div class="header">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLine}<p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p></div>`
+        : `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">${quotationLogoImg ? `<div class="print-header-logo-wrap" style="${quotationLogoWrapStyle}">${quotationLogoImg}</div>` : ''}<div style="${quotationCompanyBlockStyle}">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLine}<p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p></div></div>`;
 
     return `
 <!DOCTYPE html>

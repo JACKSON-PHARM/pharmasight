@@ -2285,6 +2285,7 @@ function getPrintConfigFromForm(form) {
         print_item_batch: bool('print_item_batch'),
         print_item_exp: bool('print_item_exp'),
         print_show_vat: bool('print_show_vat'),
+        print_show_discount: bool('print_show_discount'),
         print_total_qty: bool('print_total_qty'),
         print_received: bool('print_received'),
         print_balance: bool('print_balance'),
@@ -2325,6 +2326,7 @@ function applyPrintConfigToCONFIG(opts) {
     CONFIG.PRINT_ITEM_BATCH = !!opts.print_item_batch;
     CONFIG.PRINT_ITEM_EXP = !!opts.print_item_exp;
     CONFIG.PRINT_SHOW_VAT = !!opts.print_show_vat;
+    CONFIG.PRINT_SHOW_DISCOUNT = !!opts.print_show_discount;
     CONFIG.PRINT_TOTAL_QTY = opts.print_total_qty !== false;
     CONFIG.PRINT_RECEIVED = opts.print_received !== false;
     CONFIG.PRINT_BALANCE = opts.print_balance !== false;
@@ -2346,6 +2348,7 @@ function buildPrintPreviewHTML() {
     const showCompany = CONFIG.PRINT_HEADER_COMPANY !== false;
     const showAddress = CONFIG.PRINT_HEADER_ADDRESS !== false;
     const showVat = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_SHOW_VAT) === true;
+    const showDiscount = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_SHOW_DISCOUNT) === true;
     const showUnit = CONFIG.PRINT_ITEM_UNIT !== false;
     const msg = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
     const headerAlign = (theme === 'theme2' || theme === 'theme4') ? 'center' : 'left';
@@ -2394,18 +2397,19 @@ function buildPrintPreviewHTML() {
         <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
         </div>
     </div></div>` : '<div class="header"><div class="header-inner"><div class="header-logo-wrap" style="' + logoWrapStyle + '">' + logoEl + '</div><div class="header-company-block"><p style="margin: 0;">Sales Invoice</p></div></div></div>');
-    const qtyCol = showUnit ? '<th style="text-align: right;">Qty</th>' : '<th style="text-align: right;">Qty</th>';
+    const discountCol = showDiscount ? '<th style="text-align: right;">Discount</th>' : '';
     const vatCol = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const rows = [
-        { name: 'DOLOPAR CAP', qty: '10 P', price: '85.00', vat: '—', total: '850.00' },
-        { name: 'FEVEROL TABS', qty: '20 P', price: '50.00', vat: '—', total: '1,000.00' },
-        { name: 'KLOFENAC GEL', qty: '25 P', price: '2.00', vat: '—', total: '50.00' },
+        { name: 'DOLOPAR CAP', qty: '10 P', price: '85.00', discount: '—', vat: '—', total: '850.00' },
+        { name: 'FEVEROL TABS', qty: '20 P', price: '50.00', discount: '—', vat: '—', total: '1,000.00' },
+        { name: 'KLOFENAC GEL', qty: '25 P', price: '2.00', discount: '—', vat: '—', total: '50.00' },
     ];
     const rowHtml = rows.map(r => {
+        const discountCell = showDiscount ? `<td style="text-align: right;">${r.discount}</td>` : '';
         const vatCell = showVat ? `<td style="text-align: right;">${r.vat}</td>` : '';
-        return `<tr><td>${r.name}</td><td style="text-align: right;">${showUnit ? r.qty : r.qty.split(' ')[0]}</td><td style="text-align: right;">Ksh ${r.price}</td>${vatCell}<td style="text-align: right;">Ksh ${r.total}</td></tr>`;
+        return `<tr><td>${r.name}</td><td style="text-align: right;">${showUnit ? r.qty : r.qty.split(' ')[0]}</td><td style="text-align: right;">Ksh ${r.price}</td>${discountCell}${vatCell}<td style="text-align: right;">Ksh ${r.total}</td></tr>`;
     }).join('');
-    const colspan = showVat ? 4 : 3;
+    const colspan = 3 + (showDiscount ? 1 : 0) + (showVat ? 1 : 0);
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
         @media print { ${pageStyle} }
         body { font-family: Arial, sans-serif; }
@@ -2424,7 +2428,7 @@ function buildPrintPreviewHTML() {
         <p><strong>Customer:</strong> Sample Customer</p>
     </div>
     <table>
-        <thead><tr><th>Item</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Price</th>${vatCol}<th style="text-align: right;">Total</th></tr></thead>
+        <thead><tr><th>Item</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Price</th>${discountCol}${vatCol}<th style="text-align: right;">Total</th></tr></thead>
         <tbody>${rowHtml}</tbody>
         <tfoot><tr><td colspan="${colspan}" class="total">Total:</td><td class="total" style="text-align: right;">Ksh 1,900.00</td></tr></tfoot>
     </table>
@@ -2440,6 +2444,7 @@ function buildA4PreviewInnerHTML() {
     const showCompany = CONFIG.PRINT_HEADER_COMPANY !== false;
     const showAddress = CONFIG.PRINT_HEADER_ADDRESS !== false;
     const showVat = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_SHOW_VAT) === true;
+    const showDiscount = (typeof CONFIG !== 'undefined' && CONFIG.PRINT_SHOW_DISCOUNT) === true;
     const showUnit = CONFIG.PRINT_ITEM_UNIT !== false;
     const msg = (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '';
     const logoW = Math.min(300, Math.max(20, (typeof CONFIG !== 'undefined' && CONFIG.PRINT_LOGO_WIDTH_A4 != null) ? parseInt(CONFIG.PRINT_LOGO_WIDTH_A4, 10) : 120));
@@ -2460,17 +2465,19 @@ function buildA4PreviewInnerHTML() {
         <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
         </div>
     </div></div>`;
+    const discountCol = showDiscount ? '<th style="text-align: right;">Discount</th>' : '';
     const vatCol = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const rows = [
-        { name: 'DOLOPAR CAP', qty: '10 P', price: '85.00', vat: '—', total: '850.00' },
-        { name: 'FEVEROL TABS', qty: '20 P', price: '50.00', vat: '—', total: '1,000.00' },
-        { name: 'KLOFENAC GEL', qty: '25 P', price: '2.00', vat: '—', total: '50.00' },
+        { name: 'DOLOPAR CAP', qty: '10 P', price: '85.00', discount: '—', vat: '—', total: '850.00' },
+        { name: 'FEVEROL TABS', qty: '20 P', price: '50.00', discount: '—', vat: '—', total: '1,000.00' },
+        { name: 'KLOFENAC GEL', qty: '25 P', price: '2.00', discount: '—', vat: '—', total: '50.00' },
     ];
     const rowHtml = rows.map(r => {
+        const discountCell = showDiscount ? '<td style="text-align: right;">' + r.discount + '</td>' : '';
         const vatCell = showVat ? '<td style="text-align: right;">' + r.vat + '</td>' : '';
-        return '<tr><td>' + r.name + '</td><td style="text-align: right;">' + (showUnit ? r.qty : r.qty.split(' ')[0]) + '</td><td style="text-align: right;">Ksh ' + r.price + '</td>' + vatCell + '<td style="text-align: right;">Ksh ' + r.total + '</td></tr>';
+        return '<tr><td>' + r.name + '</td><td style="text-align: right;">' + (showUnit ? r.qty : r.qty.split(' ')[0]) + '</td><td style="text-align: right;">Ksh ' + r.price + '</td>' + discountCell + vatCell + '<td style="text-align: right;">Ksh ' + r.total + '</td></tr>';
     }).join('');
-    const colspan = showVat ? 4 : 3;
+    const colspan = 3 + (showDiscount ? 1 : 0) + (showVat ? 1 : 0);
     return `<style>.print-preview-a4 .header{ border-bottom: 2px solid #000; }
 .print-preview-a4 .header-inner{ display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .print-preview-a4 .header-logo-wrap{ flex-shrink: 0; position: relative; }
@@ -2493,9 +2500,9 @@ ${headerHtml}
 <p><strong>Customer:</strong> Sample Customer</p>
 </div>
 <table>
-<thead><tr><th>Item</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Price</th>${vatCol}<th style="text-align: right;">Total</th></tr></thead>
-<tbody>${rowHtml}</tbody>
-<tfoot><tr><td colspan="${colspan}" class="total">Total:</td><td class="total" style="text-align: right;">Ksh 1,900.00</td></tr></tfoot>
+<thead><tr><th>Item</th><th style="text-align: right;">Qty</th><th style="text-align: right;">Price</th>${discountCol}${vatCol}<th style="text-align: right;">Total</th></tr></thead>
+        <tbody>${rowHtml}</tbody>
+        <tfoot><tr><td colspan="${colspan}" class="total">Total:</td><td class="total" style="text-align: right;">Ksh 1,900.00</td></tr></tfoot>
 </table>
 <div class="footer">
 ${msg ? '<p>' + (typeof escapeHtml === 'function' ? escapeHtml(msg) : String(msg).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')) + '</p>' : ''}
@@ -2707,6 +2714,7 @@ async function renderPrintSettingsPage() {
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_batch" ${cb('PRINT_ITEM_BATCH')}> Batch No. under item (faint)</label></div>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_item_exp" ${cb('PRINT_ITEM_EXP')}> Exp. Date under item (faint)</label></div>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_show_vat" ${cb('PRINT_SHOW_VAT')}> Show VAT column</label></div>
+                        <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_show_discount" ${cb('PRINT_SHOW_DISCOUNT')}> Show Discount column</label></div>
 
                         <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Totals &amp; taxes</h4>
                         <div class="form-group"><label class="form-checkbox"><input type="checkbox" name="print_total_qty" ${cb('PRINT_TOTAL_QTY')}> Total item quantity</label></div>
@@ -2815,6 +2823,7 @@ async function savePrintSettingsFromForm(form) {
     CONFIG.PRINT_ITEM_BATCH = !!opts.print_item_batch;
     CONFIG.PRINT_ITEM_EXP = !!opts.print_item_exp;
     CONFIG.PRINT_SHOW_VAT = !!opts.print_show_vat;
+    CONFIG.PRINT_SHOW_DISCOUNT = !!opts.print_show_discount;
     CONFIG.PRINT_TOTAL_QTY = opts.print_total_qty !== false;
     CONFIG.PRINT_RECEIVED = opts.print_received !== false;
     CONFIG.PRINT_BALANCE = opts.print_balance !== false;

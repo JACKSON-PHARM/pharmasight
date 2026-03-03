@@ -67,6 +67,7 @@ const CONFIG = {
     PRINT_ITEM_BATCH: false,
     PRINT_ITEM_EXP: false,
     PRINT_SHOW_VAT: false,
+    PRINT_SHOW_DISCOUNT: false,
     // Totals & taxes
     PRINT_TOTAL_QTY: true,
     PRINT_RECEIVED: true,
@@ -149,6 +150,7 @@ function buildPrintConfigForApi() {
         PRINT_ITEM_BATCH: bool('PRINT_ITEM_BATCH'),
         PRINT_ITEM_EXP: bool('PRINT_ITEM_EXP'),
         PRINT_SHOW_VAT: bool('PRINT_SHOW_VAT'),
+        PRINT_SHOW_DISCOUNT: bool('PRINT_SHOW_DISCOUNT'),
         PRINT_TOTAL_QTY: bool('PRINT_TOTAL_QTY'),
         PRINT_RECEIVED: bool('PRINT_RECEIVED'),
         PRINT_BALANCE: bool('PRINT_BALANCE'),
@@ -228,6 +230,7 @@ function saveConfig() {
         PRINT_ITEM_BATCH: printBool('PRINT_ITEM_BATCH'),
         PRINT_ITEM_EXP: printBool('PRINT_ITEM_EXP'),
         PRINT_SHOW_VAT: printBool('PRINT_SHOW_VAT'),
+        PRINT_SHOW_DISCOUNT: printBool('PRINT_SHOW_DISCOUNT'),
         PRINT_TOTAL_QTY: printBool('PRINT_TOTAL_QTY'),
         PRINT_RECEIVED: printBool('PRINT_RECEIVED'),
         PRINT_BALANCE: printBool('PRINT_BALANCE'),
