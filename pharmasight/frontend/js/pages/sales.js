@@ -277,7 +277,7 @@ async function renderSalesInvoicesPage() {
                     <input type="text" class="form-input" id="salesSearchInput" placeholder="Search invoice, customer..." onkeyup="if(window.filterSalesInvoices) window.filterSalesInvoices()" style="width: 180px; padding: 0.35rem 0.5rem;">
                 </div>
                 
-                <div class="table-container" style="max-height: calc(100vh - 180px); overflow: auto;">
+                <div class="table-container" style="max-height: calc(100vh - 220px); overflow: auto;">
                     <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem;">
                         <thead style="position: sticky; top: 0; background: white; z-index: 10; box-shadow: 0 1px 2px rgba(0,0,0,0.06);">
                             <tr>
@@ -300,6 +300,10 @@ async function renderSalesInvoicesPage() {
                             </tr>
                         </tbody>
                     </table>
+                </div>
+                <div id="salesInvoicesTotalsFooter" style="margin-top: 0.5rem; padding: 0.5rem 0.75rem; border-top: 1px solid var(--border-color); display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; font-size: 0.875rem; background: var(--bg-color, #f8f9fa); border-radius: 0.35rem;">
+                    <span><strong>Total paid:</strong> <span id="salesInvoicesTotalPaid">Ksh 0.00</span></span>
+                    <span><strong>Total unpaid:</strong> <span id="salesInvoicesTotalUnpaid">Ksh 0.00</span></span>
                 </div>
             </div>
         </div>
@@ -774,6 +778,19 @@ function renderSalesInvoicesTableBody() {
         });
     } catch (_) {}
 
+    // Totals for paid vs unpaid (based on payment_status; exclude CANCELLED from amounts if desired – here we sum all filtered)
+    const totalPaid = filtered
+        .filter(inv => (String(inv.payment_status || '').toUpperCase() === 'PAID'))
+        .reduce((sum, inv) => sum + (parseFloat(inv.total_inclusive || inv.total) || 0), 0);
+    const totalUnpaid = filtered
+        .filter(inv => (String(inv.payment_status || '').toUpperCase() !== 'PAID')
+            && (String(inv.status || '').toUpperCase() !== 'CANCELLED'))
+        .reduce((sum, inv) => sum + (parseFloat(inv.total_inclusive || inv.total) || 0), 0);
+    const paidEl = document.getElementById('salesInvoicesTotalPaid');
+    const unpaidEl = document.getElementById('salesInvoicesTotalUnpaid');
+    if (paidEl) paidEl.textContent = formatCurrency(totalPaid);
+    if (unpaidEl) unpaidEl.textContent = formatCurrency(totalUnpaid);
+
     if (filtered.length === 0) {
         tbody.innerHTML = `
             <tr>
@@ -876,8 +893,8 @@ async function renderCreateSalesInvoicePage() {
     const today = new Date().toISOString().split('T')[0];
     const invoiceDate = invoiceData?.invoice_date ? new Date(invoiceData.invoice_date).toISOString().split('T')[0] : today;
     
-    // Prepare buttons for top bar based on mode
-    const topButtonsHtml = isEditMode ? `
+    // Right-side actions (edit mode only); Back is always on the left, title in center
+    const topBarRightHtml = isEditMode ? `
         <div style="display: flex; gap: 0.5rem;">
             <button type="button" class="btn btn-primary" id="salesUpdateInvoiceBtn" onclick="if(window.saveSalesInvoice) { const form = document.getElementById('salesInvoiceForm'); if(form) saveSalesInvoice({preventDefault:()=>{},target:form}); }">
                 <i class="fas fa-save"></i> Update Invoice
@@ -891,28 +908,30 @@ async function renderCreateSalesInvoicePage() {
             <button type="button" class="btn btn-danger" onclick="if(window.deleteSalesInvoice) window.deleteSalesInvoice('${invoiceId}')" title="Delete Invoice (Draft only)">
                 <i class="fas fa-trash"></i> Delete
             </button>
-            <button type="button" class="btn btn-secondary" onclick="loadSalesSubPage('invoices')">
-                <i class="fas fa-arrow-left"></i> Back
-            </button>
         </div>
-    ` : `
-        <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="loadSalesSubPage('invoices')">
-                <i class="fas fa-arrow-left"></i> Back to Invoices
-            </button>
-            <span class="text-muted" style="font-size: 0.8rem;">Search above, click Add. First add creates draft.</span>
-        </div>
-    `;
+    ` : '';
+    
+    const titleText = isEditMode && invoiceData?.invoice_no
+        ? `Sales Invoice: ${invoiceData.invoice_no}`
+        : 'Sales Invoice';
     
     page.innerHTML = `
-        <div class="card sales-invoice-transaction-page" style="margin-bottom: 0; padding: 0; display: flex; flex-direction: column; max-height: calc(100vh - 6rem); box-shadow: none; border: 1px solid var(--border-color);">
-            <!-- Compact transaction bar: title + actions inline -->
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); flex-shrink: 0;">
-                <h3 class="card-title" style="margin: 0; font-size: 1rem; font-weight: 600;">
-                    <i class="fas fa-file-invoice-dollar"></i> ${isEditMode ? 'Edit' : 'Create'} Sales Invoice
-                    ${isEditMode && invoiceData?.invoice_no ? `: ${invoiceData.invoice_no}` : ''}
-                </h3>
-                ${topButtonsHtml}
+        <div class="card sales-invoice-transaction-page" style="margin-bottom: 0; padding: 0; display: flex; flex-direction: column; min-height: calc(100vh - 6rem); max-height: calc(100vh - 6rem); box-shadow: none; border: 1px solid var(--border-color);">
+            <!-- Transaction bar: Back (left) | Sales Invoice (center) | actions (right, edit only) -->
+            <div style="display: flex; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); flex-shrink: 0;">
+                <div style="flex: 0 0 auto;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="loadSalesSubPage('invoices')">
+                        <i class="fas fa-arrow-left"></i> Back to Invoices
+                    </button>
+                </div>
+                <div style="flex: 1; text-align: center;">
+                    <h3 class="card-title" style="margin: 0; font-size: 1rem; font-weight: 600;">
+                        <i class="fas fa-file-invoice-dollar"></i> ${titleText}
+                    </h3>
+                </div>
+                <div style="flex: 0 0 auto; min-width: 0;">
+                    ${topBarRightHtml}
+                </div>
             </div>
             
             <div style="padding: 0.5rem 0.75rem; flex: 1; display: flex; flex-direction: column; min-height: 0;">
@@ -928,7 +947,7 @@ async function renderCreateSalesInvoicePage() {
                         <div style="display: flex; align-items: center; gap: 0.35rem; grid-column: span 2;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Notes</label><input type="text" class="form-input" name="notes" value="${invoiceData?.notes || ''}" placeholder="Additional notes" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
                     </div>
                     
-                    <!-- Items table + summary: responsive – side-by-side when wide, summary below when narrow (table priority) -->
+                    <!-- Items table full width; summary always at bottom so transaction bar is never hidden -->
                     <div class="sales-invoice-main-layout">
                         <div class="sales-invoice-items-col" id="salesInvoiceItemsWrapper">
                             <div id="salesInvoiceItemsContainer">
@@ -3359,6 +3378,8 @@ function generateInvoicePrintHTML(invoice, printType) {
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
     const layoutLabel = isThermal ? `Thermal (${pageWidthMm}mm)` : 'Regular (A4)';
     const logoUrl = (invoice.logo_url && typeof invoice.logo_url === 'string' && (invoice.logo_url.startsWith('http://') || invoice.logo_url.startsWith('https://'))) ? invoice.logo_url : '';
+    // Cache-bust so Normal (A4) print always loads the current logo after company updates it
+    const logoUrlForPrint = logoUrl ? (logoUrl + (logoUrl.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now()) : '';
     const logoSizeA4 = getPrintOpt('PRINT_LOGO_SIZE_A4', 'medium');
     const logoDims = { small: [34, 70], medium: [50, 100], large: [70, 140], xlarge: [90, 180] }[logoSizeA4] || [50, 100];
     const rawLogoW = getPrintOpt('PRINT_LOGO_WIDTH_A4', null);
@@ -3367,7 +3388,7 @@ function generateInvoicePrintHTML(invoice, printType) {
     const logoH = (rawLogoH != null && parseInt(rawLogoH, 10) > 0) ? Math.min(150, Math.max(15, parseInt(rawLogoH, 10))) : Math.max(logoDims[0], 60);
     const logoOx = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_X_A4', 0), 10) || 0;
     const logoOy = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_Y_A4', 0), 10) || 0;
-    const logoImg = logoUrl ? `<img src="${logoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${logoW}px; height: ${logoH}px; max-width: ${logoW}px; max-height: ${logoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
+    const logoImg = logoUrlForPrint ? `<img src="${logoUrlForPrint.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${logoW}px; height: ${logoH}px; max-width: ${logoW}px; max-height: ${logoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
     const logoWrapStyle = !isThermal && logoImg ? `flex-shrink: 0; position: relative; right: ${logoOx}px; top: ${logoOy}px;` : '';
     const companyBlockStyle = isThermal ? '' : `flex: 1; min-width: 0; text-align: ${headerAlign}; ${headerAlign === 'right' ? 'margin-left: auto;' : ''}`;
     const headerBlock = isThermal
@@ -3644,6 +3665,8 @@ function generateQuotationPrintHTML(quotation, printType) {
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
     const quotationLogoUrl = (quotation.logo_url && typeof quotation.logo_url === 'string' && (quotation.logo_url.startsWith('http://') || quotation.logo_url.startsWith('https://'))) ? quotation.logo_url : '';
+    // Cache-bust so Normal (A4) print always loads the current logo after company updates it
+    const quotationLogoUrlForPrint = quotationLogoUrl ? (quotationLogoUrl + (quotationLogoUrl.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now()) : '';
     const quotationLogoSizeA4 = getPrintOpt('PRINT_LOGO_SIZE_A4', 'medium');
     const quotationLogoDims = { small: [34, 70], medium: [50, 100], large: [70, 140], xlarge: [90, 180] }[quotationLogoSizeA4] || [50, 100];
     const qRawW = getPrintOpt('PRINT_LOGO_WIDTH_A4', null);
@@ -3652,7 +3675,7 @@ function generateQuotationPrintHTML(quotation, printType) {
     const quotationLogoH = (qRawH != null && parseInt(qRawH, 10) > 0) ? Math.min(150, Math.max(15, parseInt(qRawH, 10))) : Math.max(quotationLogoDims[0], 60);
     const quotationLogoOx = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_X_A4', 0), 10) || 0;
     const quotationLogoOy = parseInt(getPrintOpt('PRINT_LOGO_OFFSET_Y_A4', 0), 10) || 0;
-    const quotationLogoImg = quotationLogoUrl ? `<img src="${quotationLogoUrl.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${quotationLogoW}px; height: ${quotationLogoH}px; max-width: ${quotationLogoW}px; max-height: ${quotationLogoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
+    const quotationLogoImg = quotationLogoUrlForPrint ? `<img src="${quotationLogoUrlForPrint.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${quotationLogoW}px; height: ${quotationLogoH}px; max-width: ${quotationLogoW}px; max-height: ${quotationLogoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
     const quotationLogoWrapStyle = !isThermal && quotationLogoImg ? `flex-shrink: 0; position: relative; right: ${quotationLogoOx}px; top: ${quotationLogoOy}px;` : '';
     const quotationCompanyBlockStyle = isThermal ? '' : `flex: 1; min-width: 0; text-align: ${headerAlign}; ${headerAlign === 'right' ? 'margin-left: auto;' : ''}`;
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';

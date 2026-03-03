@@ -1455,9 +1455,12 @@ async function renderCreateSupplierInvoicePage() {
     const supplierInvoiceNumber = invoiceData ? invoiceData.reference : '';
     const reference = invoiceData ? invoiceData.reference : '';
     const isCreateWithItems = !isEditMode && documentItems.length >= 1;
-    const supplierInvoiceTitleText = isEditMode && invoiceData && invoiceData.invoice_number
-        ? `Edit Supplier Invoice: ${invoiceData.invoice_number}`
-        : (isCreateWithItems ? 'Create Supplier Invoice (Draft)' : 'Create Supplier Invoice');
+    const isReadOnly = (currentDocument && currentDocument.readOnly) || (invoiceData && invoiceData.status === 'BATCHED');
+    const supplierInvoiceTitleText = isReadOnly && invoiceData && invoiceData.invoice_number
+        ? `View Supplier Invoice: ${invoiceData.invoice_number}`
+        : (isEditMode && invoiceData && invoiceData.invoice_number
+            ? `Edit Supplier Invoice: ${invoiceData.invoice_number}`
+            : (isCreateWithItems ? 'Create Supplier Invoice (Draft)' : 'Create Supplier Invoice'));
     const supplierInvoiceActionButtonsHtml = isEditMode && invoiceData ? `
         <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${invoiceData.id}', '${String(invoiceData.invoice_number || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')" title="Download PDF">
             <i class="fas fa-file-pdf"></i> Download PDF
@@ -1514,9 +1517,10 @@ async function renderCreateSupplierInvoicePage() {
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
                     <span id="supplierInvoiceActionButtons">${supplierInvoiceActionButtonsHtml}</span>
-                    <button type="submit" class="btn btn-primary" form="purchaseInvoiceForm" ${isEditMode && invoiceData && invoiceData.status === 'BATCHED' ? 'disabled title="BATCHED invoices cannot be updated"' : ''}>
+                    ${isReadOnly ? '' : `<button type="submit" class="btn btn-primary" form="purchaseInvoiceForm">
                         <i class="fas fa-save"></i> ${isEditMode ? 'Update' : 'Save'} Invoice
-                    </button>
+                    </button>`}
+                    ${isReadOnly ? '<span style="font-size: 0.875rem; color: var(--text-secondary); align-self: center;">View only. Only payment can be updated from Supplier or Payments.</span>' : ''}
                     <button type="button" class="btn btn-secondary" onclick="loadPurchaseSubPage('invoices')">
                         <i class="fas fa-arrow-left"></i> Back
                     </button>
@@ -1541,6 +1545,7 @@ async function renderCreateSupplierInvoicePage() {
                                                placeholder="Search supplier by name..."
                                                autocomplete="off"
                                                required
+                                               ${isReadOnly ? 'disabled' : ''}
                                                onkeyup="searchSuppliersInline(event, 'supplierSearchInvoice', 'supplierIdInvoice', 'supplierSearchDropdownInvoice')"
                                                onfocus="handleSupplierSearchFocus(event)"
                                                onblur="handleSupplierSearchBlur(event)">
@@ -1553,7 +1558,7 @@ async function renderCreateSupplierInvoicePage() {
                                 <div class="form-group">
                                     <label class="form-label">Invoice Date *</label>
                                     <input type="date" class="form-input" name="document_date" 
-                                           value="${today}" required>
+                                           value="${today}" required ${isReadOnly ? 'disabled' : ''}>
                                 </div>
                             </div>
                             <div class="form-row">
@@ -1561,13 +1566,13 @@ async function renderCreateSupplierInvoicePage() {
                                     <label class="form-label">Supplier's Invoice Number</label>
                                     <input type="text" class="form-input" name="supplier_invoice_number" 
                                            value="${supplierInvoiceNumber || ''}"
-                                           placeholder="Enter supplier's invoice number (optional)">
+                                           placeholder="Enter supplier's invoice number (optional)" ${isReadOnly ? 'disabled' : ''}>
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">Reference / Comments</label>
                                     <input type="text" class="form-input" name="reference" 
                                            value="${reference || ''}"
-                                           placeholder="Optional reference or comments">
+                                           placeholder="Optional reference or comments" ${isReadOnly ? 'disabled' : ''}>
                                 </div>
                             </div>
                             <p style="font-size: 0.75rem; color: var(--text-secondary); margin: 0.25rem 0 0 0;">
@@ -1761,6 +1766,8 @@ function initializeTransactionItemsTableForInvoice() {
         setTimeout(initializeTransactionItemsTableForInvoice, 100);
         return;
     }
+
+    const isReadOnly = (currentDocument && currentDocument.readOnly) || (currentDocument && currentDocument.invoiceData && currentDocument.invoiceData.status === 'BATCHED');
     
     const items = documentItems.length > 0 
         ? documentItems.map(item => ({
@@ -1783,6 +1790,7 @@ function initializeTransactionItemsTableForInvoice() {
         mode: 'purchase',
         items: items,
         priceType: 'purchase_price',
+        canEdit: !isReadOnly,
         useAddRow: true,
         onAddItem: onSupplierInvoiceAddItem,
         onBatchSaved: async (itemId, batches) => {
@@ -2277,6 +2285,11 @@ async function savePurchaseDocument(event, documentType) {
     console.log('savePurchaseDocument()');
     
     event.preventDefault();
+
+    if (documentType === 'invoice' && currentDocument && currentDocument.invoiceData && currentDocument.invoiceData.status === 'BATCHED') {
+        showToast('BATCHED invoices are read-only. Only payment can be updated.', 'info');
+        return;
+    }
     
     // Prevent duplicate submissions
     if (isSavingDocument) {
@@ -2983,7 +2996,8 @@ async function printPurchaseOrder(orderId, printType) {
                .print-content-wrap { margin-top: 0 !important; }`;
         const layoutLabel = isThermal ? `Thermal (${pageWidthMm}mm)` : 'Regular (A4)';
         const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
-
+        const orderLogoUrl = (order.logo_url && typeof order.logo_url === 'string' && (order.logo_url.startsWith('http://') || order.logo_url.startsWith('https://'))) ? order.logo_url : '';
+        const orderLogoUrlForPrint = orderLogoUrl ? (orderLogoUrl + (orderLogoUrl.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now()) : '';
         const formatDate = (dateStr) => {
             if (!dateStr) return '—';
             const date = new Date(dateStr);
@@ -3034,7 +3048,7 @@ async function printPurchaseOrder(orderId, printType) {
                         <h1>PURCHASE ORDER</h1>
                         <p>${escapeHtml(order.order_number || '—')}</p>
                     </div>
-                    ${(order.logo_url && typeof order.logo_url === 'string' && (order.logo_url.startsWith('http://') || order.logo_url.startsWith('https://'))) ? `<div style="flex-shrink: 0;"><img src="${order.logo_url.replace(/"/g, '&quot;')}" alt="Logo" style="max-height: 34px; max-width: 70px; object-fit: contain;" onerror="this.style.display=\'none\'" /></div>` : ''}
+                    ${(orderLogoUrlForPrint ? `<div style="flex-shrink: 0;"><img src="${orderLogoUrlForPrint.replace(/"/g, '&quot;')}" alt="Logo" style="max-height: 34px; max-width: 70px; object-fit: contain;" onerror="this.style.display='none'" /></div>` : '')}
                 </div>
                 <div class="info-section">
                     <div class="info-grid">
@@ -3123,29 +3137,26 @@ function updatePurchaseSubNavActiveState() {
     });
 }
 
-// View/Edit Supplier Invoice - Navigate to create page (seamless edit experience)
+// View/Edit Supplier Invoice - Navigate to create page (DRAFT = edit, BATCHED = read-only)
 async function viewSupplierInvoice(invoiceId) {
     try {
         const invoice = await API.purchases.getInvoice(invoiceId);
         const isDraft = invoice.status === 'DRAFT';
-        
-        if (!isDraft) {
-            // For BATCHED invoices, show read-only view with payment update option
-            showToast('This invoice is already batched. Only payment can be updated.', 'info');
-            // TODO: Could show a read-only view or payment update modal
-            return;
-        }
-        
-        // For DRAFT invoices, navigate to edit page (same as create page)
-        currentDocument = { 
-            type: 'invoice', 
-            invoiceId: invoiceId, 
+        const isBatched = invoice.status === 'BATCHED';
+
+        // DRAFT: edit mode. BATCHED: open as read-only (document can be viewed; only payment can be updated elsewhere).
+        currentDocument = {
+            type: 'invoice',
+            invoiceId: invoiceId,
             mode: 'edit',
-            invoiceData: invoice  // Store invoice data to populate form
+            invoiceData: invoice,
+            readOnly: isBatched  // When true, form is read-only (no save/batch, disabled fields)
         };
-        
-        // Navigate to create page (will load as edit mode)
+
         await loadPurchaseSubPage('create-invoice');
+        if (isBatched) {
+            showToast('Viewing batched invoice (read-only). Only payment can be updated from Supplier or Payments.', 'info');
+        }
     } catch (error) {
         console.error('Error loading supplier invoice:', error);
         showToast(error.message || 'Error loading invoice', 'error');

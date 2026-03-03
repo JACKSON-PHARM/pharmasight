@@ -44,7 +44,9 @@ from app.services.tenant_storage_service import upload_po_pdf, get_signed_url, d
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
 from app.services.document_pdf_generator import build_grn_pdf, build_supplier_invoice_pdf
+from app.services.canonical_pricing import CanonicalPricingService
 import json
+import sqlalchemy.exc
 
 router = APIRouter()
 
@@ -436,24 +438,102 @@ def create_supplier_invoice(
     System document number is ALWAYS auto-generated.
     Supplier's invoice number (external) is stored in reference field.
     """
+    user = current_user_and_db[0]
     # ALWAYS auto-generate system document number (internal document number)
-    # Supplier's invoice number is stored separately in reference field
     invoice_number = DocumentService.get_supplier_invoice_number(
         db, invoice.company_id, invoice.branch_id
     )
-    
+
     # Preload all items in one query (no N+1)
     item_ids = [item_data.item_id for item_data in invoice.items]
     items_preloaded = db.query(Item).filter(Item.id.in_(item_ids), Item.company_id == invoice.company_id).all()
     items_map = {item.id: item for item in items_preloaded}
     stock_validation_config = get_stock_validation_config(db, invoice.company_id)
-    
+
+    # Resolve unit cost per line: default to last purchase (per base * multiplier) when 0 or missing; same as item adjustment
+    resolved_unit_costs = []
+    need_confirm_list = []
+    for item_data in invoice.items:
+        item = items_map.get(item_data.item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+        multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
+        if multiplier is None:
+            raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
+        uc = item_data.unit_cost_exclusive
+        if uc is None or (uc is not None and float(uc) <= 0):
+            last_base = CanonicalPricingService.get_last_purchase_cost(
+                db, item_data.item_id, invoice.branch_id, invoice.company_id
+            )
+            if last_base is not None and float(last_base) > 0:
+                uc = last_base * Decimal(str(multiplier))
+            else:
+                uc = Decimal("0")
+        else:
+            uc = Decimal(str(uc))
+        resolved_unit_costs.append(uc)
+        unit_cost_base = uc / Decimal(str(multiplier))
+        # Floor price / margin confirmation (same rules as stock adjustment)
+        check = check_stock_adjustment_requires_confirmation(
+            db, item_data.item_id, invoice.company_id, unit_cost_base
+        )
+        if check.get("requires_confirmation"):
+            need_confirm_list.append({
+                "item_id": str(item_data.item_id),
+                "item_name": getattr(item, "name", None) or str(item_data.item_id),
+                "unit_cost_base": float(unit_cost_base),
+                "floor_price": check.get("floor_price"),
+                "margin_below_standard": check.get("margin_below_standard", False),
+            })
+        # Cost outlier (same as stock adjustment)
+        outlier = is_cost_outlier_vs_weighted_average(
+            db, invoice.company_id, invoice.branch_id, item_data.item_id, unit_cost_base
+        )
+        if outlier.get("is_outlier"):
+            from app.dependencies import _user_has_permission
+            has_override = _user_has_permission(db, user.id, "inventory.cost_override")
+            if not has_override:
+                baseline = outlier.get("baseline_cost")
+                deviation = outlier.get("deviation_pct")
+                threshold = outlier.get("threshold_pct")
+                item_name = getattr(item, "name", None) or str(item_data.item_id)
+                detail_msg = (
+                    f"Unit cost {unit_cost_base} for item '{item_name}' deviates "
+                    f"{deviation:.1f}% from branch weighted average {baseline}. Manager override required."
+                )
+                if threshold is not None:
+                    detail_msg += f" (Threshold {threshold:.1f}%.)"
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"code": "COST_OUTLIER_OVERRIDE_REQUIRED", "message": detail_msg},
+                )
+    if need_confirm_list:
+        confirm_map = {}
+        if invoice.confirmations:
+            for c in invoice.confirmations:
+                k = (str(c.item_id), round(float(c.unit_cost_base), 4))
+                confirm_map[k] = float(c.unit_cost_base)
+        missing = []
+        for nc in need_confirm_list:
+            k = (nc["item_id"], round(nc["unit_cost_base"], 4))
+            if k not in confirm_map:
+                missing.append(nc)
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "PRICE_CONFIRMATION_REQUIRED",
+                    "message": "Some items have a floor price or margin below standard. Re-enter the unit cost for each to confirm.",
+                    "items": missing,
+                },
+            )
+
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
     invoice_items = []
     # NO ledger entries here - stock is added when batching
-    
-    for item_data in invoice.items:
+
+    for idx, item_data in enumerate(invoice.items):
         # Get item from preloaded map
         item = items_map.get(item_data.item_id)
         if not item:
@@ -462,6 +542,8 @@ def create_supplier_invoice(
         multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
+
+        unit_cost_exclusive = resolved_unit_costs[idx] if idx < len(resolved_unit_costs) else item_data.unit_cost_exclusive
         
         # Enforce batch + expiry for items with Track Expiry enabled (existing validation)
         if getattr(item, "track_expiry", False):
@@ -482,7 +564,7 @@ def create_supplier_invoice(
                 )
         
         # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%); use item master VAT if request sent 0
-        line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
+        line_total_exclusive = unit_cost_exclusive * item_data.quantity
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
         if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
             vat_rate_pct = Decimal(str(vat_rate_to_percent(item.vat_rate)))
@@ -505,7 +587,7 @@ def create_supplier_invoice(
             item_id=item_data.item_id,
             unit_name=item_data.unit_name,
             quantity=item_data.quantity,
-            unit_cost_exclusive=item_data.unit_cost_exclusive,
+            unit_cost_exclusive=unit_cost_exclusive,
             vat_rate=vat_rate_pct,
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
@@ -545,8 +627,16 @@ def create_supplier_invoice(
         created_by=invoice.created_by
     )
     db.add(db_invoice)
-    db.flush()
-    
+    try:
+        db.flush()
+    except sqlalchemy.exc.IntegrityError as e:
+        err_msg = str(e.orig) if e.orig else str(e)
+        if "purchase_invoices_company_id_invoice_number_key" in err_msg or "UniqueViolation" in err_msg:
+            db_invoice.invoice_number = DocumentService.get_supplier_invoice_number(db, invoice.company_id, invoice.branch_id)
+            db.flush()
+        else:
+            raise
+
     # Link items (store batch data in items for later batching)
     for item in invoice_items:
         item.purchase_invoice_id = db_invoice.id
@@ -912,7 +1002,40 @@ def update_supplier_invoice_item(
     if payload.unit_name is not None:
         line.unit_name = payload.unit_name
     if payload.unit_cost_exclusive is not None:
-        line.unit_cost_exclusive = payload.unit_cost_exclusive
+        new_cost = payload.unit_cost_exclusive
+        if new_cost <= 0:
+            mult = get_unit_multiplier_from_item(item, line.unit_name or payload.unit_name)
+            if mult and mult > 0:
+                last_base = CanonicalPricingService.get_last_purchase_cost(
+                    db, item_id, invoice.branch_id, invoice.company_id
+                )
+                if last_base and float(last_base) > 0:
+                    new_cost = last_base * Decimal(str(mult))
+        line.unit_cost_exclusive = new_cost
+        # Same rules as stock adjustment: cost outlier check
+        mult = get_unit_multiplier_from_item(item, line.unit_name)
+        if mult and float(new_cost) > 0:
+            unit_cost_base = Decimal(str(new_cost)) / Decimal(str(mult))
+            from app.dependencies import _user_has_permission
+            outlier = is_cost_outlier_vs_weighted_average(
+                db, invoice.company_id, invoice.branch_id, item_id, unit_cost_base
+            )
+            if outlier.get("is_outlier"):
+                has_override = _user_has_permission(db, current_user_and_db[0].id, "inventory.cost_override")
+                if not has_override:
+                    baseline = outlier.get("baseline_cost")
+                    deviation = outlier.get("deviation_pct")
+                    threshold = outlier.get("threshold_pct")
+                    detail_msg = (
+                        f"Unit cost {unit_cost_base} deviates {deviation:.1f}% from branch weighted average "
+                        f"{baseline}. Manager override required."
+                    )
+                    if threshold is not None:
+                        detail_msg += f" (Threshold {threshold:.1f}%.)"
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={"code": "COST_OUTLIER_OVERRIDE_REQUIRED", "message": detail_msg},
+                    )
     if payload.vat_rate is not None:
         line.vat_rate = Decimal(str(vat_rate_to_percent(payload.vat_rate)))
     if payload.batch_data is not None:
@@ -1489,10 +1612,18 @@ def batch_supplier_invoice(
         # Update snapshots in same transaction
         for entry in ledger_entries:
             SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+        # Update last unit cost per item from invoice (cost per base unit so search/pricing use it)
         for inv_item in invoice.items:
+            item = inv_item.item
+            if not item:
+                continue
+            multiplier = get_unit_multiplier_from_item(item, inv_item.unit_name)
+            if multiplier is None or multiplier <= 0:
+                continue
+            unit_cost_base = Decimal(str(inv_item.unit_cost_exclusive)) / multiplier
             SnapshotService.upsert_purchase_snapshot(
                 db, invoice.company_id, invoice.branch_id, inv_item.item_id,
-                inv_item.unit_cost_exclusive, invoice.created_at, invoice.supplier_id
+                unit_cost_base, invoice.created_at, invoice.supplier_id
             )
         for entry in ledger_entries:
             SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)

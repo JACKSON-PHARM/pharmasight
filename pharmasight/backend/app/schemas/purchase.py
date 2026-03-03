@@ -151,6 +151,7 @@ class SupplierInvoiceCreate(SupplierInvoiceBase):
     company_id: UUID
     items: List[SupplierInvoiceItemCreate] = Field(..., min_items=1)
     created_by: UUID
+    confirmations: Optional[List[BatchLineConfirmation]] = Field(None, description="Required when line costs trigger floor price or margin confirmation (same as stock adjustment)")
 
 
 class SupplierInvoiceResponse(SupplierInvoiceBase):
