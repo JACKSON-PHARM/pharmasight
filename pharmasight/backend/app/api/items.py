@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Qu
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, or_, and_, desc, text
+from sqlalchemy.exc import IntegrityError
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
@@ -38,7 +39,11 @@ from app.schemas.item import (
     CorrectionResponse, LedgerBatchEntry, LedgerBatchesResponse,
 )
 from app.services.pricing_service import PricingService
-from app.services.items_service import create_item as svc_create_item, DuplicateItemNameError
+from app.services.items_service import (
+    create_item as svc_create_item,
+    DuplicateItemNameError,
+    DuplicateItemSkuError,
+)
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.inventory_service import InventoryService, _unit_for_display
 from app.services.item_units_helper import get_stock_display_unit
@@ -265,7 +270,8 @@ def create_item(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Create a new item with 3-tier units. SKU auto-generated if not provided. Rejects duplicate names (same company).
+    Create a new item with 3-tier units. SKU auto-generated if not provided.
+    Rejects duplicate names and duplicate SKU/code (same company, case-insensitive). No duplicate items allowed.
     Item and item_branch_snapshot are updated in a single transaction: if snapshot refresh fails, the item is not committed.
     """
     try:
@@ -294,6 +300,28 @@ def create_item(
                 "similar_items": similar_items,
             },
         )
+    except DuplicateItemSkuError as e:
+        # Return existing item(s) with this SKU so the user can see the duplicate
+        similar = (
+            db.query(Item.id, Item.name, Item.sku)
+            .filter(
+                Item.company_id == e.company_id,
+                func.lower(Item.sku) == (e.sku or "").strip().lower(),
+            )
+            .limit(10)
+            .all()
+        )
+        similar_items = [
+            {"id": str(r.id), "name": r.name, "sku": r.sku or ""}
+            for r in similar
+        ]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": str(e),
+                "similar_items": similar_items,
+            },
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     try:
@@ -303,6 +331,12 @@ def create_item(
         db.commit()
         db.refresh(db_item)
         return db_item
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"message": "An item with this name or code already exists. Duplicate items are not allowed."},
+        )
     except Exception:
         db.rollback()
         raise

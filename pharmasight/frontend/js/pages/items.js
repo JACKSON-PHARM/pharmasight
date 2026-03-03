@@ -642,7 +642,7 @@ function showAddItemModal() {
     
     const footer = `
         <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" type="submit" form="itemForm">
+        <button class="btn btn-primary" type="submit" form="itemForm" id="itemFormSubmitBtn">
             <i class="fas fa-save"></i> Save Item
         </button>
     `;
@@ -685,8 +685,10 @@ function showAddItemModal() {
 async function saveItem(event) {
     event.preventDefault();
     const form = event.target;
-    // Disable submit immediately to prevent duplicate submissions (e.g. slow network double-clicks)
-    const submitBtn = form.querySelector('button[type="submit"]');
+    if (form.dataset.submitting === '1') return; // Prevent double submit (e.g. Enter key + click)
+    form.dataset.submitting = '1';
+    // Disable submit immediately to prevent duplicate submissions (button is in modal footer, not inside form)
+    const submitBtn = document.getElementById('itemFormSubmitBtn') || document.getElementById('modal')?.querySelector('.modal-footer button[type="submit"]');
     if (submitBtn && !submitBtn.disabled) {
         submitBtn.disabled = true;
         submitBtn.dataset.originalText = submitBtn.innerHTML;
@@ -725,6 +727,7 @@ async function saveItem(event) {
     
     try {
         const createdItem = await API.items.create(itemData);
+        form.dataset.submitting = '';
         showToast('Item created successfully!', 'success');
         closeModal();
         
@@ -757,13 +760,14 @@ async function saveItem(event) {
         }
     } catch (error) {
         console.error('Error saving item:', error);
-        // Re-enable button on error so user can fix and retry
-        const submitBtn = form.querySelector('button[type="submit"]');
+        // Re-enable button on error so user can fix and retry (button is in modal footer)
+        const submitBtn = document.getElementById('itemFormSubmitBtn') || document.getElementById('modal')?.querySelector('.modal-footer button[type="submit"]');
         if (submitBtn) {
             submitBtn.disabled = false;
             submitBtn.innerHTML = submitBtn.dataset.originalText || '<i class="fas fa-save"></i> Save Item';
         }
-        // Duplicate name (409): show message and similar items
+        form.dataset.submitting = '';
+        // Duplicate name or SKU (409): show message and similar items
         if (error.status === 409 && error.data && error.data.detail) {
             const detail = error.data.detail;
             const message = typeof detail === 'string' ? detail : (detail.message || error.message);

@@ -29,6 +29,14 @@ class DuplicateItemNameError(ValueError):
         super().__init__(f"An item with the name '{name}' already exists for this company.")
 
 
+class DuplicateItemSkuError(ValueError):
+    """Raised when creating an item whose SKU already exists for the company (case-insensitive)."""
+    def __init__(self, sku: str, company_id: UUID):
+        self.sku = sku
+        self.company_id = company_id
+        super().__init__(f"An item with the code/SKU '{sku}' already exists for this company.")
+
+
 def _is_numeric_unit_value(value) -> bool:
     """Return True if value looks like a number (e.g. price mistaken for unit name)."""
     if value is None:
@@ -116,6 +124,21 @@ def create_item(db: Session, data: ItemCreate) -> Item:
         )
         if existing:
             raise DuplicateItemNameError(name=name_normalized, company_id=data.company_id)
+
+    # Reject duplicate SKU (item code) per company (case-insensitive) so no two items share the same code.
+    sku_raw = dump.get("sku")
+    if sku_raw and isinstance(sku_raw, str) and sku_raw.strip():
+        sku_normalized = sku_raw.strip()
+        existing_sku = (
+            db.query(Item)
+            .filter(
+                Item.company_id == data.company_id,
+                func.lower(Item.sku) == sku_normalized.lower(),
+            )
+            .first()
+        )
+        if existing_sku:
+            raise DuplicateItemSkuError(sku=sku_normalized, company_id=data.company_id)
 
     if not dump.get("sku") or (isinstance(dump.get("sku"), str) and not dump["sku"].strip()):
         sku = _generate_sku(data.company_id, db)
