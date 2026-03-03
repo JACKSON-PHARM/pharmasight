@@ -3941,18 +3941,19 @@ async function renderSupplierDetailPage(supplierId) {
         });
     });
     try {
-        const [supplier, aging] = await Promise.all([
+        const params = {};
+        if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+        const [supplier, enrichedList] = await Promise.all([
             API.suppliers.get(supplierId),
-            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }).catch(() => ({ suppliers: [] })),
+            API.suppliers.listEnriched ? API.suppliers.listEnriched(params).catch(() => []) : [],
         ]);
         currentSupplierDetail = supplier;
         document.getElementById('supplierDetailTitle').textContent = supplier.name || 'Supplier';
-        const row = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
-        const ob = row ? parseFloat(row.total_outstanding) || 0 : 0;
-        const ov = row ? parseFloat(row.overdue_amount) || 0 : 0;
-        const metrics = await API.suppliers.getMetrics(new Date().toISOString().slice(0, 7), { branch_id: CONFIG.BRANCH_ID }).catch(() => ({}));
-        const topSupplier = (metrics.top_suppliers_by_purchase || []).find(s => String(s.supplier_id) === String(supplierId));
-        const thisMonth = topSupplier ? parseFloat(topSupplier.total) || 0 : 0;
+        const list = Array.isArray(enrichedList) ? enrichedList : [];
+        const enrichedRow = list.find(s => String(s.id) === String(supplierId));
+        const ob = enrichedRow != null ? (parseFloat(enrichedRow.outstanding_balance) ?? parseFloat(enrichedRow.outstanding) ?? 0) : 0;
+        const ov = enrichedRow != null ? (parseFloat(enrichedRow.overdue_amount) ?? parseFloat(enrichedRow.overdue) ?? 0) : 0;
+        const thisMonth = enrichedRow != null ? (parseFloat(enrichedRow.this_month_purchases) ?? parseFloat(enrichedRow.this_month) ?? 0) : 0;
         const paymentsThisMonth = 0;
         renderSupplierSummaryCards({ outstanding: ob, overdue: ov, thisMonthPurchases: thisMonth, thisMonthPayments: paymentsThisMonth, creditLimit: supplier.credit_limit });
         renderSupplierTabContent(supplierId, currentSupplierTab);
@@ -3968,17 +3969,18 @@ async function refreshSupplierDetailAfterAction(supplierId) {
     const cont = document.getElementById('supplierSummaryCards');
     if (!cont) return;
     try {
-        const [supplier, aging, metrics] = await Promise.all([
+        const params = {};
+        if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+        const [supplier, enrichedList] = await Promise.all([
             API.suppliers.get(supplierId),
-            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }).catch(() => ({ suppliers: [] })),
-            API.suppliers.getMetrics(new Date().toISOString().slice(0, 7), { branch_id: CONFIG.BRANCH_ID }).catch(() => ({})),
+            API.suppliers.listEnriched ? API.suppliers.listEnriched(params).catch(() => []) : [],
         ]);
         currentSupplierDetail = supplier;
-        const row = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
-        const ob = row ? parseFloat(row.total_outstanding) || 0 : 0;
-        const ov = row ? parseFloat(row.overdue_amount) || 0 : 0;
-        const topSupplier = (metrics.top_suppliers_by_purchase || []).find(s => String(s.supplier_id) === String(supplierId));
-        const thisMonth = topSupplier ? parseFloat(topSupplier.total) || 0 : 0;
+        const list = Array.isArray(enrichedList) ? enrichedList : [];
+        const enrichedRow = list.find(s => String(s.id) === String(supplierId));
+        const ob = enrichedRow != null ? (parseFloat(enrichedRow.outstanding_balance) ?? parseFloat(enrichedRow.outstanding) ?? 0) : 0;
+        const ov = enrichedRow != null ? (parseFloat(enrichedRow.overdue_amount) ?? parseFloat(enrichedRow.overdue) ?? 0) : 0;
+        const thisMonth = enrichedRow != null ? (parseFloat(enrichedRow.this_month_purchases) ?? parseFloat(enrichedRow.this_month) ?? 0) : 0;
         const paymentsThisMonth = 0;
         renderSupplierSummaryCards({ outstanding: ob, overdue: ov, thisMonthPurchases: thisMonth, thisMonthPayments: paymentsThisMonth, creditLimit: supplier.credit_limit });
         await renderSupplierTabContent(supplierId, currentSupplierTab);
@@ -4044,29 +4046,32 @@ async function renderSupplierOverviewTab(supplierId, cont) {
     const month = now.toISOString().slice(0, 7);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+    const params = {};
+    if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
     let metrics = {};
-    let agingRow = null;
+    let enrichedRow = null;
     let lastPayment = null;
     let paymentsList = [];
     let returnsList = [];
     try {
-        const [m, aging, payments, returns, lastPay] = await Promise.all([
-            API.suppliers.getMetrics(month, { branch_id: CONFIG.BRANCH_ID }),
-            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }),
-            API.suppliers.listPayments({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, date_from: monthStart, date_to: monthEnd, limit: 500 }),
-            API.suppliers.listReturns({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, limit: 500 }),
-            API.suppliers.listPayments({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, limit: 1 }),
+        const [enrichedList, m, payments, returns, lastPay] = await Promise.all([
+            API.suppliers.listEnriched ? API.suppliers.listEnriched(params).catch(() => []) : [],
+            API.suppliers.getMetrics(month, { branch_id: CONFIG.BRANCH_ID }).catch(() => ({})),
+            API.suppliers.listPayments({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, date_from: monthStart, date_to: monthEnd, limit: 500 }).catch(() => []),
+            API.suppliers.listReturns({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, limit: 500 }).catch(() => []),
+            API.suppliers.listPayments({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, limit: 1 }).catch(() => []),
         ]);
         metrics = m || {};
-        agingRow = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
+        const list = Array.isArray(enrichedList) ? enrichedList : [];
+        enrichedRow = list.find(s => String(s.id) === String(supplierId));
         paymentsList = payments || [];
         returnsList = returns || [];
         lastPayment = (lastPay && lastPay[0]) ? lastPay[0] : null;
     } catch (_) {}
     const topSupplier = (metrics.top_suppliers_by_purchase || []).find(s => String(s.supplier_id) === String(supplierId));
-    const outstanding = agingRow ? parseFloat(agingRow.total_outstanding) || 0 : 0;
-    const overdue = agingRow ? parseFloat(agingRow.overdue_amount) || 0 : 0;
-    const thisMonthPurchases = topSupplier ? parseFloat(topSupplier.total) || 0 : 0;
+    const outstanding = enrichedRow != null ? (parseFloat(enrichedRow.outstanding_balance) ?? parseFloat(enrichedRow.outstanding) ?? 0) : 0;
+    const overdue = enrichedRow != null ? (parseFloat(enrichedRow.overdue_amount) ?? parseFloat(enrichedRow.overdue) ?? 0) : 0;
+    const thisMonthPurchases = enrichedRow != null ? (parseFloat(enrichedRow.this_month_purchases) ?? parseFloat(enrichedRow.this_month) ?? 0) : (topSupplier ? parseFloat(topSupplier.total) || 0 : 0);
     const thisMonthPayments = (paymentsList || []).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     const thisMonthReturns = (returnsList || []).filter(r => {
         if (r.status !== 'credited') return false;
@@ -4364,18 +4369,23 @@ async function renderSupplierAgingTab(supplierId, cont) {
 
 async function renderSupplierMetricsTab(supplierId, cont) {
     const month = new Date().toISOString().slice(0, 7);
+    const params = {};
+    if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
     let metrics = {};
-    let agingRow = null;
+    let enrichedRow = null;
     try {
-        const [m, aging] = await Promise.all([
+        const [m, enrichedList] = await Promise.all([
             API.suppliers.getMetrics(month, { branch_id: CONFIG.BRANCH_ID }),
-            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }),
+            API.suppliers.listEnriched ? API.suppliers.listEnriched(params).catch(() => []) : [],
         ]);
         metrics = m || {};
-        agingRow = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
+        const list = Array.isArray(enrichedList) ? enrichedList : [];
+        enrichedRow = list.find(s => String(s.id) === String(supplierId));
     } catch (_) {}
     const topSupplier = (metrics.top_suppliers_by_purchase || []).find(s => String(s.supplier_id) === String(supplierId));
     const supplierTotal = topSupplier ? parseFloat(topSupplier.total) || 0 : 0;
+    const ob = enrichedRow != null ? (parseFloat(enrichedRow.outstanding_balance) ?? parseFloat(enrichedRow.outstanding) ?? 0) : 0;
+    const ov = enrichedRow != null ? (parseFloat(enrichedRow.overdue_amount) ?? parseFloat(enrichedRow.overdue) ?? 0) : 0;
     cont.innerHTML = `
         <div class="card" style="padding: 1rem; margin-bottom: 1rem;">
             <h4 style="margin: 0 0 1rem 0;">Company metrics (${month})</h4>
@@ -4391,8 +4401,8 @@ async function renderSupplierMetricsTab(supplierId, cont) {
         <div class="card" style="padding: 1rem;">
             <h4 style="margin: 0 0 1rem 0;">This supplier (${month})</h4>
             <p><strong>This month purchases:</strong> ${fmt(supplierTotal)}</p>
-            <p><strong>Outstanding (from aging):</strong> ${fmt(agingRow ? agingRow.total_outstanding : 0)}</p>
-            <p><strong>Overdue:</strong> ${fmt(agingRow ? agingRow.overdue_amount : 0)}</p>
+            <p><strong>Outstanding:</strong> ${fmt(ob)}</p>
+            <p><strong>Overdue:</strong> ${fmt(ov)}</p>
         </div>
     `;
 }
