@@ -95,6 +95,7 @@ class BranchSettingResponse(BaseModel):
     branch_id: UUID
     allow_manual_transfer: bool = True
     allow_manual_receipt: bool = True
+    allow_adjust_cost: bool = True
 
     class Config:
         from_attributes = True
@@ -104,6 +105,7 @@ class BranchSettingUpdate(BaseModel):
     """Update branch settings."""
     allow_manual_transfer: Optional[bool] = None
     allow_manual_receipt: Optional[bool] = None
+    allow_adjust_cost: Optional[bool] = None
 
 
 class SupplierBase(BaseModel):

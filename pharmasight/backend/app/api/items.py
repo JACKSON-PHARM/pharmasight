@@ -22,7 +22,7 @@ from app.models import (
     InventoryLedger, InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot,
     ItemBranchSnapshot,
     SupplierInvoice, SupplierInvoiceItem, Supplier,
-    PurchaseOrder, PurchaseOrderItem, Branch,
+    PurchaseOrder, PurchaseOrderItem, Branch, BranchSetting,
     UserRole, UserBranchRole, ItemMovement,
 )
 from app.models.settings import CompanySetting
@@ -1537,6 +1537,12 @@ def post_cost_adjustment(
         raise HTTPException(status_code=404, detail="Item not found")
     if not _user_has_correction_permission(db, user.id, body.branch_id, "inventory.adjust_cost"):
         raise HTTPException(status_code=403, detail="Permission inventory.adjust_cost required for this branch.")
+    bs = db.query(BranchSetting).filter(BranchSetting.branch_id == body.branch_id).first()
+    if bs is not None and not bs.allow_adjust_cost:
+        raise HTTPException(
+            status_code=403,
+            detail="Cost adjustment is disabled for this branch. Enable it in Settings → Branches → Branch inventory.",
+        )
     branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
     if not branch:
         raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")

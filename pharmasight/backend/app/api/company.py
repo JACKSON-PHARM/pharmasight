@@ -569,11 +569,13 @@ def get_branch_settings(
             branch_id=row.branch_id,
             allow_manual_transfer=row.allow_manual_transfer,
             allow_manual_receipt=row.allow_manual_receipt,
+            allow_adjust_cost=row.allow_adjust_cost,
         )
     return BranchSettingResponse(
         branch_id=branch_id,
         allow_manual_transfer=True,
         allow_manual_receipt=True,
+        allow_adjust_cost=True,
     )
 
 
@@ -594,6 +596,7 @@ def update_branch_settings(
             branch_id=branch_id,
             allow_manual_transfer=True,
             allow_manual_receipt=True,
+            allow_adjust_cost=True,
         )
         db.add(row)
         db.flush()
@@ -601,11 +604,14 @@ def update_branch_settings(
         row.allow_manual_transfer = body.allow_manual_transfer
     if body.allow_manual_receipt is not None:
         row.allow_manual_receipt = body.allow_manual_receipt
+    if body.allow_adjust_cost is not None:
+        row.allow_adjust_cost = body.allow_adjust_cost
     db.commit()
     db.refresh(row)
     return BranchSettingResponse(
         branch_id=row.branch_id,
         allow_manual_transfer=row.allow_manual_transfer,
         allow_manual_receipt=row.allow_manual_receipt,
+        allow_adjust_cost=row.allow_adjust_cost,
     )
 

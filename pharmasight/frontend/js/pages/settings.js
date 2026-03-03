@@ -685,9 +685,10 @@ async function openBranchInventorySettings(branchId, branchName) {
         const s = await API.branch.getSettings(branchId);
         const allowTransfer = s.allow_manual_transfer !== false;
         const allowReceipt = s.allow_manual_receipt !== false;
+        const allowAdjustCost = s.allow_adjust_cost !== false;
         const name = (branchName || 'Branch').replace(/"/g, '&quot;');
         const content = `
-            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Control how this branch can create Branch Transfers and Branch Receipts.</p>
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Control how this branch can create Branch Transfers, Branch Receipts, and inventory corrections.</p>
             <form id="branchInventorySettingsForm" onsubmit="saveBranchInventorySettings(event, '${branchId}')">
                 <div class="form-group">
                     <label class="form-check" style="display: flex; align-items: center; gap: 0.5rem;">
@@ -702,6 +703,13 @@ async function openBranchInventorySettings(branchId, branchName) {
                         <span>Allow manual Branch Receipt</span>
                     </label>
                     <small style="color: var(--text-secondary);">If unchecked, receipts can only be created from Pending Transfers.</small>
+                </div>
+                <div class="form-group">
+                    <label class="form-check" style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" name="allow_adjust_cost" ${allowAdjustCost ? 'checked' : ''}>
+                        <span>Allow cost adjustment</span>
+                    </label>
+                    <small style="color: var(--text-secondary);">If unchecked, users cannot adjust batch cost (Inventory → Adjustments → Cost) at this branch. Users also need the inventory.adjust_cost role permission.</small>
                 </div>
             </form>
         `;
@@ -724,8 +732,9 @@ async function saveBranchInventorySettings(event, branchId) {
     if (!form || !branchId) return;
     const allowTransfer = form.querySelector('input[name="allow_manual_transfer"]').checked;
     const allowReceipt = form.querySelector('input[name="allow_manual_receipt"]').checked;
+    const allowAdjustCost = form.querySelector('input[name="allow_adjust_cost"]').checked;
     try {
-        await API.branch.updateSettings(branchId, { allow_manual_transfer: allowTransfer, allow_manual_receipt: allowReceipt });
+        await API.branch.updateSettings(branchId, { allow_manual_transfer: allowTransfer, allow_manual_receipt: allowReceipt, allow_adjust_cost: allowAdjustCost });
         showToast('Branch inventory settings saved', 'success');
         closeModal();
         await renderBranchesPage();
