@@ -1262,6 +1262,14 @@ async function renderCreateUserForm(page, roles, branches, isAdminUser) {
                                placeholder="John Doe">
                     </div>
                     <div class="form-group">
+                        <label class="form-label">Username (optional)</label>
+                        <input type="text" class="form-input" name="username" 
+                               placeholder="Leave blank to generate from name (e.g. j-doe)">
+                        <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
+                            For login. If empty, generated from full name.
+                        </small>
+                    </div>
+                    <div class="form-group">
                         <label class="form-label">Email *</label>
                         <input type="email" class="form-input" name="email" required 
                                placeholder="user@example.com" oninput="updateFormValidation('createUserForm')">
@@ -1298,9 +1306,12 @@ async function renderCreateUserForm(page, roles, branches, isAdminUser) {
                     <div class="form-group">
                         <label class="form-checkbox">
                             <input type="checkbox" name="is_active" checked>
-                            <span>Active (user can login immediately after password setup)</span>
+                            <span>Active (user can log in immediately with the password you share)</span>
                         </label>
                     </div>
+                    <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                        A password will be generated. After creating, copy the username and password to share with the user (e.g. via text message).
+                    </p>
                     <div style="margin-top: 2rem; display: flex; gap: 1rem;">
                         <button type="submit" class="btn btn-primary" disabled>
                             <i class="fas fa-save"></i> Create User
@@ -1848,9 +1859,9 @@ async function handleCreateUser(event) {
         email: formData.get('email'),
         full_name: formData.get('full_name') || null,
         phone: formData.get('phone'),
+        username: (formData.get('username') || '').trim() || null,
         role_name: formData.get('role_name'),
-        branch_id: formData.get('branch_id') || null,
-        is_active: formData.get('is_active') === 'on'
+        branch_id: formData.get('branch_id') || null
     };
 
     const submitBtn = form.querySelector('button[type="submit"]');
@@ -1862,34 +1873,68 @@ async function handleCreateUser(event) {
     }
 
     try {
-        const result = await API.users.create(userData);
-        showToast(result.message || 'User created successfully!', 'success');
+        const result = await API.users.adminCreate(userData);
+        showToast(result.message || 'User created. Copy credentials to share.', 'success');
 
-        if (result.invitation_code) {
-            const inviteDiv = document.createElement('div');
-            inviteDiv.style.cssText = 'margin-top: 1rem; padding: 1rem; background: var(--bg-secondary); border-radius: 0.5rem;';
-            inviteDiv.innerHTML = `
-                <p style="margin-bottom: 0.5rem;"><strong>Invitation Code:</strong></p>
+        const credsDiv = document.createElement('div');
+        credsDiv.id = 'create-user-credentials-box';
+        credsDiv.setAttribute('data-username', result.username);
+        credsDiv.setAttribute('data-password', result.temporary_password);
+        credsDiv.style.cssText = 'margin-top: 1.5rem; padding: 1.25rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 0.5rem;';
+        credsDiv.innerHTML = `
+            <p style="margin-bottom: 0.75rem; font-weight: 600;"><i class="fas fa-key"></i> Share these credentials with the user (e.g. via text message)</p>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+                <label style="font-size: 0.8rem; color: var(--text-secondary);">Username</label>
                 <div style="display: flex; gap: 0.5rem; align-items: center;">
-                    <code style="flex: 1; padding: 0.5rem; background: white; border: 1px solid var(--border-color); border-radius: 0.25rem; font-size: 1.25rem; font-weight: bold;">${escapeHtml(result.invitation_code)}</code>
-                    <button class="btn btn-outline" onclick="copyInvitationCode('${escapeHtml(result.invitation_code)}', '${escapeHtml(userData.email)}')">
-                        <i class="fas fa-copy"></i> Copy
+                    <code style="flex: 1; padding: 0.5rem; background: white; border: 1px solid var(--border-color); border-radius: 0.25rem;">${escapeHtml(result.username)}</code>
+                    <button type="button" class="btn btn-outline btn-sm copy-username-btn">
+                        <i class="fas fa-copy"></i>
                     </button>
                 </div>
-                <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">
-                    Share this code with the user for first-time login.
-                </p>
-            `;
-            form.parentNode.insertBefore(inviteDiv, form);
-        }
-
-        setTimeout(async () => {
+            </div>
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label style="font-size: 0.8rem; color: var(--text-secondary);">Password (show once)</label>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <code style="flex: 1; padding: 0.5rem; background: white; border: 1px solid var(--border-color); border-radius: 0.25rem;">${escapeHtml(result.temporary_password)}</code>
+                    <button type="button" class="btn btn-outline btn-sm copy-password-btn">
+                        <i class="fas fa-copy"></i>
+                    </button>
+                </div>
+            </div>
+            <button type="button" class="btn btn-primary copy-credentials-btn">
+                <i class="fas fa-copy"></i> Copy username &amp; password (for SMS)
+            </button>
+            <p style="margin-top: 1rem; font-size: 0.875rem; color: var(--text-secondary);">
+                User can log in immediately. They will be prompted to change their password on first login.
+            </p>
+            <button type="button" class="btn btn-secondary back-to-list-btn" style="margin-top: 1rem;">
+                <i class="fas fa-list"></i> Back to user list
+            </button>
+        `;
+        form.parentNode.insertBefore(credsDiv, form.nextSibling);
+        credsDiv.querySelector('.copy-username-btn').addEventListener('click', function () {
+            navigator.clipboard.writeText(result.username).then(function () { showToast('Username copied', 'success'); });
+        });
+        credsDiv.querySelector('.copy-password-btn').addEventListener('click', function () {
+            navigator.clipboard.writeText(result.temporary_password).then(function () { showToast('Password copied', 'success'); });
+        });
+        credsDiv.querySelector('.copy-credentials-btn').addEventListener('click', function () {
+            var msg = 'Username: ' + result.username + '\nPassword: ' + result.temporary_password;
+            navigator.clipboard.writeText(msg).then(function () { showToast('Username and password copied for SMS', 'success'); });
+        });
+        credsDiv.querySelector('.back-to-list-btn').addEventListener('click', function () {
             usersPageState.view = 'list';
-            await renderUsersPage();
-        }, 2000);
+            window.renderUsersPage();
+        });
+
+        createUserSubmitting = false;
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-check"></i> Created';
+        }
     } catch (error) {
         console.error('Error creating user:', error);
-        showToast(error.message || 'Error creating user', 'error');
+        showToast(error.message || (error.detail && (typeof error.detail === 'string' ? error.detail : error.detail.detail || JSON.stringify(error.detail))) || 'Error creating user', 'error');
         createUserSubmitting = false;
         if (submitBtn) {
             submitBtn.disabled = false;

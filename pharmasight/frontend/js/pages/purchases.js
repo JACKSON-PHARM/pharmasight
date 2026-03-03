@@ -15,8 +15,12 @@ let supplierInvoiceItemDisplayCache = {};
 let poSyncedItemIds = new Set();
 /** Same for purchase order items */
 let poItemDisplayCache = {};
-/** Supplier Invoices list date preset: today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year | custom */
-let supplierInvoicesDateFilter = 'this_month';
+/** Supplier Invoices list date preset: today | yesterday | ... | custom */
+let supplierInvoicesDateFilter = 'today';
+let supplierInvoicesUserFilter = 'self';
+/** Purchase Orders list date preset (same values) */
+let purchaseOrdersDateFilter = 'today';
+let purchaseOrdersUserFilter = 'self';
 
 function getSupplierInvoiceItemDisplay(i, cache) {
     const idKey = i.item_id != null ? String(i.item_id) : '';
@@ -169,79 +173,74 @@ function renderPurchaseOrdersShell() {
     page.style.display = 'block';
     page.style.visibility = 'visible';
     
-    // Default to today's date
     const today = new Date().toISOString().split('T')[0];
+    const orderRange = getSupplierInvoicesDateRange(purchaseOrdersDateFilter);
+    const orderFrom = orderRange ? orderRange.dateFrom : today;
+    const orderTo = orderRange ? orderRange.dateTo : today;
     
-    // Clear and render full page shell
     page.innerHTML = `
         <div class="card">
-            <!-- Page Header -->
-            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
-                <h3 class="card-title" style="margin: 0; font-size: 1.5rem;">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0; font-size: 1.1rem;">
                     <i class="fas fa-file-invoice"></i> Purchase Orders
                 </h3>
-                <div style="display: flex; gap: 0.5rem;">
-                    <button class="btn btn-outline" onclick="if(window.showPurchaseFilters) window.showPurchaseFilters()">
-                        <i class="fas fa-filter"></i> Filters
-                    </button>
-                    <button class="btn btn-primary" onclick="if(window.createNewPurchaseOrder) window.createNewPurchaseOrder()">
-                        <i class="fas fa-plus"></i> New Order
-                    </button>
-                </div>
+                <button class="btn btn-primary btn-sm" onclick="if(window.createNewPurchaseOrder) window.createNewPurchaseOrder()">
+                    <i class="fas fa-plus"></i> New Order
+                </button>
             </div>
             
-            <div class="card-body" style="padding: 1.5rem;">
-                <!-- Date Filter Bar: default today; user selects range and clicks Apply -->
-                <div style="margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: 1rem; background: #f8f9fa; border-radius: 0.5rem;">
-                    <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <label style="font-weight: 500; min-width: 50px;">From:</label>
-                        <input type="date" class="form-input" id="filterDateFrom" value="${today}" style="width: 150px;">
+            <div class="card-body" style="padding: 0.5rem 0.75rem;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
+                    <select id="purchaseOrdersDateFilter" class="form-input" style="width: 120px; padding: 0.35rem 0.5rem;" onchange="if(window.togglePurchaseOrdersCustomDates) window.togglePurchaseOrdersCustomDates()">
+                        <option value="today" ${purchaseOrdersDateFilter === 'today' ? 'selected' : ''}>Today</option>
+                        <option value="yesterday" ${purchaseOrdersDateFilter === 'yesterday' ? 'selected' : ''}>Yesterday</option>
+                        <option value="this_week" ${purchaseOrdersDateFilter === 'this_week' ? 'selected' : ''}>This Week</option>
+                        <option value="last_week" ${purchaseOrdersDateFilter === 'last_week' ? 'selected' : ''}>Last Week</option>
+                        <option value="this_month" ${purchaseOrdersDateFilter === 'this_month' ? 'selected' : ''}>This Month</option>
+                        <option value="last_month" ${purchaseOrdersDateFilter === 'last_month' ? 'selected' : ''}>Last Month</option>
+                        <option value="this_year" ${purchaseOrdersDateFilter === 'this_year' ? 'selected' : ''}>This Year</option>
+                        <option value="last_year" ${purchaseOrdersDateFilter === 'last_year' ? 'selected' : ''}>Last Year</option>
+                        <option value="custom" ${purchaseOrdersDateFilter === 'custom' ? 'selected' : ''}>Custom</option>
+                    </select>
+                    <div id="purchaseOrdersCustomDateRange" style="display: ${purchaseOrdersDateFilter === 'custom' ? 'flex' : 'none'}; gap: 0.35rem; align-items: center;">
+                        <input type="date" class="form-input" id="filterDateFrom" value="${orderFrom}" style="width: 120px; padding: 0.35rem 0.5rem;">
+                        <span>-</span>
+                        <input type="date" class="form-input" id="filterDateTo" value="${orderTo}" style="width: 120px; padding: 0.35rem 0.5rem;">
                     </div>
-                    <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <label style="font-weight: 500; min-width: 30px;">To:</label>
-                        <input type="date" class="form-input" id="filterDateTo" value="${today}" style="width: 150px;">
-                    </div>
-                    <button type="button" class="btn btn-primary" onclick="if(window.applyDateFilter) window.applyDateFilter()">
+                    <button type="button" class="btn btn-primary btn-sm" onclick="if(window.applyDateFilter) window.applyDateFilter()">
                         <i class="fas fa-check"></i> Apply
                     </button>
-                    <button type="button" class="btn btn-outline" onclick="if(window.clearDateFilter) window.clearDateFilter()">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="if(window.clearDateFilter) window.clearDateFilter()">
                         <i class="fas fa-times"></i> Clear
                     </button>
+                    <select id="purchaseOrdersUserFilter" class="form-input" style="width: 90px; padding: 0.35rem 0.5rem;" onchange="if(window.applyDateFilter) window.applyDateFilter()" title="Show my documents or all">
+                        <option value="self" ${purchaseOrdersUserFilter === 'self' ? 'selected' : ''}>Self</option>
+                        <option value="all" ${purchaseOrdersUserFilter === 'all' ? 'selected' : ''}>All</option>
+                    </select>
+                    <input type="text" class="form-input" id="purchaseSearchInput" placeholder="Search doc, supplier..." onkeyup="if(window.filterPurchaseDocuments) window.filterPurchaseDocuments()" style="width: 160px; padding: 0.35rem 0.5rem;">
                 </div>
                 
-                <!-- Search Bar -->
-                <div style="margin-bottom: 1.5rem;">
-                    <input type="text" 
-                           class="form-input" 
-                           id="purchaseSearchInput" 
-                           placeholder="Search by document number, supplier, reference..."
-                           onkeyup="if(window.filterPurchaseDocuments) window.filterPurchaseDocuments()"
-                           style="width: 100%; max-width: 500px; padding: 0.75rem;">
-                </div>
-                
-                <!-- Table Container with Headers (ALWAYS rendered) -->
-                <div class="table-container" style="max-height: calc(100vh - 400px); overflow-y: auto; position: relative;">
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <thead style="position: sticky; top: 0; background: white; z-index: 20; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div class="table-container" style="max-height: calc(100vh - 180px); overflow: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem;">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 10; box-shadow: 0 1px 2px rgba(0,0,0,0.06);">
                             <tr>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">DocNumber</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">DocDate</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">DocAmt</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Currency</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Acct</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">AcctRef</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">AcctName</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Branch</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Status</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">User</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Actions</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">DocNumber</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">DocDate</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">DocAmt</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Currency</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Acct</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">AcctRef</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">AcctName</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Branch</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Status</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">User</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="purchaseOrdersTableBody">
-                            <!-- Loading state in tbody -->
                             <tr>
-                                <td colspan="11" style="padding: 3rem; text-align: center;">
-                                    <div class="spinner" style="margin: 0 auto 1rem;"></div>
+                                <td colspan="11" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
+                                    <div class="spinner" style="margin: 0 auto 0.5rem;"></div>
                                     <p style="color: var(--text-secondary);">Loading documents...</p>
                                 </td>
                             </tr>
@@ -251,6 +250,10 @@ function renderPurchaseOrdersShell() {
             </div>
         </div>
     `;
+    const fromEl = document.getElementById('filterDateFrom');
+    const toEl = document.getElementById('filterDateTo');
+    if (fromEl) fromEl.value = orderFrom;
+    if (toEl) toEl.value = orderTo;
     
     console.log('✅ Purchase Orders shell rendered - page structure is now visible');
 }
@@ -302,15 +305,30 @@ function renderPurchaseOrdersTableBody() {
         return;
     }
     
-    // Empty state: Show in tbody as a row
-    if (purchaseDocuments.length === 0) {
+    const userFilterEl = document.getElementById('purchaseOrdersUserFilter');
+    const userFilter = (userFilterEl && userFilterEl.value) ? userFilterEl.value : purchaseOrdersUserFilter;
+    const searchTerm = (document.getElementById('purchaseSearchInput')?.value || '').trim().toLowerCase();
+    let list = purchaseDocuments.slice();
+    if (userFilter === 'self' && typeof CONFIG !== 'undefined' && CONFIG.USER_ID) {
+        const uid = String(CONFIG.USER_ID);
+        list = list.filter(doc => doc && (String(doc.created_by || '') === uid));
+    }
+    if (searchTerm) {
+        list = list.filter(doc => {
+            const num = String(doc.order_number || doc.invoice_number || '').toLowerCase();
+            const sup = String(doc.supplier_name || '').toLowerCase();
+            const ref = String(doc.reference || '').toLowerCase();
+            return num.includes(searchTerm) || sup.includes(searchTerm) || ref.includes(searchTerm);
+        });
+    }
+    
+    if (list.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="10" style="padding: 3rem; text-align: center;">
-                    <i class="fas fa-file-invoice" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
-                    <p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">No purchase orders found</p>
-                    <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">Get started by creating your first purchase order</p>
-                    <button class="btn btn-primary" onclick="if(window.createNewPurchaseOrder) window.createNewPurchaseOrder()">
+                <td colspan="11" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
+                    <i class="fas fa-file-invoice" style="font-size: 2rem; color: var(--text-secondary);"></i>
+                    <p style="color: var(--text-secondary); margin: 0.5rem 0;">No purchase orders found</p>
+                    <button class="btn btn-primary btn-sm" onclick="if(window.createNewPurchaseOrder) window.createNewPurchaseOrder()">
                         <i class="fas fa-plus"></i> Create Your First Purchase Order
                     </button>
                 </td>
@@ -319,9 +337,8 @@ function renderPurchaseOrdersTableBody() {
         return;
     }
     
-    // Render data rows
     const docType = 'order';
-    const formattedDocs = purchaseDocuments.map(doc => ({
+    const formattedDocs = list.map(doc => ({
         docNumber: doc.order_number || doc.invoice_number || doc.grn_no || '—',
         docDate: doc.order_date || doc.invoice_date || doc.date_received || new Date(),
         docAmt: parseFloat(doc.total_amount || doc.total_inclusive || doc.total_cost || 0),
@@ -349,47 +366,24 @@ function renderPurchaseOrdersTableBody() {
             : `event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}'); return false;`;
         return `
             <tr style="cursor: pointer;" onclick="${rowClickHandler}">
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    <strong style="color: var(--primary-color); cursor: pointer; text-decoration: underline;" 
-                            onclick="${linkClickHandler}"
-                            onmouseover="this.style.textDecoration='underline'; this.style.color='var(--primary-dark, #0056b3)'"
-                            onmouseout="this.style.color='var(--primary-color)'">
-                        ${doc.docNumber}
-                    </strong>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">
+                    <strong style="color: var(--primary-color); cursor: pointer; text-decoration: underline; font-size: 0.8rem;" onclick="${linkClickHandler}">${doc.docNumber}</strong>
                 </td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    ${formatDate(doc.docDate)}
-                </td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    <strong>${formatCurrency(doc.docAmt)}</strong>
-                </td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.currency}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.acct}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.acctRef}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.acctName}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.branch}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    <span class="badge ${statusClass}">${statusText}</span>
-                </td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    ${doc.doneBy || '—'}
-                </td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')" title="View">
-                        <i class="fas fa-eye"></i>
-                    </button>
-                    ${statusText === 'APPROVED' ? `
-                    <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.downloadPurchaseOrderPdf) window.downloadPurchaseOrderPdf('${doc.id}')" title="Download PDF">
-                        <i class="fas fa-file-pdf"></i>
-                    </button>
-                    ` : ''}
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${formatDate(doc.docDate)}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);"><strong>${formatCurrency(doc.docAmt)}</strong></td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${doc.currency}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${doc.acct}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${doc.acctRef}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${doc.acctName}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${doc.branch}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);"><span class="badge ${statusClass}" style="font-size: 0.7rem;">${statusText}</span></td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${doc.doneBy || '—'}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">
+                    <button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', '${docType}')" title="View"><i class="fas fa-eye"></i></button>
+                    ${statusText === 'APPROVED' ? `<button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.downloadPurchaseOrderPdf) window.downloadPurchaseOrderPdf('${doc.id}')" title="PDF"><i class="fas fa-file-pdf"></i></button>` : ''}
                     ${statusText === 'PENDING' ? `
-                    <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.editPurchaseDocument) window.editPurchaseDocument('${doc.id}', '${docType}')" title="Edit">
-                        <i class="fas fa-edit"></i>
-                    </button>
-                    <button class="btn btn-outline btn-danger" onclick="event.stopPropagation(); if(window.deletePurchaseOrder) window.deletePurchaseOrder('${doc.id}')" title="Delete">
-                        <i class="fas fa-trash"></i>
-                    </button>
+                    <button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.editPurchaseDocument) window.editPurchaseDocument('${doc.id}', '${docType}')" title="Edit"><i class="fas fa-edit"></i></button>
+                    <button class="btn btn-outline btn-danger btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.deletePurchaseOrder) window.deletePurchaseOrder('${doc.id}')" title="Delete"><i class="fas fa-trash"></i></button>
                     ` : ''}
                 </td>
             </tr>
@@ -509,27 +503,19 @@ function renderSupplierInvoicesShell() {
     
     page.innerHTML = `
         <div class="card">
-            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
-                <h3 class="card-title" style="margin: 0; font-size: 1.5rem;">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0; font-size: 1.1rem;">
                     <i class="fas fa-file-invoice-dollar"></i> Supplier Invoices
-                    <span style="font-size: 0.875rem; color: var(--text-secondary); margin-left: 0.5rem; font-weight: normal;">
-                        (Receiving Documents - Add Stock)
-                    </span>
+                    <span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 0.35rem; font-weight: normal;">(Receiving - Add Stock)</span>
                 </h3>
-                <div style="display: flex; gap: 0.5rem;">
-                    <button class="btn btn-outline" onclick="if(window.showPurchaseFilters) window.showPurchaseFilters()">
-                        <i class="fas fa-filter"></i> Filters
-                    </button>
-                    <button class="btn btn-primary" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()">
-                        <i class="fas fa-plus"></i> New Supplier Invoice
-                    </button>
-                </div>
+                <button class="btn btn-primary btn-sm" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()">
+                    <i class="fas fa-plus"></i> New Supplier Invoice
+                </button>
             </div>
             
-            <div class="card-body" style="padding: 1.5rem;">
-                <div style="margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: 1rem; background: #f8f9fa; border-radius: 0.5rem;">
-                    <label style="font-weight: 500;">Date:</label>
-                    <select id="supplierInvoicesDateFilter" class="form-input" style="width: 160px;" onchange="if(window.toggleSupplierInvoicesCustomDates) window.toggleSupplierInvoicesCustomDates()">
+            <div class="card-body" style="padding: 0.5rem 0.75rem;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
+                    <select id="supplierInvoicesDateFilter" class="form-input" style="width: 120px; padding: 0.35rem 0.5rem;" onchange="if(window.toggleSupplierInvoicesCustomDates) window.toggleSupplierInvoicesCustomDates()">
                         <option value="today" ${supplierInvoicesDateFilter === 'today' ? 'selected' : ''}>Today</option>
                         <option value="yesterday" ${supplierInvoicesDateFilter === 'yesterday' ? 'selected' : ''}>Yesterday</option>
                         <option value="this_week" ${supplierInvoicesDateFilter === 'this_week' ? 'selected' : ''}>This Week</option>
@@ -540,45 +526,42 @@ function renderSupplierInvoicesShell() {
                         <option value="last_year" ${supplierInvoicesDateFilter === 'last_year' ? 'selected' : ''}>Last Year</option>
                         <option value="custom" ${supplierInvoicesDateFilter === 'custom' ? 'selected' : ''}>Custom</option>
                     </select>
-                    <div id="supplierInvoicesCustomDateRange" style="display: ${supplierInvoicesDateFilter === 'custom' ? 'flex' : 'none'}; gap: 0.5rem; align-items: center;">
-                        <label style="font-weight: 500; min-width: 50px;">From:</label>
-                        <input type="date" class="form-input" id="filterDateFrom" value="${today}" style="width: 150px;">
-                        <label style="font-weight: 500; min-width: 30px;">To:</label>
-                        <input type="date" class="form-input" id="filterDateTo" value="${today}" style="width: 150px;">
+                    <div id="supplierInvoicesCustomDateRange" style="display: ${supplierInvoicesDateFilter === 'custom' ? 'flex' : 'none'}; gap: 0.35rem; align-items: center;">
+                        <input type="date" class="form-input" id="filterDateFrom" value="${today}" style="width: 120px; padding: 0.35rem 0.5rem;">
+                        <span>-</span>
+                        <input type="date" class="form-input" id="filterDateTo" value="${today}" style="width: 120px; padding: 0.35rem 0.5rem;">
                     </div>
-                    <button id="applyDateFilterBtn" class="btn btn-primary" onclick="if(window.applyDateFilter) window.applyDateFilter()">
+                    <button id="applyDateFilterBtn" class="btn btn-primary btn-sm" onclick="if(window.applyDateFilter) window.applyDateFilter()">
                         <i class="fas fa-check"></i> Apply
                     </button>
-                    <button class="btn btn-outline" onclick="if(window.clearDateFilter) window.clearDateFilter()">
+                    <button class="btn btn-outline btn-sm" onclick="if(window.clearDateFilter) window.clearDateFilter()">
                         <i class="fas fa-times"></i> Clear
                     </button>
+                    <select id="supplierInvoicesUserFilter" class="form-input" style="width: 90px; padding: 0.35rem 0.5rem;" onchange="if(window.applyDateFilter) window.applyDateFilter()" title="Show my documents or all">
+                        <option value="self" ${supplierInvoicesUserFilter === 'self' ? 'selected' : ''}>Self</option>
+                        <option value="all" ${supplierInvoicesUserFilter === 'all' ? 'selected' : ''}>All</option>
+                    </select>
+                    <input type="text" class="form-input" id="purchaseSearchInput" placeholder="Search invoice, supplier..." onkeyup="if(window.filterPurchaseDocuments) window.filterPurchaseDocuments()" style="width: 160px; padding: 0.35rem 0.5rem;">
                 </div>
                 
-                <div style="margin-bottom: 1.5rem;">
-                    <input type="text" class="form-input" id="purchaseSearchInput" 
-                           placeholder="Search by supplier invoice number, supplier..." 
-                           onkeyup="if(window.filterPurchaseDocuments) window.filterPurchaseDocuments()"
-                           style="width: 100%; max-width: 500px; padding: 0.75rem;">
-                </div>
-                
-                <div class="table-container" style="max-height: calc(100vh - 400px); overflow-y: auto; position: relative;">
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <thead style="position: sticky; top: 0; background: white; z-index: 20; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div class="table-container" style="max-height: calc(100vh - 180px); overflow: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem;">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 10; box-shadow: 0 1px 2px rgba(0,0,0,0.06);">
                             <tr>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Supplier Invoice #</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Date</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Total</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Paid</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Balance</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Supplier</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Status</th>
-                                <th style="background: white; padding: 0.75rem; border-bottom: 2px solid var(--border-color); font-weight: 600; text-align: left;">Actions</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Supplier Invoice #</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Date</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Total</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Paid</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Balance</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Supplier</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Status</th>
+                                <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="supplierInvoicesTableBody">
                             <tr>
-                                <td colspan="6" style="padding: 3rem; text-align: center;">
-                                    <div class="spinner" style="margin: 0 auto 1rem;"></div>
+                                <td colspan="9" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
+                                    <div class="spinner" style="margin: 0 auto 0.5rem;"></div>
                                     <p style="color: var(--text-secondary);">Loading supplier invoices...</p>
                                 </td>
                             </tr>
@@ -595,7 +578,7 @@ function toggleSupplierInvoicesCustomDates() {
     const sel = document.getElementById('supplierInvoicesDateFilter');
     const customRange = document.getElementById('supplierInvoicesCustomDateRange');
     if (!sel || !customRange) return;
-    supplierInvoicesDateFilter = sel.value || 'this_month';
+    supplierInvoicesDateFilter = sel.value || 'today';
     customRange.style.display = supplierInvoicesDateFilter === 'custom' ? 'flex' : 'none';
 }
 
@@ -626,13 +609,29 @@ function renderSupplierInvoicesTableBody() {
     const tbody = document.getElementById('supplierInvoicesTableBody');
     if (!tbody) return;
     
-    if (purchaseDocuments.length === 0) {
+    const userFilterEl = document.getElementById('supplierInvoicesUserFilter');
+    const userFilter = (userFilterEl && userFilterEl.value) ? userFilterEl.value : supplierInvoicesUserFilter;
+    const searchTerm = (document.getElementById('purchaseSearchInput')?.value || '').trim().toLowerCase();
+    let list = purchaseDocuments.slice();
+    if (userFilter === 'self' && typeof CONFIG !== 'undefined' && CONFIG.USER_ID) {
+        const uid = String(CONFIG.USER_ID);
+        list = list.filter(doc => doc && (String(doc.created_by || '') === uid));
+    }
+    if (searchTerm) {
+        list = list.filter(doc => {
+            const num = String(doc.invoice_number || '').toLowerCase();
+            const sup = String(doc.supplier_name || '').toLowerCase();
+            return num.includes(searchTerm) || sup.includes(searchTerm);
+        });
+    }
+    
+    if (list.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" style="padding: 3rem; text-align: center;">
-                    <i class="fas fa-file-invoice-dollar" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
-                    <p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">No supplier invoices found</p>
-                    <button class="btn btn-primary" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()">
+                <td colspan="9" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
+                    <i class="fas fa-file-invoice-dollar" style="font-size: 2rem; color: var(--text-secondary);"></i>
+                    <p style="color: var(--text-secondary); margin: 0.5rem 0;">No supplier invoices found</p>
+                    <button class="btn btn-primary btn-sm" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()">
                         <i class="fas fa-plus"></i> Create Your First Supplier Invoice
                     </button>
                 </td>
@@ -641,7 +640,7 @@ function renderSupplierInvoicesTableBody() {
         return;
     }
     
-    tbody.innerHTML = purchaseDocuments.map(doc => {
+    tbody.innerHTML = list.map(doc => {
         const docStatus = doc.status || 'DRAFT';
         const paymentStatus = doc.payment_status || 'UNPAID';
         const total = parseFloat(doc.total_inclusive || doc.total_amount || 0);
@@ -655,36 +654,23 @@ function renderSupplierInvoicesTableBody() {
         
         return `
             <tr style="cursor: pointer;" onclick="if(window.viewSupplierInvoice) window.viewSupplierInvoice('${doc.id}')">
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    <a href="#" onclick="event.stopPropagation(); if(window.viewSupplierInvoice) window.viewSupplierInvoice('${doc.id}'); return false;" 
-                       style="color: var(--primary-color); font-weight: 600; text-decoration: none;">
-                        ${doc.invoice_number || '—'}
-                    </a>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">
+                    <a href="#" onclick="event.stopPropagation(); if(window.viewSupplierInvoice) window.viewSupplierInvoice('${doc.id}'); return false;" style="color: var(--primary-color); font-weight: 600; text-decoration: none; font-size: 0.8rem;">${doc.invoice_number || '—'}</a>
                 </td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatDate(doc.invoice_date || doc.created_at)}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong>${formatCurrency(total)}</strong></td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatCurrency(paid)}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong style="color: ${balance > 0 ? 'var(--danger-color)' : 'var(--success-color)'}">${formatCurrency(balance)}</strong></td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.supplier_name || '—'}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    <span class="badge ${docStatusClass}" title="Document: ${docStatus}">${docStatus}</span>
-                    <span class="badge ${paymentStatusClass}" title="Payment: ${paymentStatus}" style="margin-left: 0.25rem;">${paymentStatus}</span>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${formatDate(doc.invoice_date || doc.created_at)}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);"><strong>${formatCurrency(total)}</strong></td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${formatCurrency(paid)}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);"><strong style="color: ${balance > 0 ? 'var(--danger-color)' : 'var(--success-color)'}">${formatCurrency(balance)}</strong></td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">${doc.supplier_name || '—'}</td>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">
+                    <span class="badge ${docStatusClass}" style="font-size: 0.7rem;">${docStatus}</span>
+                    <span class="badge ${paymentStatusClass}" style="margin-left: 0.2rem; font-size: 0.7rem;">${paymentStatus}</span>
                 </td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                    ${docStatus === 'DRAFT' ? `
-                        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); if(window.batchSupplierInvoice) window.batchSupplierInvoice('${doc.id}', this)" title="Batch Invoice (Add Stock)">
-                            <i class="fas fa-boxes"></i> Batch
-                        </button>
-                    ` : ''}
-                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.updateInvoicePayment) window.updateInvoicePayment('${doc.id}', ${total}, ${paid})" title="Update Payment">
-                        <i class="fas fa-money-bill-wave"></i>
-                    </button>
-                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'invoice')" title="View">
-                        <i class="fas fa-eye"></i>
-                    </button>
-                    <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${doc.id}', '${String(doc.invoice_number || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="Download PDF">
-                        <i class="fas fa-file-pdf"></i>
-                    </button>
+                <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">
+                    ${docStatus === 'DRAFT' ? `<button class="btn btn-primary btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.batchSupplierInvoice) window.batchSupplierInvoice('${doc.id}', this)" title="Batch"><i class="fas fa-boxes"></i></button>` : ''}
+                    <button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.updateInvoicePayment) window.updateInvoicePayment('${doc.id}', ${total}, ${paid})" title="Payment"><i class="fas fa-money-bill-wave"></i></button>
+                    <button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'invoice')" title="View"><i class="fas fa-eye"></i></button>
+                    <button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${doc.id}', '${String(doc.invoice_number || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="PDF"><i class="fas fa-file-pdf"></i></button>
                 </td>
             </tr>
         `;
@@ -1020,6 +1006,25 @@ function applyPurchaseFilters() {
 
 // Apply date filter (uses new pattern - only updates tbody)
 async function applyDateFilter() {
+    if (currentPurchaseSubPage === 'orders') {
+        const presetEl = document.getElementById('purchaseOrdersDateFilter');
+        if (presetEl) purchaseOrdersDateFilter = presetEl.value || 'today';
+        const userEl = document.getElementById('purchaseOrdersUserFilter');
+        if (userEl) purchaseOrdersUserFilter = userEl.value || 'self';
+        if (purchaseOrdersDateFilter !== 'custom') {
+            const range = getSupplierInvoicesDateRange(purchaseOrdersDateFilter);
+            if (range) {
+                const fromEl = document.getElementById('filterDateFrom');
+                const toEl = document.getElementById('filterDateTo');
+                if (fromEl) fromEl.value = range.dateFrom;
+                if (toEl) toEl.value = range.dateTo;
+            }
+        }
+    }
+    if (currentPurchaseSubPage === 'invoices') {
+        const userEl = document.getElementById('supplierInvoicesUserFilter');
+        if (userEl) supplierInvoicesUserFilter = userEl.value || 'self';
+    }
     const docType = currentPurchaseSubPage === 'orders' ? 'order' : 
                    currentPurchaseSubPage === 'invoices' ? 'invoice' : 'credit-note';
     const applyBtn = document.getElementById('applyDateFilterBtn');
@@ -1060,15 +1065,46 @@ function clearDateFilter() {
     const dateToInput = document.getElementById('filterDateTo');
     if (dateFromInput) dateFromInput.value = today;
     if (dateToInput) dateToInput.value = today;
-    // On Supplier Invoices page, reset preset to This Month
+    if (currentPurchaseSubPage === 'orders') {
+        purchaseOrdersDateFilter = 'today';
+        purchaseOrdersUserFilter = 'self';
+        const orderPresetEl = document.getElementById('purchaseOrdersDateFilter');
+        if (orderPresetEl) orderPresetEl.value = 'today';
+        const orderCustomRange = document.getElementById('purchaseOrdersCustomDateRange');
+        if (orderCustomRange) orderCustomRange.style.display = 'none';
+        const orderUserEl = document.getElementById('purchaseOrdersUserFilter');
+        if (orderUserEl) orderUserEl.value = 'self';
+    }
     const presetEl = document.getElementById('supplierInvoicesDateFilter');
     if (presetEl) {
-        supplierInvoicesDateFilter = 'this_month';
-        presetEl.value = 'this_month';
+        supplierInvoicesDateFilter = 'today';
+        presetEl.value = 'today';
         const customRange = document.getElementById('supplierInvoicesCustomDateRange');
         if (customRange) customRange.style.display = 'none';
     }
+    const userEl = document.getElementById('supplierInvoicesUserFilter');
+    if (userEl) {
+        supplierInvoicesUserFilter = 'self';
+        userEl.value = 'self';
+    }
     applyDateFilter();
+}
+
+function togglePurchaseOrdersCustomDates() {
+    const sel = document.getElementById('purchaseOrdersDateFilter');
+    const customRange = document.getElementById('purchaseOrdersCustomDateRange');
+    if (!sel || !customRange) return;
+    purchaseOrdersDateFilter = sel.value || 'today';
+    customRange.style.display = purchaseOrdersDateFilter === 'custom' ? 'flex' : 'none';
+    if (purchaseOrdersDateFilter !== 'custom') {
+        const range = getSupplierInvoicesDateRange(purchaseOrdersDateFilter);
+        if (range) {
+            const fromEl = document.getElementById('filterDateFrom');
+            const toEl = document.getElementById('filterDateTo');
+            if (fromEl) fromEl.value = range.dateFrom;
+            if (toEl) toEl.value = range.dateTo;
+        }
+    }
 }
 
 // Create new Purchase Order (Navigate to create page)
@@ -3512,6 +3548,7 @@ if (typeof window !== 'undefined') {
     window.createSupplier = createSupplier;
     window.applyDateFilter = applyDateFilter;
     window.clearDateFilter = clearDateFilter;
+    window.togglePurchaseOrdersCustomDates = togglePurchaseOrdersCustomDates;
     window.toggleSupplierInvoicesCustomDates = toggleSupplierInvoicesCustomDates;
     window.applyPurchaseFilters = applyPurchaseFilters;
     window.renderSuppliersPage = renderSuppliersPage;

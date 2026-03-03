@@ -797,16 +797,22 @@ def admin_create_user(
     db.add(new_user)
     db.flush()
     role = get_role_by_name(body.role_name, db)
-    if body.branch_id:
-        branch = db.query(Branch).filter(Branch.id == body.branch_id).first()
+    company_id = get_effective_company_id_for_user(db, current_user)
+    # Assign role to a branch so the user appears in the company user list (same as create_user)
+    branch_id_to_assign = body.branch_id
+    if not branch_id_to_assign and company_id:
+        first_branch = db.query(Branch).filter(Branch.company_id == company_id).limit(1).first()
+        if first_branch:
+            branch_id_to_assign = first_branch.id
+    if branch_id_to_assign:
+        branch = db.query(Branch).filter(Branch.id == branch_id_to_assign).first()
         if not branch:
             db.rollback()
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
-        company_id = get_effective_company_id_for_user(db, current_user)
         if company_id and branch.company_id != company_id:
             db.rollback()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot assign user to a branch in another company")
-        db.add(UserBranchRole(user_id=new_user.id, branch_id=body.branch_id, role_id=role.id))
+        db.add(UserBranchRole(user_id=new_user.id, branch_id=branch_id_to_assign, role_id=role.id))
     db.commit()
     db.refresh(new_user)
     # Minimal audit log (no event bus or framework)

@@ -800,6 +800,8 @@ const API = {
          */
         get: (userId, params = {}) => api.get(`/api/users/${userId}`, params),
         create: (data) => api.post('/api/users', data),
+        /** Create user with password; returns username + temporary_password for admin to share (e.g. via SMS). */
+        adminCreate: (data) => api.post('/api/users/admin-create', data),
         update: (userId, data) => api.put(`/api/users/${userId}`, data),
         uploadSignature: (userId, file) => {
             const formData = new FormData();
