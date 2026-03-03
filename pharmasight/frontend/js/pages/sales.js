@@ -903,101 +903,41 @@ async function renderCreateSalesInvoicePage() {
     `;
     
     page.innerHTML = `
-        <div class="card">
-            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid var(--border-color);">
-                <h3 class="card-title" style="margin: 0; font-size: 1.5rem;">
+        <div class="card sales-invoice-transaction-page" style="margin-bottom: 0; padding: 0; display: flex; flex-direction: column; max-height: calc(100vh - 6rem); box-shadow: none; border: 1px solid var(--border-color);">
+            <!-- Compact transaction bar: title + actions inline -->
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); flex-shrink: 0;">
+                <h3 class="card-title" style="margin: 0; font-size: 1rem; font-weight: 600;">
                     <i class="fas fa-file-invoice-dollar"></i> ${isEditMode ? 'Edit' : 'Create'} Sales Invoice
                     ${isEditMode && invoiceData?.invoice_no ? `: ${invoiceData.invoice_no}` : ''}
                 </h3>
                 ${topButtonsHtml}
             </div>
             
-            <div class="card-body" style="padding: 1.5rem;">
-                <form id="salesInvoiceForm" onsubmit="event.preventDefault(); if(currentInvoice && currentInvoice.id) saveSalesInvoice(event);">
-                    <!-- Document Header -->
-                    <div style="margin-bottom: 1.5rem; padding: 1rem; background: #f8f9fa; border-radius: 0.5rem;">
-                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">
-                            <div class="form-group" style="margin: 0;">
-                                <label class="form-label" style="font-weight: 600;">Date *</label>
-                                <input type="date" class="form-input" name="invoice_date" 
-                                       value="${invoiceDate}" required>
-                            </div>
-                            <div class="form-group" style="margin: 0;">
-                                <label class="form-label" style="font-weight: 600;">Customer</label>
-                                <input type="text" class="form-input" name="customer_name" 
-                                       value="${invoiceData?.customer_name || ''}"
-                                       placeholder="Customer name (optional)">
-                            </div>
-                            <div class="form-group" style="margin: 0;">
-                                <label class="form-label" style="font-weight: 600;">Customer PIN</label>
-                                <input type="text" class="form-input" name="customer_pin" 
-                                       value="${invoiceData?.customer_pin || ''}"
-                                       placeholder="Customer PIN (optional)">
-                            </div>
-                            <div class="form-group" style="margin: 0;">
-                                <label class="form-label" style="font-weight: 600;">Customer Phone</label>
-                                <input type="text" class="form-input" name="customer_phone" 
-                                       id="customerPhoneInput"
-                                       value="${invoiceData?.customer_phone || ''}"
-                                       placeholder="Phone number (required for credit)">
-                            </div>
-                        </div>
-                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem;">
-                            <div class="form-group" style="margin: 0;">
-                                <label class="form-label" style="font-weight: 600;">Sales Type *</label>
-                                <select class="form-select" name="sales_type" id="salesTypeSelect" onchange="handleSalesTypeChange()">
-                                    <option value="RETAIL" ${invoiceData?.sales_type === 'RETAIL' || !invoiceData?.sales_type ? 'selected' : ''}>Retail (Customers)</option>
-                                    <option value="WHOLESALE" ${invoiceData?.sales_type === 'WHOLESALE' ? 'selected' : ''}>Wholesale (Pharmacies)</option>
-                                    <option value="SUPPLIER" ${invoiceData?.sales_type === 'SUPPLIER' ? 'selected' : ''}>Supplier</option>
-                                </select>
-                            </div>
-                            <div class="form-group" style="margin: 0;">
-                                <label class="form-label" style="font-weight: 600;">Payment Mode *</label>
-                                <select class="form-select" name="payment_mode" id="paymentModeSelect" onchange="handlePaymentModeChange()">
-                                    <option value="cash" ${invoiceData?.payment_mode === 'cash' ? 'selected' : ''}>Cash</option>
-                                    <option value="card" ${invoiceData?.payment_mode === 'card' ? 'selected' : ''}>Card</option>
-                                    <option value="mpesa" ${invoiceData?.payment_mode === 'mpesa' ? 'selected' : ''}>M-Pesa</option>
-                                    <option value="credit" ${invoiceData?.payment_mode === 'credit' ? 'selected' : ''}>Credit</option>
-                                </select>
-                                <small id="creditPaymentWarning" style="display: none; color: var(--danger-color); margin-top: 0.25rem;">
-                                    <i class="fas fa-exclamation-triangle"></i> Credit payment requires customer name and phone number
-                                </small>
-                            </div>
-                            <div class="form-group" style="margin: 0;">
-                                <label class="form-label" style="font-weight: 600;">Notes</label>
-                                <input type="text" class="form-input" name="notes" 
-                                       placeholder="Additional notes">
-                            </div>
-                        </div>
+            <div style="padding: 0.5rem 0.75rem; flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                <form id="salesInvoiceForm" onsubmit="event.preventDefault(); if(currentInvoice && currentInvoice.id) saveSalesInvoice(event);" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
+                    <!-- Metadata: tight grid, max 2 rows, inline labels -->
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.25rem 0.75rem; align-items: center; margin-bottom: 0.5rem; flex-shrink: 0;">
+                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Date *</label><input type="date" class="form-input" name="invoice_date" value="${invoiceDate}" required style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
+                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Customer</label><input type="text" class="form-input" name="customer_name" value="${invoiceData?.customer_name || ''}" placeholder="Name (optional)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
+                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">PIN</label><input type="text" class="form-input" name="customer_pin" value="${invoiceData?.customer_pin || ''}" placeholder="PIN" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
+                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Phone</label><input type="text" class="form-input" name="customer_phone" id="customerPhoneInput" value="${invoiceData?.customer_phone || ''}" placeholder="Phone (credit)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
+                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Sales Type</label><select class="form-select" name="sales_type" id="salesTypeSelect" onchange="handleSalesTypeChange()" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"><option value="RETAIL" ${invoiceData?.sales_type === 'RETAIL' || !invoiceData?.sales_type ? 'selected' : ''}>Retail</option><option value="WHOLESALE" ${invoiceData?.sales_type === 'WHOLESALE' ? 'selected' : ''}>Wholesale</option><option value="SUPPLIER" ${invoiceData?.sales_type === 'SUPPLIER' ? 'selected' : ''}>Supplier</option></select></div>
+                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Payment</label><select class="form-select" name="payment_mode" id="paymentModeSelect" onchange="handlePaymentModeChange()" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"><option value="cash" ${invoiceData?.payment_mode === 'cash' ? 'selected' : ''}>Cash</option><option value="card" ${invoiceData?.payment_mode === 'card' ? 'selected' : ''}>Card</option><option value="mpesa" ${invoiceData?.payment_mode === 'mpesa' ? 'selected' : ''}>M-Pesa</option><option value="credit" ${invoiceData?.payment_mode === 'credit' ? 'selected' : ''}>Credit</option></select><small id="creditPaymentWarning" style="display: none; color: var(--danger-color); font-size: 0.7rem; margin-left: 0.25rem;"><i class="fas fa-exclamation-triangle"></i> Name &amp; phone required</small></div>
+                        <div style="display: flex; align-items: center; gap: 0.35rem; grid-column: span 2;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Notes</label><input type="text" class="form-input" name="notes" value="${invoiceData?.notes || ''}" placeholder="Additional notes" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
                     </div>
                     
-                    <!-- Transaction Items Table and Summary -->
-                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
-                        <div>
+                    <!-- Items table + compact summary: proportional layout, no sticky-first -->
+                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 0.75rem; flex: 1; min-height: 0;">
+                        <div id="salesInvoiceItemsWrapper" style="min-height: 0; overflow: auto;">
                             <div id="salesInvoiceItemsContainer">
                                 <!-- TransactionItemsTable component will render here -->
                             </div>
                         </div>
-                        <div>
-                            <div class="card" style="position: sticky; top: 1rem;">
-                                <div class="card-header" style="padding: 1rem; border-bottom: 1px solid var(--border-color);">
-                                    <h4 style="margin: 0; font-size: 1.1rem;">Invoice Summary</h4>
-                                </div>
-                                <div class="card-body" style="padding: 1rem;">
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                        <span style="font-weight: 500;">Net:</span>
-                                        <strong id="invoiceSummaryNett">Ksh 0.00</strong>
-                                    </div>
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                        <span style="font-weight: 500;">VAT:</span>
-                                        <strong id="invoiceSummaryVat">Ksh 0.00</strong>
-                                    </div>
-                                    <div style="display: flex; justify-content: space-between; padding-top: 0.75rem; border-top: 2px solid var(--border-color);">
-                                        <span style="font-weight: 600; font-size: 1.1rem;">Total:</span>
-                                        <strong id="invoiceSummaryTotal" style="font-size: 1.2rem; color: var(--primary-color);">Ksh 0.00</strong>
-                                    </div>
-                                </div>
-                            </div>
+                        <div style="flex-shrink: 0; padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 0.35rem; background: var(--bg-color, #f8f9fa);">
+                            <div style="font-size: 0.8rem; font-weight: 600; margin-bottom: 0.35rem;">Summary</div>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;"><span>Net:</span><strong id="invoiceSummaryNett">Ksh 0.00</strong></div>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;"><span>VAT:</span><strong id="invoiceSummaryVat">Ksh 0.00</strong></div>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.9rem; font-weight: 600; padding-top: 0.35rem; border-top: 1px solid var(--border-color);"><span>Total:</span><strong id="invoiceSummaryTotal" style="color: var(--primary-color);">Ksh 0.00</strong></div>
                         </div>
                     </div>
                     

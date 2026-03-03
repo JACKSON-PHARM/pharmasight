@@ -852,6 +852,14 @@ body {
     color: var(--text-primary);
 }
 
+/* Sales Invoice transaction page: keep item search row visible when table scrolls (minimal sticky) */
+.sales-invoice-transaction-page .add-row-section {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: #e8f4fd;
+}
+
 /* Stats Grid */
 .stats-grid {
     display: grid;

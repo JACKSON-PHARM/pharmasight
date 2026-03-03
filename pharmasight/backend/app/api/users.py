@@ -14,7 +14,7 @@ from uuid import UUID
 import secrets
 import hashlib
 from datetime import datetime, timezone
-from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user, get_effective_company_id_for_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user, get_effective_company_id_for_user
 from sqlalchemy import text
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole, UserBranchRole
@@ -727,12 +727,12 @@ def admin_create_user(
     body: AdminCreateUserRequest,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
 ):
     """
     Create a user directly (no email invitation). Only owner or admin role.
-    Tenant is strictly from authenticated user context (token/header). tenant_id is NEVER read from request body.
-    Role check is scoped to the same tenant DB; no cross-tenant privilege.
+    Works with or without tenant (single-DB multi-company: no X-Tenant-* required).
+    Role check is scoped to the same DB; no cross-tenant privilege.
     Returns a temporary password once; user must log in and change password.
     """
     current_user, _ = current_user_and_db
@@ -815,7 +815,7 @@ def admin_create_user(
         db.add(UserBranchRole(user_id=new_user.id, branch_id=branch_id_to_assign, role_id=role.id))
     db.commit()
     db.refresh(new_user)
-    # Minimal audit log (no event bus or framework)
+    # Minimal audit log (no event bus or framework); tenant_id optional for single-DB
     try:
         request_ip = request.client.host if request.client else None
         db.execute(
@@ -827,7 +827,7 @@ def admin_create_user(
                 "action_type": "admin_create_user",
                 "performed_by": current_user.id,
                 "target_user_id": new_user.id,
-                "tenant_id": tenant.id,
+                "tenant_id": tenant.id if tenant else None,
                 "request_ip": request_ip,
             },
         )
