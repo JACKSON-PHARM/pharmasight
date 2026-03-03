@@ -264,7 +264,10 @@ def create_item(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Create a new item with 3-tier units. SKU auto-generated if not provided. Rejects duplicate names (same company)."""
+    """
+    Create a new item with 3-tier units. SKU auto-generated if not provided. Rejects duplicate names (same company).
+    Item and item_branch_snapshot are updated in a single transaction: if snapshot refresh fails, the item is not committed.
+    """
     try:
         db_item = svc_create_item(db, item)
     except DuplicateItemNameError as e:
@@ -293,11 +296,16 @@ def create_item(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # Load new item into item_branch_snapshot for all branches (same transaction) so it appears in search
-    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, db_item.company_id, db_item.id)
-    db.commit()
-    db.refresh(db_item)
-    return db_item
+    try:
+        # Same transaction: insert into item_branch_snapshot for every branch so the item appears in search.
+        # If this fails, we roll back so the item is never committed (no gaps between items and snapshot).
+        SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, db_item.company_id, db_item.id)
+        db.commit()
+        db.refresh(db_item)
+        return db_item
+    except Exception:
+        db.rollback()
+        raise
 
 
 class StockBatchRequest(BaseModel):
@@ -1314,14 +1322,14 @@ def bulk_create_items(
                         'error': str(e)
                     })
             
-            # Units are item characteristics (columns on items table only); no item_units table to insert.
-            # Load new items into item_branch_snapshot for all branches (same transaction) so they appear in search
+            # Same transaction: load each new item into item_branch_snapshot for all branches so they appear in search.
+            # If any refresh fails, the outer except will rollback the whole batch (no gaps).
             for inserted_item in inserted_items:
                 SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(
                     db, bulk_data.company_id, inserted_item.id
                 )
         
-        # Commit all at once
+        # Commit items + snapshot together; on any exception above we rollback (see except block).
         db.commit()
         
         return {
