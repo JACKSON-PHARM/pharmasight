@@ -1235,7 +1235,7 @@ def batch_supplier_invoice(
             from app.dependencies import _user_has_permission
 
             has_override = _user_has_permission(
-                db, invoice.created_by, invoice.branch_id, "inventory.cost_override"
+                db, invoice.created_by, "inventory.cost_override"
             )
             if not has_override:
                 baseline = outlier.get("baseline_cost")

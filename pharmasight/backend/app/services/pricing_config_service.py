@@ -118,9 +118,15 @@ def is_cost_outlier_vs_weighted_average(
             "threshold_pct": None,
         }
     threshold = get_cost_outlier_threshold_pct(db, company_id, branch_id)
+    # Directional deviation: we only treat costs that are **below** the weighted
+    # average as risky (potential loss). Higher-than-average costs are allowed,
+    # since they do not create a financial loss on stock valuation.
     deviation_pct = (abs(unit_cost_per_base - baseline) / baseline) * Decimal("100")
+    is_below_baseline = unit_cost_per_base < baseline
     return {
-        "is_outlier": deviation_pct > threshold,
+        # Only flag as outlier when the new cost is materially LOWER than the
+        # weighted average and exceeds the configured deviation threshold.
+        "is_outlier": is_below_baseline and deviation_pct > threshold,
         "baseline_cost": baseline,
         "deviation_pct": deviation_pct,
         "threshold_pct": threshold,

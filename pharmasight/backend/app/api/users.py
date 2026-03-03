@@ -649,14 +649,19 @@ def create_user(
     
     # Get or create role
     role = get_role_by_name(user_data.role_name, db)
+    company_id = get_effective_company_id_for_user(db, current_user)
 
-    # Assign role to branch if branch_id provided (must belong to current user's company)
-    if user_data.branch_id:
-        branch = db.query(Branch).filter(Branch.id == user_data.branch_id).first()
+    # Assign role to branch: use provided branch_id or first branch of company so user appears in list
+    branch_id_to_assign = user_data.branch_id
+    if not branch_id_to_assign and company_id:
+        first_branch = db.query(Branch).filter(Branch.company_id == company_id).limit(1).first()
+        if first_branch:
+            branch_id_to_assign = first_branch.id
+    if branch_id_to_assign:
+        branch = db.query(Branch).filter(Branch.id == branch_id_to_assign).first()
         if not branch:
             db.rollback()
             raise HTTPException(status_code=404, detail="Branch not found")
-        company_id = get_effective_company_id_for_user(db, current_user)
         if company_id and branch.company_id != company_id:
             db.rollback()
             raise HTTPException(status_code=403, detail="Cannot assign user to a branch in another company")
@@ -664,11 +669,11 @@ def create_user(
         # Create user-branch-role assignment
         user_branch_role = UserBranchRole(
             user_id=new_user.id,
-            branch_id=user_data.branch_id,
+            branch_id=branch_id_to_assign,
             role_id=role.id
         )
         db.add(user_branch_role)
-    
+
     db.commit()
     db.refresh(new_user)
     
@@ -877,20 +882,46 @@ def update_user(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Update user details (full_name, phone, is_active). Only users in same company."""
+    """Update user details (full_name, phone, is_active, role_name, branch_id). Only users in same company."""
     current_user, _ = current_user_and_db
     user = _get_user_and_verify_company(db, user_id, current_user)
 
-    # Update fields
-    update_data = user_update.model_dump(exclude_unset=True) if hasattr(user_update, 'model_dump') else user_update.dict(exclude_unset=True)
+    # Update simple fields (exclude role_name and branch_id; handle those below)
+    update_data = user_update.model_dump(exclude_unset=True) if hasattr(user_update, "model_dump") else user_update.dict(exclude_unset=True)
+    role_name = update_data.pop("role_name", None)
+    branch_id = update_data.pop("branch_id", None)
     for field, value in update_data.items():
-        setattr(user, field, value)
-    
+        if hasattr(user, field):
+            setattr(user, field, value)
+
+    # Apply role/branch: if role_name or branch_id provided, set or update UserBranchRole for that branch
+    if role_name is not None or branch_id is not None:
+        company_id = get_effective_company_id_for_user(db, current_user)
+        if branch_id:
+            branch = db.query(Branch).filter(Branch.id == branch_id).first()
+            if not branch:
+                raise HTTPException(status_code=404, detail="Branch not found")
+            if company_id and branch.company_id != company_id:
+                raise HTTPException(status_code=403, detail="Cannot assign user to a branch in another company")
+        else:
+            # branch_id not provided: use first branch of company for this user
+            if company_id:
+                first_branch = db.query(Branch).filter(Branch.company_id == company_id).limit(1).first()
+                if first_branch:
+                    branch_id = first_branch.id
+        if branch_id and role_name is not None:
+            role = get_role_by_name(role_name, db)
+            existing = db.query(UserBranchRole).filter(UserBranchRole.user_id == user_id, UserBranchRole.branch_id == branch_id).first()
+            if existing:
+                existing.role_id = role.id
+            else:
+                db.add(UserBranchRole(user_id=user_id, branch_id=branch_id, role_id=role.id))
+
     db.commit()
     db.refresh(user)
-    
-    # Return updated user with roles
-    return get_user(user_id, db)
+
+    # Return updated user with roles (call get_user with explicit current_user_and_db and db)
+    return get_user(user_id, (current_user, db), db)
 
 
 @router.patch("/users/{user_id}/activate", response_model=UserResponse)

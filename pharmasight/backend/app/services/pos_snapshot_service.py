@@ -123,11 +123,7 @@ def refresh_pos_snapshot_for_item(
     )
     current_stock = float(bal.current_stock or 0) if bal else 0
 
-    # average_cost: last purchase prioritized (same as search cost logic), then weighted avg, then default
-    cost = CanonicalPricingService.get_best_available_cost(db, item_id, branch_id, company_id)
-    average_cost = float(cost) if cost is not None else None
-
-    # last_purchase_price from snapshot
+    # last_purchase_price from snapshot (updated by GRN, supplier invoice, and manual stock adjustment)
     snap = (
         db.query(ItemBranchPurchaseSnapshot.last_purchase_price)
         .filter(
@@ -138,6 +134,11 @@ def refresh_pos_snapshot_for_item(
         .first()
     )
     last_purchase_price = float(snap.last_purchase_price) if snap and snap.last_purchase_price is not None else None
+
+    # average_cost: prefer last_purchase_price so search shows the cost just keyed (adjustment or purchase);
+    # else get_best_available_cost (weighted avg / opening / default). This ensures manual adjustment cost appears in search.
+    cost = CanonicalPricingService.get_best_available_cost(db, item_id, branch_id, company_id)
+    average_cost = float(last_purchase_price) if last_purchase_price is not None else (float(cost) if cost is not None else None)
 
     # selling_price and margin_percent from pricing logic; enforce floor_price_retail minimum
     margin_percent = PricingService.get_markup_percent(db, item_id, company_id)

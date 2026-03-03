@@ -73,6 +73,8 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
     ppb_number: Optional[str] = None
     designation: Optional[str] = None
+    role_name: Optional[str] = None
+    branch_id: Optional[UUID] = None
 
 
 class UserResponse(BaseModel):

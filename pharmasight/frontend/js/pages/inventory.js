@@ -1509,6 +1509,16 @@ async function submitAdjustStock(itemId) {
     } catch (err) {
         const data = err.data || err.response?.data || {};
         const detail = data.detail;
+        const isCostOutlier403 = err.status === 403 && (
+            (detail && typeof detail === 'object' && detail.code === 'COST_OUTLIER_OVERRIDE_REQUIRED') ||
+            (typeof detail === 'string' && detail.indexOf('Manager override') !== -1)
+        );
+        if (isCostOutlier403 && typeof showCostOverrideModal === 'function') {
+            const message = (detail && typeof detail === 'object' && detail.message) ? detail.message : (typeof detail === 'string' ? detail : 'Manager override required.');
+            showCostOverrideModal(message, itemId, payload, submitBtn);
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Apply adjustment'; }
+            return;
+        }
         if (detail && typeof detail === 'object' && detail.code === 'PRICE_CONFIRMATION_REQUIRED') {
             const confirmSection = document.getElementById('adjustStockConfirmSection');
             const confirmMsg = document.getElementById('adjustStockConfirmMessage');
@@ -1546,6 +1556,87 @@ async function submitAdjustStock(itemId) {
             submitBtn.textContent = 'Apply adjustment';
         }
     }
+}
+
+/**
+ * Show modal for manager override when cost is below average (cost-outlier).
+ * Manager enters email/username and password; we login with their token and retry adjust-stock.
+ */
+function showCostOverrideModal(message, itemId, payload, adjustSubmitBtn) {
+    const tenant = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain')) || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain')) || '';
+    const content = `
+        <div class="alert alert-warning" style="margin-bottom: 1rem;">
+            <i class="fas fa-exclamation-triangle"></i> ${escapeHtml(message)}
+        </div>
+        <p style="margin-bottom: 1rem;">Enter a manager or admin account that has permission to override cost. They will authorize this adjustment only; your session stays the same.</p>
+        <div class="form-group">
+            <label>Manager email or username</label>
+            <input type="text" id="overrideManagerUsername" class="form-input" placeholder="email or username" autocomplete="username">
+        </div>
+        <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="overrideManagerPassword" class="form-input" placeholder="Password" autocomplete="current-password">
+        </div>
+        <div id="overrideError" style="display:none; margin-top:0.5rem; padding:0.5rem; background:var(--danger-bg,#f8d7da); color:var(--danger-color,#721c24); border-radius:4px;"></div>
+    `;
+    const footer = `
+        <button type="button" class="btn btn-outline" onclick="closeCostOverrideModal()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="costOverrideAuthorizeBtn"><i class="fas fa-unlock-alt"></i> Authorize</button>
+    `;
+    if (typeof showModal === 'function') {
+        showModal('Manager override required', content, footer);
+    } else {
+        document.getElementById('modalOverlay').style.display = 'flex';
+        document.getElementById('modal').innerHTML = '<div class="modal-header"><h3>Manager override required</h3><button class="modal-close" onclick="closeCostOverrideModal()"><i class="fas fa-times"></i></button></div><div class="modal-body">' + content + '</div><div class="modal-footer">' + footer + '</div>';
+    }
+    const btn = document.getElementById('costOverrideAuthorizeBtn');
+    if (btn) {
+        btn.onclick = async function () {
+            const username = document.getElementById('overrideManagerUsername') && document.getElementById('overrideManagerUsername').value.trim();
+            const password = document.getElementById('overrideManagerPassword') && document.getElementById('overrideManagerPassword').value;
+            const errEl = document.getElementById('overrideError');
+            if (!username || !password) {
+                if (errEl) { errEl.style.display = 'block'; errEl.textContent = 'Please enter manager email/username and password.'; }
+                return;
+            }
+            if (errEl) errEl.style.display = 'none';
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Authorizing...';
+            try {
+                const loginBody = { username: username, password: password };
+                if (tenant) loginBody.tenant = tenant;
+                const loginRes = await API.auth.usernameLogin(loginBody);
+                const token = loginRes && loginRes.access_token;
+                if (!token) {
+                    if (errEl) { errEl.style.display = 'block'; errEl.textContent = 'Login succeeded but no token received.'; }
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fas fa-unlock-alt"></i> Authorize';
+                    return;
+                }
+                await API.items.adjustStockWithOverrideToken(itemId, payload, token);
+                if (typeof closeCostOverrideModal === 'function') closeCostOverrideModal();
+                if (typeof closeModal === 'function') closeModal();
+                const msg = (loginRes && loginRes.message) ? loginRes.message : 'Stock adjusted successfully with manager override.';
+                if (typeof showToast === 'function') showToast(msg || 'Stock adjusted successfully.', 'success');
+                else alert(msg || 'Stock adjusted successfully.');
+                if (typeof filterItems === 'function') filterItems();
+            } catch (e) {
+                const errMsg = (e.data && e.data.detail && (typeof e.data.detail === 'string' ? e.data.detail : e.data.detail.message)) || e.message || 'Authorization failed.';
+                if (errEl) { errEl.style.display = 'block'; errEl.textContent = errMsg; }
+                if (typeof showToast === 'function') showToast(errMsg, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-unlock-alt"></i> Authorize';
+            }
+        };
+    }
+    window._costOverrideModalOpen = true;
+}
+
+function closeCostOverrideModal() {
+    window._costOverrideModalOpen = false;
+    if (typeof closeModal === 'function') closeModal();
+    else if (document.getElementById('modalOverlay')) document.getElementById('modalOverlay').style.display = 'none';
 }
 
 // ============================================

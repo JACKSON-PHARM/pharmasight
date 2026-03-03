@@ -290,6 +290,29 @@ const API = {
         delete: (itemId) => api.delete(`${CONFIG.API_ENDPOINTS.items}/${itemId}`),
         hasTransactions: (itemId, branchId) => api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/has-transactions`, { branch_id: branchId }),
         adjustStock: (itemId, data) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/adjust-stock`, data),
+        /**
+         * Retry adjust-stock with a manager's token (for cost-outlier override).
+         * Uses only the given bearer token; does not touch localStorage.
+         */
+        adjustStockWithOverrideToken: async (itemId, payload, overrideToken) => {
+            const url = `${api.baseURL}${CONFIG.API_ENDPOINTS.items}/${itemId}/adjust-stock`;
+            const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + overrideToken };
+            try {
+                const sub = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain')) || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
+                if (sub) headers['X-Tenant-Subdomain'] = sub;
+            } catch (_) {}
+            const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+            const text = await response.text();
+            let data;
+            try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+            if (!response.ok) {
+                const err = new Error(data.detail && (typeof data.detail === 'string' ? data.detail : data.detail.message) || text || 'Request failed');
+                err.status = response.status;
+                err.data = data;
+                throw err;
+            }
+            return data;
+        },
         getLedgerBatches: (itemId, branchId) =>
             api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/ledger-batches`, { branch_id: branchId }),
         corrections: {

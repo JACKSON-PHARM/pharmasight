@@ -459,7 +459,7 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "updated_at": item.updated_at,
         "supplier_unit": _unit_for_display(item.supplier_unit, "piece"),
         "wholesale_unit": _unit_for_display(item.wholesale_unit or item.base_unit, "piece"),
-        "retail_unit": _unit_for_display(get_stock_display_unit(item), "piece"),
+        "retail_unit": _unit_for_display(item.retail_unit, "piece"),
         "pack_size": int(item.pack_size) if item.pack_size is not None else 1,
         "wholesale_units_per_supplier": float(item.wholesale_units_per_supplier) if item.wholesale_units_per_supplier is not None else 1.0,
         "can_break_bulk": item.can_break_bulk,
@@ -537,7 +537,6 @@ def get_item(
         data["stock_display"] = InventoryService.get_stock_display(db, item.id, branch_id)
         data["base_quantity"] = qty
         data["current_stock"] = qty
-        data["retail_unit"] = _unit_for_display(get_stock_display_unit(item), "piece")
     resp = ItemResponse.model_validate(data)
     return resp
 
@@ -870,9 +869,9 @@ def get_items_overview(
             'created_at': item.created_at,
             'updated_at': item.updated_at,
             'units': _display_units_from_item(item),
-            'supplier_unit': item.supplier_unit,
-            'wholesale_unit': item.wholesale_unit,
-            'retail_unit': item.retail_unit,
+            'supplier_unit': _unit_for_display(item.supplier_unit, "piece"),
+            'wholesale_unit': _unit_for_display(item.wholesale_unit or item.base_unit, "piece"),
+            'retail_unit': _unit_for_display(item.retail_unit, "piece"),
             'pack_size': item.pack_size,
             'wholesale_units_per_supplier': float(item.wholesale_units_per_supplier) if item.wholesale_units_per_supplier else 1,
             'can_break_bulk': item.can_break_bulk,
@@ -881,7 +880,6 @@ def get_items_overview(
             'is_cold_chain': getattr(item, 'is_cold_chain', False),
             'base_quantity': stock_qty,
             'current_stock': stock_qty,
-            'retail_unit': _unit_for_display(get_stock_display_unit(item), "piece"),
             'stock_display': stock_display_val,
             'last_supplier': last_supplier_map.get(item.id),
             'last_unit_cost': last_cost_map.get(item.id),
@@ -1044,7 +1042,13 @@ def adjust_stock(
                     detail_msg += f" (Threshold {threshold:.1f}%.)"
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=detail_msg,
+                    detail={
+                        "code": "COST_OUTLIER_OVERRIDE_REQUIRED",
+                        "message": detail_msg,
+                        "baseline_cost": float(baseline) if baseline is not None else None,
+                        "deviation_pct": float(deviation) if deviation is not None else None,
+                        "threshold_pct": float(threshold) if threshold is not None else None,
+                    },
                 )
 
     # quantity_delta is float from convert_to_base_units; Decimal * float is invalid
@@ -1114,6 +1118,12 @@ def adjust_stock(
     db.add(ledger_entry)
     db.flush()
     SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, quantity_delta)
+    # Update purchase snapshot with this cost so search and item_branch_snapshot show the same cost (same transaction).
+    if quantity_delta > 0 and unit_cost is not None and unit_cost > 0:
+        SnapshotService.upsert_purchase_snapshot(
+            db, item.company_id, body.branch_id, item_id,
+            unit_cost, datetime.now(timezone.utc), None,
+        )
     SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
     db.commit()
 
@@ -1603,7 +1613,7 @@ def post_cost_adjustment(
     if cost_outlier.get("is_outlier"):
         from app.dependencies import _user_has_permission
 
-        has_override = _user_has_permission(db, user.id, body.branch_id, "inventory.cost_override")
+        has_override = _user_has_permission(db, user.id, "inventory.cost_override")
         if not has_override:
             baseline = cost_outlier.get("baseline_cost")
             deviation = cost_outlier.get("deviation_pct")
