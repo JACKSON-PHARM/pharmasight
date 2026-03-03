@@ -1418,13 +1418,47 @@ async function renderCreateSupplierInvoicePage() {
     }
     const supplierInvoiceNumber = invoiceData ? invoiceData.reference : '';
     const reference = invoiceData ? invoiceData.reference : '';
+    const isCreateWithItems = !isEditMode && documentItems.length >= 1;
+    const supplierInvoiceTitleText = isEditMode && invoiceData && invoiceData.invoice_number
+        ? `Edit Supplier Invoice: ${invoiceData.invoice_number}`
+        : (isCreateWithItems ? 'Create Supplier Invoice (Draft)' : 'Create Supplier Invoice');
+    const supplierInvoiceActionButtonsHtml = isEditMode && invoiceData ? `
+        <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${invoiceData.id}', '${String(invoiceData.invoice_number || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')" title="Download PDF">
+            <i class="fas fa-file-pdf"></i> Download PDF
+        </button>
+        ${invoiceData.status === 'DRAFT' ? `
+            <button type="button" class="btn btn-primary" id="batchInvoiceBtn" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${invoiceData.id}', this)" title="Batch Invoice (Add Stock)">
+                <i class="fas fa-boxes"></i> Batch Invoice
+            </button>
+            <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deleteSupplierInvoice) window.deleteSupplierInvoice('${invoiceData.id}')" title="Delete Invoice (Only for DRAFT)">
+                <i class="fas fa-trash"></i> Delete
+            </button>
+        ` : `
+            <button type="button" class="btn btn-outline btn-danger" disabled title="Cannot delete BATCHED invoice (stock already added)">
+                <i class="fas fa-trash"></i> Delete (Disabled)
+            </button>
+            <span style="color: var(--text-secondary); font-size: 0.875rem; align-self: center; margin-left: 0.5rem;">
+                Invoice is BATCHED - cannot be deleted
+            </span>
+        `}
+    ` : (isCreateWithItems ? `
+        <button type="button" class="btn btn-outline" disabled title="Save invoice first to enable">
+            <i class="fas fa-file-pdf"></i> Download PDF
+        </button>
+        <button type="button" class="btn btn-primary" disabled title="Save invoice first to enable">
+            <i class="fas fa-boxes"></i> Batch Invoice
+        </button>
+        <button type="button" class="btn btn-outline btn-danger" disabled title="Save invoice first to enable">
+            <i class="fas fa-trash"></i> Delete
+        </button>
+    ` : '');
     
     page.innerHTML = `
         <div class="card" id="supplierInvoiceDocumentCard" style="transform-origin: top left; transition: transform 0.2s;">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: white; z-index: 10;">
                 <div style="display: flex; align-items: center; gap: 1rem;">
                     <h3 class="card-title" style="margin: 0; font-size: 1.25rem;">
-                        <i class="fas fa-file-invoice"></i> ${isEditMode && invoiceData && invoiceData.invoice_number ? `Edit Supplier Invoice: ${invoiceData.invoice_number}` : 'Create Supplier Invoice'}
+                        <i class="fas fa-file-invoice"></i> <span id="supplierInvoiceTitleText">${supplierInvoiceTitleText}</span>
                         <span style="font-size: 0.875rem; color: var(--text-secondary); margin-left: 0.5rem;">
                             (Receiving Document - Adds Stock)
                         </span>
@@ -1443,26 +1477,7 @@ async function renderCreateSupplierInvoicePage() {
                     </div>
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
-                    ${isEditMode && invoiceData ? `
-                        <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${invoiceData.id}', '${String(invoiceData.invoice_number || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="Download PDF">
-                            <i class="fas fa-file-pdf"></i> Download PDF
-                        </button>
-                        ${invoiceData.status === 'DRAFT' ? `
-                            <button type="button" class="btn btn-primary" id="batchInvoiceBtn" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${invoiceData.id}', this)" title="Batch Invoice (Add Stock)">
-                                <i class="fas fa-boxes"></i> Batch Invoice
-                            </button>
-                            <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deleteSupplierInvoice) window.deleteSupplierInvoice('${invoiceData.id}')" title="Delete Invoice (Only for DRAFT)">
-                                <i class="fas fa-trash"></i> Delete
-                            </button>
-                        ` : `
-                            <button type="button" class="btn btn-outline btn-danger" disabled title="Cannot delete BATCHED invoice (stock already added)">
-                                <i class="fas fa-trash"></i> Delete (Disabled)
-                            </button>
-                            <span style="color: var(--text-secondary); font-size: 0.875rem; align-self: center; margin-left: 0.5rem;">
-                                Invoice is BATCHED - cannot be deleted
-                            </span>
-                        `}
-                    ` : ''}
+                    <span id="supplierInvoiceActionButtons">${supplierInvoiceActionButtonsHtml}</span>
                     <button type="submit" class="btn btn-primary" form="purchaseInvoiceForm" ${isEditMode && invoiceData && invoiceData.status === 'BATCHED' ? 'disabled title="BATCHED invoices cannot be updated"' : ''}>
                         <i class="fas fa-save"></i> ${isEditMode ? 'Update' : 'Save'} Invoice
                     </button>
@@ -1558,6 +1573,28 @@ async function renderCreateSupplierInvoicePage() {
                 supplierHiddenInput.value = supplierId;
             }
         }, 100);
+    }
+}
+
+// Update Create Supplier Invoice header when first item is added (show Draft + disabled Batch/Delete/PDF)
+function updateSupplierInvoiceCreateHeader(showDraft) {
+    if (currentPurchaseSubPage !== 'create-invoice') return;
+    if (currentDocument && currentDocument.invoiceId) return;
+    const titleEl = document.getElementById('supplierInvoiceTitleText');
+    const buttonsEl = document.getElementById('supplierInvoiceActionButtons');
+    if (titleEl) titleEl.textContent = showDraft ? 'Create Supplier Invoice (Draft)' : 'Create Supplier Invoice';
+    if (buttonsEl) {
+        buttonsEl.innerHTML = showDraft ? `
+            <button type="button" class="btn btn-outline" disabled title="Save invoice first to enable">
+                <i class="fas fa-file-pdf"></i> Download PDF
+            </button>
+            <button type="button" class="btn btn-primary" disabled title="Save invoice first to enable">
+                <i class="fas fa-boxes"></i> Batch Invoice
+            </button>
+            <button type="button" class="btn btn-outline btn-danger" disabled title="Save invoice first to enable">
+                <i class="fas fa-trash"></i> Delete
+            </button>
+        ` : '';
     }
 }
 
@@ -1758,7 +1795,10 @@ function initializeTransactionItemsTableForInvoice() {
                 batches: item.batches || []
             }));
             const invoiceId = currentDocument && currentDocument.invoiceId;
-            if (!invoiceId) return;
+            if (!invoiceId) {
+                if (typeof updateSupplierInvoiceCreateHeader === 'function') updateSupplierInvoiceCreateHeader(validItems.length >= 1);
+                return;
+            }
             const validItemIds = new Set(validItems.filter(i => i.item_id).map(i => i.item_id));
             const toRemove = [...supplierInvoiceSyncedItemIds].filter(id => !validItemIds.has(id));
             if (toRemove.length === 0) return;
@@ -2358,18 +2398,28 @@ async function savePurchaseDocument(event, documentType) {
                 console.log('✅ [Supplier Invoice] Invoice saved as DRAFT:', result);
                 console.log('📄 [Supplier Invoice] Invoice number:', result?.invoice_number || 'NOT ASSIGNED');
                 
-                // Store invoice ID and number for auto-save
-                if (result && result.id) {
-                    currentDocument.invoiceId = result.id;
-                    currentDocument.status = result.status || 'DRAFT';
-                    currentDocument.invoiceNumber = result.invoice_number; // Store invoice number
-                    currentDocument.mode = 'edit'; // Switch to edit mode after first save
-                }
-                
                 if (result && result.invoice_number) {
-                    showToast(`Supplier Invoice ${result.invoice_number} saved as DRAFT! Click "Batch Invoice" to add stock to inventory.`, 'success');
+                    showToast(`Supplier Invoice ${result.invoice_number} saved as DRAFT! You can Batch or Update from this page.`, 'success');
                 } else {
                     showToast('Supplier Invoice saved as DRAFT! (Note: Invoice number not assigned - check branch code)', 'warning');
+                }
+                // Stay on create-invoice page in edit mode so user can Batch/Delete/Download PDF without going back to list
+                if (result && result.id) {
+                    let fullInvoice = result;
+                    try {
+                        fullInvoice = await API.purchases.getInvoice(result.id);
+                    } catch (e) {
+                        console.warn('Could not fetch full invoice after create, using result:', e);
+                    }
+                    currentDocument = {
+                        type: 'invoice',
+                        mode: 'edit',
+                        invoiceId: result.id,
+                        invoiceData: fullInvoice
+                    };
+                    isSavingDocument = false;
+                    await loadPurchaseSubPage('create-invoice');
+                    return;
                 }
             }
         } else {
