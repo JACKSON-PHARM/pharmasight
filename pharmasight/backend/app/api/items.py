@@ -951,6 +951,8 @@ def adjust_stock(
     Quantity is in the selected unit (one of the item's 3-tier units: e.g. box, tablet, piece).
     Unit cost defaults to last purchase cost if not provided.
     """
+    current_user, _ = current_user_and_db
+
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -1029,7 +1031,7 @@ def adjust_stock(
         if outlier.get("is_outlier"):
             from app.dependencies import _user_has_permission
 
-            has_override = _user_has_permission(db, user.id, body.branch_id, "inventory.cost_override")
+            has_override = _user_has_permission(db, current_user.id, body.branch_id, "inventory.cost_override")
             if not has_override:
                 baseline = outlier.get("baseline_cost")
                 deviation = outlier.get("deviation_pct")
