@@ -120,28 +120,35 @@ def _search_impl(
         sale_price_map: Dict[UUID, float] = {}
         margin_map: Dict[UUID, float] = {}
         if include_pricing and branch_id and item_ids:
-            # 1) Best-available cost per item (branch-aware, ledger-backed, with Excel default fallback)
-            costs = CanonicalPricingService.get_best_available_cost_batch(
-                db, item_ids, branch_id, company_id
-            )
-            # 2) Effective markup per item (item / tier / company defaults)
+            # Single markup batch call (keep search under 200ms)
             markup_batch = PricingService.get_markup_percent_batch(
                 db, item_ids, company_id, item_map=None
             )
-            for iid in item_ids:
-                raw_cost = costs.get(iid)
-                cost = float(raw_cost) if raw_cost is not None else 0.0
-                cost_map[iid] = cost
-                margin = markup_batch.get(iid, Decimal("30"))
-                margin_f = float(margin)
-                margin_map[iid] = margin_f
-                # Precalculate recommended selling price (cost * (1 + margin%)) using Decimal math
-                if cost > 0:
-                    sp_dec = (margin / Decimal("100") + Decimal("1")) * Decimal(str(cost))
-                    # Quantize to 2dp for UI friendliness
-                    sale_price_map[iid] = float(sp_dec.quantize(Decimal("0.01")))
-                else:
-                    sale_price_map[iid] = 0.0
+            # Prefer snapshot last_purchase_price when present (updated by supplier invoice batch, adjustment, GRN)
+            for r in rows:
+                lp = getattr(r, "last_purchase_price", None)
+                if lp is not None and float(lp) > 0:
+                    cost_map[r.item_id] = float(lp)
+                    sp = getattr(r, "selling_price", None)
+                    sale_price_map[r.item_id] = float(sp) if sp is not None else 0.0
+                    margin_map[r.item_id] = float(markup_batch.get(r.item_id, Decimal("30")))
+            missing_ids = [iid for iid in item_ids if iid not in cost_map]
+            if missing_ids:
+                costs = CanonicalPricingService.get_best_available_cost_batch(
+                    db, missing_ids, branch_id, company_id
+                )
+                for iid in missing_ids:
+                    raw_cost = costs.get(iid)
+                    cost = float(raw_cost) if raw_cost is not None else 0.0
+                    cost_map[iid] = cost
+                    margin = markup_batch.get(iid, Decimal("30"))
+                    margin_f = float(margin)
+                    margin_map[iid] = margin_f
+                    if cost > 0:
+                        sp_dec = (margin / Decimal("100") + Decimal("1")) * Decimal(str(cost))
+                        sale_price_map[iid] = float(sp_dec.quantize(Decimal("0.01")))
+                    else:
+                        sale_price_map[iid] = 0.0
 
         # Success (including 0 rows): build canonical response from snapshot with canonical cost overrides
         result = []

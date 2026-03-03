@@ -3,10 +3,10 @@ Document Numbering Service - KRA Compliant Sequential Numbering
 """
 from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, extract
+from sqlalchemy import and_, extract, func, Integer, text
 from datetime import date
 from uuid import UUID
-from app.models import Company, Branch, DocumentSequence
+from app.models import Company, Branch, DocumentSequence, SupplierInvoice
 from app.database import SessionLocal
 
 
@@ -154,12 +154,54 @@ class DocumentService:
         """
         Get next Supplier Invoice number
         
-        Format: SUP-INV001, SUP-INV002, etc.
-        Branch-specific sequence.
+        Primary path uses the database function `get_next_document_number`,
+        which should return numbers in format: SPV{BRANCH_CODE}-{NUMBER}.
+        If the database function is missing or still returns legacy values
+        (e.g. "SUP-INV100"), we fall back to an application-level generator
+        that produces SPV{BRANCH_CODE}-{NUMBER} and ensures uniqueness by
+        looking at existing `purchase_invoices` rows.
         """
-        return DocumentService.get_next_document_number(
-            db, company_id, branch_id, "SUPPLIER_INVOICE", None
+        # First try the database helper function – preferred when migrations are applied
+        try:
+            document_number = DocumentService.get_next_document_number(
+                db, company_id, branch_id, "SUPPLIER_INVOICE", None
+            )
+            # Accept only proper SPV-style numbers
+            if document_number and str(document_number).strip().startswith("SPV"):
+                return document_number
+        except Exception:
+            # Fall back to application-level generator below
+            document_number = None
+
+        # Fallback for databases that don't yet have the updated function / data
+        # Generate: SPV{BRANCH_CODE}-{NUMBER}, where NUMBER is 6‑digit, per branch.
+        branch = db.query(Branch).filter(Branch.id == branch_id).first()
+        if not branch or not getattr(branch, "code", None):
+            # Without a branch code we cannot produce a KRA-compliant number;
+            # surface a clear error rather than silently generating bad data.
+            raise ValueError(
+                "Branch code is required for supplier invoice numbering. "
+                "Please set a branch code and retry."
+            )
+
+        prefix = f"SPV{branch.code}"
+
+        # Find the highest existing number for this company/branch with this prefix.
+        # Pattern: SPV{BRANCH_CODE}-{NUMBER}
+        numeric_part_expr = func.replace(SupplierInvoice.invoice_number, prefix + "-", "")
+        max_number = (
+            db.query(func.coalesce(func.max(func.cast(numeric_part_expr, Integer)), 0))
+            .filter(
+                SupplierInvoice.company_id == company_id,
+                SupplierInvoice.branch_id == branch_id,
+                SupplierInvoice.invoice_number.like(prefix + "-%"),
+            )
+            .scalar()
+            or 0
         )
+
+        next_number = max_number + 1
+        return f"{prefix}-{next_number:06d}"
 
     @staticmethod
     def get_credit_note_number(

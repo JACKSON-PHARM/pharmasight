@@ -22,6 +22,12 @@ let supplierInvoicesUserFilter = 'self';
 let purchaseOrdersDateFilter = 'today';
 let purchaseOrdersUserFilter = 'self';
 
+/** Return today's date as YYYY-MM-DD in the user's local timezone (so "Today" filter and form default match). */
+function getLocalDateString() {
+    const n = new Date();
+    return [n.getFullYear(), String(n.getMonth() + 1).padStart(2, '0'), String(n.getDate()).padStart(2, '0')].join('-');
+}
+
 function getSupplierInvoiceItemDisplay(i, cache) {
     const idKey = i.item_id != null ? String(i.item_id) : '';
     let name = (i.item_name && i.item_name !== '=' && String(i.item_name).trim()) ? i.item_name : (i.item && i.item.name ? i.item.name : (i.item_code && i.item_code !== '=' && i.item_code !== '—') ? i.item_code : '') || '';
@@ -173,7 +179,7 @@ function renderPurchaseOrdersShell() {
     page.style.display = 'block';
     page.style.visibility = 'visible';
     
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDateString();
     const orderRange = getSupplierInvoicesDateRange(purchaseOrdersDateFilter);
     const orderFrom = orderRange ? orderRange.dateFrom : today;
     const orderTo = orderRange ? orderRange.dateTo : today;
@@ -499,7 +505,7 @@ function renderSupplierInvoicesShell() {
     const page = document.getElementById('purchases');
     if (!page) return;
     
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDateString();
     
     page.innerHTML = `
         <div class="card">
@@ -691,7 +697,7 @@ function renderCreditNotesShell() {
     const page = document.getElementById('purchases');
     if (!page) return;
     
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDateString();
     
     page.innerHTML = `
         <div class="card">
@@ -835,7 +841,7 @@ async function loadPurchaseDocuments(documentType = 'order') {
         // Get filter values (for orders, default to today when empty so we don't list all orders)
         const dateFromEl = document.getElementById('filterDateFrom');
         const dateToEl = document.getElementById('filterDateTo');
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalDateString();
         let dateFrom, dateTo;
         if (documentType === 'invoice') {
             const presetEl = document.getElementById('supplierInvoicesDateFilter');
@@ -949,11 +955,11 @@ function showPurchaseFilters() {
             <div class="form-row">
                 <div class="form-group">
                     <label class="form-label">Date From</label>
-                    <input type="date" class="form-input" name="date_from" value="${new Date().toISOString().split('T')[0]}">
+                    <input type="date" class="form-input" name="date_from" value="${getLocalDateString()}">
                 </div>
                 <div class="form-group">
                     <label class="form-label">Date To</label>
-                    <input type="date" class="form-input" name="date_to" value="${new Date().toISOString().split('T')[0]}">
+                    <input type="date" class="form-input" name="date_to" value="${getLocalDateString()}">
                 </div>
             </div>
             <div class="form-group">
@@ -1022,6 +1028,17 @@ async function applyDateFilter() {
         }
     }
     if (currentPurchaseSubPage === 'invoices') {
+        const presetEl = document.getElementById('supplierInvoicesDateFilter');
+        if (presetEl) supplierInvoicesDateFilter = presetEl.value || 'today';
+        if (supplierInvoicesDateFilter !== 'custom') {
+            const range = getSupplierInvoicesDateRange(supplierInvoicesDateFilter);
+            if (range) {
+                const fromEl = document.getElementById('filterDateFrom');
+                const toEl = document.getElementById('filterDateTo');
+                if (fromEl) fromEl.value = range.dateFrom;
+                if (toEl) toEl.value = range.dateTo;
+            }
+        }
         const userEl = document.getElementById('supplierInvoicesUserFilter');
         if (userEl) supplierInvoicesUserFilter = userEl.value || 'self';
     }
@@ -1060,7 +1077,7 @@ async function applyDateFilter() {
 
 // Clear date filter (uses new pattern)
 function clearDateFilter() {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDateString();
     const dateFromInput = document.getElementById('filterDateFrom');
     const dateToInput = document.getElementById('filterDateTo');
     if (dateFromInput) dateFromInput.value = today;
@@ -1161,7 +1178,7 @@ async function renderCreatePurchaseOrderPage() {
         poSyncedItemIds = new Set();
     }
     
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDateString();
     
     // Get order status for button visibility
     const orderStatus = currentDocument?.status || 'PENDING';
@@ -1341,7 +1358,7 @@ async function renderCreatePurchaseOrderPage() {
                             company_id: window.CONFIG.COMPANY_ID,
                             branch_id: window.CONFIG.BRANCH_ID,
                             supplier_id: firstSupplier.id,
-                            order_date: new Date().toISOString().split('T')[0],
+                            order_date: getLocalDateString(),
                             reference: null,
                             notes: null,
                             status: 'PENDING',
@@ -1440,7 +1457,7 @@ async function renderCreateSupplierInvoicePage() {
         supplierInvoiceSyncedItemIds = new Set();
     }
     
-    const today = invoiceData ? invoiceData.invoice_date : new Date().toISOString().split('T')[0];
+    const today = invoiceData ? invoiceData.invoice_date : getLocalDateString();
     let supplierId = invoiceData ? invoiceData.supplier_id : '';
     let supplierName = invoiceData ? invoiceData.supplier_name : '';
     // Pre-fill supplier when opened from supplier detail "Record New Invoice"
@@ -1683,7 +1700,7 @@ async function onSupplierInvoiceAddItem(item) {
                 company_id: CONFIG.COMPANY_ID,
                 branch_id: CONFIG.BRANCH_ID,
                 supplier_id: supplierId,
-                invoice_date: fd.get('document_date') || new Date().toISOString().split('T')[0],
+                invoice_date: fd.get('document_date') || getLocalDateString(),
                 supplier_invoice_number: fd.get('supplier_invoice_number') || null,
                 reference: fd.get('reference') || null,
                 status: 'DRAFT',
@@ -1932,7 +1949,7 @@ async function onPurchaseOrderAddItem(item) {
                 company_id: CONFIG.COMPANY_ID,
                 branch_id: CONFIG.BRANCH_ID,
                 supplier_id: supplierId,
-                order_date: fd.get('document_date') || new Date().toISOString().split('T')[0],
+                order_date: fd.get('document_date') || getLocalDateString(),
                 reference: fd.get('reference') || null,
                 notes: fd.get('notes') || null,
                 status: 'PENDING',
@@ -2339,7 +2356,7 @@ async function savePurchaseDocument(event, documentType) {
             company_id: CONFIG.COMPANY_ID,
             branch_id: CONFIG.BRANCH_ID,
             supplier_id: formData.get('supplier_id'),
-            order_date: formData.get('document_date') || new Date().toISOString().split('T')[0],
+            order_date: formData.get('document_date') || getLocalDateString(),
             reference: formData.get('reference') || null,
             notes: formData.get('notes') || null,
             status: 'PENDING',
@@ -2393,7 +2410,7 @@ async function savePurchaseDocument(event, documentType) {
                 supplier_id: supplierId,
                 supplier_invoice_number: formData.get('supplier_invoice_number') || null,  // Supplier's invoice number (external)
                 reference: formData.get('reference') || null,  // Additional reference/comments
-                invoice_date: formData.get('document_date') || new Date().toISOString().split('T')[0],
+                invoice_date: formData.get('document_date') || getLocalDateString(),
                 linked_grn_id: formData.get('linked_grn_id') || null,
                 vat_rate: 0,  // Display only; total VAT = sum of line VATs (item-based)
                 created_by: currentUserId,
@@ -2503,11 +2520,22 @@ async function savePurchaseDocument(event, documentType) {
         
         // Show detailed error message
         let errorMessage = error.message || 'Error saving document';
-        if (error.data && error.data.detail) {
-            if (typeof error.data.detail === 'string') {
-                errorMessage = error.data.detail;
-            } else if (Array.isArray(error.data.detail)) {
-                errorMessage = error.data.detail.map(e => e.msg || e.loc?.join('.') + ': ' + e.msg).join(', ');
+        const detail = error.data && error.data.detail;
+        if (detail) {
+            if (typeof detail === 'string') {
+                errorMessage = detail;
+            } else if (Array.isArray(detail)) {
+                errorMessage = detail.map(e => e.msg || e.loc?.join('.') + ': ' + e.msg).join(', ');
+            } else if (typeof detail === 'object' && detail.message) {
+                errorMessage = detail.message;
+                // If short-expiry blocked save, show override modal (user can then Batch with override)
+                if (detail.code === 'SHORT_EXPIRY_OVERRIDE_REQUIRED') {
+                    const invoiceId = currentDocument && currentDocument.invoiceId;
+                    if (invoiceId && typeof showShortExpiryOverrideModal === 'function') {
+                        showShortExpiryOverrideModal(invoiceId, detail, null, null);
+                        return;
+                    }
+                }
             }
         }
         
@@ -3269,7 +3297,7 @@ async function autoSaveInvoice() {
             supplier_id: supplierId,
             supplier_invoice_number: formData.get('supplier_invoice_number') || null,
             reference: formData.get('reference') || null,
-            invoice_date: formData.get('document_date') || new Date().toISOString().split('T')[0],
+            invoice_date: formData.get('document_date') || getLocalDateString(),
             linked_grn_id: formData.get('linked_grn_id') || null,
             vat_rate: 0,  // Display only; total VAT = sum of line VATs (item-based)
             items: items.map(item => {
@@ -3428,6 +3456,10 @@ async function batchSupplierInvoice(invoiceId, buttonEl, confirmationsBody) {
         const result = await API.purchases.batchInvoice(invoiceId, confirmationsBody || null);
         showToast('Invoice batched successfully! Stock has been added to inventory.', 'success');
         if (typeof closeModal === 'function') closeModal();
+        // Clear item search cache so next search shows updated costs (last unit cost from this batch)
+        if (typeof window !== 'undefined' && window.searchCache && typeof window.searchCache.clear === 'function') {
+            window.searchCache.clear();
+        }
         // Reload invoices list
         await fetchAndRenderSupplierInvoicesData();
         // If user was on the edit/view page for this invoice, re-render so Batch button disappears
@@ -3450,6 +3482,10 @@ async function batchSupplierInvoice(invoiceId, buttonEl, confirmationsBody) {
             } else {
                 showBatchPriceConfirmationModal(invoiceId, items, buttonEl);
             }
+        } else if (detail && typeof detail === 'object' && detail.code === 'SHORT_EXPIRY_OVERRIDE_REQUIRED') {
+            showShortExpiryOverrideModal(invoiceId, detail, buttonEl, confirmationsBody);
+        } else if (detail && typeof detail === 'object' && detail.code === 'SHORT_EXPIRY_OVERRIDE_FORBIDDEN') {
+            showToast(detail.message || 'You do not have permission to override short expiry. Ask a Manager or Pharmacist to batch this invoice.', 'error');
         } else {
             const msg = (detail && (typeof detail === 'string' ? detail : detail.message)) || error.message || 'Error batching invoice';
             showToast(msg, 'error');
@@ -3508,6 +3544,41 @@ function showBatchPriceConfirmationModal(invoiceId, items, buttonEl) {
     }
 }
 
+function showShortExpiryOverrideModal(invoiceId, detail, buttonEl, existingConfirmationsBody) {
+    const message = detail.message || 'Product expires sooner than the required minimum. Override required to accept.';
+    const daysRemaining = detail.days_remaining;
+    const minDays = detail.min_expiry_days;
+    const subText = (daysRemaining != null && minDays != null)
+        ? `This batch has ${daysRemaining} days until expiry (minimum ${minDays} days required).`
+        : '';
+    const content = `
+        <div style="padding:0.5rem 0;">
+            <p style="margin-bottom:0.75rem; color:var(--warning-text,#856404); font-weight:600;">
+                <i class="fas fa-exclamation-triangle"></i> ${escapeHtml(message)}
+            </p>
+            ${subText ? `<p style="margin-bottom:0.75rem; color:var(--text-secondary);">${escapeHtml(subText)}</p>` : ''}
+            <p style="margin-bottom:0.75rem;">Only users with <strong>Short Expiry Override</strong> permission (e.g. Manager or Pharmacist) can confirm. You will be verified when you click Override &amp; Batch.</p>
+            <p style="margin-bottom:0;">Do you want to accept this batch anyway?</p>
+        </div>`;
+    const footer = `
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" id="shortExpiryOverrideBatchBtn"><i class="fas fa-check"></i> Override & Batch</button>`;
+    if (typeof showModal === 'function') {
+        showModal('Short Expiry – Override Required', content, footer);
+    }
+    const submitBtn = document.getElementById('shortExpiryOverrideBatchBtn');
+    if (submitBtn) {
+        submitBtn.onclick = async () => {
+            if (typeof closeModal === 'function') closeModal();
+            const body = { short_expiry_override: true };
+            if (existingConfirmationsBody && existingConfirmationsBody.confirmations) {
+                body.confirmations = existingConfirmationsBody.confirmations;
+            }
+            await batchSupplierInvoice(invoiceId, buttonEl, body);
+        };
+    }
+}
+
 // Update invoice payment
 async function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
     const amountPaid = prompt(`Enter amount paid:\n\nTotal: ${formatCurrency(totalAmount)}\nCurrent Paid: ${formatCurrency(currentPaid)}\nBalance: ${formatCurrency(totalAmount - currentPaid)}`, currentPaid);
@@ -3548,6 +3619,7 @@ if (typeof window !== 'undefined') {
     window.createNewPurchaseInvoice = createNewSupplierInvoice; // Backward compatibility
     window.createNewCreditNote = createNewCreditNote;
     window.batchSupplierInvoice = batchSupplierInvoice;
+    window.showShortExpiryOverrideModal = showShortExpiryOverrideModal;
     window.updateInvoicePayment = updateInvoicePayment;
     window.viewSupplierInvoice = viewSupplierInvoice;
     window.editSupplierInvoice = editSupplierInvoice;
@@ -5401,7 +5473,7 @@ async function createPurchaseOrderFromSelected() {
                 </div>
                 <div style="margin-bottom: 1rem;">
                     <label>Order Date *</label>
-                    <input type="date" id="poOrderDate" class="form-input" value="${new Date().toISOString().split('T')[0]}" required>
+                    <input type="date" id="poOrderDate" class="form-input" value="${getLocalDateString()}" required>
                 </div>
                 <div style="margin-bottom: 1rem;">
                     <label>Reference</label>

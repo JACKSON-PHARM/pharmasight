@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from pathlib import Path
 from pydantic import BaseModel
-from app.dependencies import get_tenant_db, get_tenant_or_default, require_settings_edit, get_current_user, get_effective_company_id_for_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, require_settings_edit, get_current_user, get_effective_company_id_for_user
 from app.models.tenant import Tenant
 from app.models.company import Company, Branch, BranchSetting
 from app.models.settings import CompanySetting
@@ -204,10 +204,10 @@ def get_company_settings(
     company_id: UUID,
     key: Optional[str] = Query(None, description="Setting key, e.g. 'print_config'. Omit to get all."),
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ) -> Dict[str, Any]:
-    """Get company-level settings. User may only access settings of their effective company. Raw storage paths are never returned; use signed URLs for preview."""
+    """Get company-level settings. User may only access settings of their effective company. print_config and other keys work without tenant; tenant is only used for document_branding signed URLs."""
     user = current_user_and_db[0]
     effective_company_id = get_effective_company_id_for_user(db, user)
     if effective_company_id is None or company_id != effective_company_id:

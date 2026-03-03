@@ -102,6 +102,16 @@ def _validate_batches_central(
                 detail=e.result.message if e.result else str(e),
             )
         if not result.valid:
+            if getattr(result, "short_expiry", False):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "SHORT_EXPIRY_OVERRIDE_REQUIRED",
+                        "message": result.message or "Batch/expiry validation failed.",
+                        "days_remaining": getattr(result, "days_remaining", None),
+                        "min_expiry_days": getattr(config, "min_expiry_days", None),
+                    },
+                )
             raise HTTPException(status_code=400, detail=result.message or "Batch/expiry validation failed.")
 
 
@@ -552,14 +562,14 @@ def create_supplier_invoice(
                 item_data.batches,
                 from_dict=False,
             )
-            # Central validation: expired reject, short-expiry per config
+            # Central validation: expired reject. Short-expiry only enforced at batch time (allow draft save).
             if item_data.batches:
                 _validate_batches_central(
                     item.name or str(item_data.item_id),
                     item,
                     item_data.batches,
                     stock_validation_config,
-                    override=False,
+                    override=True,
                     from_dict=False,
                 )
         
@@ -632,8 +642,14 @@ def create_supplier_invoice(
     except sqlalchemy.exc.IntegrityError as e:
         err_msg = str(e.orig) if e.orig else str(e)
         if "purchase_invoices_company_id_invoice_number_key" in err_msg or "UniqueViolation" in err_msg:
-            db_invoice.invoice_number = DocumentService.get_supplier_invoice_number(db, invoice.company_id, invoice.branch_id)
-            db.flush()
+            # Roll back the failed insert and surface a clear, client-visible error.
+            # Retrying with the same session without rollback would raise PendingRollbackError.
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A supplier invoice with this document number already exists. "
+                       "Please refresh the page and try again."
+            )
         else:
             raise
 
@@ -696,26 +712,9 @@ def list_supplier_invoices(
         if created_by_user:
             invoice.created_by_name = created_by_user.full_name or created_by_user.email
         
-        # Ensure invoice has system document number (SPV{BRANCH}-{N})
-        # Assign if missing or invalid
+        # Display placeholder for missing/invalid document number (list is read-only; do not commit)
         if not invoice.invoice_number or not str(invoice.invoice_number).strip().startswith("SPV"):
-            try:
-                invoice.invoice_number = DocumentService.get_supplier_invoice_number(
-                    db, invoice.company_id, invoice.branch_id
-                )
-                db.commit()  # Commit the assignment
-                # Refresh to get the updated value
-                db.refresh(invoice)
-            except Exception as e:
-                # If branch code is missing, log but don't fail
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(f"Could not assign invoice number to invoice {invoice.id}: {e}")
-                # Try to get branch info for better error message
-                branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
-                if branch and not branch.code:
-                    logger.warning(f"Branch {invoice.branch_id} is missing a code. Please set branch code in settings.")
-                pass
+            invoice.invoice_number = "—"
     
     return invoices
 
@@ -784,12 +783,14 @@ def get_supplier_invoice(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get supplier invoice by ID with full item details"""
+    """Get supplier invoice by ID with full item details (DRAFT or BATCHED; both can be viewed)."""
     user = current_user_and_db[0]
     # Load invoice with items and item relationships (similar to get_purchase_order)
     invoice = db.query(SupplierInvoice).options(
         selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
     ).filter(SupplierInvoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
     # Load supplier and branch names
     if invoice.supplier:
@@ -1156,7 +1157,7 @@ def update_supplier_invoice(
             if item_data.batches:
                 _validate_batches_central(
                     item.name or str(item_data.item_id), item, item_data.batches,
-                    stock_validation_config_update, override=False, from_dict=False,
+                    stock_validation_config_update, override=True, from_dict=False,
                 )
         
         # Calculate line totals (VAT) — normalize vat_rate; use item master VAT if request sent 0
@@ -1317,6 +1318,17 @@ def batch_supplier_invoice(
 
     stock_validation_config_batch = get_stock_validation_config(db, invoice.company_id)
     short_expiry_override_batch = bool(body and getattr(body, "short_expiry_override", False))
+    if short_expiry_override_batch:
+        from app.dependencies import _user_has_permission
+        from app.api.users import _user_has_owner_or_admin_role
+        if not _user_has_permission(db, user.id, "inventory.short_expiry_override") and not _user_has_owner_or_admin_role(db, user.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "SHORT_EXPIRY_OVERRIDE_FORBIDDEN",
+                    "message": "Only users with Short Expiry Override permission (e.g. Manager or Pharmacist) can accept short-expiry batches. Ask a manager to batch this invoice.",
+                },
+            )
 
     # Pre-pass: collect (item_id, unit_cost_base) pairs that need floor-price confirmation
     needs_confirm = []  # [(item_id, unit_cost_base, item_name, floor_price, margin_below_standard)]
@@ -1613,8 +1625,11 @@ def batch_supplier_invoice(
         for entry in ledger_entries:
             SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
         # Update last unit cost per item from invoice (cost per base unit so search/pricing use it)
+        items_updated_for_cost = set()
         for inv_item in invoice.items:
             item = inv_item.item
+            if not item:
+                item = db.query(Item).filter(Item.id == inv_item.item_id, Item.company_id == invoice.company_id).first()
             if not item:
                 continue
             multiplier = get_unit_multiplier_from_item(item, inv_item.unit_name)
@@ -1625,8 +1640,11 @@ def batch_supplier_invoice(
                 db, invoice.company_id, invoice.branch_id, inv_item.item_id,
                 unit_cost_base, invoice.created_at, invoice.supplier_id
             )
-        for entry in ledger_entries:
-            SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
+            items_updated_for_cost.add(inv_item.item_id)
+        db.flush()  # Ensure purchase snapshot writes are visible to refresh_item_sync (item_branch_snapshot)
+        # Refresh POS snapshot (item_branch_snapshot) for each item so sales search shows updated cost
+        for iid in items_updated_for_cost:
+            SnapshotRefreshService.refresh_item_sync(db, invoice.company_id, invoice.branch_id, iid)
 
         # Update invoice status to BATCHED
         invoice.status = "BATCHED"
