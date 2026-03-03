@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 from app.models import (
     Item,
     ItemBranchSnapshot,
-    ItemBranchPurchaseSnapshot,
     InventoryBalance,
     InventoryLedger,
 )
@@ -89,6 +88,25 @@ def _get_next_expiry_date(
     return row if isinstance(row, date) else row.date() if hasattr(row, "date") else None
 
 
+def _get_last_purchase_price_from_ledger(
+    db: Session, company_id: UUID, branch_id: UUID, item_id: UUID
+) -> float | None:
+    """Last purchase unit cost from inventory ledger (single source of truth). Same transaction sees just-written rows."""
+    row = (
+        db.query(InventoryLedger.unit_cost)
+        .filter(
+            InventoryLedger.company_id == company_id,
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.transaction_type == "PURCHASE",
+        )
+        .order_by(InventoryLedger.created_at.desc())
+        .limit(1)
+        .first()
+    )
+    return float(row.unit_cost) if row and row.unit_cost is not None else None
+
+
 def refresh_pos_snapshot_for_item(
     db: Session,
     company_id: UUID,
@@ -97,9 +115,10 @@ def refresh_pos_snapshot_for_item(
 ) -> None:
     """
     Compute and upsert one row in item_branch_snapshot.
-    Uses: inventory_balances (current_stock), ledger (average_cost, next_expiry),
-    item_branch_purchase_snapshot (last_purchase_price), pricing (selling_price, margin_percent),
-    item (name, pack_size, base_unit, sku, vat_rate, vat_category, search_text).
+    Uses: inventory_balances (current_stock), ledger (average_cost, next_expiry, last_purchase_price),
+    pricing (selling_price, margin_percent), item (name, pack_size, base_unit, sku, vat_rate, vat_category, search_text).
+    Last purchase price comes from the ledger (latest PURCHASE for item/branch)—single source of truth; same
+    transaction sees the row we just wrote, so no read-from-another-table or read-after-write issues.
     Call in same transaction as the write that changed data.
     """
     item = db.query(Item).filter(
@@ -123,17 +142,8 @@ def refresh_pos_snapshot_for_item(
     )
     current_stock = float(bal.current_stock or 0) if bal else 0
 
-    # last_purchase_price from snapshot (updated by GRN, supplier invoice, and manual stock adjustment)
-    snap = (
-        db.query(ItemBranchPurchaseSnapshot.last_purchase_price)
-        .filter(
-            ItemBranchPurchaseSnapshot.item_id == item_id,
-            ItemBranchPurchaseSnapshot.branch_id == branch_id,
-            ItemBranchPurchaseSnapshot.company_id == company_id,
-        )
-        .first()
-    )
-    last_purchase_price = float(snap.last_purchase_price) if snap and snap.last_purchase_price is not None else None
+    # last_purchase_price from ledger (latest PURCHASE) — single source of truth, same transaction sees new rows
+    last_purchase_price = _get_last_purchase_price_from_ledger(db, company_id, branch_id, item_id)
 
     # average_cost: prefer last_purchase_price so search shows the cost just keyed (adjustment or purchase);
     # else get_best_available_cost (weighted avg / opening / default). This ensures manual adjustment cost appears in search.

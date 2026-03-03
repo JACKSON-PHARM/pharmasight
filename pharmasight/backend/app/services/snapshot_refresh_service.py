@@ -41,6 +41,7 @@ class SnapshotRefreshService:
         """
         Recalculate item_branch_snapshot for one (item_id, branch_id) in the current transaction.
         Must run in the same transaction as ledger/balance writes so search and stock stay in sync.
+        Last purchase price is read from the inventory ledger (single source of truth).
         On failure logs and re-raises so the transaction rolls back (no partial commit).
         """
         try:

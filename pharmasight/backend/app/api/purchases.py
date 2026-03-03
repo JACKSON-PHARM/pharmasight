@@ -1624,7 +1624,7 @@ def batch_supplier_invoice(
         # Update snapshots in same transaction
         for entry in ledger_entries:
             SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
-        # Update last unit cost per item from invoice (cost per base unit so search/pricing use it)
+        # Update last unit cost per item from invoice (cost per base unit; purchase snapshot for reporting)
         items_updated_for_cost = set()
         for inv_item in invoice.items:
             item = inv_item.item
@@ -1641,8 +1641,8 @@ def batch_supplier_invoice(
                 unit_cost_base, invoice.created_at, invoice.supplier_id
             )
             items_updated_for_cost.add(inv_item.item_id)
-        db.flush()  # Ensure purchase snapshot writes are visible to refresh_item_sync (item_branch_snapshot)
-        # Refresh POS snapshot (item_branch_snapshot) for each item so sales search shows updated cost
+        db.flush()
+        # Refresh POS snapshot from ledger (last purchase price = latest PURCHASE in same transaction)
         for iid in items_updated_for_cost:
             SnapshotRefreshService.refresh_item_sync(db, invoice.company_id, invoice.branch_id, iid)
 
