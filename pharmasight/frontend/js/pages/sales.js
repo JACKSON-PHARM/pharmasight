@@ -896,10 +896,12 @@ async function renderCreateSalesInvoicePage() {
             </button>
         </div>
     ` : `
-        <button type="button" class="btn btn-secondary" onclick="loadSalesSubPage('invoices')">
-            <i class="fas fa-arrow-left"></i> Back to Invoices
-        </button>
-        <span class="text-muted" style="margin-left: 0.5rem; font-size: 0.9rem;">Search in the row above, click Add item. First add creates the draft; click an item to view details.</span>
+        <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="loadSalesSubPage('invoices')">
+                <i class="fas fa-arrow-left"></i> Back to Invoices
+            </button>
+            <span class="text-muted" style="font-size: 0.8rem;">Search above, click Add. First add creates draft.</span>
+        </div>
     `;
     
     page.innerHTML = `
@@ -926,18 +928,20 @@ async function renderCreateSalesInvoicePage() {
                         <div style="display: flex; align-items: center; gap: 0.35rem; grid-column: span 2;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Notes</label><input type="text" class="form-input" name="notes" value="${invoiceData?.notes || ''}" placeholder="Additional notes" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
                     </div>
                     
-                    <!-- Items table + compact summary: proportional layout, no sticky-first -->
-                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 0.75rem; flex: 1; min-height: 0;">
-                        <div id="salesInvoiceItemsWrapper" style="min-height: 0; overflow: auto;">
+                    <!-- Items table + summary: responsive – side-by-side when wide, summary below when narrow (table priority) -->
+                    <div class="sales-invoice-main-layout">
+                        <div class="sales-invoice-items-col" id="salesInvoiceItemsWrapper">
                             <div id="salesInvoiceItemsContainer">
                                 <!-- TransactionItemsTable component will render here -->
                             </div>
                         </div>
-                        <div style="flex-shrink: 0; padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 0.35rem; background: var(--bg-color, #f8f9fa);">
-                            <div style="font-size: 0.8rem; font-weight: 600; margin-bottom: 0.35rem;">Summary</div>
-                            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;"><span>Net:</span><strong id="invoiceSummaryNett">Ksh 0.00</strong></div>
-                            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;"><span>VAT:</span><strong id="invoiceSummaryVat">Ksh 0.00</strong></div>
-                            <div style="display: flex; justify-content: space-between; font-size: 0.9rem; font-weight: 600; padding-top: 0.35rem; border-top: 1px solid var(--border-color);"><span>Total:</span><strong id="invoiceSummaryTotal" style="color: var(--primary-color);">Ksh 0.00</strong></div>
+                        <div class="sales-invoice-summary">
+                            <span class="sales-invoice-summary-label">Summary</span>
+                            <div class="sales-invoice-summary-rows">
+                                <div><span>Net:</span><strong id="invoiceSummaryNett">Ksh 0.00</strong></div>
+                                <div><span>VAT:</span><strong id="invoiceSummaryVat">Ksh 0.00</strong></div>
+                                <div><span>Total:</span><strong id="invoiceSummaryTotal" class="sales-invoice-total">Ksh 0.00</strong></div>
+                            </div>
                         </div>
                     </div>
                     

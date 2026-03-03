@@ -860,6 +860,73 @@ body {
     background: #e8f4fd;
 }
 
+/* Sales Invoice: responsive layout – table priority; totals move to bottom when narrow so Add Item is never behind summary */
+.sales-invoice-main-layout {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    gap: 0.75rem;
+}
+.sales-invoice-items-col {
+    min-height: 0;
+    overflow: auto;
+    min-width: 0; /* allow shrink so no horizontal scroll from grid */
+}
+.sales-invoice-summary {
+    flex-shrink: 0;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.35rem;
+    background: var(--bg-color, #f8f9fa);
+}
+.sales-invoice-summary-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: block;
+    margin-bottom: 0.35rem;
+}
+.sales-invoice-summary-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.sales-invoice-summary-rows > div {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+}
+.sales-invoice-summary-rows > div:last-child {
+    padding-top: 0.35rem;
+    border-top: 1px solid var(--border-color);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+.sales-invoice-total { color: var(--primary-color); }
+
+/* Narrow: summary as horizontal bar at bottom to save vertical space */
+@media (max-width: 959px) {
+    .sales-invoice-main-layout .sales-invoice-summary-label { margin-bottom: 0.25rem; }
+    .sales-invoice-main-layout .sales-invoice-summary-rows {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 0 1.5rem;
+    }
+    .sales-invoice-main-layout .sales-invoice-summary-rows > div:last-child {
+        width: 100%;
+        padding-top: 0.35rem;
+        margin-top: 0.25rem;
+    }
+}
+
+/* Wide: side-by-side so table and totals fit without horizontal scroll */
+@media (min-width: 960px) {
+    .sales-invoice-main-layout {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+    }
+}
+
 /* Stats Grid */
 .stats-grid {
     display: grid;
