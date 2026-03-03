@@ -70,6 +70,8 @@ class BranchSetting(Base):
     allow_manual_transfer = Column(Boolean, nullable=False, default=True)
     allow_manual_receipt = Column(Boolean, nullable=False, default=True)
     allow_adjust_cost = Column(Boolean, nullable=False, default=True)
+    cost_outlier_threshold_pct = Column(Numeric(10, 2), nullable=True)
+    min_margin_retail_pct_override = Column(Numeric(10, 2), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

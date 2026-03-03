@@ -130,6 +130,7 @@ class PricingSettings(Base):
     allow_line_discounts = Column(Boolean, nullable=False, default=True)
     max_discount_pct_without_override = Column(Numeric(10, 2), nullable=True)
     promotions_can_go_below_margin = Column(Boolean, nullable=False, default=True)
+    cost_outlier_threshold_pct = Column(Numeric(10, 2), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

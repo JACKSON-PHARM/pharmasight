@@ -570,12 +570,16 @@ def get_branch_settings(
             allow_manual_transfer=row.allow_manual_transfer,
             allow_manual_receipt=row.allow_manual_receipt,
             allow_adjust_cost=row.allow_adjust_cost,
+            cost_outlier_threshold_pct=float(row.cost_outlier_threshold_pct) if row.cost_outlier_threshold_pct is not None else None,
+            min_margin_retail_pct_override=float(row.min_margin_retail_pct_override) if row.min_margin_retail_pct_override is not None else None,
         )
     return BranchSettingResponse(
         branch_id=branch_id,
         allow_manual_transfer=True,
         allow_manual_receipt=True,
         allow_adjust_cost=True,
+        cost_outlier_threshold_pct=None,
+        min_margin_retail_pct_override=None,
     )
 
 
@@ -597,6 +601,8 @@ def update_branch_settings(
             allow_manual_transfer=True,
             allow_manual_receipt=True,
             allow_adjust_cost=True,
+            cost_outlier_threshold_pct=None,
+            min_margin_retail_pct_override=None,
         )
         db.add(row)
         db.flush()
@@ -606,6 +612,10 @@ def update_branch_settings(
         row.allow_manual_receipt = body.allow_manual_receipt
     if body.allow_adjust_cost is not None:
         row.allow_adjust_cost = body.allow_adjust_cost
+    if body.cost_outlier_threshold_pct is not None:
+        row.cost_outlier_threshold_pct = body.cost_outlier_threshold_pct
+    if body.min_margin_retail_pct_override is not None:
+        row.min_margin_retail_pct_override = body.min_margin_retail_pct_override
     db.commit()
     db.refresh(row)
     return BranchSettingResponse(
@@ -613,5 +623,7 @@ def update_branch_settings(
         allow_manual_transfer=row.allow_manual_transfer,
         allow_manual_receipt=row.allow_manual_receipt,
         allow_adjust_cost=row.allow_adjust_cost,
+        cost_outlier_threshold_pct=float(row.cost_outlier_threshold_pct) if row.cost_outlier_threshold_pct is not None else None,
+        min_margin_retail_pct_override=float(row.min_margin_retail_pct_override) if row.min_margin_retail_pct_override is not None else None,
     )
 

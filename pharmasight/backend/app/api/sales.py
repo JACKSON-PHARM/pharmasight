@@ -253,8 +253,14 @@ def create_sales_invoice(
                             db, item_data.item_id, item_data.unit_name or "", unit_price_val
                         )
                         validation = validate_line_price(
-                            db, invoice.company_id, item_data.item_id,
-                            unit_price_val, cost_per_sale_unit, user_has_override, is_promo_price=is_promo
+                            db,
+                            invoice.company_id,
+                            item_data.item_id,
+                            unit_price_val,
+                            cost_per_sale_unit,
+                            user_has_override,
+                            branch_id=invoice.branch_id,
+                            is_promo_price=is_promo,
                         )
                         if not validation.get("allowed"):
                             raise HTTPException(
@@ -640,8 +646,14 @@ def add_sales_invoice_item(
                         db, item_data.item_id, item_data.unit_name or "", unit_price_val
                     )
                     validation = validate_line_price(
-                        db, invoice.company_id, item_data.item_id,
-                        unit_price_val, cost_per_sale_unit, user_has_override, is_promo_price=is_promo
+                        db,
+                        invoice.company_id,
+                        item_data.item_id,
+                        unit_price_val,
+                        cost_per_sale_unit,
+                        user_has_override,
+                        branch_id=invoice.branch_id,
+                        is_promo_price=is_promo,
                     )
                     if not validation.get("allowed"):
                         raise HTTPException(
@@ -1436,6 +1448,7 @@ def batch_sales_invoice(
                             unit_price_val,
                             cost_per_sale_unit,
                             user_has_override,
+                            branch_id=invoice.branch_id,
                             is_promo_price=is_promo,
                         )
                         if not validation.get("allowed"):

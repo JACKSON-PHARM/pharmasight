@@ -96,6 +96,12 @@ class BranchSettingResponse(BaseModel):
     allow_manual_transfer: bool = True
     allow_manual_receipt: bool = True
     allow_adjust_cost: bool = True
+    cost_outlier_threshold_pct: Optional[float] = Field(
+        None, ge=0, le=1000, description="Branch-level cost outlier threshold (%)"
+    )
+    min_margin_retail_pct_override: Optional[float] = Field(
+        None, ge=0, le=100, description="Branch-level minimum retail margin (%) override"
+    )
 
     class Config:
         from_attributes = True
@@ -106,6 +112,8 @@ class BranchSettingUpdate(BaseModel):
     allow_manual_transfer: Optional[bool] = None
     allow_manual_receipt: Optional[bool] = None
     allow_adjust_cost: Optional[bool] = None
+    cost_outlier_threshold_pct: Optional[float] = Field(None, ge=0, le=1000)
+    min_margin_retail_pct_override: Optional[float] = Field(None, ge=0, le=100)
 
 
 class SupplierBase(BaseModel):

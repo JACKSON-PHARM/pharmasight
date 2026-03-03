@@ -18,6 +18,12 @@ class PricingSettingsBase(BaseModel):
     allow_line_discounts: bool = Field(default=True)
     max_discount_pct_without_override: Optional[float] = Field(None, ge=0, le=100)
     promotions_can_go_below_margin: bool = Field(default=True)
+    cost_outlier_threshold_pct: Optional[float] = Field(
+        None,
+        ge=0,
+        le=1000,
+        description="Max allowed deviation (%) from branch weighted average cost before override is required.",
+    )
 
 
 class PricingSettingsUpdate(BaseModel):
@@ -28,6 +34,12 @@ class PricingSettingsUpdate(BaseModel):
     allow_line_discounts: Optional[bool] = None
     max_discount_pct_without_override: Optional[float] = Field(None, ge=0, le=100)
     promotions_can_go_below_margin: Optional[bool] = None
+    cost_outlier_threshold_pct: Optional[float] = Field(
+        None,
+        ge=0,
+        le=1000,
+        description="Max allowed deviation (%) from branch weighted average cost before override is required.",
+    )
 
 
 class PricingSettingsResponse(PricingSettingsBase):

@@ -686,6 +686,8 @@ async function openBranchInventorySettings(branchId, branchName) {
         const allowTransfer = s.allow_manual_transfer !== false;
         const allowReceipt = s.allow_manual_receipt !== false;
         const allowAdjustCost = s.allow_adjust_cost !== false;
+        const branchCostOutlier = typeof s.cost_outlier_threshold_pct === 'number' ? s.cost_outlier_threshold_pct : '';
+        const branchMinMargin = typeof s.min_margin_retail_pct_override === 'number' ? s.min_margin_retail_pct_override : '';
         const name = (branchName || 'Branch').replace(/"/g, '&quot;');
         const content = `
             <p style="color: var(--text-secondary); margin-bottom: 1rem;">Control how this branch can create Branch Transfers, Branch Receipts, and inventory corrections.</p>
@@ -711,6 +713,22 @@ async function openBranchInventorySettings(branchId, branchName) {
                     </label>
                     <small style="color: var(--text-secondary);">If unchecked, users cannot adjust batch cost (Inventory → Adjustments → Cost) at this branch. Users also need the inventory.adjust_cost role permission.</small>
                 </div>
+                <div class="form-group">
+                    <label class="form-label">Cost outlier threshold (%)</label>
+                    <input type="number" name="cost_outlier_threshold_pct" class="form-input" min="0" max="1000" step="1" value="${branchCostOutlier}">
+                    <small style="color: var(--text-secondary);">
+                        Manager override is required when a new unit cost deviates more than this percentage from the branch weighted average cost.
+                        Leave blank to use the company default (or 200% when not configured).
+                    </small>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Default minimum retail margin (%)</label>
+                    <input type="number" name="min_margin_retail_pct_override" class="form-input" min="0" max="100" step="0.1" value="${branchMinMargin}">
+                    <small style="color: var(--text-secondary);">
+                        Optional branch-level minimum margin when item/tier rules are not stricter.
+                        Sales at this branch will not be allowed below this margin unless users have override permissions.
+                    </small>
+                </div>
             </form>
         `;
         const footer = `
@@ -733,8 +751,23 @@ async function saveBranchInventorySettings(event, branchId) {
     const allowTransfer = form.querySelector('input[name="allow_manual_transfer"]').checked;
     const allowReceipt = form.querySelector('input[name="allow_manual_receipt"]').checked;
     const allowAdjustCost = form.querySelector('input[name="allow_adjust_cost"]').checked;
+    const costOutlierInput = form.querySelector('input[name="cost_outlier_threshold_pct"]');
+    const minMarginInput = form.querySelector('input[name="min_margin_retail_pct_override"]');
+    const costOutlierRaw = costOutlierInput && costOutlierInput.value !== '' ? Number(costOutlierInput.value) : null;
+    const minMarginRaw = minMarginInput && minMarginInput.value !== '' ? Number(minMarginInput.value) : null;
+    const payload = {
+        allow_manual_transfer: allowTransfer,
+        allow_manual_receipt: allowReceipt,
+        allow_adjust_cost: allowAdjustCost,
+    };
+    if (costOutlierRaw !== null && !Number.isNaN(costOutlierRaw)) {
+        payload.cost_outlier_threshold_pct = costOutlierRaw;
+    }
+    if (minMarginRaw !== null && !Number.isNaN(minMarginRaw)) {
+        payload.min_margin_retail_pct_override = minMarginRaw;
+    }
     try {
-        await API.branch.updateSettings(branchId, { allow_manual_transfer: allowTransfer, allow_manual_receipt: allowReceipt, allow_adjust_cost: allowAdjustCost });
+        await API.branch.updateSettings(branchId, payload);
         showToast('Branch inventory settings saved', 'success');
         closeModal();
         await renderBranchesPage();

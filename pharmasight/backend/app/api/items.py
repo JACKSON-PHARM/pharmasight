@@ -52,7 +52,10 @@ from app.services.snapshot_service import SnapshotService
 from app.services.order_book_service import OrderBookService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.item_search_service import ItemSearchService
-from app.services.pricing_config_service import check_stock_adjustment_requires_confirmation
+from app.services.pricing_config_service import (
+    check_stock_adjustment_requires_confirmation,
+    is_cost_outlier_vs_weighted_average,
+)
 from app.services.stock_validation_service import (
     get_stock_validation_config,
     validate_stock_entry_with_config,
@@ -1019,6 +1022,29 @@ def adjust_stock(
                     detail="Price confirmation does not match. Please re-enter the unit cost exactly to confirm.",
                 )
 
+        # Cost outlier check for manual stock additions (per branch & company)
+        outlier = is_cost_outlier_vs_weighted_average(
+            db, item.company_id, body.branch_id, item_id, unit_cost
+        )
+        if outlier.get("is_outlier"):
+            from app.dependencies import _user_has_permission
+
+            has_override = _user_has_permission(db, user.id, body.branch_id, "inventory.cost_override")
+            if not has_override:
+                baseline = outlier.get("baseline_cost")
+                deviation = outlier.get("deviation_pct")
+                threshold = outlier.get("threshold_pct")
+                detail_msg = (
+                    f"Unit cost {unit_cost} deviates {deviation:.1f}% from branch weighted average "
+                    f"{baseline}. Manager override required."
+                )
+                if threshold is not None:
+                    detail_msg += f" (Threshold {threshold:.1f}%.)"
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=detail_msg,
+                )
+
     # quantity_delta is float from convert_to_base_units; Decimal * float is invalid
     total_cost = unit_cost * Decimal(str(abs(quantity_delta)))
 
@@ -1568,6 +1594,28 @@ def post_cost_adjustment(
     new_cost = Decimal(str(body.new_unit_cost))
     if previous_cost == new_cost:
         raise HTTPException(status_code=400, detail="New cost is unchanged.")
+    # Cost outlier control: compare against branch weighted average and require override when far off
+    cost_outlier = is_cost_outlier_vs_weighted_average(
+        db, item.company_id, body.branch_id, item_id, new_cost
+    )
+    if cost_outlier.get("is_outlier"):
+        from app.dependencies import _user_has_permission
+
+        has_override = _user_has_permission(db, user.id, body.branch_id, "inventory.cost_override")
+        if not has_override:
+            baseline = cost_outlier.get("baseline_cost")
+            deviation = cost_outlier.get("deviation_pct")
+            threshold = cost_outlier.get("threshold_pct")
+            detail_msg = (
+                f"New cost {new_cost} deviates {deviation:.1f}% from branch weighted average "
+                f"{baseline}. Manager override required to apply this cost."
+            )
+            if threshold is not None:
+                detail_msg += f" (Threshold {threshold:.1f}%.)"
+            raise HTTPException(
+                status_code=403,
+                detail=detail_msg,
+            )
     try:
         movement = ItemMovement(
             company_id=item.company_id,

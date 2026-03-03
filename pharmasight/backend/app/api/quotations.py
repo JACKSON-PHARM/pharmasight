@@ -741,6 +741,7 @@ def convert_quotation_to_invoice(
                         unit_price_val,
                         cost_per_sale_unit,
                         user_has_override,
+                        branch_id=quotation.branch_id,
                         is_promo_price=is_promo,
                     )
                     if not validation.get("allowed"):

@@ -30,7 +30,10 @@ from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.supplier_ledger_service import SupplierLedgerService
-from app.services.pricing_config_service import check_stock_adjustment_requires_confirmation
+from app.services.pricing_config_service import (
+    check_stock_adjustment_requires_confirmation,
+    is_cost_outlier_vs_weighted_average,
+)
 from app.services.stock_validation_service import (
     get_stock_validation_config,
     validate_stock_entry_with_config,
@@ -1223,6 +1226,32 @@ def batch_supplier_invoice(
         else:
             unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
             unit_costs_base.append(float(unit_cost_base))
+
+        # Cost outlier control per item/branch before creating ledger entries
+        outlier = is_cost_outlier_vs_weighted_average(
+            db, invoice.company_id, invoice.branch_id, invoice_item.item_id, unit_cost_base
+        )
+        if outlier.get("is_outlier"):
+            from app.dependencies import _user_has_permission
+
+            has_override = _user_has_permission(
+                db, invoice.created_by, invoice.branch_id, "inventory.cost_override"
+            )
+            if not has_override:
+                baseline = outlier.get("baseline_cost")
+                deviation = outlier.get("deviation_pct")
+                threshold = outlier.get("threshold_pct")
+                item_name = getattr(item, "name", None) or str(invoice_item.item_id)
+                detail_msg = (
+                    f"Invoice unit cost {unit_cost_base} for item '{item_name}' deviates "
+                    f"{deviation:.1f}% from branch weighted average {baseline}. Manager override required."
+                )
+                if threshold is not None:
+                    detail_msg += f" (Threshold {threshold:.1f}%.)"
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=detail_msg,
+                )
 
         item_name = getattr(item, "name", None) or str(invoice_item.item_id)
         for uc in unit_costs_base:

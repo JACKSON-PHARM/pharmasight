@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services.inventory_service import InventoryService, _unit_for_display
 from app.services.pricing_service import PricingService
+from app.services.canonical_pricing import CanonicalPricingService
 from app.services.order_book_service import OrderBookService
 from app.utils.vat import vat_rate_to_percent
 
@@ -113,7 +114,36 @@ def _search_impl(
             )
             return [], "item_branch_snapshot", f"item_branch_snapshot;dur={snapshot_ms:.2f}"
 
-        # Success (including 0 rows): build canonical response from snapshot only
+        # Success (including 0 rows): optionally enrich with canonical cost-based pricing
+        item_ids = [r.item_id for r in rows]
+        cost_map: Dict[UUID, float] = {}
+        sale_price_map: Dict[UUID, float] = {}
+        margin_map: Dict[UUID, float] = {}
+        if include_pricing and branch_id and item_ids:
+            # 1) Best-available cost per item (branch-aware, ledger-backed, with Excel default fallback)
+            costs = CanonicalPricingService.get_best_available_cost_batch(
+                db, item_ids, branch_id, company_id
+            )
+            # 2) Effective markup per item (item / tier / company defaults)
+            markup_batch = PricingService.get_markup_percent_batch(
+                db, item_ids, company_id, item_map=None
+            )
+            for iid in item_ids:
+                raw_cost = costs.get(iid)
+                cost = float(raw_cost) if raw_cost is not None else 0.0
+                cost_map[iid] = cost
+                margin = markup_batch.get(iid, Decimal("30"))
+                margin_f = float(margin)
+                margin_map[iid] = margin_f
+                # Precalculate recommended selling price (cost * (1 + margin%))
+                if cost > 0:
+                    sp = float((margin / Decimal("100") + Decimal("1")) * Decimal(str(cost)))
+                    # Round to 2dp for UI friendliness
+                    sale_price_map[iid] = float(round(sp + Decimal("0.0000001"), 2))
+                else:
+                    sale_price_map[iid] = 0.0
+
+        # Success (including 0 rows): build canonical response from snapshot with canonical cost overrides
         result = []
         for r in rows:
             item_like = SimpleNamespace(
@@ -126,7 +156,18 @@ def _search_impl(
             )
             stock_float = float(r.current_stock or 0)
             stock_val = int(stock_float)
-            item_data = _canonical_item_from_snapshot_row(r, item_like, stock_float, stock_val)
+            purchase_price_override = cost_map.get(r.item_id) if include_pricing and branch_id and item_ids else None
+            sale_price_override = sale_price_map.get(r.item_id) if include_pricing and branch_id and item_ids else None
+            margin_percent_override = margin_map.get(r.item_id) if include_pricing and branch_id and item_ids else None
+            item_data = _canonical_item_from_snapshot_row(
+                r,
+                item_like,
+                stock_float,
+                stock_val,
+                purchase_price_override=purchase_price_override,
+                sale_price_override=sale_price_override,
+                margin_percent_override=margin_percent_override,
+            )
             if context == "purchase_order":
                 item_data["last_supply_date"] = None
                 item_data["last_unit_cost"] = item_data["purchase_price"]
@@ -149,11 +190,21 @@ def _canonical_item_from_snapshot_row(
     item_obj: Optional[Item],
     stock_float: float,
     stock_val: int,
+    purchase_price_override: Optional[float] = None,
+    sale_price_override: Optional[float] = None,
+    margin_percent_override: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Build one canonical item dict from a snapshot row. Shared shape for snapshot path."""
     price_val = float(r.average_cost or 0)
-    purchase_val = float(r.last_purchase_price or r.average_cost or 0)
-    sale_val = float(r.selling_price or 0)
+    # Use canonical best-available cost and markup when provided; fall back to snapshot columns
+    if purchase_price_override is not None:
+        purchase_val = float(purchase_price_override)
+    else:
+        purchase_val = float(r.last_purchase_price or r.average_cost or 0)
+    if sale_price_override is not None:
+        sale_val = float(sale_price_override)
+    else:
+        sale_val = float(r.selling_price or 0)
     stock_display = _format_stock_display(stock_float, item_obj)
     retail_unit = _unit_for_display(item_obj.retail_unit, "piece") if item_obj else "piece"
     return {
@@ -174,7 +225,9 @@ def _canonical_item_from_snapshot_row(
         "sale_price": sale_val,
         "last_supplier": "",
         "last_order_date": None,
-        "margin_percent": float(r.margin_percent) if r.margin_percent is not None else None,
+        "margin_percent": float(margin_percent_override) if margin_percent_override is not None else (
+            float(r.margin_percent) if r.margin_percent is not None else None
+        ),
         "next_expiry_date": r.next_expiry_date.isoformat() if r.next_expiry_date else None,
     }
 

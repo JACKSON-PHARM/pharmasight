@@ -12,7 +12,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models import Item, PricingSettings
+from app.models import Item, PricingSettings, BranchSetting
 from app.services.pricing_service import PricingService
 from app.services.item_units_helper import get_unit_multiplier_from_item
 
@@ -39,6 +39,7 @@ def get_global_pricing_config(db: Session, company_id: UUID) -> Dict[str, Any]:
             "allow_line_discounts": True,
             "max_discount_pct_without_override": None,
             "promotions_can_go_below_margin": True,
+            "cost_outlier_threshold_pct": None,
         }
     return {
         "default_min_margin_retail_pct": float(row.default_min_margin_retail_pct) if row.default_min_margin_retail_pct is not None else None,
@@ -47,6 +48,82 @@ def get_global_pricing_config(db: Session, company_id: UUID) -> Dict[str, Any]:
         "allow_line_discounts": bool(row.allow_line_discounts),
         "max_discount_pct_without_override": float(row.max_discount_pct_without_override) if row.max_discount_pct_without_override is not None else None,
         "promotions_can_go_below_margin": bool(row.promotions_can_go_below_margin),
+        "cost_outlier_threshold_pct": float(row.cost_outlier_threshold_pct) if row.cost_outlier_threshold_pct is not None else None,
+    }
+
+
+def get_cost_outlier_threshold_pct(
+    db: Session, company_id: UUID, branch_id: Optional[UUID] = None
+) -> Decimal:
+    """
+    Return configured cost outlier threshold (%) or a safe default.
+    Default is 200%% if not set (cost can deviate up to 2x before override is required).
+    """
+    # 1) Branch-level override when present
+    if branch_id is not None:
+        row = (
+            db.query(BranchSetting.cost_outlier_threshold_pct)
+            .filter(BranchSetting.branch_id == branch_id)
+            .first()
+        )
+        if row and row[0] is not None:
+            try:
+                return Decimal(str(row[0]))
+            except Exception:
+                pass
+
+    # 2) Company-level default from pricing_settings
+    config = get_global_pricing_config(db, company_id)
+    raw = config.get("cost_outlier_threshold_pct")
+    if raw is not None:
+        try:
+            return Decimal(str(raw))
+        except Exception:
+            pass
+    # 3) Fallback application default
+    return Decimal("200")
+
+
+def is_cost_outlier_vs_weighted_average(
+    db: Session,
+    company_id: UUID,
+    branch_id: UUID,
+    item_id: UUID,
+    unit_cost_per_base: Decimal,
+) -> Dict[str, Any]:
+    """
+    Compare a new unit cost (per base unit) against the branch weighted average cost.
+    Returns dict: { is_outlier, baseline_cost, deviation_pct, threshold_pct }.
+    When baseline is missing or zero, always returns is_outlier=False.
+    """
+    if unit_cost_per_base is None or unit_cost_per_base <= 0:
+        return {
+            "is_outlier": False,
+            "baseline_cost": None,
+            "deviation_pct": None,
+            "threshold_pct": None,
+        }
+
+    # Lazy import to avoid circular dependency at module import time
+    from app.services.canonical_pricing import CanonicalPricingService
+
+    baseline = CanonicalPricingService.get_weighted_average_cost(
+        db, item_id, branch_id, company_id
+    )
+    if baseline is None or baseline <= 0:
+        return {
+            "is_outlier": False,
+            "baseline_cost": None,
+            "deviation_pct": None,
+            "threshold_pct": None,
+        }
+    threshold = get_cost_outlier_threshold_pct(db, company_id, branch_id)
+    deviation_pct = (abs(unit_cost_per_base - baseline) / baseline) * Decimal("100")
+    return {
+        "is_outlier": deviation_pct > threshold,
+        "baseline_cost": baseline,
+        "deviation_pct": deviation_pct,
+        "threshold_pct": threshold,
     }
 
 
@@ -121,6 +198,7 @@ def validate_line_price(
     cost_per_sale_unit: Decimal,
     user_has_sell_below_margin: bool,
     *,
+    branch_id: Optional[UUID] = None,
     is_promo_price: bool = False,
     line_discount_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -158,6 +236,21 @@ def validate_line_price(
     # 1b) Floor overrides margin — when item has floor_price_retail set and price >= floor,
     # the floor IS the pricing rule for that item (e.g. constant 200 bob); skip margin check.
     floor_overrides_margin = floor is not None and unit_price_exclusive >= Decimal(str(floor))
+
+    # 1c) Branch-level minimum margin override (tightens, never relaxes)
+    if branch_id is not None:
+        row = (
+            db.query(BranchSetting.min_margin_retail_pct_override)
+            .filter(BranchSetting.branch_id == branch_id)
+            .first()
+        )
+        if row and row[0] is not None:
+            try:
+                branch_min = Decimal(str(row[0]))
+                if branch_min > effective_min_margin:
+                    effective_min_margin = branch_min
+            except Exception:
+                pass
 
     # 2) Margin check (existing logic: min_margin from tier/item) — skipped when floor overrides
     if cost_per_sale_unit <= 0:
