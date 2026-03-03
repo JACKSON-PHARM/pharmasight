@@ -135,11 +135,11 @@ def _search_impl(
                 margin = markup_batch.get(iid, Decimal("30"))
                 margin_f = float(margin)
                 margin_map[iid] = margin_f
-                # Precalculate recommended selling price (cost * (1 + margin%))
+                # Precalculate recommended selling price (cost * (1 + margin%)) using Decimal math
                 if cost > 0:
-                    sp = float((margin / Decimal("100") + Decimal("1")) * Decimal(str(cost)))
-                    # Round to 2dp for UI friendliness
-                    sale_price_map[iid] = float(round(sp + Decimal("0.0000001"), 2))
+                    sp_dec = (margin / Decimal("100") + Decimal("1")) * Decimal(str(cost))
+                    # Quantize to 2dp for UI friendliness
+                    sale_price_map[iid] = float(sp_dec.quantize(Decimal("0.01")))
                 else:
                     sale_price_map[iid] = 0.0
 
