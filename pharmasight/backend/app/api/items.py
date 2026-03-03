@@ -1031,7 +1031,7 @@ def adjust_stock(
         if outlier.get("is_outlier"):
             from app.dependencies import _user_has_permission
 
-            has_override = _user_has_permission(db, current_user.id, body.branch_id, "inventory.cost_override")
+            has_override = _user_has_permission(db, current_user.id, "inventory.cost_override")
             if not has_override:
                 baseline = outlier.get("baseline_cost")
                 deviation = outlier.get("deviation_pct")
