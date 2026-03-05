@@ -2141,6 +2141,7 @@
     /**
      * Build 3-tier unit list from item fields (wholesale_unit, retail_unit, supplier_unit, pack_size, wholesale_units_per_supplier).
      * Used when API returns no/empty units or as fallback so user can always choose wholesale, retail, or supplier.
+     * Supplier unit: use wholesale_units_per_supplier when > 1, else pack_size (1 packet = pack_size base units).
      */
     TransactionItemsTable.prototype.buildUnitsFrom3Tier = function(full) {
         const wholesaleName = (full.wholesale_unit || full.base_unit || 'piece').toString().trim() || 'piece';
@@ -2157,7 +2158,9 @@
             }
         }
         if (supplierName && supplierName.toLowerCase() !== wholesaleName.toLowerCase()) {
-            units.push({ unit_name: supplierName, multiplier_to_base: wups, is_default: false });
+            // 1 supplier unit = wups base units; when wups is 1/missing use pack_size (e.g. 1 packet = 30 tablets)
+            const supplierMult = wups > 1 ? wups : pack;
+            units.push({ unit_name: supplierName, multiplier_to_base: supplierMult, is_default: false });
         }
         return units.length ? units : [{ unit_name: wholesaleName, multiplier_to_base: 1, is_default: true }];
     };
@@ -2176,6 +2179,19 @@
         try {
             const full = await api.items.get(item.item_id, branchId);
             let units = full.units && full.units.length > 1 ? full.units : this.buildUnitsFrom3Tier(full);
+            // Ensure supplier unit has correct multiplier (per-base conversion): if multiplier is 1 but pack_size > 1, use pack_size
+            const packSize = Math.max(1, parseInt(full.pack_size, 10) || 1);
+            const supplierName = (full.supplier_unit || '').toString().trim();
+            if (supplierName && packSize > 1 && Array.isArray(units)) {
+                units = units.map(function(u) {
+                    const name = (u.unit_name || '').toString().trim();
+                    if (name.toLowerCase() === supplierName.toLowerCase()) {
+                        const mult = parseFloat(u.multiplier_to_base) || 1;
+                        if (mult <= 1) return { unit_name: u.unit_name, multiplier_to_base: packSize, is_default: u.is_default };
+                    }
+                    return u;
+                });
+            }
             item.available_units = units;
             if (typeof full.default_cost === 'number' && full.default_cost >= 0) {
                 item.purchase_price = full.default_cost;

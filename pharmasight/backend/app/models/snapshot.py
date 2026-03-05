@@ -4,7 +4,7 @@ Precomputed inventory_balances, item_branch_purchase_snapshot, item_branch_searc
 Updated in same transaction as ledger writes.
 """
 import uuid
-from sqlalchemy import Column, Date, Integer, Numeric, String, ForeignKey, UniqueConstraint
+from sqlalchemy import Boolean, Column, Date, Integer, Numeric, String, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -68,9 +68,9 @@ class ItemBranchSearchSnapshot(Base):
 
 class ItemBranchSnapshot(Base):
     """
-    Item search snapshot: one row per (item_id, branch_id). Updated in same transaction as
-    ledger (GRN, sale, adjustment, pricing, item edit). Used for single-SELECT item search
-    across the app (sales, quotations, inventory, suppliers, etc.).
+    Unified item search snapshot: one row per (item_id, branch_id). Consolidates
+    inventory state, pricing inputs, effective_selling_price, and activity metadata.
+    Updated in same transaction as ledger and legacy snapshot writes.
     """
     __tablename__ = "item_branch_snapshot"
 
@@ -92,10 +92,31 @@ class ItemBranchSnapshot(Base):
     next_expiry_date = Column(Date, nullable=True)
     search_text = Column(String, nullable=False, default="")
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+    # From item_branch_purchase_snapshot
+    last_purchase_date = Column(TIMESTAMP(timezone=True), nullable=True)
+    last_supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True)
+    # From item_branch_search_snapshot
+    last_order_date = Column(Date, nullable=True)
+    last_sale_date = Column(Date, nullable=True)
+    last_order_book_date = Column(TIMESTAMP(timezone=True), nullable=True)
+    last_quotation_date = Column(Date, nullable=True)
+    # Pricing inputs (set by refresh)
+    default_item_margin = Column(Numeric(10, 2), nullable=True)
+    branch_margin = Column(Numeric(10, 2), nullable=True)
+    company_margin = Column(Numeric(10, 2), nullable=True)
+    floor_price = Column(Numeric(20, 4), nullable=True)
+    minimum_margin = Column(Numeric(10, 2), nullable=True)
+    promotion_price = Column(Numeric(20, 4), nullable=True)
+    promotion_start = Column(TIMESTAMP(timezone=True), nullable=True)
+    promotion_end = Column(TIMESTAMP(timezone=True), nullable=True)
+    promotion_active = Column(Boolean, default=False, nullable=True)
+    # Computed selling price and source
+    effective_selling_price = Column(Numeric(20, 4), nullable=True)
+    price_source = Column(String(50), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("item_id", "branch_id", name="item_branch_snapshot_item_id_branch_id_key"),
-        {"comment": "Item search snapshot. Single-SELECT when branch_id provided."},
+        {"comment": "Unified item search snapshot. Single-SELECT when branch_id provided."},
     )
     __mapper_args__ = {"eager_defaults": True}
 
