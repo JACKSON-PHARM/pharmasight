@@ -764,42 +764,49 @@ def get_tenant_required(
     return tenant
 
 
+# When no tenant row exists for the app DB, use this UUID for storage (single-DB / post-migration).
+# All companies on the default DB share this storage prefix: tenant-assets/{this_uuid}/...
+_SYNTHETIC_DEFAULT_TENANT_UUID = UUID("11111111-1111-1111-1111-111111111111")
+
+
 def get_tenant_or_default(
     request: Request,
     master_db: Session = Depends(get_master_db),
-) -> Tenant:
+):
     """
-    Resolve tenant for storage/tenant-scoped ops: from header, or as the default DB tenant.
+    Resolve tenant for storage/tenant-scoped ops: from header, default DB tenant row, or synthetic.
 
-    Master/default DB can function as a tenant DB for development, testing, and demos.
-    When no X-Tenant-* header is sent, look up a tenant in the tenants table whose
-    database_url equals this app's DATABASE_URL. That tenant is the "default" and
-    provides tenant_id for storage (e.g. tenant-assets/{tenant_id}/stamp.png).
-
-    If no such tenant exists, raises 400 with instructions to add the default DB
-    as a tenant (so it can be listed and used for dev/demos).
+    When all clients use the default DB (no X-Tenant-* header), we first look up a tenant in the
+    tenants table whose database_url equals DATABASE_URL. If none exists (e.g. after collapsing
+    to single DB, identified by company id), we return a synthetic tenant so logo/stamp upload and
+    PO PDF generation still work. Storage uses tenant-assets/{tenant_id}/...; synthetic tenant id
+    comes from DEFAULT_STORAGE_TENANT_ID env or a fixed UUID.
     """
     tenant = get_tenant_from_header(request, master_db)
     if tenant is not None:
         return tenant
-    # No header: use default DB as tenant (reuse cached lookup)
     default_tenant = _get_default_tenant(master_db)
-    if default_tenant is None:
-        default_url = settings.database_connection_string
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "This operation requires a tenant (for storage paths). "
-                "Either send X-Tenant-ID or X-Tenant-Subdomain, or add your current database as a tenant "
-                "in the tenants table (same database_url as DATABASE_URL) so the default DB can be used for development and demos."
-            ),
-        )
-    if (default_tenant.status or "").lower() in ("suspended", "cancelled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account suspended. Please contact support.",
-        )
-    return default_tenant
+    if default_tenant is not None:
+        if (default_tenant.status or "").lower() in ("suspended", "cancelled"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account suspended. Please contact support.",
+            )
+        return default_tenant
+    # No tenant row for this DB: use synthetic default so storage works (single-DB, company-identified)
+    sid = getattr(settings, "DEFAULT_STORAGE_TENANT_ID", None) or ""
+    if isinstance(sid, str):
+        sid = (sid or "").strip()
+    try:
+        uid = UUID(sid) if sid else _SYNTHETIC_DEFAULT_TENANT_UUID
+    except (ValueError, TypeError):
+        uid = _SYNTHETIC_DEFAULT_TENANT_UUID
+    return SimpleNamespace(
+        id=uid,
+        status="active",
+        supabase_storage_url=None,
+        supabase_storage_service_role_key=None,
+    )
 
 
 def get_tenant_optional(

@@ -678,6 +678,7 @@ const API = {
         deleteOrder: (orderId) => api.delete(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}`),
         approveOrder: (orderId) => api.patch(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}/approve`, null),
         getOrderPdfUrl: (orderId) => api.get(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}/pdf-url`),
+        regenerateOrderPdf: (orderId) => api.post(`${CONFIG.API_ENDPOINTS.purchases}/order/${orderId}/regenerate-pdf`),
         listInvoices: (params) => {
             const queryString = new URLSearchParams();
             Object.keys(params).forEach(key => {

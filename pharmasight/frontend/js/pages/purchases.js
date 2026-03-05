@@ -2924,21 +2924,37 @@ async function downloadPurchaseOrderPdf(orderId) {
     try {
         if (typeof showToast === 'function') showToast('Opening PDF...', 'info');
         const order = await API.purchases.getOrder(orderId);
-        if (order.status !== 'APPROVED' || !order.pdf_path) {
+        const isApproved = (order && (order.status || '').toUpperCase()) === 'APPROVED';
+        if (!order || !isApproved) {
             if (typeof showToast === 'function') showToast('PDF is available only for approved orders.', 'info');
             return;
         }
-        const { url } = await API.purchases.getOrderPdfUrl(orderId);
+        let url;
+        if (order.pdf_path && typeof API.purchases.getOrderPdfUrl === 'function') {
+            try {
+                const res = await API.purchases.getOrderPdfUrl(orderId);
+                url = res && res.url;
+            } catch (e) {
+                if (e && e.status === 404) url = null;
+                else throw e;
+            }
+        }
+        if (!url && typeof API.purchases.regenerateOrderPdf === 'function') {
+            if (typeof showToast === 'function') showToast('Generating PDF...', 'info');
+            const res = await API.purchases.regenerateOrderPdf(orderId);
+            url = res && res.url;
+        }
         if (url) {
             window.open(url, '_blank');
             if (typeof showToast === 'function') showToast('PDF opened in new tab; you can save from there.', 'success');
         } else {
-            if (typeof showToast === 'function') showToast('Could not get PDF URL', 'error');
+            if (typeof showToast === 'function') showToast('Could not get PDF URL. Ensure tenant/ Supabase is configured.', 'error');
         }
     } catch (error) {
         console.error('Error opening PO PDF:', error);
-        const msg = error && (error.message || error.detail || String(error));
-        if (typeof showToast === 'function') showToast(msg || 'Failed to open PDF', 'error');
+        let msg = error && (error.message || (typeof error.detail === 'string' ? error.detail : error.detail && error.detail.detail ? error.detail.detail : null) || String(error));
+        if (!msg || msg === '[object Object]') msg = 'Failed to open PDF';
+        if (typeof showToast === 'function') showToast(msg, 'error');
     }
 }
 

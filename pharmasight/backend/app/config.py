@@ -123,6 +123,11 @@ class Settings(BaseSettings):
     # so links work for recipients; if unset or localhost, links will point to localhost and fail for external users.
     APP_PUBLIC_URL: str = os.getenv("APP_PUBLIC_URL", "http://localhost:3000")
 
+    # Single-DB mode: when no tenant row exists for DATABASE_URL, use this UUID for storage paths
+    # (logo, stamp, signatures, PO PDFs). Set to a fixed UUID so logo/stamp upload works without
+    # adding a row to the master tenants table. Leave empty to require a tenant row.
+    DEFAULT_STORAGE_TENANT_ID: Optional[str] = os.getenv("DEFAULT_STORAGE_TENANT_ID", "").strip() or None
+
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
     ALGORITHM: str = "HS256"

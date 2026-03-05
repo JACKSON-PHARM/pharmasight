@@ -308,15 +308,20 @@ def update_company_setting(
 async def upload_company_stamp(
     company_id: UUID,
     file: UploadFile = File(...),
+    auth: tuple = Depends(require_settings_edit),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
-    _auth: tuple = Depends(require_settings_edit),
 ) -> Dict[str, Any]:
     """
     Upload company stamp (e.g. pharmacy seal). Requires settings.edit.
-    Stores in Supabase tenant-assets/{tenant_id}/stamp.png. Saves path in document_branding.
+    Stores in Supabase tenant-assets/{tenant_id}/companies/{company_id}/stamp.png.
+    User may only upload for their effective company (resolved from token).
     PNG/JPG only, max 2MB.
     """
+    user = auth[0]
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -338,7 +343,7 @@ async def upload_company_stamp(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid content-type. Allowed: image/png, image/jpeg",
         )
-    stored_path = upload_stamp(tenant.id, content, content_type, tenant=tenant)
+    stored_path = upload_stamp(tenant.id, content, content_type, tenant=tenant, company_id=company_id)
     if not stored_path:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -374,16 +379,21 @@ async def upload_company_stamp(
 async def upload_company_logo(
     company_id: UUID,
     file: UploadFile = File(...),
+    auth: tuple = Depends(require_settings_edit),
     tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
-    _auth: tuple = Depends(require_settings_edit),
 ):
     """
     Upload company logo (requires settings.edit).
-    Prefer Supabase tenant-assets (PNG/JPG, max 2MB). Falls back to local uploads if storage unavailable.
-    Returns the company with updated logo_url (stored path or local URL).
+    Stores in tenant-assets/{tenant_id}/companies/{company_id}/logo.png so each company has its own file.
+    User may only upload for their effective company (resolved from token).
+    Prefer Supabase; falls back to local uploads if storage unavailable.
     """
     import os
+    user = auth[0]
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -400,7 +410,7 @@ async def upload_company_logo(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File too large. Maximum size is 2MB",
         )
-    stored_path = upload_logo(tenant.id, file_content, content_type, tenant=tenant)
+    stored_path = upload_logo(tenant.id, file_content, content_type, tenant=tenant, company_id=company_id)
     if stored_path:
         company.logo_url = stored_path
         db.commit()

@@ -31,11 +31,12 @@ MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2MB
 SIGNED_URL_EXPIRY_SECONDS = 600  # 10 minutes
 
 
-def _tenant_id_from_stored_path(stored_path: str) -> Optional[str]:
+def tenant_id_from_stored_path(stored_path: str) -> Optional[str]:
     """
     Extract tenant_id (first path segment) from stored_path.
     Path format: tenant-assets/{tenant_id}/...
     Returns None if path is invalid or not tenant-scoped.
+    Public so API can resolve legacy path tenant (e.g. post single-DB migration).
     """
     if not stored_path or not stored_path.startswith(BUCKET + "/"):
         return None
@@ -44,6 +45,11 @@ def _tenant_id_from_stored_path(stored_path: str) -> Optional[str]:
         return None
     parts = rest.split("/")
     return parts[0] if parts else None
+
+
+def _tenant_id_from_stored_path(stored_path: str) -> Optional[str]:
+    """Alias for tenant_id_from_stored_path (internal use)."""
+    return tenant_id_from_stored_path(stored_path)
 
 
 def _path_belongs_to_tenant(stored_path: str, tenant: Any) -> bool:
@@ -95,6 +101,16 @@ def path_logo(tenant_id: UUID) -> str:
 
 def path_stamp(tenant_id: UUID) -> str:
     return f"{tenant_id}/stamp.png"
+
+
+def path_company_logo(tenant_id: UUID, company_id: UUID) -> str:
+    """Company-scoped logo so multiple companies in one tenant do not overwrite each other."""
+    return f"{tenant_id}/companies/{company_id}/logo.png"
+
+
+def path_company_stamp(tenant_id: UUID, company_id: UUID) -> str:
+    """Company-scoped stamp so multiple companies in one tenant do not overwrite each other."""
+    return f"{tenant_id}/companies/{company_id}/stamp.png"
 
 
 def path_user_signature(tenant_id: UUID, user_id: UUID) -> str:
@@ -178,21 +194,35 @@ def upload_file(
 
 
 def upload_logo(
-    tenant_id: UUID, content: bytes, content_type: str, *, tenant: Optional[Any] = None
+    tenant_id: UUID,
+    content: bytes,
+    content_type: str,
+    *,
+    tenant: Optional[Any] = None,
+    company_id: Optional[UUID] = None,
 ) -> Optional[str]:
+    """Upload logo. Pass company_id so multiple companies in one tenant use separate paths."""
     ct = content_type or "image/png"
     if ct not in ALLOWED_IMAGE_CONTENT_TYPES:
         ct = "image/png"
-    return upload_file(tenant_id, "logo.png", content, ct, validate_image=True, tenant=tenant)
+    rel = f"companies/{company_id}/logo.png" if company_id is not None else "logo.png"
+    return upload_file(tenant_id, rel, content, ct, validate_image=True, tenant=tenant)
 
 
 def upload_stamp(
-    tenant_id: UUID, content: bytes, content_type: str, *, tenant: Optional[Any] = None
+    tenant_id: UUID,
+    content: bytes,
+    content_type: str,
+    *,
+    tenant: Optional[Any] = None,
+    company_id: Optional[UUID] = None,
 ) -> Optional[str]:
+    """Upload stamp. Pass company_id so multiple companies in one tenant use separate paths."""
     ct = content_type or "image/png"
     if ct not in ALLOWED_IMAGE_CONTENT_TYPES:
         ct = "image/png"
-    return upload_file(tenant_id, "stamp.png", content, ct, validate_image=True, tenant=tenant)
+    rel = f"companies/{company_id}/stamp.png" if company_id is not None else "stamp.png"
+    return upload_file(tenant_id, rel, content, ct, validate_image=True, tenant=tenant)
 
 
 def upload_user_signature(
@@ -232,6 +262,30 @@ def download_file(stored_path: str, tenant: Optional[Any] = None) -> Optional[by
         return data if isinstance(data, bytes) else None
     except Exception as e:
         logger.warning("download_file %s: %s", stored_path, e)
+        return None
+
+
+def download_file_with_path_tenant(
+    stored_path: str, path_tenant: Any
+) -> Optional[bytes]:
+    """
+    Download file using the tenant that owns the path (for legacy assets).
+    Use when the stored_path is under a different tenant_id (e.g. pre-migration)
+    but the document belongs to the current user's company. Caller must ensure
+    the asset is scoped to the same company. path_tenant is the Tenant row for
+    the tenant_id extracted from stored_path.
+    """
+    if not stored_path or not stored_path.startswith(BUCKET + "/"):
+        return None
+    client = _client(path_tenant)
+    if not client:
+        return None
+    try:
+        object_path = stored_path[len(BUCKET) + 1:]
+        data = client.storage.from_(BUCKET).download(object_path)
+        return data if isinstance(data, bytes) else None
+    except Exception as e:
+        logger.warning("download_file_with_path_tenant %s: %s", stored_path, e)
         return None
 
 
@@ -283,4 +337,41 @@ def get_signed_url(
         return url
     except Exception as e:
         logger.warning("get_signed_url %s: %s", stored_path, e, exc_info=True)
+        return None
+
+
+def get_signed_url_with_path_tenant(
+    stored_path: str,
+    path_tenant: Any,
+    expires_in: int = SIGNED_URL_EXPIRY_SECONDS,
+) -> Optional[str]:
+    """
+    Return signed URL using the tenant that owns the path (for legacy stored PDFs).
+    Use when pdf_path is under a different tenant_id (e.g. pre single-DB migration).
+    """
+    client = _client(path_tenant)
+    if not client or not stored_path or not stored_path.startswith(BUCKET + "/"):
+        return None
+    try:
+        object_path = stored_path[len(BUCKET) + 1:]
+        result = client.storage.from_(BUCKET).create_signed_url(object_path, expires_in)
+        url = None
+        if isinstance(result, dict):
+            url = (
+                result.get("signedURL")
+                or result.get("signedUrl")
+                or result.get("signed_url")
+                or result.get("url")
+            )
+        elif hasattr(result, "signed_url"):
+            url = result.signed_url
+        elif hasattr(result, "signedUrl"):
+            url = result.signedUrl
+        elif hasattr(result, "signedURL"):
+            url = result.signedURL
+        elif hasattr(result, "url"):
+            url = result.url
+        return url
+    except Exception as e:
+        logger.warning("get_signed_url_with_path_tenant %s: %s", stored_path, e)
         return None

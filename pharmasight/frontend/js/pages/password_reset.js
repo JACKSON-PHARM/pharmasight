@@ -196,10 +196,10 @@ async function renderPasswordUpdateForm(page, isInternalReset) {
                     <div class="form-group">
                         <label for="newPassword">New Password</label>
                         <input type="password" id="newPassword" required 
-                               placeholder="At least 6 characters (not numbers/letters only, sequential, or common)"
-                               minlength="6" autocomplete="new-password">
+                               placeholder="At least 8 characters (letter and digit required)"
+                               minlength="8" autocomplete="new-password">
                         <small style="color: var(--text-secondary); margin-top: 0.25rem; display: block;">
-                            Must be at least 6 characters. Cannot be numbers only, letters only, sequential, or common passwords.
+                            Must be at least 8 characters and include both a letter and a digit. Cannot be numbers only, letters only, sequential, or common passwords.
                         </small>
                         <div id="passwordStrength" style="margin-top: 0.5rem; font-size: 0.75rem;"></div>
                         <div id="passwordResetValidationError" style="color: var(--danger-color); font-size: 0.875rem; margin-top: 0.25rem; display: none;"></div>
@@ -308,6 +308,12 @@ async function renderPasswordUpdateForm(page, isInternalReset) {
                 return;
             }
             
+            // Backend requires at least 8 characters; enforce before sending
+            if (newPassword.length < 8) {
+                showError('Password must be at least 8 characters long');
+                return;
+            }
+            
             // Use PasswordValidation if available, otherwise fallback to basic validation
             if (window.PasswordValidation) {
                 const validation = window.PasswordValidation.validate(newPassword);
@@ -316,9 +322,9 @@ async function renderPasswordUpdateForm(page, isInternalReset) {
                     return;
                 }
             } else {
-                // Fallback validation
-                if (newPassword.length < 6) {
-                    showError('Password must be at least 6 characters long');
+                // Fallback validation (must match backend: min 8 chars, letter + digit)
+                if (newPassword.length < 8) {
+                    showError('Password must be at least 8 characters long');
                     return;
                 }
                 
@@ -326,7 +332,7 @@ async function renderPasswordUpdateForm(page, isInternalReset) {
                 const hasLetter = /[a-zA-Z]/.test(newPassword);
                 
                 if (!hasNumber || !hasLetter) {
-                    showError('Password must include both letters and numbers');
+                    showError('Password must contain at least one letter and one digit');
                     return;
                 }
             }
@@ -341,9 +347,11 @@ async function renderPasswordUpdateForm(page, isInternalReset) {
                 if (isInternalReset) {
                     const token = getResetTokenFromUrl();
                     if (!token) throw new Error('Reset link invalid or expired.');
-                    const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL) ? CONFIG.API_BASE_URL : '';
+                    const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
+                        ? CONFIG.API_BASE_URL
+                        : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
                     if (!baseUrl) throw new Error('Configuration error.');
-                    const res = await fetch(`${baseUrl}/api/auth/reset-password`, {
+                    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/reset-password`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ token: token, new_password: newPassword })

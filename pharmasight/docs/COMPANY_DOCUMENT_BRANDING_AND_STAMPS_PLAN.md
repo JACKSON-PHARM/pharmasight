@@ -1,8 +1,41 @@
 # Company Document Branding, Stamps & Signatures – Implementation Plan
 
-**Status:** Implemented (Supabase storage, document_branding, stamp/signature upload, PO approval workflow, frontend Settings > Document Branding and User edit signature).
+**Status:** Implemented (Supabase storage, document_branding, stamp/signature upload, PO approval workflow, frontend Settings > Document Branding and User edit signature). Logo/stamp use company-scoped storage paths when multiple companies share one tenant (single-DB).
 
-**Context:** Kenyan pharmacies (tenants) need company names, branch names, logos, addresses, and optionally **digital stamps** and **signatures** on transactional documents. Stamps/signatures are required for compliance (e.g. controlled substances, official purchase orders). These are **company settings**, editable by admins, and can change over time.
+**Context:** Kenyan pharmacies (tenants) need company names, branch names, logos, addresses, and optionally **digital stamps** and **signatures** on transactional documents.
+
+---
+
+## Asset isolation (logos, stamps, signatures)
+
+All companies share one bucket (`tenant-assets`). Isolation is enforced so Company X never receives Company Y’s logo, stamp, or signature.
+
+### 1. Token → company
+
+- The JWT is issued after login with the user’s **effective company** (from their branch/role). That value is cached in auth resolution.
+- `get_effective_company_id_for_user(db, user)` returns the company the user is acting in (e.g. from selected branch or default branch).
+- `request.state.effective_company_id` is set by `get_current_user` from the token/cache so most endpoints do not need an extra DB call.
+
+### 2. Upload (who can write what)
+
+- **Logo** (`POST /companies/{company_id}/logo`): Requires `settings.edit`. The API checks `effective_company_id == company_id`; if not, returns 403. File is stored at `tenant-assets/{tenant_id}/companies/{company_id}/logo.png`, so each company has its own file even when many companies share one tenant (e.g. single-DB / synthetic tenant).
+- **Stamp** (`POST /companies/{company_id}/stamp`): Same: must be the user’s effective company; stored at `tenant-assets/{tenant_id}/companies/{company_id}/stamp.png`. The path is saved in `company_settings.document_branding.stamp_url` for that company.
+- **Signature** (`POST /users/.../signature`): Stored at `tenant-assets/{tenant_id}/users/{user_id}/signature.png`. Users are scoped to companies via branches/roles; the upload endpoint ensures the target user is in a branch the current user can manage.
+
+### 3. Retrieval (how documents get the right assets)
+
+We never “list” assets by tenant. We always use **paths stored in the DB** for the **document’s company** and the **specific user** (e.g. approver):
+
+- **Logo:** For a PO/invoice/quotation we load the **document’s company** (`order.company_id` → `company`). Logo bytes or signed URL come from `company.logo_url` (the path saved at upload). So we always use that company’s logo.
+- **Stamp:** We load `CompanySetting` for **that company** (`document_branding.stamp_url`). The path points to that company’s stamp file (company-scoped path when using new uploads).
+- **Signature:** We use the **approver user** (e.g. `order.approved_by_user_id`). Signature bytes come from `user.signature_path`. So we use that person’s signature, not another company’s.
+
+Document endpoints (e.g. PO PDF, invoice PDF) also call `require_document_belongs_to_user_company(db, user, order, ...)`, which ensures the document’s `company_id` matches the user’s `effective_company_id` before any asset is read. So retrieval is always for the same company the user is allowed to see.
+
+### 4. Path formats (backward compatible)
+
+- **Legacy:** `tenant-assets/{tenant_id}/logo.png`, `tenant-assets/{tenant_id}/stamp.png` — still supported for existing rows.
+- **Company-scoped (new uploads):** `tenant-assets/{tenant_id}/companies/{company_id}/logo.png`, `tenant-assets/{tenant_id}/companies/{company_id}/stamp.png` — one file per company when multiple companies share one tenant. Stamps/signatures are required for compliance (e.g. controlled substances, official purchase orders). These are **company settings**, editable by admins, and can change over time.
 
 ---
 

@@ -235,8 +235,8 @@
     
     /**
      * Available stock in the currently selected unit (for display and qty validation).
-     * API returns stock in base (wholesale) units; selected unit has unit_multiplier to base.
-     * So available in selected unit = available_base / unit_multiplier (e.g. 3 packets, piece mult 1/100 => 300 pieces).
+     * API returns stock in base (retail) units; selected unit has unit_multiplier = base units per selected unit.
+     * So available in selected unit = available_base / unit_multiplier (e.g. 32 tablets, packet mult 8 => 4 packets).
      */
     TransactionItemsTable.prototype.getAvailableInSelectedUnit = function(item) {
         if (item == null || typeof item.available_stock !== 'number') return null;
@@ -246,7 +246,7 @@
 
     /**
      * Calculate margin percentage in the selected unit (unit-aware).
-     * purchase_price is cost per base (wholesale) unit; convert to cost per selected unit using unit_multiplier.
+     * purchase_price is cost per base (retail) unit; cost per selected unit = purchase_price * unit_multiplier.
      * NOTE: This margin is markup-on-cost: (price - cost) / cost * 100.
      */
     TransactionItemsTable.prototype.calculateMargin = function(item) {
@@ -1419,7 +1419,7 @@
     
     /**
      * Handle margin change: set unit price from cost (in selected unit) and margin %, then recalc net and total.
-     * cost per selected unit = purchase_price * unit_multiplier; unit_price = cost_per_selected * (1 + margin%/100)
+     * cost per selected unit = purchase_price * unit_multiplier (base = retail); unit_price = cost_per_selected * (1 + margin%/100)
      */
     TransactionItemsTable.prototype.handleMarginChange = function(rowIndex, value) {
         if (rowIndex < 0 || rowIndex >= this.items.length) return;
@@ -2140,8 +2140,8 @@
     
     /**
      * Build 3-tier unit list from item fields (wholesale_unit, retail_unit, supplier_unit, pack_size, wholesale_units_per_supplier).
-     * Used when API returns no/empty units or as fallback so user can always choose wholesale, retail, or supplier.
-     * Supplier unit: use wholesale_units_per_supplier when > 1, else pack_size (1 packet = pack_size base units).
+     * Base unit = retail (smallest), matching API: purchase_price and sale_price are per retail unit.
+     * So: retail multiplier_to_base = 1, wholesale = pack_size (1 packet = pack_size tablets), supplier = pack_size * wups.
      */
     TransactionItemsTable.prototype.buildUnitsFrom3Tier = function(full) {
         const wholesaleName = (full.wholesale_unit || full.base_unit || 'piece').toString().trim() || 'piece';
@@ -2150,19 +2150,20 @@
         const pack = Math.max(1, parseInt(full.pack_size, 10) || 1);
         const wups = Math.max(0.0001, parseFloat(full.wholesale_units_per_supplier) || 1);
         const units = [];
-        units.push({ unit_name: wholesaleName, multiplier_to_base: 1, is_default: true });
+        // Retail = base (mult 1) so API cost/price per tablet match row cost/price when unit is tablet
         if (retailName) {
             const sameAsWholesale = retailName.toLowerCase() === wholesaleName.toLowerCase();
             if (!(sameAsWholesale && pack === 1)) {
-                units.push({ unit_name: retailName, multiplier_to_base: 1 / pack, is_default: false });
+                units.push({ unit_name: retailName, multiplier_to_base: 1, is_default: true });
             }
         }
+        // Wholesale (e.g. packet): 1 unit = pack retail units
+        units.push({ unit_name: wholesaleName, multiplier_to_base: pack, is_default: !retailName || retailName.toLowerCase() === wholesaleName.toLowerCase() });
         if (supplierName && supplierName.toLowerCase() !== wholesaleName.toLowerCase()) {
-            // 1 supplier unit = wups base units; when wups is 1/missing use pack_size (e.g. 1 packet = 30 tablets)
-            const supplierMult = wups > 1 ? wups : pack;
+            const supplierMult = pack * wups;
             units.push({ unit_name: supplierName, multiplier_to_base: supplierMult, is_default: false });
         }
-        return units.length ? units : [{ unit_name: wholesaleName, multiplier_to_base: 1, is_default: true }];
+        return units.length ? units : [{ unit_name: wholesaleName, multiplier_to_base: pack, is_default: true }];
     };
 
     /**
@@ -2179,15 +2180,16 @@
         try {
             const full = await api.items.get(item.item_id, branchId);
             let units = full.units && full.units.length > 1 ? full.units : this.buildUnitsFrom3Tier(full);
-            // Ensure supplier unit has correct multiplier (per-base conversion): if multiplier is 1 but pack_size > 1, use pack_size
+            // Normalize supplier multiplier to retail base when API returned units with mult <= 1: 1 supplier = pack * wups retail
             const packSize = Math.max(1, parseInt(full.pack_size, 10) || 1);
+            const wups = Math.max(0.0001, parseFloat(full.wholesale_units_per_supplier) || 1);
             const supplierName = (full.supplier_unit || '').toString().trim();
-            if (supplierName && packSize > 1 && Array.isArray(units)) {
+            if (supplierName && Array.isArray(units)) {
                 units = units.map(function(u) {
                     const name = (u.unit_name || '').toString().trim();
                     if (name.toLowerCase() === supplierName.toLowerCase()) {
                         const mult = parseFloat(u.multiplier_to_base) || 1;
-                        if (mult <= 1) return { unit_name: u.unit_name, multiplier_to_base: packSize, is_default: u.is_default };
+                        if (mult <= 1) return { unit_name: u.unit_name, multiplier_to_base: packSize * wups, is_default: u.is_default };
                     }
                     return u;
                 });

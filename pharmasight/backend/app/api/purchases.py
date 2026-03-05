@@ -7,7 +7,8 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
-from app.dependencies import get_tenant_db, get_current_user, get_tenant_optional, require_document_belongs_to_user_company
+from app.dependencies import get_tenant_db, get_current_user, get_tenant_optional, get_tenant_or_default, require_document_belongs_to_user_company
+from app.database_master import get_master_db
 from app.models.tenant import Tenant
 from app.models.settings import CompanySetting
 from app.models import (
@@ -40,7 +41,14 @@ from app.services.stock_validation_service import (
     StockValidationError,
 )
 from app.services.document_pdf_generator import build_po_pdf
-from app.services.tenant_storage_service import upload_po_pdf, get_signed_url, download_file
+from app.services.tenant_storage_service import (
+    upload_po_pdf,
+    get_signed_url,
+    get_signed_url_with_path_tenant,
+    download_file,
+    download_file_with_path_tenant,
+    tenant_id_from_stored_path,
+)
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
 from app.services.document_pdf_generator import build_grn_pdf, build_supplier_invoice_pdf
@@ -2210,16 +2218,31 @@ def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db:
     return db_order
 
 
+def _tenant_for_stored_path(master_db: Session, stored_path: Optional[str]) -> Optional[Tenant]:
+    """Resolve Tenant for stored_path (tenant-assets/{tenant_id}/...) for legacy asset access."""
+    if not stored_path or not str(stored_path).startswith("tenant-assets/"):
+        return None
+    path_tid = tenant_id_from_stored_path(stored_path)
+    if not path_tid:
+        return None
+    try:
+        return master_db.query(Tenant).filter(Tenant.id == UUID(str(path_tid))).first()
+    except (ValueError, TypeError):
+        return None
+
+
 @router.patch("/order/{order_id}/approve", response_model=PurchaseOrderResponse)
 def approve_purchase_order(
     order_id: UUID,
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Tenant = Depends(get_tenant_or_default),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     """
     Approve a purchase order. Sets status=APPROVED, approved_by_user_id, approved_at,
     generates immutable PDF (logo, stamp, approver signature), uploads to Supabase, sets pdf_path.
+    Requires tenant (X-Tenant-ID/X-Tenant-Subdomain or default DB as tenant) so PDF can be stored.
     """
     current_user, _ = user_db
     db_order = db.query(PurchaseOrder).options(
@@ -2268,17 +2291,29 @@ def approve_purchase_order(
     if hasattr(order_dt, "isoformat") and not isinstance(order_dt, datetime):
         order_dt = datetime.combine(order_dt, datetime.min.time().replace(tzinfo=timezone.utc))
 
-    # Download logo, stamp, signature from tenant storage for embedding in PDF (live/Render)
+    # Download logo, stamp, signature (current tenant or path-tenant for legacy/pre-migration assets)
     company_logo_bytes = None
-    if company.logo_url and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
         company_logo_bytes = download_file(company.logo_url, tenant=tenant)
+        if company_logo_bytes is None:
+            path_tenant = _tenant_for_stored_path(master_db, company.logo_url)
+            if path_tenant:
+                company_logo_bytes = download_file_with_path_tenant(company.logo_url, path_tenant)
     stamp_bytes = None
-    if stamp_path and str(stamp_path).startswith("tenant-assets/") and tenant is not None:
+    if stamp_path and str(stamp_path).startswith("tenant-assets/"):
         stamp_bytes = download_file(stamp_path, tenant=tenant)
+        if stamp_bytes is None:
+            path_tenant = _tenant_for_stored_path(master_db, stamp_path)
+            if path_tenant:
+                stamp_bytes = download_file_with_path_tenant(stamp_path, path_tenant)
     signature_bytes = None
     approver_sig_path = getattr(approver, "signature_path", None)
-    if approver_sig_path and str(approver_sig_path).startswith("tenant-assets/") and tenant is not None:
+    if approver_sig_path and str(approver_sig_path or "").startswith("tenant-assets/"):
         signature_bytes = download_file(approver_sig_path, tenant=tenant)
+        if signature_bytes is None:
+            path_tenant = _tenant_for_stored_path(master_db, approver_sig_path)
+            if path_tenant:
+                signature_bytes = download_file_with_path_tenant(approver_sig_path, path_tenant)
 
     pdf_bytes = build_po_pdf(
         company_name=company.name or "—",
@@ -2305,10 +2340,9 @@ def approve_purchase_order(
         signature_bytes=signature_bytes,
         approved_at=now,
     )
-    if tenant is not None:
-        stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes, tenant=tenant)
-        if stored_path:
-            db_order.pdf_path = stored_path
+    stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes, tenant=tenant)
+    if stored_path:
+        db_order.pdf_path = stored_path
     db.commit()
     db.refresh(db_order)
     # Load names for response
@@ -2337,25 +2371,153 @@ def get_purchase_order_pdf_url(
     current_user_and_db: tuple = Depends(get_current_user),
     tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     """Return signed URL for the stored PO PDF (only when approved and pdf_path set). Expires in 1 hour."""
     user = current_user_and_db[0]
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     require_document_belongs_to_user_company(db, user, order, "Purchase order", request)
     if not order.pdf_path:
-        raise HTTPException(status_code=404, detail="No PDF available for this order")
-    if tenant is None and str(order.pdf_path or "").startswith("tenant-assets/"):
+        raise HTTPException(
+            status_code=404,
+            detail="No PDF available for this order. The order may have been approved before PDF generation was enabled. Use 'Regenerate PDF' to generate it now.",
+        )
+    url = None
+    if tenant is not None:
+        url = get_signed_url(order.pdf_path, tenant=tenant)
+    if not url and str(order.pdf_path or "").startswith("tenant-assets/"):
+        path_tenant = _tenant_for_stored_path(master_db, order.pdf_path)
+        if path_tenant:
+            url = get_signed_url_with_path_tenant(order.pdf_path, path_tenant)
+    if not url and tenant is None:
         raise HTTPException(
             status_code=400,
             detail="Tenant required to generate PDF URL. Send X-Tenant-ID or X-Tenant-Subdomain, or add your database as a tenant.",
         )
-    url = get_signed_url(order.pdf_path, tenant=tenant)  # Uses 10 min expiry; never expose raw path
     if not url:
         raise HTTPException(
             status_code=503,
             detail="Could not generate PDF URL. Check Supabase storage config (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) and Render logs.",
         )
     return {"url": url}
+
+
+@router.post("/order/{order_id}/regenerate-pdf")
+def regenerate_purchase_order_pdf(
+    order_id: UUID,
+    request: Request,
+    tenant: Tenant = Depends(get_tenant_or_default),
+    user_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
+):
+    """
+    Generate and store PDF for an already-approved purchase order that has no pdf_path.
+    Use after migration or when PDF was not generated at approval time. Embeds logo, stamp, signature.
+    """
+    user = user_db[0]
+    db_order = db.query(PurchaseOrder).options(
+        selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.item),
+        selectinload(PurchaseOrder.company),
+        selectinload(PurchaseOrder.branch),
+        selectinload(PurchaseOrder.supplier),
+    ).filter(PurchaseOrder.id == order_id).first()
+    if not db_order:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    require_document_belongs_to_user_company(db, user, db_order, "Purchase order", request)
+    if db_order.status != "APPROVED":
+        raise HTTPException(
+            status_code=400,
+            detail="Only approved orders can have a PDF generated. Current status: " + str(db_order.status),
+        )
+    branding_row = db.query(CompanySetting).filter(
+        CompanySetting.company_id == db_order.company_id,
+        CompanySetting.setting_key == "document_branding",
+    ).first()
+    try:
+        document_branding = json.loads(branding_row.setting_value or "{}") if branding_row else {}
+    except json.JSONDecodeError:
+        document_branding = {}
+    stamp_path = document_branding.get("stamp_url")
+    company = db_order.company
+    branch = db_order.branch
+    approver = db.query(User).filter(User.id == db_order.approved_by_user_id).first() if db_order.approved_by_user_id else user
+    items_data = []
+    for oi in db_order.items:
+        items_data.append({
+            "item_code": oi.item.sku if oi.item else None,
+            "item_name": oi.item.name if oi.item else None,
+            "quantity": float(oi.quantity),
+            "unit_name": oi.unit_name,
+            "unit_price": float(oi.unit_price),
+            "total_price": float(oi.total_price),
+            "is_controlled": getattr(oi.item, "is_controlled", False) if oi.item else False,
+        })
+    order_dt = db_order.order_date
+    if hasattr(order_dt, "isoformat") and not isinstance(order_dt, datetime):
+        order_dt = datetime.combine(order_dt, datetime.min.time().replace(tzinfo=timezone.utc))
+    approved_at = db_order.approved_at or datetime.now(timezone.utc)
+    if hasattr(approved_at, "isoformat") and not isinstance(approved_at, datetime):
+        approved_at = datetime.combine(approved_at, datetime.min.time().replace(tzinfo=timezone.utc))
+
+    company_logo_bytes = None
+    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
+        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
+        if company_logo_bytes is None:
+            path_tenant = _tenant_for_stored_path(master_db, company.logo_url)
+            if path_tenant:
+                company_logo_bytes = download_file_with_path_tenant(company.logo_url, path_tenant)
+    stamp_bytes = None
+    if stamp_path and str(stamp_path).startswith("tenant-assets/"):
+        stamp_bytes = download_file(stamp_path, tenant=tenant)
+        if stamp_bytes is None:
+            path_tenant = _tenant_for_stored_path(master_db, stamp_path)
+            if path_tenant:
+                stamp_bytes = download_file_with_path_tenant(stamp_path, path_tenant)
+    signature_bytes = None
+    approver_sig_path = getattr(approver, "signature_path", None)
+    if approver_sig_path and str(approver_sig_path or "").startswith("tenant-assets/"):
+        signature_bytes = download_file(approver_sig_path, tenant=tenant)
+        if signature_bytes is None:
+            path_tenant = _tenant_for_stored_path(master_db, approver_sig_path)
+            if path_tenant:
+                signature_bytes = download_file_with_path_tenant(approver_sig_path, path_tenant)
+
+    pdf_bytes = build_po_pdf(
+        company_name=company.name or "—",
+        company_address=company.address,
+        company_phone=company.phone,
+        company_pin=company.pin,
+        company_logo_path=company.logo_url if company else None,
+        company_logo_bytes=company_logo_bytes,
+        branch_name=branch.name if branch else None,
+        branch_address=branch.address if branch else None,
+        order_number=db_order.order_number,
+        order_date=order_dt,
+        supplier_name=db_order.supplier.name if db_order.supplier else "—",
+        reference=db_order.reference,
+        items=items_data,
+        total_amount=db_order.total_amount or Decimal("0"),
+        document_branding=document_branding,
+        stamp_path=stamp_path,
+        stamp_bytes=stamp_bytes,
+        approver_name=approver.full_name or approver.email,
+        approver_designation=getattr(approver, "designation", None),
+        approver_ppb_number=getattr(approver, "ppb_number", None),
+        signature_path=approver_sig_path,
+        signature_bytes=signature_bytes,
+        approved_at=approved_at,
+    )
+    stored_path = upload_po_pdf(tenant.id, db_order.id, pdf_bytes, tenant=tenant)
+    if not stored_path:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not upload PDF. Check Supabase storage configuration.",
+        )
+    db_order.pdf_path = stored_path
+    db.commit()
+    url = get_signed_url(stored_path, tenant=tenant) or get_signed_url_with_path_tenant(stored_path, tenant)
+    return {"url": url, "pdf_path": stored_path}
 
 
 @router.delete("/order/{order_id}", status_code=status.HTTP_200_OK)
