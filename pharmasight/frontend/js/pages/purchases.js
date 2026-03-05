@@ -4884,7 +4884,7 @@ async function showNewReturnModal(supplierId, linkedInvoiceId = null) {
             } catch (_) {
                 stockSpan.textContent = 'Search failed';
             }
-        }, 200);
+        }, 60);
     }
     function showReturnItemDropdown(items) {
         if (searchDropdown) searchDropdown.remove();

@@ -11,6 +11,8 @@ let quotationSyncedItemIds = new Set();
 /** Cache item_id -> { item_name, item_code } so committed rows show correct name/code when API omits them */
 let quotationItemDisplayCache = {};
 let salesDraftCreateTimeout = null; // Debounce draft creation so quantity (e.g. 10 tablets) is captured
+/** True while first-item draft creation is in flight; prevents double Add from creating two drafts */
+let draftCreationInProgress = false;
 
 // Initialize sales page
 async function loadSales() {
@@ -1105,6 +1107,34 @@ function mapTableItemToApiItem(item) {
     return payload;
 }
 
+/** Map table/add-row item to document line shape for optimistic UI update (no extra API). */
+function mapTableItemToDocumentItem(item) {
+    var qty = parseFloat(item.quantity) || 1;
+    var unitPrice = parseFloat(item.unit_price) || 0;
+    var discountPct = parseFloat(item.discount_percent) || 0;
+    var taxPct = parseFloat(item.tax_percent) || 0;
+    var subtotal = qty * unitPrice;
+    var afterDiscount = subtotal * (1 - discountPct / 100);
+    var total = Math.round(afterDiscount * (1 + taxPct / 100) * 100) / 100;
+    return {
+        item_id: item.item_id,
+        item_name: item.item_name || '',
+        item_sku: item.item_sku || item.item_code || '',
+        item_code: item.item_code || item.item_sku || '',
+        unit_name: item.unit_name || '',
+        quantity: qty,
+        unit_price: unitPrice,
+        discount_percent: discountPct,
+        tax_percent: taxPct,
+        total: total,
+        batch_allocations: item.batch_allocations || null,
+        batch_number: item.batch_number || null,
+        expiry_date: item.expiry_date || null,
+        purchase_price: item.purchase_price != null ? parseFloat(item.purchase_price) : null,
+        margin_percent: item.margin_percent != null ? parseFloat(item.margin_percent) : null
+    };
+}
+
 async function createSalesDraftWithFirstItem(firstItem) {
     const formData = getSalesInvoiceFormData();
     if (!formData) throw new Error('Form not found');
@@ -1135,32 +1165,79 @@ async function createSalesDraftWithFirstItem(firstItem) {
     return invoice;
 }
 
-/** Add-row flow: user clicked "Add item" in the search row. First add creates draft; subsequent adds append line. */
+/** Add-row flow: user clicked "Add item". Optimistic update: show line immediately, then one API call (create draft or add line). */
 async function onSalesInvoiceAddItem(item) {
     const draftId = currentInvoice && currentInvoice.id;
+    if (!draftId && draftCreationInProgress) {
+        if (typeof showToast === 'function') showToast('Creating draft… add the next item in a moment.', 'info');
+        return;
+    }
+
+    const perf = typeof performance !== 'undefined' && performance.mark ? performance : null;
+    const t0 = perf ? performance.now() : 0;
+    if (perf) {
+        try { performance.mark('add-item-start'); } catch (_) {}
+    }
+
+    const optimisticLine = mapTableItemToDocumentItem(item);
+
+    // Optimistic: show the new line immediately so add feels instant (<20ms perceived)
+    if (!draftId) {
+        documentItems = [optimisticLine];
+    } else {
+        documentItems = (documentItems || []).concat(optimisticLine);
+    }
+    if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
+        salesInvoiceItemsTable.setItems(documentItems);
+    }
+    updateSalesInvoiceSummary();
+
+    const tOptimistic = perf ? performance.now() - t0 : 0;
+    if (perf) {
+        try {
+            performance.mark('add-item-optimistic-done');
+            performance.measure('add-item-to-visible', 'add-item-start', 'add-item-optimistic-done');
+        } catch (_) {}
+    }
+    if (typeof console !== 'undefined' && console.log) {
+        console.log('[POS Add Item] Line on table (optimistic): ' + Math.round(tOptimistic) + ' ms');
+    }
+
     try {
         if (!draftId) {
-            showToast('Creating invoice...', 'info');
-            const invoice = await createSalesDraftWithFirstItem(item);
-            currentInvoice = { id: invoice.id, mode: 'edit', invoiceData: invoice };
-            salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
-            documentItems = (invoice.items || []).map(i => ({
-                item_id: i.item_id,
-                item_name: i.item_name,
-                item_sku: i.item_code,
-                item_code: i.item_code,
-                unit_name: i.unit_name,
-                quantity: i.quantity,
-                unit_price: i.unit_price_exclusive,
-                discount_percent: i.discount_percent || 0,
-                tax_percent: i.vat_rate || 0,
-                total: i.line_total_inclusive
-            }));
-            lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(invoice.items);
-            showToast('Draft invoice created. Add more items or click Batch when ready.', 'success');
-            // Re-render the page so the header shows Update/Batch & Print/Convert/Delete/Back buttons (same as when reopening a draft)
-            await renderCreateSalesInvoicePage();
-            updateSalesInvoiceSummary();
+            draftCreationInProgress = true;
+            try {
+                const invoice = await createSalesDraftWithFirstItem(item);
+                currentInvoice = { id: invoice.id, mode: 'edit', invoiceData: invoice };
+                salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
+                documentItems = (invoice.items || []).map(i => ({
+                    item_id: i.item_id,
+                    item_name: i.item_name,
+                    item_sku: i.item_code,
+                    item_code: i.item_code,
+                    unit_name: i.unit_name,
+                    quantity: i.quantity,
+                    unit_price: i.unit_price_exclusive != null ? i.unit_price_exclusive : i.unit_price,
+                    discount_percent: i.discount_percent || 0,
+                    tax_percent: i.vat_rate || 0,
+                    total: i.line_total_inclusive != null ? i.line_total_inclusive : i.total,
+                    batch_allocations: i.batch_allocations || null,
+                    batch_number: i.batch_number || null,
+                    expiry_date: i.expiry_date || null,
+                    purchase_price: i.unit_cost_base != null ? parseFloat(i.unit_cost_base) : null,
+                    margin_percent: i.margin_percent != null ? parseFloat(i.margin_percent) : null
+                }));
+                lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(invoice.items);
+                if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
+                    salesInvoiceItemsTable.setItems(documentItems);
+                }
+                updateSalesInvoiceSummary();
+                showToast('Draft invoice created. Add more items or click Batch when ready.', 'success');
+                await renderCreateSalesInvoicePage();
+                updateSalesInvoiceSummary();
+            } finally {
+                draftCreationInProgress = false;
+            }
             return;
         }
         const updated = await API.sales.addInvoiceItem(draftId, mapTableItemToApiItem(item));
@@ -1202,7 +1279,18 @@ async function onSalesInvoiceAddItem(item) {
         }
         updateSalesInvoiceSummary();
     } catch (err) {
+        draftCreationInProgress = false;
         const msg = (err && err.message) || String(err);
+        // Revert optimistic update: remove the line we just added
+        if (!draftId) {
+            documentItems = [];
+        } else {
+            documentItems = (documentItems || []).slice(0, -1);
+        }
+        if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
+            salesInvoiceItemsTable.setItems(documentItems);
+        }
+        updateSalesInvoiceSummary();
         if (msg.indexOf('already exists') !== -1) {
             showToast('Item already on this invoice. Remove the line or choose a different item.', 'warning');
         } else {
@@ -1259,6 +1347,17 @@ async function onSalesInvoiceAddItem(item) {
                     updateSalesInvoiceSummary();
                 }
             } catch (_) { /* ignore refetch errors */ }
+        }
+    } finally {
+        if (perf) {
+            try {
+                performance.mark('add-item-api-done');
+                performance.measure('add-item-total', 'add-item-start', 'add-item-api-done');
+                var m = performance.getEntriesByName('add-item-total')[0];
+                if (m && typeof console !== 'undefined' && console.log) {
+                    console.log('[POS Add Item] Total (click → API done): ' + Math.round(m.duration) + ' ms');
+                }
+            } catch (_) {}
         }
     }
 }

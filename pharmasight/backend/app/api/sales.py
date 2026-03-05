@@ -415,28 +415,29 @@ def get_sales_invoice_pdf(
     return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
-@router.get("/invoice/{invoice_id}", response_model=SalesInvoiceResponse)
-def get_sales_invoice(
+def _get_sales_invoice_response(
     invoice_id: UUID,
-    request: Request,
-    current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
-    db: Session = Depends(get_tenant_db),
+    db: Session,
+    user: User,
+    *,
+    request: Optional[Request] = None,
+    tenant: Optional[Tenant] = None,
 ):
-    """Get sales invoice by ID with full item details. Works without tenant (no tenant-assets logo URL)."""
+    """Build sales invoice response (load, enrich, return). Optional request for timings; optional tenant for logo URL."""
     import time as _time
     t0 = _time.perf_counter()
-    request.state.timings = {}
+    if request is not None:
+        request.state.timings = {}
     from sqlalchemy.orm import selectinload
-    user = current_user_and_db[0]
-    # Load invoice with items and item relationships
     invoice = db.query(SalesInvoice).options(
         selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item)
     ).filter(SalesInvoice.id == invoice_id).first()
-    request.state.timings["LoadMs"] = round((_time.perf_counter() - t0) * 1000, 1)
+    if request is not None:
+        request.state.timings["LoadMs"] = round((_time.perf_counter() - t0) * 1000, 1)
     t1 = _time.perf_counter()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
-    request.state.timings["CompanyCheckMs"] = round((_time.perf_counter() - t1) * 1000, 1)
+    if request is not None:
+        request.state.timings["CompanyCheckMs"] = round((_time.perf_counter() - t1) * 1000, 1)
     t2 = _time.perf_counter()
     # Handle backward compatibility - set defaults for missing fields
     if not hasattr(invoice, 'status') or invoice.status is None:
@@ -479,7 +480,8 @@ def get_sales_invoice(
                     price = float(invoice_item.unit_price_exclusive or 0)
                     if price > 0:
                         invoice_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
-    request.state.timings["CostEnrichMs"] = round((_time.perf_counter() - t2) * 1000, 1)
+    if request is not None:
+        request.state.timings["CostEnrichMs"] = round((_time.perf_counter() - t2) * 1000, 1)
     t3 = _time.perf_counter()
     for invoice_item in invoice.items:
         # Batch/expiry for receipt/PDF (from ledger when batched); build full batch_allocations for multi-batch FEFO
@@ -520,7 +522,8 @@ def get_sales_invoice(
                 invoice_item.batch_number = None
                 invoice_item.expiry_date = None
 
-    request.state.timings["LedgerMs"] = round((_time.perf_counter() - t3) * 1000, 1)
+    if request is not None:
+        request.state.timings["LedgerMs"] = round((_time.perf_counter() - t3) * 1000, 1)
     t4 = _time.perf_counter()
     # Print letterhead: company, branch, user, logo URL for print (all documents)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
@@ -542,9 +545,23 @@ def get_sales_invoice(
     if creator:
         invoice.created_by_username = creator.username or getattr(creator, "full_name", None) or ""
 
-    request.state.timings["BuildMs"] = round((_time.perf_counter() - t4) * 1000, 1)
-    request.state.timings["TotalMs"] = round((_time.perf_counter() - t0) * 1000, 1)
+    if request is not None:
+        request.state.timings["BuildMs"] = round((_time.perf_counter() - t4) * 1000, 1)
+        request.state.timings["TotalMs"] = round((_time.perf_counter() - t0) * 1000, 1)
     return invoice
+
+
+@router.get("/invoice/{invoice_id}", response_model=SalesInvoiceResponse)
+def get_sales_invoice(
+    invoice_id: UUID,
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    db: Session = Depends(get_tenant_db),
+):
+    """Get sales invoice by ID with full item details. Works without tenant (no tenant-assets logo URL)."""
+    user = current_user_and_db[0]
+    return _get_sales_invoice_response(invoice_id, db, user, request=request, tenant=tenant)
 
 
 @router.post("/invoice/{invoice_id}/items", response_model=SalesInvoiceResponse)
@@ -908,7 +925,8 @@ def update_sales_invoice_item(
 
     db.commit()
     db.refresh(invoice)
-    return get_sales_invoice(invoice_id, db)
+    user = current_user_and_db[0]
+    return _get_sales_invoice_response(invoice_id, db, user)
 
 
 @router.get("/branch/{branch_id}/today-summary", response_model=dict)

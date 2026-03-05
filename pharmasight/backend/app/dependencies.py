@@ -103,9 +103,10 @@ _pool_lock = threading.Lock()
 _default_tenant_cache: dict = {}
 
 # Auth resolution cache: (jti, str(sub)) -> (user_id, company_id, tenant_database_url, expiry_ts)
-# Short TTL so repeat requests (e.g. item search) skip master + tenant lookups. Populated after full resolve.
+# Populated after full resolve. Long TTL so item search (and other requests) skip ~2s master+tenant resolution.
+# Without this, every cache miss pays: master DB (tenant lookup) + tenant DB connection + user lookup.
 _auth_resolution_cache: dict = {}
-_auth_resolution_cache_ttl_seconds = 5.0
+_auth_resolution_cache_ttl_seconds = 300.0  # 5 minutes: keep item search fast for whole POS session
 
 
 def _stub_user_for_cache(user_id: UUID):

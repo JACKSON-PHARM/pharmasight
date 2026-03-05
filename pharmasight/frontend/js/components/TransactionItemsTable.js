@@ -74,7 +74,7 @@
         this.totalInputDebounce = null; // For debouncing total input (reverse calc)
         this.marginInputDebounce = null; // For debouncing margin input
         this._searchId = 0; // Incremented per search; used to ignore stale responses
-        this._searchDebounceMs = 250; // Debounce so requests fire only after user pauses typing
+        this._searchDebounceMs = 60;  // Short debounce: request fires almost every key stroke; in-flight requests cancelled on new input
         
         // When useAddRow: items = committed lines only (no empty row). Otherwise: ensure one empty row.
         if (!this.useAddRow) {
@@ -223,6 +223,12 @@
                 margin_percent: item.margin_percent != null ? parseFloat(item.margin_percent) : null,
                 is_empty: false
             };
+            // When server/document already gave unit_name, set minimal available_units so we skip GET /items per row on load
+            const unit = (item.unit_name || item.unit || 'piece').toString().trim() || 'piece';
+            if (unit && (!item.available_units || !item.available_units.length)) {
+                normalized.available_units = [{ unit_name: unit, multiplier_to_base: 1 }];
+                normalized.unit_multiplier = typeof item.unit_multiplier === 'number' ? item.unit_multiplier : 1;
+            }
             // Calculate nett and vat_amount for normalized items
             const subtotal = (normalized.quantity || 0) * (normalized.unit_price || 0);
             const discount = subtotal * ((normalized.discount_percent || 0) / 100);
@@ -798,11 +804,11 @@
         el.addEventListener('input', (e) => {
             const row = e.target.dataset.row;
             if (row === 'add') {
-                if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || 
+                if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') ||
                     e.target.classList.contains('discount-input') || e.target.classList.contains('margin-input') ||
                     e.target.classList.contains('total-input') || e.target.classList.contains('nett-input')) {
                     if (this.inputDebounceTimeout) clearTimeout(this.inputDebounceTimeout);
-                    this.inputDebounceTimeout = setTimeout(() => this.updateAddRowFromDom(), 550);
+                    this.inputDebounceTimeout = setTimeout(() => this.updateAddRowFromDom(), 120);
                 }
                 return;
             }
@@ -870,8 +876,7 @@
     
     /**
      * Handle item search.
-     * Debounced (~250ms) so requests fire only after user pauses typing.
-     * Cancels in-flight request when new query is entered. Stale responses are ignored.
+     * Debounced (60ms) so request fires quickly after typing; in-flight request cancelled when user types again.
      */
     TransactionItemsTable.prototype.handleItemSearch = function(query, rowIndex) {
         const queryTrimmed = query.trim();
@@ -1089,7 +1094,9 @@
                     </div>
                 `;
             } else if (suggestion.type === 'item') {
-                const salePrice = suggestion.sale_price || 0;
+                // Use effective_selling_price from search when present (POS: no extra recommended-price call)
+                const salePrice = (suggestion.effective_selling_price != null && suggestion.effective_selling_price !== '')
+                    ? Number(suggestion.effective_selling_price) : (suggestion.sale_price || 0);
                 const purchasePrice = suggestion.purchase_price || 0;
                 const stock = typeof suggestion.current_stock === 'number' ? suggestion.current_stock : (suggestion.stock || 0);
                 const stockDisplayStr = suggestion.stock_display || null; // 3-tier formatted stock display
@@ -1098,17 +1105,20 @@
                 const lastSupplier = suggestion.last_supplier || '';
                 const cheapestSupplier = suggestion.cheapest_supplier || suggestion.last_supplier || '';
                 const baseUnit = suggestion.base_unit || '';
+                const retailUnit = suggestion.retail_unit || baseUnit || 'piece';
                 
                 // Purchase Order specific fields
                 const lastOrderDate = suggestion.last_order_date || null;
                 const lastSupplyDate = suggestion.last_supply_date || null;
                 const lastUnitCost = suggestion.last_unit_cost || purchasePrice;
                 
-                // For sale/quotation: if selling price is zero but cost exists, pre-calculate 30% margin
+                // For sale/quotation: use search effective_selling_price (already in salePrice) or fallback 30% margin
                 const DEFAULT_MARGIN_PERCENT = 30;
                 const effectiveSalePrice = (this.mode === 'sale' || this.mode === 'quotation') && (!salePrice || salePrice === 0) && purchasePrice > 0
                     ? Math.round(purchasePrice * (1 + DEFAULT_MARGIN_PERCENT / 100) * 100) / 100
                     : salePrice;
+                // Unit for the line: retail for sale/quotation (from search), else base
+                const lineUnit = (this.mode === 'sale' || this.mode === 'quotation') ? retailUnit : baseUnit;
                 // Determine which price to show based on mode (quotation uses selling price like sale)
                 const displayPrice = (this.mode === 'sale' || this.mode === 'quotation') ? effectiveSalePrice : purchasePrice;
                 const priceLabel = (this.mode === 'sale' || this.mode === 'quotation') ? 'Price' : 'Cost';
@@ -1161,7 +1171,9 @@
                              data-item-name="${escapeHtml(suggestion.name)}"
                              data-item-sku="${escapeHtml(suggestion.sku || '')}"
                              data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
-                             data-unit-name="${escapeHtml(baseUnit)}"
+                             data-unit-name="${escapeHtml(lineUnit)}"
+                             data-retail-unit="${escapeHtml(retailUnit)}"
+                             data-base-unit="${escapeHtml(baseUnit)}"
                              data-sale-price="${salePrice}"
                              data-purchase-price="${lastUnitCost}"
                              data-vat-rate="${vatRate}"
@@ -1229,7 +1241,9 @@
                              data-item-name="${escapeHtml(suggestion.name)}"
                              data-item-sku="${escapeHtml(suggestion.sku || '')}"
                              data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
-                             data-unit-name="${escapeHtml(baseUnit)}"
+                             data-unit-name="${escapeHtml(lineUnit)}"
+                             data-retail-unit="${escapeHtml(retailUnit)}"
+                             data-base-unit="${escapeHtml(baseUnit)}"
                              data-sale-price="${(this.mode === 'sale' || this.mode === 'quotation') ? effectiveSalePrice : salePrice}"
                              data-purchase-price="${this.context === 'purchase_order' ? lastUnitCost : purchasePrice}"
                              data-vat-rate="${vatRate}"
@@ -1344,7 +1358,11 @@
                 : null,
             stock_display: suggestionEl.dataset.stockDisplay || null, // 3-tier formatted stock display
             is_empty: false,
-            available_units: null, // Populated below from API
+            // Use search data for units so we skip GET /items/{id} and GET recommended-price (instant add)
+            available_units: [{
+                unit_name: suggestionEl.dataset.unitName || suggestionEl.dataset.retailUnit || suggestionEl.dataset.baseUnit || 'piece',
+                multiplier_to_base: 1
+            }],
             unit_multiplier: 1
         };
         
@@ -1359,7 +1377,7 @@
             this.closeSuggestions();
             this.render();
             this.attachEventListeners();
-            this.loadUnitsForRow('add');
+            // No loadUnitsForRow('add'): search already returned unit + effective_selling_price; no GET /items or recommended-price
             setTimeout(() => {
                 const qtyInput = this.mountEl.querySelector('.add-row-qty');
                 if (qtyInput) {
@@ -1877,6 +1895,13 @@
             this.render();
             this.attachEventListeners();
             const p = Promise.resolve(this.onAddItem(data));
+            // Unlock Add button as soon as parent's optimistic update has run (next tick), so user can add next item without waiting for API
+            const self = this;
+            setTimeout(function() {
+                self.addRowLoading = false;
+                self.render();
+                self.attachEventListeners();
+            }, 0);
             p.finally(() => {
                 this.addRowLoading = false;
                 this.render();

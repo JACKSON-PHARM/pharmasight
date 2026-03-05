@@ -113,6 +113,11 @@ class ItemBranchSnapshot(Base):
     # Computed selling price and source
     effective_selling_price = Column(Numeric(20, 4), nullable=True)
     price_source = Column(String(50), nullable=True)
+    # Denormalized from items so search can avoid Item join (POS <100ms at 1.5M rows)
+    retail_unit = Column(String(50), nullable=True, default="piece")
+    supplier_unit = Column(String(50), nullable=True, default="piece")
+    wholesale_unit = Column(String(50), nullable=True, default="piece")
+    wholesale_units_per_supplier = Column(Numeric(20, 4), nullable=False, default=1)
 
     __table_args__ = (
         UniqueConstraint("item_id", "branch_id", name="item_branch_snapshot_item_id_branch_id_key"),

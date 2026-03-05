@@ -259,6 +259,10 @@ def refresh_pos_snapshot_for_item(
     vat_category = (item.vat_category or "ZERO_RATED").strip() or None
     pack_size = max(1, int(item.pack_size or 1))
     name = (item.name or "").strip() or ""
+    retail_unit = (getattr(item, "retail_unit", None) or "piece").strip() or "piece"
+    supplier_unit = (getattr(item, "supplier_unit", None) or "piece").strip() or "piece"
+    wholesale_unit = (getattr(item, "wholesale_unit", None) or "piece").strip() or "piece"
+    wholesale_units_per_supplier = float(getattr(item, "wholesale_units_per_supplier", None) or 1)
 
     db.execute(
         text("""
@@ -271,6 +275,7 @@ def refresh_pos_snapshot_for_item(
                 default_item_margin, branch_margin, company_margin, floor_price, minimum_margin,
                 promotion_price, promotion_start, promotion_end, promotion_active,
                 effective_selling_price, price_source,
+                retail_unit, supplier_unit, wholesale_unit, wholesale_units_per_supplier,
                 updated_at
             )
             VALUES (
@@ -282,6 +287,7 @@ def refresh_pos_snapshot_for_item(
                 :default_item_margin, :branch_margin, :company_margin, :floor_price, :minimum_margin,
                 :promotion_price, :promotion_start, :promotion_end, :promotion_active,
                 :effective_selling_price, :price_source,
+                :retail_unit, :supplier_unit, :wholesale_unit, :wholesale_units_per_supplier,
                 NOW()
             )
             ON CONFLICT (item_id, branch_id) DO UPDATE SET
@@ -315,6 +321,10 @@ def refresh_pos_snapshot_for_item(
                 promotion_active = EXCLUDED.promotion_active,
                 effective_selling_price = EXCLUDED.effective_selling_price,
                 price_source = EXCLUDED.price_source,
+                retail_unit = EXCLUDED.retail_unit,
+                supplier_unit = EXCLUDED.supplier_unit,
+                wholesale_unit = EXCLUDED.wholesale_unit,
+                wholesale_units_per_supplier = EXCLUDED.wholesale_units_per_supplier,
                 updated_at = NOW()
         """),
         {
@@ -351,6 +361,10 @@ def refresh_pos_snapshot_for_item(
             "promotion_active": promotion_active,
             "effective_selling_price": effective_selling_price,
             "price_source": price_source,
+            "retail_unit": retail_unit,
+            "supplier_unit": supplier_unit,
+            "wholesale_unit": wholesale_unit,
+            "wholesale_units_per_supplier": wholesale_units_per_supplier,
         },
     )
 

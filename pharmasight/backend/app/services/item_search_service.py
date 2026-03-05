@@ -11,11 +11,24 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models import Item, ItemBranchSnapshot
+from app.models import ItemBranchSnapshot
 from app.services.inventory_service import InventoryService, _unit_for_display
 from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
+
+
+def _item_like_from_snapshot_row(r: Any) -> SimpleNamespace:
+    """Build item-like object from snapshot row for format_quantity_display (no Item join)."""
+    return SimpleNamespace(
+        pack_size=getattr(r, "pack_size", 1) or 1,
+        base_unit=getattr(r, "base_unit", None) or "piece",
+        retail_unit=getattr(r, "retail_unit", None) or "piece",
+        supplier_unit=getattr(r, "supplier_unit", None) or "piece",
+        wholesale_unit=getattr(r, "wholesale_unit", None) or "piece",
+        wholesale_units_per_supplier=getattr(r, "wholesale_units_per_supplier", 1) or 1,
+        can_break_bulk=True,
+    )
 
 
 class ItemSearchService:
@@ -38,10 +51,10 @@ class ItemSearchService:
         return _search_impl(db, q, company_id, branch_id, limit, include_pricing, context)
 
 
-def _format_stock_display(quantity_retail: float, item: Optional[Item]) -> str:
-    """Single shared place for stock_display. Used by both snapshot and heavy paths."""
-    if item is not None:
-        return InventoryService.format_quantity_display(quantity_retail, item)
+def _format_stock_display(quantity_retail: float, item_like: Optional[Any]) -> str:
+    """Single shared place for stock_display. item_like is snapshot row or SimpleNamespace from snapshot."""
+    if item_like is not None:
+        return InventoryService.format_quantity_display(quantity_retail, item_like)
     return str(int(quantity_retail))
 
 
@@ -57,35 +70,11 @@ def _search_impl(
     t_start = time.perf_counter()
     search_term_pattern = f"%{q.lower()}%"
 
-    # Primary: snapshot path when branch_id is present (single query: snapshot + item columns for display)
+    # Single-table snapshot path (no Item join): keeps search <100ms at 1.5M rows.
     if branch_id is not None:
         try:
             rows = (
-                db.query(
-                    ItemBranchSnapshot.item_id,
-                    ItemBranchSnapshot.name,
-                    ItemBranchSnapshot.pack_size,
-                    ItemBranchSnapshot.base_unit,
-                    ItemBranchSnapshot.sku,
-                    ItemBranchSnapshot.vat_rate,
-                    ItemBranchSnapshot.vat_category,
-                    ItemBranchSnapshot.current_stock,
-                    ItemBranchSnapshot.average_cost,
-                    ItemBranchSnapshot.last_purchase_price,
-                    ItemBranchSnapshot.selling_price,
-                    ItemBranchSnapshot.margin_percent,
-                    ItemBranchSnapshot.next_expiry_date,
-                    ItemBranchSnapshot.effective_selling_price,
-                    ItemBranchSnapshot.price_source,
-                    ItemBranchSnapshot.last_purchase_date,
-                    ItemBranchSnapshot.last_supplier_id,
-                    ItemBranchSnapshot.last_order_date,
-                    Item.retail_unit,
-                    Item.supplier_unit,
-                    Item.wholesale_unit,
-                    Item.wholesale_units_per_supplier,
-                )
-                .join(Item, Item.id == ItemBranchSnapshot.item_id)
+                db.query(ItemBranchSnapshot)
                 .filter(
                     ItemBranchSnapshot.company_id == company_id,
                     ItemBranchSnapshot.branch_id == branch_id,
@@ -122,18 +111,11 @@ def _search_impl(
                 mp = getattr(r, "margin_percent", None)
                 margin_map[r.item_id] = float(mp) if mp is not None else None
 
-        # Build response from snapshot only
+        # Build response from snapshot only (item_like from snapshot row for stock_display; no Item join)
         from_snapshot_only = bool(include_pricing and branch_id and item_ids)
         result = []
         for r in rows:
-            item_like = SimpleNamespace(
-                retail_unit=getattr(r, "retail_unit", None),
-                supplier_unit=getattr(r, "supplier_unit", None),
-                pack_size=getattr(r, "pack_size", 1) or 1,
-                base_unit=getattr(r, "base_unit", None),
-                wholesale_unit=getattr(r, "wholesale_unit", None),
-                wholesale_units_per_supplier=getattr(r, "wholesale_units_per_supplier", 1) or 1,
-            )
+            item_like = _item_like_from_snapshot_row(r)
             stock_float = float(r.current_stock or 0)
             stock_val = int(stock_float)
             purchase_price_override = cost_map.get(r.item_id) if from_snapshot_only else None
@@ -172,7 +154,7 @@ def _search_impl(
 
 def _canonical_item_from_snapshot_row(
     r: Any,
-    item_obj: Optional[Item],
+    item_like: Optional[Any],
     stock_float: float,
     stock_val: int,
     purchase_price_override: Optional[float] = None,
@@ -182,7 +164,7 @@ def _canonical_item_from_snapshot_row(
     last_order_date: Optional[Any] = None,
     from_snapshot_only: bool = False,
 ) -> Dict[str, Any]:
-    """Build one canonical item dict from a snapshot row. Uses effective_selling_price when present."""
+    """Build one canonical item dict from a snapshot row. item_like is from _item_like_from_snapshot_row (no Item join)."""
     price_val = float(r.average_cost or 0)
     if from_snapshot_only:
         purchase_val = float(purchase_price_override) if purchase_price_override is not None else None
@@ -192,8 +174,8 @@ def _canonical_item_from_snapshot_row(
         purchase_val = float(r.last_purchase_price or r.average_cost or 0)
         sale_val = float(r.selling_price or 0)
         margin_val = float(r.margin_percent) if r.margin_percent is not None else None
-    stock_display = _format_stock_display(stock_float, item_obj)
-    retail_unit = _unit_for_display(item_obj.retail_unit, "piece") if item_obj else "piece"
+    stock_display = _format_stock_display(stock_float, item_like)
+    retail_unit = _unit_for_display(getattr(item_like, "retail_unit", None), "piece") if item_like else "piece"
     out = {
         "id": str(r.item_id),
         "name": r.name or "",
