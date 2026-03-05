@@ -33,10 +33,15 @@ class CanonicalPricingService:
         company_id: UUID
     ) -> Optional[Decimal]:
         """
-        Get last purchase cost from inventory_ledger (most recent PURCHASE transaction).
+        Get last purchase-like cost from inventory_ledger.
+
+        Uses the most recent ledger row where:
+        - transaction_type is PURCHASE or ADJUSTMENT
+        - quantity_delta > 0 (stock added)
+        - unit_cost > 0 (ignore zero-cost adjustments)
         
         Returns:
-            Decimal: unit_cost from most recent PURCHASE, or None if no purchases
+            Decimal: unit_cost from most recent matching row, or None if none
         """
         last_purchase = (
             db.query(InventoryLedger)
@@ -45,8 +50,9 @@ class CanonicalPricingService:
                     InventoryLedger.item_id == item_id,
                     InventoryLedger.branch_id == branch_id,
                     InventoryLedger.company_id == company_id,
-                    InventoryLedger.transaction_type == 'PURCHASE',
-                    InventoryLedger.quantity_delta > 0
+                    InventoryLedger.transaction_type.in_(["PURCHASE", "ADJUSTMENT"]),
+                    InventoryLedger.quantity_delta > 0,
+                    InventoryLedger.unit_cost > 0,
                 )
             )
             .order_by(desc(InventoryLedger.created_at))

@@ -94,14 +94,23 @@ def _get_next_expiry_date(
 def _get_last_purchase_price_from_ledger(
     db: Session, company_id: UUID, branch_id: UUID, item_id: UUID
 ) -> float | None:
-    """Last purchase unit cost from inventory ledger (single source of truth). Same transaction sees just-written rows."""
+    """
+    Last purchase-like unit cost from inventory ledger (single source of truth).
+    Considers the most recent row where:
+    - transaction_type is PURCHASE or ADJUSTMENT
+    - quantity_delta > 0 (stock added)
+    - unit_cost > 0 (ignore zero-cost adjustments)
+    Same transaction sees just-written rows.
+    """
     row = (
         db.query(InventoryLedger.unit_cost)
         .filter(
             InventoryLedger.company_id == company_id,
             InventoryLedger.branch_id == branch_id,
             InventoryLedger.item_id == item_id,
-            InventoryLedger.transaction_type == "PURCHASE",
+            InventoryLedger.transaction_type.in_(["PURCHASE", "ADJUSTMENT"]),
+            InventoryLedger.quantity_delta > 0,
+            InventoryLedger.unit_cost > 0,
         )
         .order_by(InventoryLedger.created_at.desc())
         .limit(1)
@@ -145,12 +154,18 @@ def refresh_pos_snapshot_for_item(
     )
     current_stock = float(bal.current_stock or 0) if bal else 0
 
-    # last_purchase_price from ledger (latest PURCHASE) — single source of truth
+    # last_purchase_price from ledger (latest costed movement)
     last_purchase_price = _get_last_purchase_price_from_ledger(db, company_id, branch_id, item_id)
 
-    # average_cost: prefer last_purchase_price; else get_best_available_cost
+    # average_cost: prefer last_purchase_price; else get_best_available_cost (which can fall back
+    # to items.default_cost_per_base when there is no ledger history for this branch).
     cost = CanonicalPricingService.get_best_available_cost(db, item_id, branch_id, company_id)
     average_cost = float(last_purchase_price) if last_purchase_price is not None else (float(cost) if cost is not None else None)
+    # When there is no ledger movement yet for this branch but we have a default cost from Excel
+    # (items.default_cost_per_base via CanonicalPricingService), promote that into last_purchase_price
+    # so branch snapshots and item search always have a cost for pricing/UI.
+    if last_purchase_price is None and average_cost is not None and average_cost > 0:
+        last_purchase_price = average_cost
 
     # Margin and pricing inputs (for effective_selling_price and audit)
     margin_percent = PricingService.get_markup_percent(db, item_id, company_id)

@@ -1479,10 +1479,19 @@ def batch_sales_invoice(
                 )
                 ledger_entries.append(ledger_entry)
 
-        invoice.status = "BATCHED"
         invoice.batched = True
         invoice.batched_by = batched_by
         invoice.batched_at = datetime.utcnow()
+
+        # For cash invoices, mark as PAID automatically during batching
+        if getattr(invoice, "payment_mode", "").lower() == "cash":
+            invoice.payment_status = "PAID"
+            invoice.status = "PAID"
+            invoice.cashier_approved = True
+            invoice.approved_by = batched_by
+            invoice.approved_at = datetime.now(timezone.utc)
+        else:
+            invoice.status = "BATCHED"
 
         for entry in ledger_entries:
             db.add(entry)
