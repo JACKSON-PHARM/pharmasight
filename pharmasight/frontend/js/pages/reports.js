@@ -795,7 +795,10 @@ async function loadGrossProfitReport() {
 
         const rows = Array.isArray(res.breakdown) ? res.breakdown : [];
         if (!rows.length) {
-            breakdownEl.innerHTML = '<p style="color: var(--text-secondary);">No transactions in this date range.</p>';
+            var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+                ? window.EmptyStateWatermark.render({ title: 'No transactions in this date range', description: 'Try a different date range.' })
+                : '<p style="color: var(--text-secondary);">No transactions in this date range.</p>';
+            breakdownEl.innerHTML = emptyHtml;
             return;
         }
 

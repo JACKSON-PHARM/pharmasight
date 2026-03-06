@@ -71,7 +71,11 @@ async function loadLogin() {
     page.innerHTML = `
         <div class="login-container">
             <div class="login-card">
-                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                <div class="login-branding no-print">
+                    <div class="login-logo-wrap"><svg class="login-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 30" width="64" height="40" aria-hidden="true"><path fill="#14b8a6" d="M24 2C11 2 3 9 3 12s8 10 21 10 21-8 21-10-8-10-21-10zm0 20c-7.2 0-13-5-15-7 2-2 7.8-7 15-7s13 5 15 7c-2 2-7.8 7-15 7z"/><circle fill="#0f172a" cx="24" cy="12" r="6"/><rect x="20" y="10" width="8" height="4" rx="1.5" fill="#14b8a6"/><rect x="28" y="10" width="4" height="4" rx="0.5" fill="#fff"/></svg></div>
+                    <h1>PharmaSight</h1>
+                    <p class="login-subtitle">Secure Pharmacy Operations Platform</p>
+                </div>
                 <h2>Sign In</h2>
                 <form id="loginForm">
                     <div class="form-group">

@@ -482,10 +482,92 @@ body {
     margin-top: 0.75rem;
     padding-top: 0.5rem;
     border-top: 1px solid rgba(255, 255, 255, 0.15);
-    font-size: 0.65rem;
+    font-size: 11px;
     font-weight: 400;
     color: rgba(255, 255, 255, 0.6);
+    opacity: 0.6;
     text-align: center;
+}
+
+/* PharmaSight logo icon in sidebar header - compact, subtle */
+.pharmasight-logo-icon {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+.pharmasight-logo-icon svg {
+    width: 22px;
+    height: 14px;
+    vertical-align: middle;
+}
+.sidebar-header h1 .pharmasight-logo-icon {
+    margin-right: 0.35rem;
+}
+
+/* Login page branding - logo and subtitle */
+.login-branding {
+    text-align: center;
+    margin-bottom: 1rem;
+}
+.login-logo-wrap {
+    margin-bottom: 0.5rem;
+}
+.login-logo {
+    width: 64px;
+    height: 40px;
+}
+.login-branding h1 {
+    font-size: 1.75rem;
+    margin: 0;
+    color: var(--text-primary);
+    display: block;
+}
+.login-branding h1 i {
+    display: none;
+}
+.login-subtitle {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0.25rem 0 0 0;
+}
+
+/* Empty state watermark - faint PharmaSight branding on empty pages */
+.empty-state-watermark {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    padding: 2rem;
+    position: relative;
+}
+.empty-state-watermark-inner {
+    text-align: center;
+    max-width: 320px;
+}
+.empty-state-watermark-illustration {
+    opacity: 0.06;
+    margin-bottom: 1rem;
+}
+.empty-state-watermark-illustration .empty-state-watermark-logo {
+    color: var(--primary-color);
+}
+.empty-state-watermark-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 0.5rem 0;
+}
+.empty-state-watermark-desc {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+/* Print safety - hide platform branding in print/PDF */
+@media print {
+    .no-print {
+        display: none !important;
+    }
 }
 
 .user-info {

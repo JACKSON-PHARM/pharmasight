@@ -329,17 +329,10 @@ function renderPurchaseOrdersTableBody() {
     }
     
     if (list.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="11" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
-                    <i class="fas fa-file-invoice" style="font-size: 2rem; color: var(--text-secondary);"></i>
-                    <p style="color: var(--text-secondary); margin: 0.5rem 0;">No purchase orders found</p>
-                    <button class="btn btn-primary btn-sm" onclick="if(window.createNewPurchaseOrder) window.createNewPurchaseOrder()">
-                        <i class="fas fa-plus"></i> Create Your First Purchase Order
-                    </button>
-                </td>
-            </tr>
-        `;
+        var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+            ? window.EmptyStateWatermark.render({ title: 'No purchase orders yet', description: 'Create your first purchase order to get started' })
+            : '<p style="color: var(--text-secondary); margin: 0.5rem 0;">No purchase orders found</p>';
+        tbody.innerHTML = '<tr><td colspan="11" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">' + emptyHtml + '<button class="btn btn-primary btn-sm" onclick="if(window.createNewPurchaseOrder) window.createNewPurchaseOrder()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Purchase Order</button></td></tr>';
         return;
     }
     
@@ -632,17 +625,10 @@ function renderSupplierInvoicesTableBody() {
     }
     
     if (list.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="9" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
-                    <i class="fas fa-file-invoice-dollar" style="font-size: 2rem; color: var(--text-secondary);"></i>
-                    <p style="color: var(--text-secondary); margin: 0.5rem 0;">No supplier invoices found</p>
-                    <button class="btn btn-primary btn-sm" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()">
-                        <i class="fas fa-plus"></i> Create Your First Supplier Invoice
-                    </button>
-                </td>
-            </tr>
-        `;
+        var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+            ? window.EmptyStateWatermark.render({ title: 'No supplier invoices yet', description: 'Create your first supplier invoice to get started' })
+            : '<p style="color: var(--text-secondary); margin: 0.5rem 0;">No supplier invoices found</p>';
+        tbody.innerHTML = '<tr><td colspan="9" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">' + emptyHtml + '<button class="btn btn-primary btn-sm" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Supplier Invoice</button></td></tr>';
         return;
     }
     
@@ -793,17 +779,10 @@ function renderCreditNotesTableBody() {
     if (!tbody) return;
     
     if (purchaseDocuments.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="6" style="padding: 3rem; text-align: center;">
-                    <i class="fas fa-file-invoice" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
-                    <p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">No credit notes found</p>
-                    <button class="btn btn-primary" onclick="if(window.createNewCreditNote) window.createNewCreditNote()">
-                        <i class="fas fa-plus"></i> Create Your First Credit Note
-                    </button>
-                </td>
-            </tr>
-        `;
+        var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+            ? window.EmptyStateWatermark.render({ title: 'No credit notes yet', description: 'Create your first credit note when needed' })
+            : '<p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">No credit notes found</p>';
+        tbody.innerHTML = '<tr><td colspan="6" style="padding: 3rem; text-align: center;">' + emptyHtml + '<button class="btn btn-primary" onclick="if(window.createNewCreditNote) window.createNewCreditNote()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Credit Note</button></td></tr>';
         return;
     }
     

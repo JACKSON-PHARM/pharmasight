@@ -1210,9 +1210,13 @@ function renderItemsTable() {
     if (displayList.length === 0) {
         const searchInput = document.getElementById('itemsSearchInput');
         const hasSearch = searchInput && searchInput.value.trim().length >= 2;
-        container.innerHTML = hasSearch 
-            ? '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found matching your search.</p>'
-            : '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found. Add your first item to get started.</p>';
+        var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+            ? window.EmptyStateWatermark.render({
+                title: hasSearch ? 'No items match your search' : 'No items found',
+                description: hasSearch ? 'Try a different search term.' : 'Add your first item to get started.'
+            })
+            : (hasSearch ? '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found matching your search.</p>' : '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found. Add your first item to get started.</p>');
+        container.innerHTML = emptyHtml;
         return;
     }
     
@@ -2207,7 +2211,10 @@ async function runCurrentStockValuation(overrideBranchId) {
             var totalItems = (res && res.total_items != null) ? res.total_items : rows.length;
             if (rows.length === 0) {
                 lastCurrentStockValuation = null;
-                container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items match the criteria. Try "All items" or another branch.</p>';
+                var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+                    ? window.EmptyStateWatermark.render({ title: 'No items match the criteria', description: 'Try "All items" or another branch.' })
+                    : '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items match the criteria. Try "All items" or another branch.</p>';
+                container.innerHTML = emptyHtml;
             } else {
                 lastCurrentStockValuation = {
                     rows: rows,
@@ -2247,7 +2254,10 @@ async function runCurrentStockValuation(overrideBranchId) {
         } else {
             var list = await API.inventory.getAllStock(branchId);
             if (!list || list.length === 0) {
-                container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No stock on hand at this branch.</p>';
+                var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+                    ? window.EmptyStateWatermark.render({ title: 'No stock on hand', description: 'No items with stock at this branch.' })
+                    : '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No stock on hand at this branch.</p>';
+                container.innerHTML = emptyHtml;
             } else {
                 var simpleRows = list.map(function (row) {
                     return '<tr><td>' + escapeHtml(row.item_name || '—') + '</td><td style="text-align: right;">' + formatNumber(row.stock) + ' ' + escapeHtml(row.retail_unit || 'piece') + '</td></tr>';

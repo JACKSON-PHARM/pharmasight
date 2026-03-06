@@ -524,17 +524,10 @@ function renderSalesQuotationsTableBody() {
     }
     
     if (list.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="8" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
-                    <i class="fas fa-file-invoice" style="font-size: 2rem; color: var(--text-secondary);"></i>
-                    <p style="color: var(--text-secondary); margin: 0.5rem 0;">No quotations found</p>
-                    <button class="btn btn-primary btn-sm" onclick="createNewSalesQuotation()">
-                        <i class="fas fa-plus"></i> Create Your First Quotation
-                    </button>
-                </td>
-            </tr>
-        `;
+        var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+            ? window.EmptyStateWatermark.render({ title: 'No quotations yet', description: 'Create your first quotation to get started' })
+            : '<p style="color: var(--text-secondary); margin: 0.5rem 0;">No quotations found</p>';
+        tbody.innerHTML = '<tr><td colspan="8" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">' + emptyHtml + '<button class="btn btn-primary btn-sm" onclick="createNewSalesQuotation()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Quotation</button></td></tr>';
         return;
     }
     
@@ -794,21 +787,13 @@ function renderSalesInvoicesTableBody() {
     if (unpaidEl) unpaidEl.textContent = formatCurrency(totalUnpaid);
 
     if (filtered.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="8" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
-                    <i class="fas fa-file-invoice-dollar" style="font-size: 2rem; color: var(--text-secondary);"></i>
-                    <p style="color: var(--text-secondary); margin: 0.5rem 0;">No sales invoices found</p>
-                    ${(dateFrom || dateTo || search || userFilter === 'self') ? `
-                        <p style="color: var(--text-secondary); font-size: 0.75rem;">Try clearing filters or choose All.</p>
-                    ` : `
-                        <button class="btn btn-primary btn-sm" onclick="if(window.createNewSalesInvoice) window.createNewSalesInvoice()">
-                            <i class="fas fa-plus"></i> Create Your First Sales Invoice
-                        </button>
-                    `}
-                </td>
-            </tr>
-        `;
+        var emptyTitle = (dateFrom || dateTo || search || userFilter === 'self') ? 'No sales invoices match filters' : 'No transactions yet';
+        var emptyDesc = (dateFrom || dateTo || search || userFilter === 'self') ? 'Try clearing filters or choose All.' : 'Start by creating your first sale';
+        var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+            ? window.EmptyStateWatermark.render({ title: emptyTitle, description: emptyDesc })
+            : '<p style="color: var(--text-secondary); margin: 0.5rem 0;">No sales invoices found</p>';
+        var btnHtml = (dateFrom || dateTo || search || userFilter === 'self') ? '' : '<button class="btn btn-primary btn-sm" onclick="if(window.createNewSalesInvoice) window.createNewSalesInvoice()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Sales Invoice</button>';
+        tbody.innerHTML = '<tr><td colspan="8" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">' + emptyHtml + btnHtml + '</td></tr>';
         return;
     }
     

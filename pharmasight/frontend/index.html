@@ -17,7 +17,11 @@
         <div id="login" class="page">
             <div class="login-container">
                 <div class="login-card">
-                    <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                    <div class="login-branding no-print">
+                        <div class="login-logo-wrap"><svg class="login-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 30" width="64" height="40" aria-hidden="true"><path fill="#14b8a6" d="M24 2C11 2 3 9 3 12s8 10 21 10 21-8 21-10-8-10-21-10zm0 20c-7.2 0-13-5-15-7 2-2 7.8-7 15-7s13 5 15 7c-2 2-7.8 7-15 7z"/><circle fill="#0f172a" cx="24" cy="12" r="6"/><rect x="20" y="10" width="8" height="4" rx="1.5" fill="#14b8a6"/><rect x="28" y="10" width="4" height="4" rx="0.5" fill="#fff"/></svg></div>
+                        <h1>PharmaSight</h1>
+                        <p class="login-subtitle">Secure Pharmacy Operations Platform</p>
+                    </div>
                     <h2>Sign In</h2>
                     <form id="loginForm">
                         <div class="form-group">
@@ -50,8 +54,8 @@
     <div class="app-container" id="appLayout" style="display: none;">
         <!-- Sidebar Navigation -->
         <aside class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <h1><i class="fas fa-pills"></i> <span class="sidebar-title">PharmaSight</span></h1>
+            <div class="sidebar-header no-print">
+                <h1><span class="pharmasight-logo-icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 20" width="22" height="14"><path fill="#14b8a6" d="M16 1C8 1 2 7 2 10s6 9 14 9 14-6 14-9-6-9-14-9zm0 16c-5.5 0-10-3.7-11.7-5 1.7-1.3 6.2-5 11.7-5s10 3.7 11.7 5C26 13.3 21.5 17 16 17z"/><circle fill="#0f172a" cx="16" cy="10" r="5"/><rect x="14" y="8.5" width="4" height="3" rx="1" fill="#14b8a6"/><rect x="18" y="8.5" width="2" height="3" rx="0.5" fill="#fff"/></svg></span> <span class="sidebar-title">PharmaSight</span></h1>
                 <button class="sidebar-toggle-btn" id="sidebarToggle" title="Collapse/Expand">
                     <i class="fas fa-chevron-left"></i>
                 </button>
@@ -116,8 +120,8 @@
                 <button class="btn btn-link btn-sm" id="logoutBtn" onclick="if(window.globalLogout) window.globalLogout()" style="width: 100%; margin-top: 0.5rem; color: var(--text-secondary); text-decoration: none;">
                     <i class="fas fa-sign-out-alt"></i> Logout
                 </button>
-                <div class="sidebar-powered-by">
-                    Powered by PharmaSight Solutions
+                <div class="sidebar-powered-by no-print">
+                    Powered by PharmaSight
                 </div>
             </div>
         </aside>
@@ -424,6 +428,7 @@
     <script src="js/services/thermalPrinter.js?v=1"></script>
     <script src="js/services/printService.js?v=1"></script>
     <script src="js/utils/itemMapper.js?v=1"></script>
+    <script src="js/components/EmptyStateWatermark.js?v=1"></script>
     <!-- Security Utilities -->
     <script src="js/utils/password_validation.js?v=1"></script>
     <script src="js/utils/session_timeout.js?v=1"></script>

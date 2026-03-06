@@ -139,19 +139,11 @@ async function loadItems() {
 function showItemsPrompt() {
     const container = document.getElementById('itemsTableContainer');
     if (!container) return;
-    
-    container.innerHTML = `
-        <div style="padding: 3rem; text-align: center; color: var(--text-secondary);">
-            <i class="fas fa-boxes" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
-            <p style="font-size: 1.1rem; margin-bottom: 0.5rem; font-weight: 500;">Items Management</p>
-            <p style="font-size: 0.875rem; margin-bottom: 1.5rem;">Use search to find specific items, or click "Load All Items" to browse</p>
-            <div style="display: flex; gap: 1rem; justify-content: center;">
-                <button class="btn btn-outline" onclick="loadAllItems()">
-                    <i class="fas fa-list"></i> Load All Items
-                </button>
-            </div>
-        </div>
-    `;
+
+    var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+        ? window.EmptyStateWatermark.render({ title: 'No items yet', description: 'Use search to find items, or load all items to browse.' })
+        : '<p style="font-size: 1.1rem; margin-bottom: 0.5rem; font-weight: 500;">Items Management</p><p style="font-size: 0.875rem; margin-bottom: 1.5rem;">Use search to find specific items, or click "Load All Items" to browse</p>';
+    container.innerHTML = '<div style="padding: 3rem; text-align: center; color: var(--text-secondary);">' + emptyHtml + '<div style="display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem;"><button class="btn btn-outline" onclick="loadAllItems()"><i class="fas fa-list"></i> Load All Items</button></div></div>';
 }
 
 // Load all items for management (with pagination/limits for performance)
@@ -362,11 +354,17 @@ function renderItemsTable() {
     
     if (displayList.length === 0) {
         if (hasActiveSearch) {
-            container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found matching your search.</p>';
+            var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+                ? window.EmptyStateWatermark.render({ title: 'No items match your search', description: 'Try a different search term.' })
+                : '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items found matching your search.</p>';
+            container.innerHTML = emptyHtml;
         } else if (itemsList.length === 0) {
             showItemsPrompt();
         } else {
-            container.innerHTML = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items to display.</p>';
+            var emptyHtml2 = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+                ? window.EmptyStateWatermark.render({ title: 'No items to display', description: '' })
+                : '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items to display.</p>';
+            container.innerHTML = emptyHtml2;
         }
         return;
     }
