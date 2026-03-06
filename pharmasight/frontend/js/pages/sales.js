@@ -1188,7 +1188,7 @@ async function onSalesInvoiceAddItem(item) {
         documentItems = (documentItems || []).concat(optimisticLine);
     }
     if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
-        salesInvoiceItemsTable.setItems(documentItems);
+        salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
     }
     updateSalesInvoiceSummary();
 
@@ -1229,7 +1229,7 @@ async function onSalesInvoiceAddItem(item) {
                 }));
                 lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(invoice.items);
                 if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
-                    salesInvoiceItemsTable.setItems(documentItems);
+                    salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
                 }
                 updateSalesInvoiceSummary();
                 showToast('Draft invoice created. Add more items or click Batch when ready.', 'success');
@@ -1275,7 +1275,7 @@ async function onSalesInvoiceAddItem(item) {
         documentItems = itemsToSet;
         lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(apiItems);
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
-            salesInvoiceItemsTable.setItems(documentItems);
+            salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
         }
         updateSalesInvoiceSummary();
     } catch (err) {
@@ -1967,7 +1967,7 @@ async function onQuotationAddItem(item) {
             quotationSyncedItemIds = new Set((quotation.items || []).map(i => i.item_id));
             quotationItems = mapQuotationResponseItems(quotation);
             if (salesQuotationItemsTable && typeof salesQuotationItemsTable.setItems === 'function') {
-                salesQuotationItemsTable.setItems(quotationItems);
+                salesQuotationItemsTable.setItems(quotationItems, { focusNewRowQty: true });
             }
             updateSalesQuotationSummary();
             const formEl = document.getElementById('salesQuotationForm');
@@ -1992,7 +1992,7 @@ async function onQuotationAddItem(item) {
         quotationItems = mapQuotationResponseItems(quotation, quotationItems);
         currentQuotation.quotationData = quotation;
         if (salesQuotationItemsTable && typeof salesQuotationItemsTable.setItems === 'function') {
-            salesQuotationItemsTable.setItems(quotationItems);
+            salesQuotationItemsTable.setItems(quotationItems, { focusNewRowQty: true });
         }
         updateSalesQuotationSummary();
     } catch (err) {

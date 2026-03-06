@@ -803,7 +803,16 @@
                     return;
                 }
                 this.updateAddRowFromDom();
-                this.moveAddRowToNextField(e.target);
+                // POS: Enter on qty/price/discount → focus search for fast next-item entry
+                if (e.target.classList.contains('add-row-qty') || e.target.classList.contains('add-row-price') || e.target.classList.contains('add-row-discount')) {
+                    const searchInput = document.getElementById(this.instanceId + '_item_add');
+                    if (searchInput) {
+                        searchInput.focus();
+                        try { searchInput.setSelectionRange(0, (searchInput.value || '').length); } catch (_) {}
+                    }
+                } else {
+                    this.moveAddRowToNextField(e.target);
+                }
                 return;
             }
             if (e.target.classList.contains('item-search-input')) {
@@ -819,7 +828,16 @@
                     e.preventDefault();
                     const row = e.target.dataset.row;
                     this.handleFieldChange(parseInt(row, 10), e.target.dataset.field, e.target.value);
-                    this.moveToNextField(e.target);
+                    // POS: Enter on qty/price/discount → focus search for fast next-item entry
+                    if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || e.target.classList.contains('discount-input')) {
+                        const searchInput = document.getElementById(this.instanceId + '_item_add');
+                        if (searchInput) {
+                            searchInput.focus();
+                            try { searchInput.setSelectionRange(0, (searchInput.value || '').length); } catch (_) {}
+                        }
+                    } else {
+                        this.moveToNextField(e.target);
+                    }
                 }
             } else if (!inAddRow && e.target.classList.contains('total-input')) {
                 if (e.key === 'Enter') {
@@ -2152,11 +2170,7 @@
             this.closeSelectedItemDropdown();
             this.render();
             this.attachEventListeners();
-            const instanceId = this.instanceId;
-            setTimeout(function() {
-                const addInput = typeof document !== 'undefined' ? document.getElementById(`${instanceId}_item_add`) : null;
-                if (addInput) addInput.focus();
-            }, 0);
+            // POS focus: do NOT force focus to search. Parent's setItems (with focusNewRowQty) will focus qty of new row.
             // Unlock Add button as soon as parent's optimistic update has run (next tick), so user can add next item without waiting for API
             const self = this;
             setTimeout(function() {
@@ -2175,10 +2189,13 @@
     /**
      * Set items (e.g. after parent creates doc or adds line). Re-renders table.
      */
-    TransactionItemsTable.prototype.setItems = function(items) {
+    TransactionItemsTable.prototype.setItems = function(items, options) {
+        options = options || {};
+        const focusNewRowQty = options.focusNewRowQty === true;
         // Preserve add-row typing/search state across server refreshes so in-flight add doesn't wipe user input.
+        // When focusNewRowQty (POS: after add), skip restoring focus to search; we'll focus qty of new row instead.
         let addRowPreserve = null;
-        if (this.useAddRow && this.mountEl && typeof document !== 'undefined') {
+        if (this.useAddRow && this.mountEl && typeof document !== 'undefined' && !focusNewRowQty) {
             const addInput = this.mountEl.querySelector('.add-row-search');
             const active = document.activeElement;
             const addRowSection = this.mountEl.querySelector(`#${this.instanceId}_add_row_section`);
@@ -2198,18 +2215,32 @@
         if (!this.useAddRow) this.addRowItem = null;
         this.render();
         this.attachEventListeners();
-        if (this.useAddRow && addRowPreserve && this.mountEl) {
-            const newAddInput = this.mountEl.querySelector('.add-row-search') || (typeof document !== 'undefined' ? document.getElementById(`${this.instanceId}_item_add`) : null);
-            if (newAddInput && typeof addRowPreserve.value === 'string') {
-                // If user was typing (value differs from selected item_name), keep typed query.
-                newAddInput.value = addRowPreserve.value;
-                if (addRowPreserve.activeInAddRow) {
+        if (this.useAddRow && this.mountEl && typeof document !== 'undefined') {
+            if (focusNewRowQty && this.items.length > 0) {
+                // POS: focus quantity of newly added row (smooth, no timers)
+                const lastIdx = this.items.length - 1;
+                const lastRow = this.mountEl.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${lastIdx}"]`);
+                const qtyInput = lastRow ? lastRow.querySelector('.qty-input') : null;
+                if (qtyInput) {
                     try {
-                        newAddInput.focus();
-                        if (addRowPreserve.selectionStart != null && addRowPreserve.selectionEnd != null) {
-                            newAddInput.setSelectionRange(addRowPreserve.selectionStart, addRowPreserve.selectionEnd);
+                        qtyInput.focus();
+                        if (qtyInput.type !== 'number' && typeof qtyInput.setSelectionRange === 'function') {
+                            qtyInput.setSelectionRange(0, (qtyInput.value || '').length);
                         }
                     } catch (_) {}
+                }
+            } else if (addRowPreserve) {
+                const newAddInput = this.mountEl.querySelector('.add-row-search') || document.getElementById(`${this.instanceId}_item_add`);
+                if (newAddInput && typeof addRowPreserve.value === 'string') {
+                    newAddInput.value = addRowPreserve.value;
+                    if (addRowPreserve.activeInAddRow) {
+                        try {
+                            newAddInput.focus();
+                            if (addRowPreserve.selectionStart != null && addRowPreserve.selectionEnd != null) {
+                                newAddInput.setSelectionRange(addRowPreserve.selectionStart, addRowPreserve.selectionEnd);
+                            }
+                        } catch (_) {}
+                    }
                 }
             }
         }
