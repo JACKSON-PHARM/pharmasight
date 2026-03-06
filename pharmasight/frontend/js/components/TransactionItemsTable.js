@@ -636,7 +636,9 @@
                         self.recalculateAddRow();
                         self.render();
                         self.attachEventListeners();
-                        self.requestRecommendedPriceForAddRow();
+                        // Price follows unit: scale from basis price, no API call on sales type change.
+                        self.recalcAddRowPriceFromBasis();
+                        self.updateAddRowComputedFieldsOnly();
                     }
                 });
             }
@@ -813,14 +815,11 @@
                 if (this.addRowItem && e.target.classList.contains('price-input')) {
                     this.addRowItem._userEditedPrice = true;
                 }
-                // Unit change in add row should update price suggestion to match unit tier
+                // Unit change in add row should update price display instantly (scaled from basis); no API call here.
                 if (this.addRowItem && e.target.classList.contains('unit-select')) {
-                    this.addRowItem._userEditedPrice = false; // unit change implies we want auto price for that unit
+                    this.addRowItem._userEditedPrice = false;
                 }
                 this.updateAddRowFromDom();
-                if (this.addRowItem && e.target.classList.contains('unit-select')) {
-                    this.requestRecommendedPriceForAddRow();
-                }
                 return;
             }
             const rowNum = parseInt(row, 10);
@@ -1423,7 +1422,12 @@
             available_units: null,
             unit_multiplier: 1,
             _addRowAutoPriceSeq: 0,
-            _userEditedPrice: false
+            _userEditedPrice: false,
+            // Basis: price we got from search (typically wholesale unit). We use this to instantly scale
+            // price when user switches units, without calling the API. Backend can still validate/override on Add.
+            _basis_unit_name: suggestionEl.dataset.wholesaleUnit || null,
+            _basis_unit_multiplier: null,
+            _basis_unit_price: null
         };
         
         if (isAddRow) {
@@ -1445,6 +1449,19 @@
                 item.unit_multiplier = parseFloat(match.multiplier_to_base) || 1;
             }
 
+            // Set basis multiplier from the configured wholesale_unit, then scale price to selected unit.
+            // This fixes cases where search returns wholesale price but UI defaults to retail unit.
+            const basisUnit = (item.wholesale_unit || item.base_unit || '').toString().trim();
+            const basisMatch = (item.available_units || []).find(u => (u.unit_name || '').toString().trim().toLowerCase() === basisUnit.toLowerCase());
+            const basisMult = basisMatch ? (parseFloat(basisMatch.multiplier_to_base) || 1) : (item.pack_size != null ? Math.max(1, parseInt(item.pack_size, 10) || 1) : 1);
+            item._basis_unit_name = basisUnit || item._basis_unit_name;
+            item._basis_unit_multiplier = basisMult;
+            item._basis_unit_price = item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : null;
+            if (item._basis_unit_price != null && basisMult > 0) {
+                const pricePerBase = item._basis_unit_price / basisMult;
+                item.unit_price = this.roundMoney(pricePerBase * (item.unit_multiplier || 1));
+            }
+
             this.addRowItem = item;
             // If we were editing a line but user selected a different item → add as new line instead
             if (this.editingRowIndex !== null && this.items[this.editingRowIndex] &&
@@ -1455,8 +1472,7 @@
             this.closeSuggestions();
             this.render();
             this.attachEventListeners();
-            // Fetch recommended price for currently selected unit (tier derived from unit) without blocking UI
-            this.requestRecommendedPriceForAddRow();
+            // No recommended-price call here; we scale from basis price. Backend can correct on Add.
             setTimeout(() => {
                 const qtyInput = this.mountEl.querySelector('.add-row-qty');
                 if (qtyInput) {
@@ -1489,6 +1505,21 @@
             }
         }
         this.notifyChange();
+    };
+
+    /**
+     * In add-row mode, recompute unit_price from the basis (wholesale) price and the selected unit multiplier.
+     * Keeps unit conversions untouched; only affects UI default/suggested price display.
+     */
+    TransactionItemsTable.prototype.recalcAddRowPriceFromBasis = function() {
+        if (!this.addRowItem) return;
+        const it = this.addRowItem;
+        if (it._basis_unit_price == null || it._basis_unit_multiplier == null) return;
+        const basisMult = parseFloat(it._basis_unit_multiplier) || 0;
+        if (basisMult <= 0) return;
+        const pricePerBase = parseFloat(it._basis_unit_price) / basisMult;
+        const mult = parseFloat(it.unit_multiplier) || 1;
+        it.unit_price = this.roundMoney(pricePerBase * mult);
     };
 
     /**
@@ -1937,6 +1968,14 @@
             this.addRowItem.unit_multiplier = newMult;
             if (oldMult > 0 && newMult > 0 && Math.abs(oldMult - newMult) > 1e-9) {
                 didRecalcUnitPriceFromUnitChange = true;
+                // Immediate price update so UI updates instantly on unit switch.
+                // Prefer basis price from search (wholesale) so we don't compound rounding drift.
+                if (this.addRowItem && this.addRowItem._basis_unit_price != null && this.addRowItem._basis_unit_multiplier != null) {
+                    this.recalcAddRowPriceFromBasis();
+                } else {
+                    const pricePerBase = (this.addRowItem.unit_price || 0) / oldMult;
+                    this.addRowItem.unit_price = this.roundMoney(pricePerBase * newMult);
+                }
             }
         }
         const nettEl = this.mountEl.querySelector('.add-row-nett');
