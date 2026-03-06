@@ -2523,6 +2523,7 @@
     TransactionItemsTable.prototype.loadUnitsForRow = async function(rowIndex) {
         const item = rowIndex === 'add' ? this.addRowItem : this.items[rowIndex];
         if (!item || !item.item_id) return;
+        if (item._unitsLoadFailed) return;  // Skip retry when item was deleted/404
         const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
         if (!api || !api.items || !api.items.get) return;
         const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
@@ -2592,6 +2593,7 @@
             // When useAddRow, committed rows are read-only; we only set item.available_units for when user loads row to edit
         } catch (err) {
             console.warn('TransactionItemsTable: could not load units for item', item.item_id, err);
+            item._unitsLoadFailed = true;  // Prevent repeated 404 requests for deleted/unavailable items
             item.available_units = [{ unit_name: item.unit_name || 'unit', multiplier_to_base: 1 }];
             item.unit_multiplier = 1;
             if (rowIndex === 'add') {

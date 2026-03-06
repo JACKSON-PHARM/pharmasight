@@ -39,6 +39,9 @@ def get_unit_multiplier_from_item(item: "Item", unit_name: str) -> Optional[Deci
         return Decimal(str(pack))
     if supplier and u == supplier:
         return Decimal(str(pack)) * wups
+    # "piece"/"pieces" are universal fallbacks for one base/retail unit (frontend defaults, cached data, etc.)
+    if u in ("piece", "pieces"):
+        return Decimal("1")
     return None
 
 
@@ -70,6 +73,9 @@ def get_unit_multiplier_from_item_row(
         return Decimal(str(pack))
     if supplier and u == supplier:
         return Decimal(str(pack)) * wups
+    # "piece"/"pieces" are universal fallbacks for one base/retail unit
+    if u in ("piece", "pieces"):
+        return Decimal("1")
     return None
 
 

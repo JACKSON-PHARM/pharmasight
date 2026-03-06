@@ -822,6 +822,12 @@ def get_supplier_invoice(
             if (invoice_item.vat_rate is None or float(invoice_item.vat_rate) == 0) and getattr(invoice_item.item, "vat_rate", None) is not None:
                 pct = vat_rate_to_percent(invoice_item.item.vat_rate)
                 invoice_item.vat_rate = Decimal(str(pct))
+        else:
+            # Item was deleted from catalog; provide fallback so UI doesn't break and frontend won't retry fetch
+            invoice_item.item_code = getattr(invoice_item, "item_code", None) or ""
+            invoice_item.item_name = getattr(invoice_item, "item_name", None) or "[Item no longer available]"
+            invoice_item.item_category = getattr(invoice_item, "item_category", None) or ""
+            invoice_item.base_unit = getattr(invoice_item, "base_unit", None) or "piece"
         # batch_data is already stored in the database and will be included in response
     
     return invoice
