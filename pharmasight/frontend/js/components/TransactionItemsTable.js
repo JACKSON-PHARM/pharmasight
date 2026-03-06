@@ -251,19 +251,33 @@
     };
 
     /**
+     * Get cost per selected unit. When _basis_unit_cost exists, cost is in same unit as basis price
+     * (wholesale); convert to selected unit. Otherwise assume purchase_price is per retail unit.
+     */
+    TransactionItemsTable.prototype.getCostPerSelectedUnit = function(item) {
+        if (!item) return 0;
+        const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
+        if (item._basis_unit_cost != null && !isNaN(Number(item._basis_unit_cost)) &&
+            item._basis_unit_multiplier != null && parseFloat(item._basis_unit_multiplier) > 0) {
+            const basisCost = Number(item._basis_unit_cost);
+            const basisMult = parseFloat(item._basis_unit_multiplier);
+            return basisCost * (mult / basisMult);
+        }
+        const costPerBase = item.purchase_price || 0;
+        return costPerBase * mult;
+    };
+
+    /**
      * Calculate margin percentage in the selected unit (unit-aware).
-     * purchase_price is cost per base (retail) unit; cost per selected unit = purchase_price * unit_multiplier.
+     * Uses _basis_unit_cost when available (cost in same unit as price); else purchase_price per retail.
      * NOTE: This margin is markup-on-cost: (price - cost) / cost * 100.
      */
     TransactionItemsTable.prototype.calculateMargin = function(item) {
         if (this.mode !== 'sale' && this.mode !== 'quotation') return 0;
-        const costPerBase = item.purchase_price || 0;
-        if (costPerBase <= 0) return 0;
-        const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
-        const costPerSelectedUnit = costPerBase * mult;
+        const costPerSelectedUnit = this.getCostPerSelectedUnit(item);
+        if (costPerSelectedUnit <= 0) return 0;
         const salePricePerUnit = item.unit_price || 0;
         if (salePricePerUnit <= 0) return 0;
-        if (costPerSelectedUnit <= 0) return 0;
         return ((salePricePerUnit - costPerSelectedUnit) / costPerSelectedUnit) * 100;
     };
     
@@ -717,7 +731,11 @@
                         const inp = e.target;
                         setTimeout(function() {
                             if (inp && (inp.value === '\u2014' || inp.value === '—' || inp.value === '-')) inp.value = '';
-                            if (inp) inp.setSelectionRange(0, (inp.value || '').length);
+                            try {
+                                if (inp && inp.type !== 'number' && typeof inp.setSelectionRange === 'function') {
+                                    inp.setSelectionRange(0, (inp.value || '').length);
+                                }
+                            } catch (_) {}
                         }, 0);
                     }
                     return;
@@ -772,7 +790,11 @@
                             const qty = this.mountEl.querySelector('.add-row-qty');
                             if (qty) {
                                 qty.focus();
-                                qty.setSelectionRange(0, (qty.value || '').length);
+                                try {
+                                    if (qty.type !== 'number' && typeof qty.setSelectionRange === 'function') {
+                                        qty.setSelectionRange(0, (qty.value || '').length);
+                                    }
+                                } catch (_) {}
                             }
                         }
                     } else {
@@ -1007,12 +1029,20 @@
             if (cache) {
                 const cached = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 50);
                 if (cached !== null && cached !== undefined) {
+                    // Cache safety: older cached payloads may miss unit conversion fields (pack_size / wups).
+                    // If so, treat as cache miss so we fetch fresh results that include conversion rates.
+                    const first = Array.isArray(cached) && cached.length ? cached[0] : null;
+                    const hasConversion = first && (first.pack_size != null || first.wholesale_units_per_supplier != null || first.wholesale_unit != null || first.supplier_unit != null);
+                    if (!hasConversion) {
+                        // ignore cache
+                    } else {
                     if (cached.length === 0) {
                         applyResults([{ type: 'create', query: query, message: 'Create new item: "' + query + '"' }]);
                     } else {
                         applyResults(cached.map(item => ({ type: 'item', ...item })));
                     }
                     return;
+                    }
                 }
             }
             
@@ -1423,11 +1453,12 @@
             unit_multiplier: 1,
             _addRowAutoPriceSeq: 0,
             _userEditedPrice: false,
-            // Basis: price we got from search (typically wholesale unit). We use this to instantly scale
-            // price when user switches units, without calling the API. Backend can still validate/override on Add.
+            // Basis: price and cost we got from search (typically wholesale unit). We use this to instantly scale
+            // price and cost when user switches units, so margin compares like units. Backend validates on Add.
             _basis_unit_name: suggestionEl.dataset.wholesaleUnit || null,
             _basis_unit_multiplier: null,
-            _basis_unit_price: null
+            _basis_unit_price: null,
+            _basis_unit_cost: null
         };
         
         if (isAddRow) {
@@ -1457,6 +1488,8 @@
             item._basis_unit_name = basisUnit || item._basis_unit_name;
             item._basis_unit_multiplier = basisMult;
             item._basis_unit_price = item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : null;
+            // Cost from search is in same unit as price (wholesale); store for unit-aware margin
+            item._basis_unit_cost = (item.purchase_price != null && !isNaN(Number(item.purchase_price))) ? Number(item.purchase_price) : null;
             if (item._basis_unit_price != null && basisMult > 0) {
                 const pricePerBase = item._basis_unit_price / basisMult;
                 item.unit_price = this.roundMoney(pricePerBase * (item.unit_multiplier || 1));
@@ -1477,7 +1510,12 @@
                 const qtyInput = this.mountEl.querySelector('.add-row-qty');
                 if (qtyInput) {
                     qtyInput.focus();
-                    qtyInput.setSelectionRange(0, (qtyInput.value || '').length);
+                    // type="number" does not support setSelectionRange in some browsers
+                    try {
+                        if (qtyInput.type !== 'number' && typeof qtyInput.setSelectionRange === 'function') {
+                            qtyInput.setSelectionRange(0, (qtyInput.value || '').length);
+                        }
+                    } catch (_) {}
                 }
             }, 100);
             return;
@@ -1621,7 +1659,7 @@
     
     /**
      * Handle margin change: set unit price from cost (in selected unit) and margin %, then recalc net and total.
-     * cost per selected unit = purchase_price * unit_multiplier (base = retail); unit_price = cost_per_selected * (1 + margin%/100)
+     * Uses getCostPerSelectedUnit for unit-aware cost (basis cost when available).
      */
     TransactionItemsTable.prototype.handleMarginChange = function(rowIndex, value) {
         if (rowIndex < 0 || rowIndex >= this.items.length) return;
@@ -1629,10 +1667,8 @@
         if (!item) return;
         const marginPct = parseFloat(value);
         if (isNaN(marginPct)) return;
-        const costPerBase = item.purchase_price || 0;
-        if (costPerBase <= 0) return;
-        const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
-        const costPerSelectedUnit = costPerBase * mult;
+        const costPerSelectedUnit = this.getCostPerSelectedUnit(item);
+        if (costPerSelectedUnit <= 0) return;
         item.unit_price = Math.round(costPerSelectedUnit * (1 + marginPct / 100) * 10000) / 10000;
         this.recalculateRow(rowIndex);
         this.updateRowDisplay(rowIndex);
@@ -1958,12 +1994,16 @@
         const unitSelect = this.mountEl.querySelector('.add-row-unit');
         const active = typeof document !== 'undefined' ? document.activeElement : null;
         let didRecalcUnitPriceFromUnitChange = false;
+        let oldMultForDebug = null;
+        let newMultForDebug = null;
         if (qtyEl) this.addRowItem.quantity = parseFloat(qtyEl.value) || 1;
         if (discountEl) this.addRowItem.discount_percent = this.roundMoney(parseFloat(discountEl.value) || 0);
         if (unitSelect && unitSelect.tagName === 'SELECT') {
             const opt = unitSelect.options[unitSelect.selectedIndex];
             const newMult = opt ? parseFloat(opt.dataset.multiplier) || 1 : 1;
             const oldMult = this.addRowItem.unit_multiplier || 1;
+            oldMultForDebug = oldMult;
+            newMultForDebug = newMult;
             this.addRowItem.unit_name = unitSelect.value || '';
             this.addRowItem.unit_multiplier = newMult;
             if (oldMult > 0 && newMult > 0 && Math.abs(oldMult - newMult) > 1e-9) {
@@ -1990,14 +2030,34 @@
         }
         if (marginEl && (this.mode === 'sale' || this.mode === 'quotation') && active === marginEl) {
             const margin = parseFloat(marginEl.value);
-            if (!isNaN(margin) && this.addRowItem.purchase_price != null) {
-                const costPerUnit = (this.addRowItem.purchase_price || 0) * (this.addRowItem.unit_multiplier || 1);
-                if (costPerUnit > 0) this.addRowItem.unit_price = this.roundMoney(costPerUnit * (1 + margin / 100));
+            const costPerUnit = this.getCostPerSelectedUnit(this.addRowItem);
+            if (!isNaN(margin) && costPerUnit > 0) {
+                this.addRowItem.unit_price = this.roundMoney(costPerUnit * (1 + margin / 100));
             }
         }
         this.recalculateAddRow();
-        // Avoid formatting/overwriting the active input while user is typing (prevents caret jumps/resets)
-        if (priceEl && active !== priceEl) priceEl.value = this.roundMoney(this.addRowItem.unit_price || 0).toFixed(2);
+        // Always refresh price display on unit change so user sees it immediately.
+        // Otherwise, keep the "don't fight typing" rule.
+        if (priceEl && (didRecalcUnitPriceFromUnitChange || active !== priceEl)) {
+            priceEl.value = this.roundMoney(this.addRowItem.unit_price || 0).toFixed(2);
+        }
+        // Optional debug to validate multipliers/basis during testing
+        try {
+            const cfg = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
+            if (cfg && cfg.DEBUG_UNIT_PRICE && didRecalcUnitPriceFromUnitChange) {
+                // eslint-disable-next-line no-console
+                console.warn('[AddRow Unit→Price]', {
+                    item_id: this.addRowItem.item_id,
+                    unit_name: this.addRowItem.unit_name,
+                    old_mult: oldMultForDebug,
+                    new_mult: newMultForDebug,
+                    basis_unit: this.addRowItem._basis_unit_name,
+                    basis_mult: this.addRowItem._basis_unit_multiplier,
+                    basis_price: this.addRowItem._basis_unit_price,
+                    unit_price: this.addRowItem.unit_price
+                });
+            }
+        } catch (_) {}
         this.updateAddRowComputedFieldsOnly();
     };
     
@@ -2007,13 +2067,11 @@
     TransactionItemsTable.prototype.getAddRowData = function() {
         if (!this.addRowItem || !this.addRowItem.item_id) return null;
         this.updateAddRowFromDom();
-        var costBase = this.addRowItem.purchase_price;
-        var mult = this.addRowItem.unit_multiplier;
+        var costPerSelected = this.getCostPerSelectedUnit(this.addRowItem);
         var price = this.addRowItem.unit_price || 0;
         var marginPct = this.addRowItem.margin_percent;
-        if (marginPct == null && costBase != null && price > 0 && mult != null && mult > 0) {
-            var costPerSale = costBase * mult;
-            marginPct = costPerSale > 0 ? ((price - costPerSale) / price * 100) : null;
+        if (marginPct == null && costPerSelected > 0 && price > 0) {
+            marginPct = ((price - costPerSelected) / costPerSelected) * 100;
         }
         return {
             item_id: this.addRowItem.item_id,
@@ -2026,7 +2084,7 @@
             tax_percent: this.addRowItem.tax_percent || 0,
             total: this.addRowItem.total || 0,
             batches: this.addRowItem.batches || [],
-            unit_cost_base: costBase != null ? costBase : undefined,
+            unit_cost_base: this.addRowItem.purchase_price != null ? this.addRowItem.purchase_price : undefined,
             margin_percent: marginPct != null ? marginPct : undefined
         };
     };

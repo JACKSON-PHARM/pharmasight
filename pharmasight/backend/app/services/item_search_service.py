@@ -23,9 +23,9 @@ def _item_like_from_snapshot_row(r: Any) -> SimpleNamespace:
     return SimpleNamespace(
         pack_size=getattr(r, "pack_size", 1) or 1,
         base_unit=getattr(r, "base_unit", None) or "piece",
-        retail_unit=getattr(r, "retail_unit", None) or "piece",
-        supplier_unit=getattr(r, "supplier_unit", None) or "piece",
-        wholesale_unit=getattr(r, "wholesale_unit", None) or "piece",
+        retail_unit=getattr(r, "retail_unit", None) or (getattr(r, "base_unit", None) or "piece"),
+        supplier_unit=getattr(r, "supplier_unit", None) or "",
+        wholesale_unit=getattr(r, "wholesale_unit", None) or (getattr(r, "base_unit", None) or "piece"),
         wholesale_units_per_supplier=getattr(r, "wholesale_units_per_supplier", 1) or 1,
         can_break_bulk=True,
     )
@@ -176,11 +176,19 @@ def _canonical_item_from_snapshot_row(
         margin_val = float(r.margin_percent) if r.margin_percent is not None else None
     stock_display = _format_stock_display(stock_float, item_like)
     retail_unit = _unit_for_display(getattr(item_like, "retail_unit", None), "piece") if item_like else "piece"
+    wholesale_unit = _unit_for_display(getattr(item_like, "wholesale_unit", None), _unit_for_display(r.base_unit, "piece")) if item_like else _unit_for_display(r.base_unit, "piece")
+    supplier_unit = _unit_for_display(getattr(item_like, "supplier_unit", None), "") if item_like else ""
+    pack_size = int(getattr(r, "pack_size", None) or getattr(item_like, "pack_size", None) or 1)
+    wups = float(getattr(item_like, "wholesale_units_per_supplier", None) or getattr(r, "wholesale_units_per_supplier", None) or 1.0)
     out = {
         "id": str(r.item_id),
         "name": r.name or "",
         "base_unit": _unit_for_display(r.base_unit, "piece"),
         "retail_unit": retail_unit,
+        "wholesale_unit": wholesale_unit,
+        "supplier_unit": supplier_unit,
+        "pack_size": max(1, pack_size),
+        "wholesale_units_per_supplier": max(0.0001, wups),
         "price": price_val,
         "sku": (r.sku or "").strip(),
         "category": "",
