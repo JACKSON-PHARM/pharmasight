@@ -1348,7 +1348,13 @@ async function showAdjustStockModal(itemId) {
         const itemName = (data && data.name) ? String(data.name) : 'Item';
         const units = (data && data.units && data.units.length) ? data.units : [{ unit_name: data.base_unit || 'piece', multiplier_to_base: 1 }];
         const lastCost = (data && (data.default_cost != null || data.default_cost_per_base != null)) ? (data.default_cost ?? data.default_cost_per_base) : 0;
-        const unitOptions = units.map(u => `<option value="${escapeHtml(u.unit_name)}">${escapeHtml(u.unit_name)}</option>`).join('');
+        const baseUnitName = (data && data.base_unit) ? String(data.base_unit) : 'piece';
+        const hasMultipleUnits = Array.isArray(units) && units.length > 1;
+        const unitOptions = (hasMultipleUnits
+            ? `<option value="" selected disabled>Select unit / pack size</option>` +
+            units.map(u => `<option value="${escapeHtml(u.unit_name)}">${escapeHtml(u.unit_name)}</option>`).join('')
+            : units.map(u => `<option value="${escapeHtml(u.unit_name)}">${escapeHtml(u.unit_name)}</option>`).join('')
+        );
         // stock_display preferred; else base_quantity + retail_unit. Never use base_unit (wholesale) for numeric stock.
         const currentStockDisplay = (data && data.stock_display) ? String(data.stock_display) : (data && (data.current_stock != null || data.base_quantity != null) ? String(data.base_quantity != null ? data.base_quantity : data.current_stock) + ' ' + (data.retail_unit || 'piece') : '—');
 
@@ -1362,6 +1368,9 @@ async function showAdjustStockModal(itemId) {
                 <select id="adjustStockUnit" class="form-input">
                     ${unitOptions}
                 </select>
+                <div style="margin-top:0.35rem; font-size:0.85rem; color: var(--text-secondary, #666);">
+                    Tip: pick the pack size you are counting. We'll convert it to <strong>${escapeHtml(baseUnitName)}</strong> automatically.
+                </div>
             </div>
             <div class="form-group">
                 <label>Direction</label>
@@ -1372,7 +1381,14 @@ async function showAdjustStockModal(itemId) {
             </div>
             <div class="form-group">
                 <label>Quantity (in selected unit)</label>
-                <input type="number" id="adjustStockQty" class="form-input" min="0.001" step="any" value="1" required>
+                <input type="number" id="adjustStockQty" class="form-input" min="0.001" step="any" value="" required placeholder="Enter quantity">
+                <div id="adjustStockImpactPreview" style="margin-top:0.35rem; font-size:0.9rem; color: var(--text-secondary, #666);"></div>
+                <div class="alert alert-warning" style="margin-top:0.75rem; margin-bottom:0; padding:0.6rem 0.75rem;">
+                    <label style="display:flex; gap:0.5rem; align-items:flex-start; margin:0;">
+                        <input type="checkbox" id="adjustStockReviewed" style="margin-top:0.25rem;">
+                        <span><strong>Confirm</strong> you have reviewed the <strong>Unit</strong> and <strong>Quantity</strong> (pack size) before saving.</span>
+                    </label>
+                </div>
             </div>
             <div class="form-group">
                 <label>Unit cost (per base unit) — optional; defaults to last purchase cost</label>
@@ -1410,6 +1426,43 @@ async function showAdjustStockModal(itemId) {
         if (submitBtn) {
             submitBtn.onclick = async () => submitAdjustStock(itemId);
         }
+
+        // Require explicit review of Unit & Quantity before enabling submit (prevents accidental base-unit=1 defaults).
+        const reviewedEl = document.getElementById('adjustStockReviewed');
+        if (submitBtn && reviewedEl) {
+            submitBtn.disabled = true;
+            reviewedEl.addEventListener('change', function () {
+                submitBtn.disabled = !reviewedEl.checked;
+            });
+        }
+
+        // Show live conversion preview: selected unit * qty = base units.
+        const unitEl = document.getElementById('adjustStockUnit');
+        const qtyEl = document.getElementById('adjustStockQty');
+        const previewEl = document.getElementById('adjustStockImpactPreview');
+        const unitMultiplierMap = {};
+        (units || []).forEach(function (u) {
+            if (!u || !u.unit_name) return;
+            unitMultiplierMap[String(u.unit_name)] = (u.multiplier_to_base != null ? Number(u.multiplier_to_base) : 1);
+        });
+        function updateImpactPreview() {
+            if (!previewEl || !unitEl || !qtyEl) return;
+            const unitName = unitEl.value;
+            const q = qtyEl.value != null && String(qtyEl.value).trim() !== '' ? Number(qtyEl.value) : null;
+            if (!unitName || q == null || isNaN(q) || q <= 0) {
+                previewEl.textContent = '';
+                return;
+            }
+            const m = unitMultiplierMap[unitName] != null ? Number(unitMultiplierMap[unitName]) : 1;
+            const baseQty = q * m;
+            const baseQtyText = (isFinite(baseQty) ? (Math.abs(baseQty - Math.round(baseQty)) < 1e-9 ? String(Math.round(baseQty)) : String(baseQty)) : '');
+            previewEl.innerHTML = 'Will adjust approximately: <strong>' + escapeHtml(String(q)) + '</strong> ' + escapeHtml(String(unitName)) +
+                ' = <strong>' + escapeHtml(baseQtyText) + '</strong> ' + escapeHtml(baseUnitName) + ' (base units).';
+        }
+        if (unitEl) unitEl.addEventListener('change', updateImpactPreview);
+        if (qtyEl) qtyEl.addEventListener('input', updateImpactPreview);
+        updateImpactPreview();
+
         // When Add is selected, batch and expiry are required
         const directionRadios = document.querySelectorAll('input[name="adjustDirection"]');
         const batchInput = document.getElementById('adjustStockBatch');
@@ -1442,12 +1495,24 @@ async function submitAdjustStock(itemId) {
     const directionRadios = document.querySelectorAll('input[name="adjustDirection"]');
     if (!unitEl || !qtyEl || !directionRadios.length) return;
     const unit_name = unitEl.value;
+    if (!unit_name || String(unit_name).trim() === '') {
+        if (typeof showToast === 'function') showToast('Please select the unit / pack size.', 'warning');
+        else alert('Please select the unit / pack size.');
+        return;
+    }
     const quantity = parseFloat(qtyEl.value);
     const direction = Array.from(directionRadios).find(r => r.checked);
     const dir = direction ? direction.value : 'add';
     if (!quantity || quantity <= 0) {
         if (typeof showToast === 'function') showToast('Enter a valid quantity.', 'warning');
         else alert('Enter a valid quantity.');
+        return;
+    }
+    const reviewedEl = document.getElementById('adjustStockReviewed');
+    if (reviewedEl && !reviewedEl.checked) {
+        if (typeof showToast === 'function') showToast('Please confirm you have reviewed Unit and Quantity.', 'warning');
+        else alert('Please confirm you have reviewed Unit and Quantity.');
+        reviewedEl.focus();
         return;
     }
     const batchEl = document.getElementById('adjustStockBatch');
@@ -1519,6 +1584,19 @@ async function submitAdjustStock(itemId) {
             if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Apply adjustment'; }
             return;
         }
+        if (detail && typeof detail === 'object' && detail.code === 'SHORT_EXPIRY_OVERRIDE_REQUIRED') {
+            if (typeof showShortExpiryOverrideAdjustStockModal === 'function') {
+                showShortExpiryOverrideAdjustStockModal(itemId, detail, payload);
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Apply adjustment'; }
+                return;
+            }
+        }
+        if (detail && typeof detail === 'object' && detail.code === 'SHORT_EXPIRY_OVERRIDE_FORBIDDEN') {
+            const msg = detail.message || 'You do not have permission to override short expiry. Ask a Manager or Pharmacist to authorize.';
+            if (typeof showToast === 'function') showToast(msg, 'error');
+            else alert(msg);
+            return;
+        }
         if (detail && typeof detail === 'object' && detail.code === 'PRICE_CONFIRMATION_REQUIRED') {
             const confirmSection = document.getElementById('adjustStockConfirmSection');
             const confirmMsg = document.getElementById('adjustStockConfirmMessage');
@@ -1555,6 +1633,58 @@ async function submitAdjustStock(itemId) {
             submitBtn.disabled = false;
             submitBtn.textContent = 'Apply adjustment';
         }
+    }
+}
+
+function showShortExpiryOverrideAdjustStockModal(itemId, detail, payload) {
+    const message = detail.message || 'Product expires sooner than the required minimum. Override required to accept.';
+    const daysRemaining = detail.days_remaining;
+    const minDays = detail.min_expiry_days;
+    const subText = (daysRemaining != null && minDays != null)
+        ? `This batch has ${daysRemaining} days until expiry (minimum ${minDays} days required).`
+        : '';
+    const content = `
+        <div class="alert alert-warning" style="margin-bottom: 1rem;">
+            <i class="fas fa-exclamation-triangle"></i> ${escapeHtml(message)}
+        </div>
+        ${subText ? `<p style="margin-bottom:0.75rem; color:var(--text-secondary);">${escapeHtml(subText)}</p>` : ''}
+        <p style="margin-bottom:0.75rem;">Only users with <strong>Short Expiry Override</strong> permission (e.g. Manager or Pharmacist) can confirm. You will be verified when you click <strong>Override &amp; Apply</strong>.</p>
+        <p style="margin-bottom:0;">Do you want to accept this batch anyway?</p>
+    `;
+    const footer = `
+        <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" id="shortExpiryOverrideApplyBtn"><i class="fas fa-check"></i> Override & Apply</button>
+    `;
+    if (typeof showModal === 'function') showModal('Short Expiry – Override Required', content, footer);
+    const btn = document.getElementById('shortExpiryOverrideApplyBtn');
+    if (btn) {
+        btn.onclick = async function () {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Applying...';
+            try {
+                const overridePayload = Object.assign({}, payload, { short_expiry_override: true });
+                const res = await API.items.adjustStock(itemId, overridePayload);
+                if (typeof closeModal === 'function') closeModal();
+                const msg = (res && res.message) ? res.message : 'Stock adjusted successfully.';
+                if (typeof showToast === 'function') showToast(msg, 'success');
+                else alert(msg);
+                if (typeof filterItems === 'function') filterItems();
+            } catch (e) {
+                const d = (e && (e.data || e.response?.data) && (e.data || e.response?.data).detail) || null;
+                if (d && typeof d === 'object' && d.code === 'SHORT_EXPIRY_OVERRIDE_FORBIDDEN') {
+                    const msg = d.message || 'You do not have permission to override short expiry. Ask a Manager or Pharmacist to authorize.';
+                    if (typeof showToast === 'function') showToast(msg, 'error');
+                    else alert(msg);
+                } else {
+                    const errMsg = (d && (typeof d === 'string' ? d : d.message)) || e.message || 'Adjustment failed.';
+                    if (typeof showToast === 'function') showToast(errMsg, 'error');
+                    else alert(errMsg);
+                }
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-check"></i> Override & Apply';
+            }
+        };
     }
 }
 

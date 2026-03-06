@@ -255,6 +255,10 @@ class AdjustStockRequest(BaseModel):
     confirm_unit_cost: Optional[float] = Field(None, ge=0, description="Re-enter unit cost to confirm when item has floor price or margin below standard")
     batch_number: Optional[str] = Field(None, max_length=200, description="Batch/lot number (required when direction=add)")
     expiry_date: Optional[str] = Field(None, description="Expiry date YYYY-MM-DD (required when direction=add)")
+    short_expiry_override: Optional[bool] = Field(
+        False,
+        description="When True, allows accepting short-expiry batches (requires inventory.short_expiry_override permission).",
+    )
     notes: Optional[str] = Field(None, max_length=2000, description="Comments or details (e.g. source, reason)")
 
     @model_validator(mode="after")

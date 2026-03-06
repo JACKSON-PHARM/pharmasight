@@ -608,6 +608,39 @@
         
         // Event delegation: use container so both add-row section and main table tbody are covered
         const el = container;
+
+        // Sales Type change should update add-row default unit + suggested price (without changing conversion logic).
+        // Attach once per instance to avoid duplicate listeners on re-render.
+        if ((this.mode === 'sale' || this.mode === 'quotation') && this.useAddRow && !this._salesTypeListenerAttached) {
+            this._salesTypeListenerAttached = true;
+            const self = this;
+            const salesTypeEl = typeof document !== 'undefined' ? document.getElementById('salesTypeSelect') : null;
+            if (salesTypeEl) {
+                salesTypeEl.addEventListener('change', function() {
+                    if (!self.addRowItem || !self.addRowItem.item_id) return;
+                    const salesType = salesTypeEl.value || 'RETAIL';
+                    const it = self.addRowItem;
+                    let desiredUnit = it.retail_unit || it.base_unit || it.wholesale_unit || 'piece';
+                    if (salesType === 'WHOLESALE') desiredUnit = it.wholesale_unit || it.base_unit || desiredUnit;
+                    else if (salesType === 'SUPPLIER') {
+                        const wups = Math.max(0.0001, parseFloat(it.wholesale_units_per_supplier) || 1);
+                        desiredUnit = (wups > 1 && it.supplier_unit) ? it.supplier_unit : (it.wholesale_unit || it.base_unit || desiredUnit);
+                    }
+                    const units = it.available_units && it.available_units.length ? it.available_units : self.buildUnitsFrom3Tier(it);
+                    it.available_units = units;
+                    const match = units.find(u => (u.unit_name || '').toLowerCase() === (desiredUnit || '').toLowerCase());
+                    if (match && match.unit_name) {
+                        it.unit_name = match.unit_name;
+                        it.unit_multiplier = parseFloat(match.multiplier_to_base) || 1;
+                        it._userEditedPrice = false; // allow auto price on sales type change
+                        self.recalculateAddRow();
+                        self.render();
+                        self.attachEventListeners();
+                        self.requestRecommendedPriceForAddRow();
+                    }
+                });
+            }
+        }
         
         // Double-click committed row to load into search row for editing (useAddRow only)
         if (this.useAddRow && tbody) {
@@ -776,7 +809,18 @@
         el.addEventListener('change', (e) => {
             const row = e.target.dataset.row;
             if (row === 'add') {
+                // Track user manual edits to price so auto-pricing doesn't override typing.
+                if (this.addRowItem && e.target.classList.contains('price-input')) {
+                    this.addRowItem._userEditedPrice = true;
+                }
+                // Unit change in add row should update price suggestion to match unit tier
+                if (this.addRowItem && e.target.classList.contains('unit-select')) {
+                    this.addRowItem._userEditedPrice = false; // unit change implies we want auto price for that unit
+                }
                 this.updateAddRowFromDom();
+                if (this.addRowItem && e.target.classList.contains('unit-select')) {
+                    this.requestRecommendedPriceForAddRow();
+                }
                 return;
             }
             const rowNum = parseInt(row, 10);
@@ -807,6 +851,9 @@
                 if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') ||
                     e.target.classList.contains('discount-input') || e.target.classList.contains('margin-input') ||
                     e.target.classList.contains('total-input') || e.target.classList.contains('nett-input')) {
+                    if (this.addRowItem && e.target.classList.contains('price-input')) {
+                        this.addRowItem._userEditedPrice = true;
+                    }
                     if (this.inputDebounceTimeout) clearTimeout(this.inputDebounceTimeout);
                     this.inputDebounceTimeout = setTimeout(() => this.updateAddRowFromDom(), 120);
                 }
@@ -1173,6 +1220,10 @@
                              data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
                              data-unit-name="${escapeHtml(lineUnit)}"
                              data-retail-unit="${escapeHtml(retailUnit)}"
+                             data-wholesale-unit="${escapeHtml(suggestion.wholesale_unit || baseUnit || '')}"
+                             data-supplier-unit="${escapeHtml(suggestion.supplier_unit || '')}"
+                             data-pack-size="${escapeHtml(String(suggestion.pack_size != null ? suggestion.pack_size : ''))}"
+                             data-wups="${escapeHtml(String(suggestion.wholesale_units_per_supplier != null ? suggestion.wholesale_units_per_supplier : ''))}"
                              data-base-unit="${escapeHtml(baseUnit)}"
                              data-sale-price="${salePrice}"
                              data-purchase-price="${lastUnitCost}"
@@ -1243,6 +1294,10 @@
                              data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
                              data-unit-name="${escapeHtml(lineUnit)}"
                              data-retail-unit="${escapeHtml(retailUnit)}"
+                             data-wholesale-unit="${escapeHtml(suggestion.wholesale_unit || baseUnit || '')}"
+                             data-supplier-unit="${escapeHtml(suggestion.supplier_unit || '')}"
+                             data-pack-size="${escapeHtml(String(suggestion.pack_size != null ? suggestion.pack_size : ''))}"
+                             data-wups="${escapeHtml(String(suggestion.wholesale_units_per_supplier != null ? suggestion.wholesale_units_per_supplier : ''))}"
                              data-base-unit="${escapeHtml(baseUnit)}"
                              data-sale-price="${(this.mode === 'sale' || this.mode === 'quotation') ? effectiveSalePrice : salePrice}"
                              data-purchase-price="${this.context === 'purchase_order' ? lastUnitCost : purchasePrice}"
@@ -1358,15 +1413,38 @@
                 : null,
             stock_display: suggestionEl.dataset.stockDisplay || null, // 3-tier formatted stock display
             is_empty: false,
-            // Use search data for units so we skip GET /items/{id} and GET recommended-price (instant add)
-            available_units: [{
-                unit_name: suggestionEl.dataset.unitName || suggestionEl.dataset.retailUnit || suggestionEl.dataset.baseUnit || 'piece',
-                multiplier_to_base: 1
-            }],
-            unit_multiplier: 1
+            // Carry 3-tier unit fields so UI can show retail/wholesale/supplier without extra GET /items/{id}
+            base_unit: suggestionEl.dataset.baseUnit || null,
+            retail_unit: suggestionEl.dataset.retailUnit || null,
+            wholesale_unit: suggestionEl.dataset.wholesaleUnit || null,
+            supplier_unit: suggestionEl.dataset.supplierUnit || null,
+            pack_size: suggestionEl.dataset.packSize != null && suggestionEl.dataset.packSize !== '' ? parseInt(suggestionEl.dataset.packSize, 10) : null,
+            wholesale_units_per_supplier: suggestionEl.dataset.wups != null && suggestionEl.dataset.wups !== '' ? parseFloat(suggestionEl.dataset.wups) : null,
+            available_units: null,
+            unit_multiplier: 1,
+            _addRowAutoPriceSeq: 0,
+            _userEditedPrice: false
         };
         
         if (isAddRow) {
+            // Build full units list from 3-tier fields (retail/wholesale/supplier)
+            item.available_units = this.buildUnitsFrom3Tier(item);
+
+            // Default unit should follow Sales Type selector (Retail/Wholesale/Supplier)
+            const salesTypeEl = typeof document !== 'undefined' ? document.getElementById('salesTypeSelect') : null;
+            const salesType = (salesTypeEl && salesTypeEl.value) ? salesTypeEl.value : 'RETAIL';
+            let desiredUnit = item.retail_unit || item.base_unit || item.wholesale_unit || 'piece';
+            if (salesType === 'WHOLESALE') desiredUnit = item.wholesale_unit || item.base_unit || desiredUnit;
+            else if (salesType === 'SUPPLIER') {
+                const wups = Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1);
+                desiredUnit = (wups > 1 && item.supplier_unit) ? item.supplier_unit : (item.wholesale_unit || item.base_unit || desiredUnit);
+            }
+            const match = (item.available_units || []).find(u => (u.unit_name || '').toLowerCase() === (desiredUnit || '').toLowerCase());
+            if (match && match.unit_name) {
+                item.unit_name = match.unit_name;
+                item.unit_multiplier = parseFloat(match.multiplier_to_base) || 1;
+            }
+
             this.addRowItem = item;
             // If we were editing a line but user selected a different item → add as new line instead
             if (this.editingRowIndex !== null && this.items[this.editingRowIndex] &&
@@ -1377,7 +1455,8 @@
             this.closeSuggestions();
             this.render();
             this.attachEventListeners();
-            // No loadUnitsForRow('add'): search already returned unit + effective_selling_price; no GET /items or recommended-price
+            // Fetch recommended price for currently selected unit (tier derived from unit) without blocking UI
+            this.requestRecommendedPriceForAddRow();
             setTimeout(() => {
                 const qtyInput = this.mountEl.querySelector('.add-row-qty');
                 if (qtyInput) {
@@ -1410,6 +1489,80 @@
             }
         }
         this.notifyChange();
+    };
+
+    /**
+     * Determine tier from selected unit name (retail/wholesale/supplier).
+     * Unit choice controls price suggestion; Sales Type controls only initial default unit.
+     */
+    TransactionItemsTable.prototype.getTierForUnit = function(item, unitName) {
+        const u = (unitName || '').toString().trim().toLowerCase();
+        // IMPORTANT: Tier detection must use configured snapshot units only (names vary per pharmacy).
+        // Do NOT infer tiers from generic names like "piece/box/case" or from base_unit.
+        const retail = (item && item.retail_unit ? item.retail_unit : '').toString().trim().toLowerCase();
+        const wholesale = (item && item.wholesale_unit ? item.wholesale_unit : '').toString().trim().toLowerCase();
+        const supplier = (item && item.supplier_unit ? item.supplier_unit : '').toString().trim().toLowerCase();
+        if (retail && u === retail) return 'retail';
+        if (wholesale && u === wholesale) return 'wholesale';
+        if (supplier && u === supplier) return 'supplier';
+        // If unit isn't one of the configured units, fall back to RETAIL tier (lowest-risk for POS).
+        // Optional debug: enable CONFIG.DEBUG_UNIT_TIER to log mismatches during testing.
+        try {
+            const cfg = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
+            if (cfg && cfg.DEBUG_UNIT_TIER) {
+                // eslint-disable-next-line no-console
+                console.warn('Unit→tier fallback to RETAIL', {
+                    selected_unit: unitName,
+                    retail_unit: item && item.retail_unit,
+                    wholesale_unit: item && item.wholesale_unit,
+                    supplier_unit: item && item.supplier_unit
+                });
+            }
+        } catch (_) { /* ignore logging errors */ }
+        return 'retail';
+    };
+
+    /**
+     * Fetch and apply recommended price for add-row selection based on current selected unit.
+     * Applies only if add-row still points to same item and user isn't actively typing in price.
+     */
+    TransactionItemsTable.prototype.requestRecommendedPriceForAddRow = function() {
+        if (!this.useAddRow) return;
+        if (!this.addRowItem || !this.addRowItem.item_id) return;
+        if (!(this.mode === 'sale' || this.mode === 'quotation')) return;
+        const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
+        if (!api || !api.items || !api.items.getRecommendedPrice) return;
+        const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
+        if (!config || !config.COMPANY_ID) return;
+        const branchId = config.BRANCH_ID || null;
+
+        const item = this.addRowItem;
+        const seq = (item._addRowAutoPriceSeq || 0) + 1;
+        item._addRowAutoPriceSeq = seq;
+        // Allow auto pricing on unit change / sales type change; if user starts typing price, we won't override.
+        const unitName = item.unit_name || (item.retail_unit || item.base_unit || item.wholesale_unit || 'piece');
+        const tier = this.getTierForUnit(item, unitName);
+
+        api.items.getRecommendedPrice(item.item_id, branchId, config.COMPANY_ID, unitName, tier)
+            .then((priceInfo) => {
+                if (!this.addRowItem || this.addRowItem.item_id !== item.item_id) return;
+                if ((this.addRowItem._addRowAutoPriceSeq || 0) !== seq) return; // stale response
+                if (!priceInfo || typeof priceInfo.recommended_unit_price !== 'number') return;
+                const priceEl = this.mountEl ? this.mountEl.querySelector('.add-row-price') : null;
+                const active = typeof document !== 'undefined' ? document.activeElement : null;
+                if (active === priceEl) return; // don't fight user typing
+                if (this.addRowItem._userEditedPrice) return;
+                this.addRowItem.unit_price = this.roundMoney(priceInfo.recommended_unit_price);
+                this.recalculateAddRow();
+                if (priceEl) priceEl.value = this.roundMoney(this.addRowItem.unit_price || 0).toFixed(2);
+                this.updateAddRowComputedFieldsOnly();
+            })
+            .catch((err) => {
+                // Silent: search/add should remain fast even if pricing service is slow/unavailable.
+                if (typeof console !== 'undefined' && console.warn) {
+                    console.warn('TransactionItemsTable: recommended price fetch failed', err);
+                }
+            });
     };
     
     /**
@@ -1749,11 +1902,12 @@
         const totalEl = this.mountEl.querySelector('.add-row-total-input');
         const marginEl = this.mountEl.querySelector('.add-row-margin');
         const vatEl = this.mountEl.querySelector('.add-row-vat');
-        if (nettEl) nettEl.value = this.roundMoney(this.calculateNett(ar) || 0).toFixed(2);
-        if (totalEl) totalEl.value = this.roundMoney(ar.total || 0).toFixed(2);
+        const active = typeof document !== 'undefined' ? document.activeElement : null;
+        if (nettEl && active !== nettEl) nettEl.value = this.roundMoney(this.calculateNett(ar) || 0).toFixed(2);
+        if (totalEl && active !== totalEl) totalEl.value = this.roundMoney(ar.total || 0).toFixed(2);
         if (marginEl) {
             const margin = this.calculateMargin(ar) || 0;
-            marginEl.value = margin.toFixed(1);
+            if (active !== marginEl) marginEl.value = margin.toFixed(1);
             marginEl.style.color = margin >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)';
         }
         if (vatEl) vatEl.textContent = (ar.tax_percent || 0).toFixed(1) + '% / ' + fmt(this.calculateVATAmount(ar));
@@ -1782,8 +1936,6 @@
             this.addRowItem.unit_name = unitSelect.value || '';
             this.addRowItem.unit_multiplier = newMult;
             if (oldMult > 0 && newMult > 0 && Math.abs(oldMult - newMult) > 1e-9) {
-                const basePrice = (this.addRowItem.unit_price || 0) / oldMult;
-                this.addRowItem.unit_price = this.roundMoney(basePrice * newMult);
                 didRecalcUnitPriceFromUnitChange = true;
             }
         }
@@ -1805,7 +1957,8 @@
             }
         }
         this.recalculateAddRow();
-        if (priceEl) priceEl.value = this.roundMoney(this.addRowItem.unit_price || 0).toFixed(2);
+        // Avoid formatting/overwriting the active input while user is typing (prevents caret jumps/resets)
+        if (priceEl && active !== priceEl) priceEl.value = this.roundMoney(this.addRowItem.unit_price || 0).toFixed(2);
         this.updateAddRowComputedFieldsOnly();
     };
     
@@ -1895,6 +2048,18 @@
             this.render();
             this.attachEventListeners();
             const p = Promise.resolve(this.onAddItem(data));
+            // Clear the add-row selection immediately so user can search next item without waiting.
+            // (Server updates may re-render; setItems preserves add-row input below.)
+            this.addRowItem = null;
+            this.closeSuggestions();
+            this.closeSelectedItemDropdown();
+            this.render();
+            this.attachEventListeners();
+            const instanceId = this.instanceId;
+            setTimeout(function() {
+                const addInput = typeof document !== 'undefined' ? document.getElementById(`${instanceId}_item_add`) : null;
+                if (addInput) addInput.focus();
+            }, 0);
             // Unlock Add button as soon as parent's optimistic update has run (next tick), so user can add next item without waiting for API
             const self = this;
             setTimeout(function() {
@@ -1914,11 +2079,43 @@
      * Set items (e.g. after parent creates doc or adds line). Re-renders table.
      */
     TransactionItemsTable.prototype.setItems = function(items) {
+        // Preserve add-row typing/search state across server refreshes so in-flight add doesn't wipe user input.
+        let addRowPreserve = null;
+        if (this.useAddRow && this.mountEl && typeof document !== 'undefined') {
+            const addInput = this.mountEl.querySelector('.add-row-search');
+            const active = document.activeElement;
+            const addRowSection = this.mountEl.querySelector(`#${this.instanceId}_add_row_section`);
+            const activeInAddRow = !!(addRowSection && active && addRowSection.contains(active));
+            if (addInput) {
+                addRowPreserve = {
+                    value: addInput.value,
+                    activeInAddRow,
+                    selectionStart: typeof addInput.selectionStart === 'number' ? addInput.selectionStart : null,
+                    selectionEnd: typeof addInput.selectionEnd === 'number' ? addInput.selectionEnd : null,
+                };
+            }
+        }
         this.items = this.normalizeItems(Array.isArray(items) ? items : []);
         this.editingRowIndex = null;
-        this.addRowItem = null;
+        // In add-row mode, keep addRowItem unless caller cleared it (we clear on Add click).
+        if (!this.useAddRow) this.addRowItem = null;
         this.render();
         this.attachEventListeners();
+        if (this.useAddRow && addRowPreserve && this.mountEl) {
+            const newAddInput = this.mountEl.querySelector('.add-row-search') || (typeof document !== 'undefined' ? document.getElementById(`${this.instanceId}_item_add`) : null);
+            if (newAddInput && typeof addRowPreserve.value === 'string') {
+                // If user was typing (value differs from selected item_name), keep typed query.
+                newAddInput.value = addRowPreserve.value;
+                if (addRowPreserve.activeInAddRow) {
+                    try {
+                        newAddInput.focus();
+                        if (addRowPreserve.selectionStart != null && addRowPreserve.selectionEnd != null) {
+                            newAddInput.setSelectionRange(addRowPreserve.selectionStart, addRowPreserve.selectionEnd);
+                        }
+                    } catch (_) {}
+                }
+            }
+        }
         if (this.onItemsChange) this.onItemsChange(this.getItems());
         if (this.onTotalChange) this.onTotalChange(this.calculateTotal());
     };

@@ -1156,6 +1156,21 @@ def adjust_stock(
 
     # Central batch/expiry validation when adding stock for track_expiry items
     if body.direction.lower() == "add" and getattr(item, "track_expiry", False):
+        short_expiry_override_adjust = bool(body and getattr(body, "short_expiry_override", False))
+        if short_expiry_override_adjust:
+            from app.dependencies import _user_has_permission
+            from app.api.users import _user_has_owner_or_admin_role
+
+            if not _user_has_permission(
+                db, current_user.id, "inventory.short_expiry_override"
+            ) and not _user_has_owner_or_admin_role(db, current_user.id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "SHORT_EXPIRY_OVERRIDE_FORBIDDEN",
+                        "message": "Only users with Short Expiry Override permission (e.g. Manager or Pharmacist) can accept short-expiry batches. Ask a manager to authorize this adjustment.",
+                    },
+                )
         config_adjust = get_stock_validation_config(db, item.company_id)
         try:
             result = validate_stock_entry_with_config(
@@ -1163,7 +1178,7 @@ def adjust_stock(
                 batch_number=body.batch_number.strip() if body.batch_number else None,
                 expiry_date=expiry_date_parsed,
                 track_expiry=True,
-                override=False,
+                override=short_expiry_override_adjust,
             )
         except StockValidationError as e:
             raise HTTPException(
@@ -1171,7 +1186,20 @@ def adjust_stock(
                 detail=e.result.message if e.result else str(e),
             )
         if not result.valid:
-            raise HTTPException(status_code=400, detail=result.message or "Batch/expiry validation failed.")
+            if getattr(result, "short_expiry", False):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "SHORT_EXPIRY_OVERRIDE_REQUIRED",
+                        "message": result.message or "Batch/expiry validation failed.",
+                        "days_remaining": getattr(result, "days_remaining", None),
+                        "min_expiry_days": getattr(config_adjust, "min_expiry_days", None),
+                    },
+                )
+            raise HTTPException(
+                status_code=400,
+                detail=result.message or "Batch/expiry validation failed.",
+            )
 
     # Reject duplicate POST within same request window (e.g. double submit)
     window = datetime.now(timezone.utc) - timedelta(seconds=2)
