@@ -287,7 +287,12 @@ const API = {
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/`, data),
         bulkCreate: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/bulk`, data, { timeout: 300000 }), // 5 minute timeout for bulk
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),
-        delete: (itemId) => api.delete(`${CONFIG.API_ENDPOINTS.items}/${itemId}`),
+        delete: (itemId, permanent = false) => {
+            const url = permanent
+                ? `${CONFIG.API_ENDPOINTS.items}/${itemId}?permanent=true`
+                : `${CONFIG.API_ENDPOINTS.items}/${itemId}`;
+            return api.delete(url);
+        },
         hasTransactions: (itemId, branchId) => api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/has-transactions`, { branch_id: branchId }),
         adjustStock: (itemId, data) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/adjust-stock`, data),
         /**

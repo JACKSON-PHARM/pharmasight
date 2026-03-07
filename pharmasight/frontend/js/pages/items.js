@@ -1901,10 +1901,21 @@ async function editItem(itemId) {
     `;
     
     const footer = `
-        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button type="submit" form="editItemForm" class="btn btn-primary">
-            <i class="fas fa-save"></i> Update Item
-        </button>
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; width: 100%;">
+            <div>
+                ${!hasTransactions ? `
+                <button type="button" class="btn btn-outline btn-danger" onclick="permanentDeleteItem('${itemId}', '${escapeHtml(item.name || '')}')" title="Remove this item from the database. Only available when the item has no sales, purchases, or stock movements.">
+                    <i class="fas fa-trash-alt"></i> Remove from database
+                </button>
+                ` : ''}
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button type="submit" form="editItemForm" class="btn btn-primary">
+                    <i class="fas fa-save"></i> Update Item
+                </button>
+            </div>
+        </div>
     `;
     
     showModal('Edit Item', content, footer, 'modal-large');
@@ -2150,6 +2161,36 @@ async function updateItem(event, itemId) {
     }
 }
 
+/**
+ * Permanently remove an item from the database. Only allowed when the item has no transactions (no sales, purchases, or stock movements).
+ * Called from the item settings (Edit Item) modal when "Remove from database" is shown.
+ */
+async function permanentDeleteItem(itemId, itemName) {
+    const name = (itemName || 'This item').toString().trim();
+    if (!confirm('Remove "' + name + '" from the database?\n\nThis cannot be undone. The item and its opening balance (if any) will be deleted. Only items with no sales, purchases, or stock movements can be removed.\n\nContinue?')) {
+        return;
+    }
+    try {
+        await API.items.delete(itemId, true);
+        showToast('Item removed from database.', 'success');
+        closeModal();
+        const itemsPage = document.getElementById('items');
+        const currentHash = window.location.hash || '';
+        if (currentHash.includes('#items') && itemsPage) {
+            if (window.loadItems) window.loadItems();
+        } else if (window.loadAllItems) {
+            await loadAllItems();
+        } else if (window.loadItems) {
+            window.loadItems();
+        }
+    } catch (error) {
+        console.error('Error removing item:', error);
+        const detail = error.data?.detail || error.message || 'Could not remove item';
+        const msg = typeof detail === 'string' ? detail : (detail.message || detail);
+        showToast(msg, 'error');
+    }
+}
+
 async function viewItemUnits(itemId) {
     // Fetch item from API (works from any page)
     let item;
@@ -2284,6 +2325,7 @@ window.importExcelFile = importExcelFile;
 window.saveItem = saveItem;
 window.editItem = editItem;
 window.updateItem = updateItem;
+window.permanentDeleteItem = permanentDeleteItem;
 window.confirmClearDataWithPassword = confirmClearDataWithPassword;
 window.viewItemUnits = viewItemUnits;
 window.filterItems = filterItems;

@@ -23,7 +23,7 @@ from app.models import (
     ItemBranchSnapshot,
     SupplierInvoice, SupplierInvoiceItem, Supplier,
     PurchaseOrder, PurchaseOrderItem, Branch, BranchSetting,
-    UserRole, UserBranchRole, ItemMovement,
+    UserRole, UserBranchRole, ItemMovement, GRNItem,
 )
 from app.models.settings import CompanySetting
 from app.models.permission import Permission, RolePermission
@@ -1331,14 +1331,32 @@ def update_item(
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_item(
     item_id: UUID,
+    permanent: bool = Query(False, description="If true and item has no transactions, remove from database; otherwise soft-deactivate"),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Soft delete item (set is_active=False)"""
+    """
+    Soft delete (default): set is_active=False; item stays in DB.
+    Permanent delete (permanent=true): only when item has never had a transaction (no sales, purchases, or non–opening-balance ledger). Removes item and related data from the company database.
+    """
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    
+
+    if permanent:
+        has_transactions = item_id in ExcelImportService._get_items_with_real_transactions(db, item.company_id, [item_id])
+        if has_transactions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot remove item from database: it has sales, purchases, or stock movements. Deactivate the item instead.",
+            )
+        # Remove child rows that reference item_id without CASCADE (so DB delete of Item can succeed)
+        db.query(PurchaseOrderItem).filter(PurchaseOrderItem.item_id == item_id).delete(synchronize_session=False)
+        db.query(GRNItem).filter(GRNItem.item_id == item_id).delete(synchronize_session=False)
+        db.delete(item)
+        db.commit()
+        return None
+
     item.is_active = False
     db.commit()
     return None
