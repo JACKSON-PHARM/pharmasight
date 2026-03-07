@@ -418,13 +418,61 @@
             `;
         }
         
+        html += this.getItemsTableHtml();
         html += `
-               <table class="transaction-items-table" style="width: 100%; border-collapse: collapse; background: white;">
+            </div>
+        `;
+        this.mountEl.innerHTML = html;
+    };
+
+    /**
+     * Build HTML for the transaction (items) table only. Used by render() and by renderItemsTable().
+     * POS: setItems() calls renderItemsTable() only, so the add row is never rebuilt during table sync.
+     */
+    TransactionItemsTable.prototype.getItemsTableHtml = function() {
+        const formatCurrency = this.getFormatCurrency();
+        const formatNumber = this.getFormatNumber();
+        const escapeHtml = this.getEscapeHtml();
+        const isAddRowMode = this.useAddRow;
+        const thStyle = 'padding: 0.3rem 0.4rem; text-align: left; font-weight: 600; font-size: 0.75rem;';
+        const thStyleRight = 'padding: 0.3rem 0.4rem; text-align: right; font-weight: 600; font-size: 0.75rem;';
+        const thStyleCenter = 'padding: 0.3rem 0.4rem; text-align: center; font-weight: 600; font-size: 0.75rem;';
+        const headerRow = this.isBranchMode()
+            ? (this.isBranchOrderMode()
+                ? `<tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
+                    <th style="${thStyle} width: 45%; min-width: 200px;">ITEM</th>
+                    <th style="${thStyle} width: 15%;">ITEM CODE</th>
+                    <th style="${thStyleCenter} width: 12%;">QTY</th>
+                    <th style="${thStyle} width: 18%;">UNIT</th>
+                    <th style="${thStyleCenter} width: 10%;">ACTIONS</th>
+                </tr>`
+                : `<tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
+                    <th style="${thStyle} width: 38%; min-width: 200px;">ITEM</th>
+                    <th style="${thStyle} width: 12%;">ITEM CODE</th>
+                    <th style="${thStyleCenter} width: 10%;">QTY</th>
+                    <th style="${thStyle} width: 12%;">UNIT</th>
+                    <th style="${thStyleRight} width: 12%;">COST</th>
+                    <th style="${thStyleCenter} width: 8%;">ACTIONS</th>
+                </tr>`)
+            : `
+                        <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
+                           <th style="${thStyle} width: 38%; min-width: 220px;">ITEM</th>
+                           <th style="${thStyle} width: 10%; min-width: 80px;">ITEM CODE</th>
+                            <th style="${thStyleCenter} width: 8%; min-width: 72px;">QTY</th>
+                            <th style="${thStyle} width: 8%; min-width: 64px;">UNIT</th>
+                            <th style="${thStyleRight} width: 10%; min-width: 95px;" title="Price per unit excluding VAT.">PRICE/UNIT (excl. VAT)</th>
+                            ${(this.mode === 'sale' || this.mode === 'quotation') ? `<th style="${thStyleRight} width: 7%; min-width: 68px;">MARGIN%</th>` : ''}
+                            <th style="${thStyleRight} width: 7%; min-width: 68px;">DISCOUNT%</th>
+                            <th style="${thStyleRight} width: 8%; min-width: 88px;">VAT</th>
+                            <th style="${thStyleRight} width: 10%; min-width: 88px;">NETT</th>
+                            <th style="${thStyleRight} width: 10%; min-width: 88px;">TOTAL</th>
+                            <th style="${thStyleCenter} width: 5%; min-width: 72px;">ACTIONS</th>
+                        </tr>`;
+        let tableHtml = `
+               <table id="${this.instanceId}_items_table" class="transaction-items-table" style="width: 100%; border-collapse: collapse; background: white;">
                     <thead>${headerRow}</thead>
                     <tbody id="${this.instanceId}_tbody">
         `;
-        
-        // Render item rows (when useAddRow: only committed items, read-only; else normal editable rows)
         this.items.forEach((item, index) => {
             if (isAddRowMode && (item.is_empty || !item.item_id)) return;
             const isSearching = this.activeSearchRow === index;
@@ -564,7 +612,7 @@
                         <input type="number" class="form-input input-direct total-input" data-row="${index}" data-field="total" value="${totalVal}" step="0.01" min="0" style="width: 100%; text-align: right; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6); font-weight: 600;" ${!this.canEdit ? 'readonly' : ''} title="Editable: enter total to reverse-calculate unit price">
                     </td>
             `));
-            html += `
+            tableHtml += `
                 <tr data-item-index="${index}" data-row-id="${this.instanceId}_row_${index}" class="${isAddRowMode ? 'committed-row' : ''}" ${isAddRowMode ? 'title="Double-click to load into search row for editing"' : ''}>
                     ${firstCell}
                     ${readOnlyCells}
@@ -599,12 +647,11 @@
                 </tr>
             `;
         });
-        
         const summary = this.calculateSummary();
         const branchFooter = this.isBranchOrderMode()
             ? `<tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;"><td colspan="4" style="padding: 0.75rem; text-align: right;">Total units:</td><td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total_units">${this.getFormatNumber()(this.items.reduce(function(s, i) { return s + (parseFloat(i.quantity) || 0); }, 0))}</td></tr>`
             : `<tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;"><td colspan="5" style="padding: 0.75rem; text-align: right;">Total:</td><td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total">${formatCurrency(summary.total)}</td></tr>`;
-        html += `
+        tableHtml += `
                     </tbody>
                     <tfoot>
                         ${this.isBranchMode() ? branchFooter : `
@@ -618,10 +665,18 @@
                         `}
                     </tfoot>
                 </table>
-            </div>
         `;
-        
-        this.mountEl.innerHTML = html;
+        return tableHtml;
+    };
+
+    /**
+     * Render only the transaction (items) table. Add row is NOT touched.
+     * POS: setItems() calls this so table sync never rebuilds the add row.
+     */
+    TransactionItemsTable.prototype.renderItemsTable = function() {
+        if (!this.mountEl || typeof document === 'undefined') return;
+        const table = this.mountEl.querySelector('#' + this.instanceId + '_items_table');
+        if (table) table.outerHTML = this.getItemsTableHtml();
     };
     
     /**
@@ -2010,7 +2065,25 @@
         }
         if (vatEl) vatEl.textContent = (ar.tax_percent || 0).toFixed(1) + '% / ' + fmt(this.calculateVATAmount(ar));
     };
-    
+
+    /**
+     * Update only the Add button in the add row (label + disabled). Does not rebuild the add row.
+     * POS: Used when addRowLoading becomes false after API completes so we never call render() on API response.
+     */
+    TransactionItemsTable.prototype.updateAddRowButtonOnly = function() {
+        if (typeof document === 'undefined' || !this.useAddRow) return;
+        const section = document.getElementById(this.instanceId + '_add_row_section');
+        const btn = section ? section.querySelector('.add-item-btn') : null;
+        if (!btn) return;
+        const ar = this.addRowItem;
+        const btnDisabled = !this.canEdit || !(ar && ar.item_id) || this.addRowLoading;
+        btn.disabled = !!btnDisabled;
+        const label = this.addRowLoading ? 'Adding...' : (this.editingRowIndex !== null ? 'Update line' : 'Add item');
+        const icon = this.addRowLoading ? '<i class="fas fa-spinner fa-spin"></i> ' : ('<i class="fas ' + (this.editingRowIndex !== null ? 'fa-check' : 'fa-plus') + '"></i> ');
+        btn.innerHTML = icon + label;
+        btn.title = this.editingRowIndex !== null ? 'Save changes to this line' : 'Add item to document';
+    };
+
     /**
      * Read add row inputs and update addRowItem; then update only computed fields in DOM
      * (no full render) so price/qty inputs are not recreated while the user is typing.
@@ -2157,8 +2230,7 @@
                     this.attachEventListeners();
                     p.finally(() => {
                         this.addRowLoading = false;
-                        this.render();
-                        this.attachEventListeners();
+                        this.updateAddRowButtonOnly();
                     });
                 }
             }
@@ -2184,109 +2256,44 @@
             this.render();
             this.attachEventListeners();
             // POS focus: do NOT force focus to search. Parent's setItems (with focusNewRowQty) will focus qty of new row.
-            // Unlock Add button as soon as parent's optimistic update has run (next tick), so user can add next item without waiting for API
+            // Unlock Add button as soon as parent's optimistic update has run (next tick), so user can add next item without waiting for API.
+            // POS: Do NOT call render() here — it would rebuild the add row and wipe search/dropdown/focus when API returns.
             const self = this;
             setTimeout(function() {
                 self.addRowLoading = false;
-                self.render();
-                self.attachEventListeners();
+                self.updateAddRowButtonOnly();
             }, 0);
             p.finally(() => {
                 this.addRowLoading = false;
-                this.render();
-                this.attachEventListeners();
+                this.updateAddRowButtonOnly();
             });
         }
     };
     
     /**
-     * Set items (e.g. after parent creates doc or adds line). Re-renders table.
+     * Set items (e.g. after parent creates doc or adds line). Updates only the transaction table.
+     * POS: MUST NOT rebuild the add row. Add row stays stable during API sync.
      */
     TransactionItemsTable.prototype.setItems = function(items, options) {
         options = options || {};
         const focusNewRowQty = options.focusNewRowQty === true;
-        // Preserve add-row state across server refreshes so in-flight add API doesn't wipe user's next search or edits.
-        // When focusNewRowQty (POS: after add), skip preserving; we'll focus qty of new row instead.
-        let addRowPreserve = null;
-        if (this.useAddRow && this.mountEl && typeof document !== 'undefined' && !focusNewRowQty) {
-            const addRowSection = this.mountEl.querySelector(`#${this.instanceId}_add_row_section`);
-            const addInput = this.mountEl.querySelector('.add-row-search');
-            const active = document.activeElement;
-            const activeInAddRow = !!(addRowSection && active && addRowSection.contains(active));
-            // Which add-row field had focus (so we can restore it and never steal from unit/price/nett/total)
-            let focusedAddRowField = null;
-            if (activeInAddRow && active) {
-                if (addInput && active === addInput) focusedAddRowField = 'add-row-search';
-                else if (active.classList && active.classList.contains('add-row-qty')) focusedAddRowField = 'add-row-qty';
-                else if (active.classList && (active.classList.contains('add-row-unit') || (active.tagName === 'SELECT' && active.closest('.add-row-section')))) focusedAddRowField = 'add-row-unit';
-                else if (active.classList && active.classList.contains('add-row-price')) focusedAddRowField = 'add-row-price';
-                else if (active.classList && active.classList.contains('add-row-margin')) focusedAddRowField = 'add-row-margin';
-                else if (active.classList && active.classList.contains('add-row-discount')) focusedAddRowField = 'add-row-discount';
-                else if (active.classList && active.classList.contains('add-row-nett')) focusedAddRowField = 'add-row-nett';
-                else if (active.classList && (active.classList.contains('add-row-total') || active.classList.contains('add-row-total-input'))) focusedAddRowField = 'add-row-total-input';
-            }
-            if (addInput) {
-                addRowPreserve = {
-                    value: addInput.value,
-                    activeWasSearchInput: focusedAddRowField === 'add-row-search',
-                    focusedAddRowField,
-                    selectionStart: typeof addInput.selectionStart === 'number' ? addInput.selectionStart : null,
-                    selectionEnd: typeof addInput.selectionEnd === 'number' ? addInput.selectionEnd : null,
-                };
-            }
-        }
-        // Sync add-row DOM into addRowItem before re-render so in-progress edits (qty, unit, price, nett, total) are not lost when API finishes.
-        if (this.useAddRow && this.addRowItem && this.addRowItem.item_id && this.mountEl) {
-            this.updateAddRowFromDom();
-        }
         this.items = this.normalizeItems(Array.isArray(items) ? items : []);
         this.editingRowIndex = null;
-        // In add-row mode, keep addRowItem unless caller cleared it (we clear on Add click).
         if (!this.useAddRow) this.addRowItem = null;
-        this.render();
+        this.renderItemsTable();
         this.attachEventListeners();
-        if (this.useAddRow && this.mountEl && typeof document !== 'undefined') {
-            if (focusNewRowQty && this.items.length > 0) {
-                // POS: focus quantity of newly added row (smooth, no timers)
-                const lastIdx = this.items.length - 1;
-                const lastRow = this.mountEl.querySelector(`#${this.instanceId}_tbody tr[data-item-index="${lastIdx}"]`);
-                const qtyInput = lastRow ? lastRow.querySelector('.qty-input') : null;
-                if (qtyInput) {
-                    try {
-                        qtyInput.focus();
-                        if (qtyInput.type !== 'number' && typeof qtyInput.setSelectionRange === 'function') {
-                            qtyInput.setSelectionRange(0, (qtyInput.value || '').length);
-                        }
-                    } catch (_) {}
-                }
-            } else if (addRowPreserve) {
-                const newAddInput = this.mountEl.querySelector('.add-row-search') || document.getElementById(`${this.instanceId}_item_add`);
-                if (newAddInput && typeof addRowPreserve.value === 'string') newAddInput.value = addRowPreserve.value;
-                // Restore focus to the exact field the user was in (never steal from unit/price/nett/total)
-                const field = addRowPreserve.focusedAddRowField;
-                if (field) {
-                    try {
-                        if (field === 'add-row-search') {
-                            if (newAddInput) {
-                                newAddInput.focus();
-                                if (addRowPreserve.selectionStart != null && addRowPreserve.selectionEnd != null) {
-                                    newAddInput.setSelectionRange(addRowPreserve.selectionStart, addRowPreserve.selectionEnd);
-                                }
-                            }
-                        } else {
-                            const section = this.mountEl.querySelector(`#${this.instanceId}_add_row_section`);
-                            const el = section ? section.querySelector('.' + field) : null;
-                            if (el) {
-                                el.focus();
-                                if (el.tagName === 'INPUT' && el.type !== 'number' && typeof el.setSelectionRange === 'function') {
-                                    el.setSelectionRange(0, (el.value || '').length);
-                                } else if (el.tagName === 'INPUT' && typeof el.setSelectionRange === 'function') {
-                                    try { el.setSelectionRange(0, (el.value || '').length); } catch (_) {}
-                                }
-                            }
-                        }
-                    } catch (_) {}
-                }
+        if (this.useAddRow && this.mountEl && typeof document !== 'undefined' && focusNewRowQty && this.items.length > 0) {
+            const tbody = document.getElementById(this.instanceId + '_tbody');
+            const lastIdx = this.items.length - 1;
+            const lastRow = tbody ? tbody.querySelector('tr[data-item-index="' + lastIdx + '"]') : null;
+            const qtyInput = lastRow ? lastRow.querySelector('.qty-input') : null;
+            if (qtyInput) {
+                try {
+                    qtyInput.focus();
+                    if (qtyInput.type !== 'number' && typeof qtyInput.setSelectionRange === 'function') {
+                        qtyInput.setSelectionRange(0, (qtyInput.value || '').length);
+                    }
+                } catch (_) {}
             }
         }
         if (this.onItemsChange) this.onItemsChange(this.getItems());
