@@ -1815,9 +1815,18 @@ function renderManualAdjustmentsSubPage() {
                         <label>Batch (ledger row)</label>
                         <select id="costBatchSelect" class="form-input"><option value="">Select item above first</option></select>
                     </div>
+                    <div class="form-group" id="costUnitKindGroup" style="display: none;">
+                        <label>Enter cost per</label>
+                        <select id="costUnitKind" class="form-input">
+                            <option value="wholesale">Wholesale (base unit)</option>
+                            <option value="retail">Retail</option>
+                        </select>
+                        <small id="costUnitKindHint" style="display: block; color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;"></small>
+                    </div>
                     <div class="form-group">
-                        <label>New unit cost (per base unit)</label>
-                        <input type="number" id="costNewCost" class="form-input" min="0" step="0.01" required>
+                        <label id="costNewCostLabel">New unit cost (per base unit — select item above to see unit name)</label>
+                        <input type="number" id="costNewCost" class="form-input" min="0" step="0.01" required placeholder="e.g. 150.00">
+                        <small style="display: block; color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Base unit = wholesale unit (e.g. packet). Ledger stores cost per wholesale.</small>
                     </div>
                     <div class="form-group">
                         <label>Reason <span style="color: var(--danger-color);">*</span></label>
@@ -1886,14 +1895,54 @@ function setupManualAdjustmentsHandlers() {
     const itemIdHidden = document.getElementById('adjustmentItemId');
     const dropdownEl = document.getElementById('adjustmentItemDropdown');
     const costBatchSelect = document.getElementById('costBatchSelect');
+    const costUnitKindGroup = document.getElementById('costUnitKindGroup');
+    const costUnitKindSelect = document.getElementById('costUnitKind');
+    const costUnitKindHint = document.getElementById('costUnitKindHint');
+    const costNewCostLabel = document.getElementById('costNewCostLabel');
     var adjustmentSearchTimeout = null;
+    var adjustmentItemUnits = null; // { wholesale_unit, retail_unit, pack_size } when item selected
+
     function getAdjustmentItemId() {
         return (itemIdHidden && itemIdHidden.value) ? itemIdHidden.value : null;
     }
-    function loadBatchesForAdjustmentItem(itemId) {
+
+    function updateCostAdjustmentUnitUI(wholesaleUnit, retailUnit, packSize) {
+        if (!costNewCostLabel || !costUnitKindGroup || !costUnitKindSelect || !costUnitKindHint) return;
+        if (!wholesaleUnit && !retailUnit && packSize == null) {
+            adjustmentItemUnits = null;
+            costUnitKindGroup.style.display = 'none';
+            costNewCostLabel.textContent = 'New unit cost (per base unit — select item above to see unit name)';
+            costUnitKindSelect.innerHTML = '<option value="wholesale">Wholesale (base unit)</option><option value="retail">Retail</option>';
+            costUnitKindHint.textContent = '';
+            return;
+        }
+        var wholesale = (wholesaleUnit || 'packet').trim() || 'packet';
+        var retail = (retailUnit || 'tablet').trim() || 'tablet';
+        var pack = Math.max(1, parseInt(packSize, 10) || 1);
+        adjustmentItemUnits = { wholesale_unit: wholesale, retail_unit: retail, pack_size: pack };
+        costNewCostLabel.textContent = 'New unit cost (per ' + wholesale + ' — wholesale/base)';
+        costUnitKindSelect.innerHTML = '<option value="wholesale">Wholesale (' + wholesale + ')</option><option value="retail">Retail (' + retail + ')</option>';
+        costUnitKindHint.textContent = 'Wholesale = base unit (e.g. 1 ' + wholesale + '). Retail = per ' + retail + ' (1 ' + wholesale + ' = ' + pack + ' ' + retail + ').';
+        costUnitKindGroup.style.display = 'block';
+    }
+
+    function loadBatchesForAdjustmentItem(itemId, unitsFromSearch) {
         if (!costBatchSelect || !itemId) {
             if (costBatchSelect) costBatchSelect.innerHTML = '<option value="">Select item above first</option>';
+            updateCostAdjustmentUnitUI(null, null, null);
             return;
+        }
+        if (unitsFromSearch && unitsFromSearch.wholesale_unit != null) {
+            updateCostAdjustmentUnitUI(unitsFromSearch.wholesale_unit, unitsFromSearch.retail_unit, unitsFromSearch.pack_size);
+        } else {
+            API.items.get(itemId, branchIdRaw).then(function (item) {
+                var w = (item.wholesale_unit || item.base_unit || 'packet').toString().trim() || 'packet';
+                var r = (item.retail_unit || 'tablet').toString().trim() || 'tablet';
+                var p = Math.max(1, parseInt(item.pack_size, 10) || 1);
+                updateCostAdjustmentUnitUI(w, r, p);
+            }).catch(function () {
+                updateCostAdjustmentUnitUI('packet', 'tablet', 1);
+            });
         }
         costBatchSelect.innerHTML = '<option value="">Loading...</option>';
         API.items.getLedgerBatches(itemId, branchIdRaw).then(function (r) {
@@ -1949,7 +1998,10 @@ function setupManualAdjustmentsHandlers() {
                             else if (it.default_cost != null) costDisplay = fmt(it.default_cost);
                             var subLine = '<div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 2px;">Stock: ' + (typeof escapeHtml === 'function' ? escapeHtml(stockDisplay) : stockDisplay) + ' &nbsp; Price: ' + (typeof escapeHtml === 'function' ? escapeHtml(priceDisplay) : priceDisplay) + ' &nbsp; Cost: ' + (typeof escapeHtml === 'function' ? escapeHtml(costDisplay) : costDisplay) + '</div>';
                             var label = (typeof escapeHtml === 'function' ? escapeHtml(name + (sku ? ' (' + sku + ')' : '')) : (name + (sku ? ' (' + sku + ')' : '')));
-                            return '<div class="dropdown-item" data-id="' + (it.id || '') + '" data-name="' + safeName + '" data-sku="' + safeSku + '" style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border-color);">' + label + subLine + '</div>';
+                            var wu = (it.wholesale_unit || it.base_unit || 'packet').toString().replace(/"/g, '&quot;');
+                            var ru = (it.retail_unit || 'tablet').toString().replace(/"/g, '&quot;');
+                            var ps = (it.pack_size != null ? it.pack_size : 1);
+                            return '<div class="dropdown-item" data-id="' + (it.id || '') + '" data-name="' + safeName + '" data-sku="' + safeSku + '" data-wholesale-unit="' + wu + '" data-retail-unit="' + ru + '" data-pack-size="' + ps + '" style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border-color);">' + label + subLine + '</div>';
                         }).join('');
                         dropdownEl.querySelectorAll('.dropdown-item').forEach(function (el) {
                             el.addEventListener('mousedown', function (e) {
@@ -1957,11 +2009,14 @@ function setupManualAdjustmentsHandlers() {
                                 var id = el.getAttribute('data-id');
                                 var name = el.getAttribute('data-name') || '';
                                 var sku = el.getAttribute('data-sku') || '';
+                                var wu = el.getAttribute('data-wholesale-unit') || 'packet';
+                                var ru = el.getAttribute('data-retail-unit') || 'tablet';
+                                var ps = el.getAttribute('data-pack-size') || '1';
                                 itemIdHidden.value = id;
                                 searchInput.value = name + (sku ? ' (' + sku + ')' : '');
                                 dropdownEl.style.display = 'none';
                                 dropdownEl.innerHTML = '';
-                                loadBatchesForAdjustmentItem(id);
+                                loadBatchesForAdjustmentItem(id, { wholesale_unit: wu, retail_unit: ru, pack_size: parseInt(ps, 10) || 1 });
                             });
                         });
                     }
@@ -1998,11 +2053,17 @@ function setupManualAdjustmentsHandlers() {
         submitCost.onclick = function () {
             const itemId = getAdjustmentItemId();
             const batchId = document.getElementById('costBatchSelect').value;
-            const newCost = parseFloat(document.getElementById('costNewCost').value);
+            var newCostRaw = parseFloat(document.getElementById('costNewCost').value);
             const reason = (document.getElementById('costReason') && document.getElementById('costReason').value || '').trim();
-            if (!itemId || !batchId || isNaN(newCost) || newCost < 0 || !reason) {
+            if (!itemId || !batchId || isNaN(newCostRaw) || newCostRaw < 0 || !reason) {
                 if (typeof showToast === 'function') showToast('Select an item (search above), then batch, new cost, and reason.', 'warning');
                 return;
+            }
+            // If user chose "Retail", convert to cost per wholesale (base): cost per packet = cost per tablet × pack_size
+            var newCost = newCostRaw;
+            var unitKind = (costUnitKindSelect && costUnitKindSelect.value) ? costUnitKindSelect.value : 'wholesale';
+            if (unitKind === 'retail' && adjustmentItemUnits && adjustmentItemUnits.pack_size > 0) {
+                newCost = newCostRaw * adjustmentItemUnits.pack_size;
             }
             submitCost.disabled = true;
             API.items.corrections.costAdjustment(itemId, { branch_id: branchIdRaw, batch_id: batchId, new_unit_cost: newCost, reason }).then(function (res) {
