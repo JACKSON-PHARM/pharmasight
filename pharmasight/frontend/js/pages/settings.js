@@ -462,8 +462,8 @@ async function renderBranchesPage() {
                                             <button class="btn btn-outline btn-sm" onclick="editBranch('${branch.id}')" title="Edit">
                                                 <i class="fas fa-edit"></i>
                                             </button>
-                                            <button class="btn btn-outline btn-sm" data-branch-name="${escapeHtml(branch.name || '')}" onclick="openBranchInventorySettings('${branch.id}', this.getAttribute('data-branch-name'))" title="Branch inventory rules (manual transfer/receipt)">
-                                                <i class="fas fa-truck-loading"></i>
+                                            <button class="btn btn-outline btn-sm" data-branch-name="${escapeHtml(branch.name || '')}" onclick="openBranchInventorySettings('${branch.id}', this.getAttribute('data-branch-name'))" title="Branch inventory: allow cost adjustment, manual transfers &amp; receipts">
+                                                <i class="fas fa-truck-loading"></i> Inventory
                                             </button>
                                             ${branch.id !== CONFIG.BRANCH_ID ? `
                                                 <button class="btn btn-outline btn-sm" onclick="setCurrentBranch('${branch.id}')" title="Set as Current">
