@@ -1027,7 +1027,50 @@
             }
         }
     };
-    
+
+    /**
+     * Attach only listeners required for the items table (tbody). Used by setItems() so we do not
+     * re-run add-row logic or re-attach container listeners. Add-row inputs (search, qty, unit,
+     * price) must never be reinitialized or cleared during table sync — POS entry must remain
+     * non-blocking when the add-item API completes.
+     */
+    TransactionItemsTable.prototype.attachTableEventListenersOnly = function() {
+        const tbody = typeof document !== 'undefined' ? document.getElementById(this.instanceId + '_tbody') : null;
+        if (this.useAddRow && tbody) {
+            tbody.addEventListener('dblclick', (e) => {
+                const tr = e.target.closest('tr[data-item-index]');
+                if (!tr || tr.dataset.itemIndex === 'add') return;
+                const rowIndex = parseInt(tr.dataset.itemIndex, 10);
+                if (isNaN(rowIndex) || rowIndex < 0 || rowIndex >= this.items.length) return;
+                const item = this.items[rowIndex];
+                if (!item || !item.item_id) return;
+                this.addRowItem = {
+                    item_id: item.item_id,
+                    item_name: item.item_name,
+                    item_sku: item.item_sku,
+                    item_code: item.item_code || item.item_sku,
+                    unit_name: item.unit_name,
+                    quantity: item.quantity,
+                    unit_price: item.unit_price,
+                    discount_percent: item.discount_percent,
+                    tax_percent: item.tax_percent,
+                    total: item.total,
+                    available_units: item.available_units,
+                    purchase_price: item.purchase_price,
+                    batches: item.batches || []
+                };
+                this.editingRowIndex = rowIndex;
+                this.render();
+                this.attachEventListeners();
+            });
+        }
+        for (let i = 0; i < this.items.length; i++) {
+            if (this.items[i].item_id && !(this.items[i].available_units && this.items[i].available_units.length)) {
+                this.loadUnitsForRow(i);
+            }
+        }
+    };
+
     /**
      * Handle item search.
      * Debounced (60ms) so request fires quickly after typing; in-flight request cancelled when user types again.
@@ -2272,7 +2315,9 @@
     
     /**
      * Set items (e.g. after parent creates doc or adds line). Updates only the transaction table.
-     * POS: MUST NOT rebuild the add row. Add row stays stable during API sync.
+     * POS: MUST NOT rebuild the add row. Add-row inputs (search, qty, unit, price) must never be
+     * reinitialized or cleared during table sync — POS entry must remain non-blocking when the
+     * add-item API completes; we only attach table-only listeners, not full attachEventListeners().
      */
     TransactionItemsTable.prototype.setItems = function(items, options) {
         options = options || {};
@@ -2281,19 +2326,24 @@
         this.editingRowIndex = null;
         if (!this.useAddRow) this.addRowItem = null;
         this.renderItemsTable();
-        this.attachEventListeners();
+        this.attachTableEventListenersOnly();
         if (this.useAddRow && this.mountEl && typeof document !== 'undefined' && focusNewRowQty && this.items.length > 0) {
-            const tbody = document.getElementById(this.instanceId + '_tbody');
-            const lastIdx = this.items.length - 1;
-            const lastRow = tbody ? tbody.querySelector('tr[data-item-index="' + lastIdx + '"]') : null;
-            const qtyInput = lastRow ? lastRow.querySelector('.qty-input') : null;
-            if (qtyInput) {
-                try {
-                    qtyInput.focus();
-                    if (qtyInput.type !== 'number' && typeof qtyInput.setSelectionRange === 'function') {
-                        qtyInput.setSelectionRange(0, (qtyInput.value || '').length);
-                    }
-                } catch (_) {}
+            const addSection = document.getElementById(this.instanceId + '_add_row_section');
+            const active = document.activeElement;
+            const focusInAddRow = addSection && active && addSection.contains(active);
+            if (!focusInAddRow) {
+                const tbody = document.getElementById(this.instanceId + '_tbody');
+                const lastIdx = this.items.length - 1;
+                const lastRow = tbody ? tbody.querySelector('tr[data-item-index="' + lastIdx + '"]') : null;
+                const qtyInput = lastRow ? lastRow.querySelector('.qty-input') : null;
+                if (qtyInput) {
+                    try {
+                        qtyInput.focus();
+                        if (qtyInput.type !== 'number' && typeof qtyInput.setSelectionRange === 'function') {
+                            qtyInput.setSelectionRange(0, (qtyInput.value || '').length);
+                        }
+                    } catch (_) {}
+                }
             }
         }
         if (this.onItemsChange) this.onItemsChange(this.getItems());
