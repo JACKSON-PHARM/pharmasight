@@ -1259,8 +1259,9 @@ async function onSalesInvoiceAddItem(item) {
         });
         documentItems = itemsToSet;
         lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(apiItems);
+        // Sync server state only; do NOT pass focusNewRowQty so add-row search/typing is preserved (user may already be searching next item).
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
-            salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
+            salesInvoiceItemsTable.setItems(documentItems);
         }
         updateSalesInvoiceSummary();
     } catch (err) {
@@ -1281,8 +1282,10 @@ async function onSalesInvoiceAddItem(item) {
         } else {
             showToast(msg || 'Server error adding item. Try again.', 'error');
         }
-        // Refetch invoice so table matches server (e.g. if add partially succeeded); merge with current table if refetch is incomplete
-        if (currentInvoice && currentInvoice.id && salesInvoiceItemsTable && typeof API.sales.getInvoice === 'function') {
+        // Refetch invoice so table matches server (e.g. if add partially succeeded). Skip on 5xx to avoid cascading server errors.
+        const msgLower = (msg || '').toLowerCase();
+        const is5xx = msgLower.indexOf('500') !== -1 || msgLower.indexOf('502') !== -1 || msgLower.indexOf('503') !== -1 || msgLower.indexOf('internal server error') !== -1;
+        if (!is5xx && currentInvoice && currentInvoice.id && salesInvoiceItemsTable && typeof API.sales.getInvoice === 'function') {
             const refetchId = currentInvoice.id;
             try {
                 const fresh = await API.sales.getInvoice(refetchId);

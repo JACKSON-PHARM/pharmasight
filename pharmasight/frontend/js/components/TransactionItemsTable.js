@@ -356,10 +356,22 @@
         `;
         
         // When useAddRow: add row in a SEPARATE section above the items table (not inside the table)
+        // Preserve current search input value across re-renders so user typing is not wiped (and selection stays stable).
+        let addRowSearchValuePreserve = undefined;
+        if (isAddRowMode && typeof document !== 'undefined') {
+            const existingAddInput = document.getElementById(this.instanceId + '_item_add');
+            if (existingAddInput && typeof existingAddInput.value === 'string') {
+                addRowSearchValuePreserve = existingAddInput.value;
+            }
+        }
         if (isAddRowMode) {
             const isSearching = this.activeSearchRow === 'add';
             const ar = addItem || this.createEmptyItem();
             const btnDisabled = !this.canEdit || !ar.item_id || this.addRowLoading;
+            // Show selected item name when we have a selection; otherwise preserve user's typed query so re-renders don't clear it.
+            const searchInputValue = (ar.item_id && ar.item_name && String(ar.item_name).trim() && ar.item_name !== '—' && ar.item_name !== '-')
+                ? ar.item_name
+                : (typeof addRowSearchValuePreserve === 'string' ? addRowSearchValuePreserve : '');
             html += `
             <div id="${this.instanceId}_add_row_section" class="add-row-section" style="margin-bottom: 0.75rem; padding: 0.35rem 0.6rem; background: #e8f4fd; border: 1px solid var(--border-color, #b6d4fe); border-radius: 0.5rem;">
                 <style>.add-row-section input[type="number"]::-webkit-outer-spin-button,.add-row-section input[type="number"]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.add-row-section input[type="number"]{-moz-appearance:textfield}</style>
@@ -369,7 +381,7 @@
                 <tr data-item-index="add" class="add-row-tr">
                     <td style="padding: 0.2rem 0.35rem; position: relative;">
                         <input type="text" class="form-input item-search-input add-row-search ${ar.item_id ? 'item-selected' : ''}"
-                               id="${this.instanceId}_item_add" value="${escapeHtml((ar.item_name && ar.item_name.trim() && ar.item_name !== '—' && ar.item_name !== '-') ? ar.item_name : '')}"
+                               id="${this.instanceId}_item_add" value="${escapeHtml(searchInputValue)}"
                                placeholder="Search item (name or SKU)"
                                autocomplete="off" data-row="add" data-item-id="${ar.item_id || ''}"
                                style="width: 100%; box-sizing: border-box; border: ${isSearching ? '2px solid var(--primary-color, #007bff)' : '1px solid var(--border-color, #dee2e6)'}; padding: 0.35rem 0.5rem; font-size: 0.8rem;"
@@ -694,7 +706,8 @@
                 const row = e.target.dataset.row;
                 const rowNum = row === 'add' ? 'add' : parseInt(row, 10);
                 if (rowNum === 'add') {
-                    if (this.addRowItem && this.addRowItem.item_id) {
+                    // Only clear selected item when the user actually typed (user-initiated). Programmatic value sets (e.g. setItems restore) must not clear selection.
+                    if (e.isTrusted && this.addRowItem && this.addRowItem.item_id) {
                         this.addRowItem = null;
                         e.target.dataset.itemId = '';
                         e.target.classList.remove('item-selected');
@@ -2198,12 +2211,12 @@
         if (this.useAddRow && this.mountEl && typeof document !== 'undefined' && !focusNewRowQty) {
             const addInput = this.mountEl.querySelector('.add-row-search');
             const active = document.activeElement;
-            const addRowSection = this.mountEl.querySelector(`#${this.instanceId}_add_row_section`);
-            const activeInAddRow = !!(addRowSection && active && addRowSection.contains(active));
+            // Only restore focus to search when the user was actually in the search input (not qty/price etc.)
+            const activeWasSearchInput = !!(addInput && active && active === addInput);
             if (addInput) {
                 addRowPreserve = {
                     value: addInput.value,
-                    activeInAddRow,
+                    activeWasSearchInput,
                     selectionStart: typeof addInput.selectionStart === 'number' ? addInput.selectionStart : null,
                     selectionEnd: typeof addInput.selectionEnd === 'number' ? addInput.selectionEnd : null,
                 };
@@ -2231,9 +2244,10 @@
                 }
             } else if (addRowPreserve) {
                 const newAddInput = this.mountEl.querySelector('.add-row-search') || document.getElementById(`${this.instanceId}_item_add`);
-                if (newAddInput && typeof addRowPreserve.value === 'string') {
-                    newAddInput.value = addRowPreserve.value;
-                    if (addRowPreserve.activeInAddRow) {
+                if (newAddInput) {
+                    if (typeof addRowPreserve.value === 'string') newAddInput.value = addRowPreserve.value;
+                    // Only move focus to search when user was in the search input (never steal from qty/price/discount)
+                    if (addRowPreserve.activeWasSearchInput) {
                         try {
                             newAddInput.focus();
                             if (addRowPreserve.selectionStart != null && addRowPreserve.selectionEnd != null) {
