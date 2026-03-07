@@ -2205,22 +2205,39 @@
     TransactionItemsTable.prototype.setItems = function(items, options) {
         options = options || {};
         const focusNewRowQty = options.focusNewRowQty === true;
-        // Preserve add-row typing/search state across server refreshes so in-flight add doesn't wipe user input.
-        // When focusNewRowQty (POS: after add), skip restoring focus to search; we'll focus qty of new row instead.
+        // Preserve add-row state across server refreshes so in-flight add API doesn't wipe user's next search or edits.
+        // When focusNewRowQty (POS: after add), skip preserving; we'll focus qty of new row instead.
         let addRowPreserve = null;
         if (this.useAddRow && this.mountEl && typeof document !== 'undefined' && !focusNewRowQty) {
+            const addRowSection = this.mountEl.querySelector(`#${this.instanceId}_add_row_section`);
             const addInput = this.mountEl.querySelector('.add-row-search');
             const active = document.activeElement;
-            // Only restore focus to search when the user was actually in the search input (not qty/price etc.)
-            const activeWasSearchInput = !!(addInput && active && active === addInput);
+            const activeInAddRow = !!(addRowSection && active && addRowSection.contains(active));
+            // Which add-row field had focus (so we can restore it and never steal from unit/price/nett/total)
+            let focusedAddRowField = null;
+            if (activeInAddRow && active) {
+                if (addInput && active === addInput) focusedAddRowField = 'add-row-search';
+                else if (active.classList && active.classList.contains('add-row-qty')) focusedAddRowField = 'add-row-qty';
+                else if (active.classList && (active.classList.contains('add-row-unit') || (active.tagName === 'SELECT' && active.closest('.add-row-section')))) focusedAddRowField = 'add-row-unit';
+                else if (active.classList && active.classList.contains('add-row-price')) focusedAddRowField = 'add-row-price';
+                else if (active.classList && active.classList.contains('add-row-margin')) focusedAddRowField = 'add-row-margin';
+                else if (active.classList && active.classList.contains('add-row-discount')) focusedAddRowField = 'add-row-discount';
+                else if (active.classList && active.classList.contains('add-row-nett')) focusedAddRowField = 'add-row-nett';
+                else if (active.classList && (active.classList.contains('add-row-total') || active.classList.contains('add-row-total-input'))) focusedAddRowField = 'add-row-total-input';
+            }
             if (addInput) {
                 addRowPreserve = {
                     value: addInput.value,
-                    activeWasSearchInput,
+                    activeWasSearchInput: focusedAddRowField === 'add-row-search',
+                    focusedAddRowField,
                     selectionStart: typeof addInput.selectionStart === 'number' ? addInput.selectionStart : null,
                     selectionEnd: typeof addInput.selectionEnd === 'number' ? addInput.selectionEnd : null,
                 };
             }
+        }
+        // Sync add-row DOM into addRowItem before re-render so in-progress edits (qty, unit, price, nett, total) are not lost when API finishes.
+        if (this.useAddRow && this.addRowItem && this.addRowItem.item_id && this.mountEl) {
+            this.updateAddRowFromDom();
         }
         this.items = this.normalizeItems(Array.isArray(items) ? items : []);
         this.editingRowIndex = null;
@@ -2244,17 +2261,31 @@
                 }
             } else if (addRowPreserve) {
                 const newAddInput = this.mountEl.querySelector('.add-row-search') || document.getElementById(`${this.instanceId}_item_add`);
-                if (newAddInput) {
-                    if (typeof addRowPreserve.value === 'string') newAddInput.value = addRowPreserve.value;
-                    // Only move focus to search when user was in the search input (never steal from qty/price/discount)
-                    if (addRowPreserve.activeWasSearchInput) {
-                        try {
-                            newAddInput.focus();
-                            if (addRowPreserve.selectionStart != null && addRowPreserve.selectionEnd != null) {
-                                newAddInput.setSelectionRange(addRowPreserve.selectionStart, addRowPreserve.selectionEnd);
+                if (newAddInput && typeof addRowPreserve.value === 'string') newAddInput.value = addRowPreserve.value;
+                // Restore focus to the exact field the user was in (never steal from unit/price/nett/total)
+                const field = addRowPreserve.focusedAddRowField;
+                if (field) {
+                    try {
+                        if (field === 'add-row-search') {
+                            if (newAddInput) {
+                                newAddInput.focus();
+                                if (addRowPreserve.selectionStart != null && addRowPreserve.selectionEnd != null) {
+                                    newAddInput.setSelectionRange(addRowPreserve.selectionStart, addRowPreserve.selectionEnd);
+                                }
                             }
-                        } catch (_) {}
-                    }
+                        } else {
+                            const section = this.mountEl.querySelector(`#${this.instanceId}_add_row_section`);
+                            const el = section ? section.querySelector('.' + field) : null;
+                            if (el) {
+                                el.focus();
+                                if (el.tagName === 'INPUT' && el.type !== 'number' && typeof el.setSelectionRange === 'function') {
+                                    el.setSelectionRange(0, (el.value || '').length);
+                                } else if (el.tagName === 'INPUT' && typeof el.setSelectionRange === 'function') {
+                                    try { el.setSelectionRange(0, (el.value || '').length); } catch (_) {}
+                                }
+                            }
+                        }
+                    } catch (_) {}
                 }
             }
         }
