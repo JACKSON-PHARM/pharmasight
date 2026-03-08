@@ -1594,14 +1594,19 @@
             // Build full units list from 3-tier fields (retail/wholesale/supplier)
             item.available_units = this.buildUnitsFrom3Tier(item);
 
-            // Default unit should follow Sales Type selector (Retail/Wholesale/Supplier)
+            // Default unit: for purchase (supplier invoice) use wholesale/pack; for sales use Sales Type selector
             const salesTypeEl = typeof document !== 'undefined' ? document.getElementById('salesTypeSelect') : null;
             const salesType = (salesTypeEl && salesTypeEl.value) ? salesTypeEl.value : 'RETAIL';
-            let desiredUnit = item.retail_unit || item.base_unit || item.wholesale_unit || 'piece';
-            if (salesType === 'WHOLESALE') desiredUnit = item.wholesale_unit || item.base_unit || desiredUnit;
-            else if (salesType === 'SUPPLIER') {
-                const wups = Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1);
-                desiredUnit = (wups > 1 && item.supplier_unit) ? item.supplier_unit : (item.wholesale_unit || item.base_unit || desiredUnit);
+            let desiredUnit;
+            if (this.mode === 'purchase') {
+                desiredUnit = item.wholesale_unit || item.base_unit || item.retail_unit || 'piece';
+            } else {
+                desiredUnit = item.retail_unit || item.base_unit || item.wholesale_unit || 'piece';
+                if (salesType === 'WHOLESALE') desiredUnit = item.wholesale_unit || item.base_unit || desiredUnit;
+                else if (salesType === 'SUPPLIER') {
+                    const wups = Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1);
+                    desiredUnit = (wups > 1 && item.supplier_unit) ? item.supplier_unit : (item.wholesale_unit || item.base_unit || desiredUnit);
+                }
             }
             const match = (item.available_units || []).find(u => (u.unit_name || '').toLowerCase() === (desiredUnit || '').toLowerCase());
             if (match && match.unit_name) {

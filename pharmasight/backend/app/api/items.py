@@ -164,7 +164,7 @@ def _get_user_role(user_id: UUID, branch_id: UUID, db: Session) -> Optional[str]
 
 
 def _user_has_correction_permission(db: Session, user_id: UUID, branch_id: UUID, permission_name: str) -> bool:
-    """True if user has the given permission for this branch (via role)."""
+    """True if user has the given permission for this branch (via role). Accepts global or branch-scoped permission."""
     perm = db.query(Permission).filter(Permission.name == permission_name).first()
     if not perm:
         return False
@@ -181,7 +181,10 @@ def _user_has_correction_permission(db: Session, user_id: UUID, branch_id: UUID,
         .filter(
             RolePermission.role_id == ubr.role_id,
             RolePermission.permission_id == perm.id,
-            RolePermission.branch_id.is_(None),
+            or_(
+                RolePermission.branch_id.is_(None),
+                RolePermission.branch_id == branch_id,
+            ),
         )
         .first()
     )

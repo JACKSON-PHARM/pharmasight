@@ -834,13 +834,17 @@ def get_supplier_invoice(
 
 
 def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierInvoiceItemCreate):
-    """Build SupplierInvoiceItem and return (invoice_item, line_total_exclusive, line_vat, item)."""
+    """Build SupplierInvoiceItem and return (invoice_item, line_total_exclusive, line_vat, item). Default unit to wholesale (pack) when missing."""
     item = db.query(Item).filter(Item.id == item_data.item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
-    multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
+    unit_name_raw = (item_data.unit_name or "").strip()
+    if not unit_name_raw:
+        unit_name_raw = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
+    effective_unit_name = unit_name_raw
+    multiplier = get_unit_multiplier_from_item(item, effective_unit_name)
     if multiplier is None:
-        raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item.name}")
+        raise HTTPException(status_code=404, detail=f"Unit '{effective_unit_name}' not found for item {item.name}")
     # For track_expiry items, require at least one batch with batch_number and expiry_date before adding to invoice
     if getattr(item, "track_expiry", False):
         _require_batch_and_expiry_for_track_expiry_item(
@@ -863,7 +867,7 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
     invoice_item = SupplierInvoiceItem(
         purchase_invoice_id=invoice_id,
         item_id=item_data.item_id,
-        unit_name=item_data.unit_name,
+        unit_name=effective_unit_name,
         quantity=item_data.quantity,
         unit_cost_exclusive=item_data.unit_cost_exclusive,
         vat_rate=vat_rate_pct,

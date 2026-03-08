@@ -87,7 +87,7 @@ class GRNResponse(GRNBase):
 class SupplierInvoiceItemBase(BaseModel):
     """Supplier invoice item base schema"""
     item_id: UUID
-    unit_name: str
+    unit_name: str = Field(default="", description="Purchase unit (e.g. packet). Defaults to item wholesale unit when empty.")
     quantity: Decimal = Field(..., gt=0)
     unit_cost_exclusive: Decimal = Field(..., ge=0)
     vat_rate: Decimal = Field(default=16.00, ge=0, le=100)
