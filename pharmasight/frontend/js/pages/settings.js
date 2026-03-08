@@ -1489,10 +1489,26 @@ async function renderEditRoleForm(page, roleId, roles) {
                 </label>
             </td>`;
         }).join('');
-        return `<tr><td class="perm-module">${escapeHtml(mod.module)}</td>${cells}</tr>`;
+        // "Other" column: permissions that are not view/create/edit/delete (e.g. inventory.adjust_cost, cost_override)
+        const otherPerms = (mod.permissions || []).filter(p => !actions.includes(p.action));
+        let otherCell;
+        if (otherPerms.length === 0) {
+            otherCell = '<td class="perm-cell perm-na"><span class="perm-na-label">—</span></td>';
+        } else {
+            otherCell = '<td class="perm-cell perm-other">' + otherPerms.map(perm => {
+                const checked = rolePermissionNames.has(perm.name);
+                const label = (perm.action || '').replace(/_/g, ' ');
+                return `<label class="perm-checkbox-label perm-other-label" title="${escapeHtml(perm.description || '')}" style="display: block; margin-bottom: 0.35rem;">
+                    <input type="checkbox" class="perm-checkbox" data-permission="${escapeHtml(perm.name)}" ${checked ? 'checked' : ''}>
+                    <span class="perm-checkmark ${checked ? 'checked' : ''}"><i class="fas fa-check"></i></span>
+                    <span class="perm-other-action">${escapeHtml(label)}</span>
+                </label>`;
+            }).join('') + '</td>';
+        }
+        return `<tr><td class="perm-module">${escapeHtml(mod.module)}</td>${cells}${otherCell}</tr>`;
     }).join('');
 
-    const headerCells = actions.map(a => `<th class="perm-header">${actionLabels[a]}</th>`).join('');
+    const headerCells = actions.map(a => `<th class="perm-header">${actionLabels[a]}</th>`).join('') + '<th class="perm-header">Other</th>';
 
     page.innerHTML = `
         <div class="card">
