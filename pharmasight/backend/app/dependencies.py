@@ -109,6 +109,21 @@ _auth_resolution_cache: dict = {}
 _auth_resolution_cache_ttl_seconds = 300.0  # 5 minutes: keep item search fast for whole POS session
 
 
+def invalidate_auth_cache_for_user(user_id: UUID) -> None:
+    """
+    Remove all auth resolution cache entries for this user.
+    Call after password change so the next request does a full DB resolution
+    and sees must_change_password=False (avoids stale cache showing old flag).
+    """
+    with _pool_lock:
+        keys_to_remove = [
+            k for k, v in _auth_resolution_cache.items()
+            if v[0] == user_id
+        ]
+        for k in keys_to_remove:
+            _auth_resolution_cache.pop(k, None)
+
+
 def _stub_user_for_cache(user_id: UUID):
     """Minimal user-like object for cache-hit fast path (e.g. /api/items/search). Avoids DB round-trip."""
     return SimpleNamespace(

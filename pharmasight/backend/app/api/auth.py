@@ -22,7 +22,7 @@ from sqlalchemy.exc import OperationalError
 from app.config import settings
 from app.database import SessionLocal
 from app.database_master import get_master_db
-from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_header, tenant_db_session, get_effective_company_id_for_user
+from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_header, tenant_db_session, get_effective_company_id_for_user, invalidate_auth_cache_for_user
 from app.utils.auth_internal import (
     CLAIM_EXP,
     CLAIM_JTI,
@@ -630,6 +630,7 @@ def auth_change_password(
     user.password_set = True
     user.must_change_password = False  # clear forced first-time change so other APIs work
     db.commit()
+    invalidate_auth_cache_for_user(user.id)  # so next request sees updated flag (e.g. Users page)
     return {"message": "Password updated successfully."}
 
 

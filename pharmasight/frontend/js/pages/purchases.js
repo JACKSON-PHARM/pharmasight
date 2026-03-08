@@ -18,8 +18,8 @@ let poItemDisplayCache = {};
 /** Supplier Invoices list date preset: today | yesterday | ... | custom */
 let supplierInvoicesDateFilter = 'today';
 let supplierInvoicesUserFilter = 'self';
-/** Purchase Orders list date preset (same values) */
-let purchaseOrdersDateFilter = 'today';
+/** Purchase Orders list date preset. Use 'this_week' so approved orders from recent days are visible by default. */
+let purchaseOrdersDateFilter = 'this_week';
 let purchaseOrdersUserFilter = 'self';
 
 /** Return today's date as YYYY-MM-DD in the user's local timezone (so "Today" filter and form default match). */
@@ -838,10 +838,12 @@ async function loadPurchaseDocuments(documentType = 'order') {
             dateTo = dateToEl?.value?.trim() || (documentType === 'order' ? today : null);
         }
         const supplierId = document.getElementById('filterSupplier')?.value || null;
-        const status = document.getElementById('filterStatus')?.value || null;
+        // For orders: do not use status filter unless we have an explicit orders status dropdown (with "All" default).
+        // This ensures approved orders always show and avoids any stray filterStatus from other views.
+        const status = documentType === 'invoice' ? (document.getElementById('filterStatus')?.value || null) : null;
         
         if (documentType === 'order') {
-            // Load purchase orders
+            // Load purchase orders (no status filter so PENDING, APPROVED, RECEIVED, CANCELLED all show)
             const params = {
                 company_id: CONFIG.COMPANY_ID
             };
@@ -1062,10 +1064,10 @@ function clearDateFilter() {
     if (dateFromInput) dateFromInput.value = today;
     if (dateToInput) dateToInput.value = today;
     if (currentPurchaseSubPage === 'orders') {
-        purchaseOrdersDateFilter = 'today';
+        purchaseOrdersDateFilter = 'this_week';
         purchaseOrdersUserFilter = 'self';
         const orderPresetEl = document.getElementById('purchaseOrdersDateFilter');
-        if (orderPresetEl) orderPresetEl.value = 'today';
+        if (orderPresetEl) orderPresetEl.value = 'this_week';
         const orderCustomRange = document.getElementById('purchaseOrdersCustomDateRange');
         if (orderCustomRange) orderCustomRange.style.display = 'none';
         const orderUserEl = document.getElementById('purchaseOrdersUserFilter');

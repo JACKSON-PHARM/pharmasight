@@ -14,7 +14,7 @@ from uuid import UUID
 import secrets
 import hashlib
 from datetime import datetime, timezone
-from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user, get_effective_company_id_for_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user, get_effective_company_id_for_user, invalidate_auth_cache_for_user
 from sqlalchemy import text
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole, UserBranchRole
@@ -878,6 +878,7 @@ def change_password_first_time(
     user.password_set = True
     user.must_change_password = False
     db.commit()
+    invalidate_auth_cache_for_user(user.id)  # so next request sees updated flag (e.g. Users page)
     return {"message": "Password updated. You will not be asked to change it again."}
 
 
