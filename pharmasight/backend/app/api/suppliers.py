@@ -27,6 +27,10 @@ class SupplierBase(BaseModel):
     credit_limit: Optional[float] = None
     allow_over_credit: Optional[bool] = None
     opening_balance: Optional[float] = None
+    requires_supplier_invoice_number: Optional[bool] = Field(
+        default=False,
+        description="When true, supplier invoices require external supplier invoice number",
+    )
 
 
 class SupplierUpdate(BaseModel):
@@ -42,6 +46,7 @@ class SupplierUpdate(BaseModel):
     credit_limit: Optional[float] = None
     allow_over_credit: Optional[bool] = None
     opening_balance: Optional[float] = None
+    requires_supplier_invoice_number: Optional[bool] = None
 
 
 class SupplierCreate(SupplierBase):
@@ -131,7 +136,12 @@ def create_supplier(
         phone=supplier.phone,
         email=supplier.email,
         address=supplier.address,
-        credit_terms=supplier.credit_terms
+        credit_terms=supplier.credit_terms,
+        default_payment_terms_days=supplier.default_payment_terms_days,
+        credit_limit=supplier.credit_limit,
+        allow_over_credit=supplier.allow_over_credit or False,
+        opening_balance=supplier.opening_balance or 0,
+        requires_supplier_invoice_number=bool(supplier.requires_supplier_invoice_number),
     )
     db.add(db_supplier)
     db.commit()

@@ -127,6 +127,10 @@ class SupplierBase(BaseModel):
     address: Optional[str] = None
     credit_terms: Optional[int] = Field(None, ge=0, description="Credit terms in days")
     is_active: bool = Field(default=True)
+    requires_supplier_invoice_number: Optional[bool] = Field(
+        default=False,
+        description="When true, supplier invoices require external supplier invoice number",
+    )
 
 
 class SupplierCreate(SupplierBase):
@@ -144,6 +148,7 @@ class SupplierUpdate(BaseModel):
     address: Optional[str] = None
     credit_terms: Optional[int] = None
     is_active: Optional[bool] = None
+    requires_supplier_invoice_number: Optional[bool] = None
 
 
 class SupplierResponse(SupplierBase):

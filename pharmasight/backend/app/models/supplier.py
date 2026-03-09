@@ -28,6 +28,9 @@ class Supplier(Base):
     allow_over_credit = Column(Boolean, default=False)
     opening_balance = Column(Numeric(20, 4), default=0)  # positive = we owe supplier
     is_active = Column(Boolean, default=True)
+    # When true, every supplier invoice for this supplier must capture the external supplier invoice number.
+    # Frontend uses this to toggle required validation; backend enforces it in purchase invoice APIs.
+    requires_supplier_invoice_number = Column(Boolean, nullable=False, server_default="false", default=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

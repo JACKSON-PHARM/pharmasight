@@ -471,6 +471,24 @@ def create_supplier_invoice(
     Supplier's invoice number (external) is stored in reference field.
     """
     user = current_user_and_db[0]
+
+    # Enforce per-supplier requirement for external supplier invoice number when configured.
+    supplier = (
+        db.query(Supplier)
+        .filter(
+            Supplier.id == invoice.supplier_id,
+            Supplier.company_id == invoice.company_id,
+        )
+        .first()
+    )
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    if getattr(supplier, "requires_supplier_invoice_number", False):
+        if not (invoice.supplier_invoice_number and str(invoice.supplier_invoice_number).strip()):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Supplier invoice number is required for this supplier.",
+            )
     # ALWAYS auto-generate system document number (internal document number)
     invoice_number = DocumentService.get_supplier_invoice_number(
         db, invoice.company_id, invoice.branch_id
@@ -1144,6 +1162,24 @@ def update_supplier_invoice(
             status_code=400,
             detail=f"Cannot update invoice with status {db_invoice.status}. Only DRAFT invoices can be updated. Stock has already been added to inventory."
         )
+
+    # Enforce per-supplier requirement for external supplier invoice number when configured.
+    supplier = (
+        db.query(Supplier)
+        .filter(
+            Supplier.id == invoice_update.supplier_id,
+            Supplier.company_id == db_invoice.company_id,
+        )
+        .first()
+    )
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    if getattr(supplier, "requires_supplier_invoice_number", False):
+        if not (invoice_update.supplier_invoice_number and str(invoice_update.supplier_invoice_number).strip()):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Supplier invoice number is required for this supplier.",
+            )
     
     # Ensure DRAFT has system document number (SPV{BRANCH}-{N}); assign if missing
     if not db_invoice.invoice_number or not str(db_invoice.invoice_number).strip().startswith("SPV"):

@@ -124,6 +124,7 @@ def list_suppliers_enriched(
             "allow_over_credit": getattr(s, "allow_over_credit", False) or False,
             "opening_balance": float(s.opening_balance) if getattr(s, "opening_balance", None) is not None else 0,
             "is_active": s.is_active,
+            "requires_supplier_invoice_number": getattr(s, "requires_supplier_invoice_number", False) or False,
             "created_at": s.created_at.isoformat() if hasattr(s.created_at, "isoformat") else str(s.created_at),
             "updated_at": s.updated_at.isoformat() if hasattr(s.updated_at, "isoformat") else str(s.updated_at),
             "outstanding_balance": float(outstanding),

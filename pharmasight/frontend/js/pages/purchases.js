@@ -1561,7 +1561,7 @@ async function renderCreateSupplierInvoicePage() {
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
-                                    <label class="form-label">Supplier's Invoice Number</label>
+                                    <label class="form-label" data-role="supplier-invoice-number-label">Supplier's Invoice Number</label>
                                     <input type="text" class="form-input" name="supplier_invoice_number" 
                                            value="${supplierInvoiceNumber || ''}"
                                            placeholder="Enter supplier's invoice number (optional)" ${isReadOnly ? 'disabled' : ''}>
@@ -2226,7 +2226,7 @@ function closeSupplierDropdown(dropdownId) {
 }
 
 // Select supplier from search (works with both order and invoice forms)
-function selectSupplier(supplierId, supplierName, searchInputId = 'supplierSearch', hiddenInputId = 'supplierId', dropdownId = 'supplierSearchDropdown') {
+async function selectSupplier(supplierId, supplierName, searchInputId = 'supplierSearch', hiddenInputId = 'supplierId', dropdownId = 'supplierSearchDropdown') {
     const searchInput = document.getElementById(searchInputId);
     const hiddenInput = document.getElementById(hiddenInputId);
     const dropdown = document.getElementById(dropdownId);
@@ -2237,6 +2237,28 @@ function selectSupplier(supplierId, supplierName, searchInputId = 'supplierSearc
     
     // Focus back on search input for quick entry
     if (searchInput) searchInput.focus();
+
+    // When selecting supplier on the supplier invoice form, fetch supplier profile
+    // and enforce "requires supplier invoice number" toggle on the invoice field.
+    if (searchInputId === 'supplierSearchInvoice' && window.API && window.API.suppliers && typeof window.API.suppliers.get === 'function') {
+        try {
+            const supplier = await window.API.suppliers.get(supplierId);
+            const input = document.querySelector('input[name="supplier_invoice_number"]');
+            const label = document.querySelector('[data-role="supplier-invoice-number-label"]');
+            if (!input || !label || input.disabled) return;
+            const required = !!supplier.requires_supplier_invoice_number;
+            input.required = required;
+            if (required) {
+                label.textContent = "Supplier's Invoice Number *";
+                input.placeholder = 'Supplier invoice number required for this supplier *';
+            } else {
+                label.textContent = "Supplier's Invoice Number";
+                input.placeholder = "Enter supplier's invoice number (optional)";
+            }
+        } catch (e) {
+            console.warn('Failed to load supplier settings for invoice requirement:', e);
+        }
+    }
 }
 
 // Removed handleItemSearchFocus/handleItemSearchBlur - now handled by TransactionItemsTable component
@@ -3358,6 +3380,14 @@ function showCreateSupplierModal() {
                 <label class="form-label">Address</label>
                 <textarea class="form-textarea" name="address" rows="2" placeholder="Supplier address"></textarea>
             </div>
+            <div class="form-row">
+                <div class="form-group" style="display: flex; align-items: flex-end;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                        <input type="checkbox" name="requires_supplier_invoice_number">
+                        Require supplier invoice number on invoices
+                    </label>
+                </div>
+            </div>
         </form>
     `;
     
@@ -3384,7 +3414,8 @@ async function createSupplier(event) {
         phone: formData.get('phone') || null,
         email: formData.get('email') || null,
         contact_person: formData.get('contact_person') || null,
-        address: formData.get('address') || null
+        address: formData.get('address') || null,
+        requires_supplier_invoice_number: formData.get('requires_supplier_invoice_number') === 'on',
     };
     
     try {
@@ -4286,6 +4317,14 @@ async function renderSupplierProfileTab(supplierId, cont) {
                     </label>
                 </div>
             </div>
+            <div class="form-row">
+                <div class="form-group" style="display: flex; align-items: flex-end;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                        <input type="checkbox" name="requires_supplier_invoice_number" ${(s.requires_supplier_invoice_number || false) ? 'checked' : ''}>
+                        Require supplier invoice number on invoices
+                    </label>
+                </div>
+            </div>
             <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Changes</button>
         </form>
     `;
@@ -4303,6 +4342,7 @@ async function renderSupplierProfileTab(supplierId, cont) {
                 credit_limit: fd.get('credit_limit') ? parseFloat(fd.get('credit_limit')) : null,
                 opening_balance: fd.get('opening_balance') != null ? parseFloat(fd.get('opening_balance')) : null,
                 allow_over_credit: fd.get('allow_over_credit') === 'on',
+                requires_supplier_invoice_number: fd.get('requires_supplier_invoice_number') === 'on',
             });
             showToast('Supplier updated', 'success');
             currentSupplierDetail = await API.suppliers.get(supplierId);
@@ -4586,7 +4626,46 @@ async function showNewPaymentModal(supplierId) {
     } catch (e) {
         console.warn('Could not load invoices for allocation:', e);
     }
-    const allocationRows = unpaidInvoices.map(inv => {
+    // Helper to filter invoices by date preset or custom range (uses invoice_date).
+    let allocationDatePreset = 'this_month';
+    let allocationDateFrom = null;
+    let allocationDateTo = null;
+    function filterUnpaidInvoices() {
+        let from = allocationDateFrom;
+        let to = allocationDateTo;
+        if (allocationDatePreset && allocationDatePreset !== 'custom') {
+            const range = getSupplierInvoicesDateRange(allocationDatePreset);
+            if (range) {
+                from = range.dateFrom;
+                to = range.dateTo;
+            }
+        }
+        if (!from && !to) return unpaidInvoices;
+        return unpaidInvoices.filter(inv => {
+            if (!inv.invoice_date) return false;
+            const d = inv.invoice_date.slice(0, 10);
+            if (from && d < from) return false;
+            if (to && d > to) return false;
+            return true;
+        });
+    }
+
+    function buildAllocationRows(sourceInvoices) {
+        return sourceInvoices.map(inv => {
+            const bal = parseFloat(inv.balance) || 0;
+            return {
+                id: inv.id,
+                invoice_number: inv.invoice_number || '—',
+                supplier_invoice_number: inv.supplier_invoice_number || inv.reference || '—',
+                due_date: inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-KE') : '—',
+                total: parseFloat(inv.total_inclusive) || 0,
+                balance: bal,
+            };
+        });
+    }
+
+    const initialInvoices = filterUnpaidInvoices();
+    const allocationRows = buildAllocationRows(initialInvoices);
         const bal = parseFloat(inv.balance) || 0;
         return {
             id: inv.id,
@@ -4597,11 +4676,12 @@ async function showNewPaymentModal(supplierId) {
         };
     });
     const tableBody = allocationRows.length === 0
-        ? '<tr><td colspan="6" style="padding: 1rem; color: var(--text-secondary);">No unpaid (posted) invoices. Unallocated amount will become supplier credit.</td></tr>'
+        ? '<tr><td colspan="7" style="padding: 1rem; color: var(--text-secondary);">No unpaid (posted) invoices in this period. Unallocated amount will become supplier credit.</td></tr>'
         : allocationRows.map((row, i) => `
             <tr data-invoice-id="${row.id}" data-balance="${row.balance}">
                 <td style="padding: 0.5rem;">${escapeHtml(row.invoice_number)}</td>
                 <td style="padding: 0.5rem;">${row.due_date}</td>
+                <td style="padding: 0.5rem;">${escapeHtml(row.supplier_invoice_number)}</td>
                 <td style="padding: 0.5rem; text-align: right;">${fmt(row.total)}</td>
                 <td style="padding: 0.5rem; text-align: right;">${fmt(row.balance)}</td>
                 <td style="padding: 0.5rem;"><input type="checkbox" class="alloc-check" data-idx="${i}" data-balance="${row.balance}"></td>
@@ -4618,9 +4698,29 @@ async function showNewPaymentModal(supplierId) {
             <div class="form-group"><label class="form-label">Amount (KES) *</label><input type="number" id="newPaymentAmount" class="form-input" name="amount" step="0.01" min="0.01" required></div>
             <div class="form-group" style="margin-top: 1rem;">
                 <label class="form-label">Allocate to invoices</label>
+                <div class="form-row" style="margin-bottom: 0.5rem; gap: 0.5rem; align-items: center;">
+                    <div class="form-group">
+                        <select id="allocationDatePreset" class="form-select" style="min-width: 130px; font-size: 0.8rem;">
+                            <option value="today">Today</option>
+                            <option value="yesterday">Yesterday</option>
+                            <option value="this_week">This Week</option>
+                            <option value="last_week">Last Week</option>
+                            <option value="this_month" selected>This Month</option>
+                            <option value="last_month">Last Month</option>
+                            <option value="this_year">This Year</option>
+                            <option value="last_year">Last Year</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="allocationDateCustom" style="display: none; gap: 0.25rem;">
+                        <input type="date" id="allocationDateFrom" class="form-input" style="width: 130px;">
+                        <input type="date" id="allocationDateTo" class="form-input" style="width: 130px;">
+                    </div>
+                    <button type="button" class="btn btn-outline btn-sm" id="allocationDateApply">Apply</button>
+                </div>
                 <div class="table-container" style="overflow-x: auto; max-height: 220px; overflow-y: auto;">
                     <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
-                        <thead><tr><th>Invoice</th><th>Due Date</th><th>Total</th><th>Balance</th><th>Allocate?</th><th>Amount (KES)</th></tr></thead>
+                        <thead><tr><th>Invoice</th><th>Due Date</th><th>Supplier Inv No</th><th>Total</th><th>Balance</th><th>Allocate?</th><th>Amount (KES)</th></tr></thead>
                         <tbody id="newPaymentAllocTbody">${tableBody}</tbody>
                     </table>
                 </div>
@@ -4658,20 +4758,66 @@ async function showNewPaymentModal(supplierId) {
         if (summaryEl) summaryEl.innerHTML = `Payment Amount: ${fmt(amount)} &nbsp;|&nbsp; Total Allocated: ${fmt(totalAlloc)} &nbsp;|&nbsp; Unallocated: ${fmt(unallocated)}`;
         if (warningEl) warningEl.style.display = (amount > 0 && unallocated > 0) ? 'block' : 'none';
     }
-    document.querySelectorAll('.alloc-check').forEach(cb => {
-        cb.addEventListener('change', function () {
-            const row = this.closest('tr');
-            const input = row && row.querySelector('.alloc-amount');
-            if (input) {
-                input.value = this.checked ? (row.dataset.balance || '0') : '';
-                updateAllocSummary();
-            }
+    function wireAllocationRowEvents() {
+        document.querySelectorAll('.alloc-check').forEach(cb => {
+            cb.addEventListener('change', function () {
+                const row = this.closest('tr');
+                const input = row && row.querySelector('.alloc-amount');
+                if (input) {
+                    input.value = this.checked ? (row.dataset.balance || '0') : '';
+                    updateAllocSummary();
+                }
+            });
         });
-    });
-    document.querySelectorAll('.alloc-amount').forEach(input => {
-        input.addEventListener('input', updateAllocSummary);
-    });
+        document.querySelectorAll('.alloc-amount').forEach(input => {
+            input.addEventListener('input', updateAllocSummary);
+        });
+    }
+    wireAllocationRowEvents();
     if (amountEl) amountEl.addEventListener('input', updateAllocSummary);
+
+    // Date filter controls for allocation table
+    const allocationPresetEl = document.getElementById('allocationDatePreset');
+    const allocationCustomEl = document.getElementById('allocationDateCustom');
+    const allocationFromEl = document.getElementById('allocationDateFrom');
+    const allocationToEl = document.getElementById('allocationDateTo');
+    const allocationApplyBtn = document.getElementById('allocationDateApply');
+
+    if (allocationPresetEl && allocationCustomEl && allocationApplyBtn) {
+        allocationPresetEl.addEventListener('change', () => {
+            allocationDatePreset = allocationPresetEl.value || 'this_month';
+            allocationCustomEl.style.display = allocationDatePreset === 'custom' ? 'flex' : 'none';
+        });
+        allocationApplyBtn.addEventListener('click', () => {
+            if (allocationDatePreset === 'custom' && allocationFromEl && allocationToEl) {
+                allocationDateFrom = allocationFromEl.value || null;
+                allocationDateTo = allocationToEl.value || null;
+            } else {
+                allocationDateFrom = null;
+                allocationDateTo = null;
+            }
+            const filtered = buildAllocationRows(filterUnpaidInvoices());
+            const tbody = document.getElementById('newPaymentAllocTbody');
+            if (!tbody) return;
+            if (filtered.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="padding: 1rem; color: var(--text-secondary);">No unpaid (posted) invoices in this period. Unallocated amount will become supplier credit.</td></tr>';
+            } else {
+                tbody.innerHTML = filtered.map((row, i) => `
+                    <tr data-invoice-id="${row.id}" data-balance="${row.balance}">
+                        <td style="padding: 0.5rem;">${escapeHtml(row.invoice_number)}</td>
+                        <td style="padding: 0.5rem;">${row.due_date}</td>
+                        <td style="padding: 0.5rem;">${escapeHtml(row.supplier_invoice_number)}</td>
+                        <td style="padding: 0.5rem; text-align: right;">${fmt(row.total)}</td>
+                        <td style="padding: 0.5rem; text-align: right;">${fmt(row.balance)}</td>
+                        <td style="padding: 0.5rem;"><input type="checkbox" class="alloc-check" data-idx="${i}" data-balance="${row.balance}"></td>
+                        <td style="padding: 0.5rem;"><input type="number" class="form-input alloc-amount" data-invoice-id="${row.id}" data-balance="${row.balance}" step="0.01" min="0" max="${row.balance}" placeholder="0" style="width: 100px; text-align: right;"></td>
+                    </tr>
+                `).join('');
+            }
+            wireAllocationRowEvents();
+            updateAllocSummary();
+        });
+    }
 }
 
 async function submitNewPayment(supplierId) {
