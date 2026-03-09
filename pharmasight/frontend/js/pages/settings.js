@@ -2997,6 +2997,45 @@ async function renderTransactionSettingsPage() {
     console.log('renderTransactionSettingsPage() called');
     const page = document.getElementById('settings');
     if (!page) return;
+
+    const cid = (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) ? CONFIG.COMPANY_ID : null;
+    const api = (typeof window !== 'undefined' && window.API) ? window.API : null;
+    const canAdmin = (typeof window !== 'undefined' && window.Permissions && typeof window.Permissions.hasAnyPermission === 'function')
+        ? await window.Permissions.hasAnyPermission(['users.edit', 'admin.manage_company'])
+        : false;
+    if (!cid || !api?.company?.getSettings) {
+        page.innerHTML = '<div class="card"><div class="card-body"><p>Select a company first (Settings → Company).</p></div></div>';
+        return;
+    }
+
+    if (!canAdmin) {
+        page.innerHTML = `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fas fa-receipt"></i> Transaction Settings</h3>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-warning">Admin only.</div>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
+    let requireBatchTracking = true;
+    let requireExpiryTracking = true;
+    try {
+        const res = await api.company.getSettings(cid);
+        const s = (res && res.settings) ? res.settings : {};
+        if (s && typeof s.require_batch_tracking !== 'undefined') {
+            requireBatchTracking = s.require_batch_tracking === true || s.require_batch_tracking === 'true';
+        }
+        if (s && typeof s.require_expiry_tracking !== 'undefined') {
+            requireExpiryTracking = s.require_expiry_tracking === true || s.require_expiry_tracking === 'true';
+        }
+    } catch (e) {
+        console.warn('Load transaction/company tracking settings:', e);
+    }
     
     page.innerHTML = `
         <div class="card">
@@ -3005,6 +3044,23 @@ async function renderTransactionSettingsPage() {
             </div>
             <div class="card-body">
                 <form id="transactionSettingsForm" onsubmit="saveTransactionSettings(event)">
+                    <h4 style="margin-bottom: 1rem;">Inventory tracking (company-level)</h4>
+                    <p style="margin: 0 0 0.75rem 0; font-size: 0.875rem; color: var(--text-secondary);">
+                        Controls whether Batch Number and/or Expiry Date are required when adding stock (supplier invoices / GRN / adjustments / imports).
+                    </p>
+                    <div class="form-group">
+                        <label class="form-checkbox">
+                            <input type="checkbox" name="require_batch_tracking" ${requireBatchTracking ? 'checked' : ''}>
+                            <span>Require batch number tracking</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-checkbox">
+                            <input type="checkbox" name="require_expiry_tracking" ${requireExpiryTracking ? 'checked' : ''}>
+                            <span>Require expiry date tracking</span>
+                        </label>
+                    </div>
+
                     <h4 style="margin-bottom: 1rem;">Transaction Options</h4>
                     
                     <div class="form-group">
@@ -3080,8 +3136,30 @@ async function renderTransactionSettingsPage() {
 
 function saveTransactionSettings(event) {
     event.preventDefault();
-    // TODO: Save transaction settings to backend/localStorage
-    showToast('Transaction settings saved', 'success');
+    const form = document.getElementById('transactionSettingsForm');
+    const cid = (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) ? CONFIG.COMPANY_ID : null;
+    if (!form || !cid || !window.API?.company?.updateSetting) {
+        showToast('Could not save settings (missing config).', 'error');
+        return;
+    }
+    const fd = new FormData(form);
+    const requireBatchTracking = fd.has('require_batch_tracking');
+    const requireExpiryTracking = fd.has('require_expiry_tracking');
+    Promise.resolve()
+        .then(() => window.API.company.updateSetting(cid, { key: 'require_batch_tracking', value: requireBatchTracking }))
+        .then(() => window.API.company.updateSetting(cid, { key: 'require_expiry_tracking', value: requireExpiryTracking }))
+        .then(() => {
+            if (typeof CONFIG !== 'undefined') {
+                CONFIG.REQUIRE_BATCH_TRACKING = requireBatchTracking;
+                CONFIG.REQUIRE_EXPIRY_TRACKING = requireExpiryTracking;
+                if (typeof saveConfig === 'function') saveConfig();
+            }
+            showToast('Transaction settings saved', 'success');
+        })
+        .catch((err) => {
+            console.error('Save transaction settings error:', err);
+            showToast((err && err.message) || 'Failed to save', 'error');
+        });
 }
 
 // Helper function

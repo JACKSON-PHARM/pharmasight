@@ -89,6 +89,10 @@ def _validate_batches_central(
     """
     if not getattr(item, "track_expiry", False):
         return
+    require_batch = bool(getattr(config, "require_batch_tracking", True))
+    require_expiry = bool(getattr(config, "require_expiry_tracking", True))
+    if not require_batch and not require_expiry:
+        return
     for batch in batches:
         if from_dict:
             bn = batch.get("batch_number") or None
@@ -102,7 +106,13 @@ def _validate_batches_central(
                 ed = ed.date()
         try:
             result = validate_stock_entry_with_config(
-                config, batch_number=bn, expiry_date=ed, track_expiry=True, override=override
+                config,
+                batch_number=bn,
+                expiry_date=ed,
+                track_expiry=True,
+                require_batch=require_batch,
+                require_expiry=require_expiry,
+                override=override,
             )
         except StockValidationError as e:
             raise HTTPException(
@@ -128,18 +138,22 @@ def _require_batch_and_expiry_for_track_expiry_item(
     batches: Optional[List],
     *,
     from_dict: bool = False,
+    require_batch: bool = True,
+    require_expiry: bool = True,
 ) -> None:
     """
     If item has track_expiry, batches must be present, non-empty, and each batch
-    must have batch_number and expiry_date. Raises HTTPException 400 otherwise.
+    must have batch_number and/or expiry_date based on company settings. Raises HTTPException 400 otherwise.
     from_dict: if True, each batch is a dict with keys batch_number, expiry_date.
     """
+    if not require_batch and not require_expiry:
+        return
     if not batches or len(batches) == 0:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Item '{item_name}' has Track Expiry enabled. You must use 'Manage Batches' and enter "
-                "at least one batch with Batch Number and Expiry Date before saving."
+                "at least one batch with the required tracking fields before saving."
             ),
         )
     for i, batch in enumerate(batches):
@@ -149,7 +163,7 @@ def _require_batch_and_expiry_for_track_expiry_item(
         else:
             batch_num = getattr(batch, "batch_number", None)
             expiry = getattr(batch, "expiry_date", None)
-        if not (batch_num and str(batch_num).strip()):
+        if require_batch and not (batch_num and str(batch_num).strip()):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -157,7 +171,7 @@ def _require_batch_and_expiry_for_track_expiry_item(
                     "(use Manage Batches and fill Batch Number)."
                 ),
             )
-        if not expiry:
+        if require_expiry and not expiry:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -563,12 +577,14 @@ def create_supplier_invoice(
 
         unit_cost_exclusive = resolved_unit_costs[idx] if idx < len(resolved_unit_costs) else item_data.unit_cost_exclusive
         
-        # Enforce batch + expiry for items with Track Expiry enabled (existing validation)
+        # Enforce tracking fields for items with Track Expiry enabled (company-level toggles decide what is required)
         if getattr(item, "track_expiry", False):
             _require_batch_and_expiry_for_track_expiry_item(
                 item.name or str(item_data.item_id),
                 item_data.batches,
                 from_dict=False,
+                require_batch=bool(getattr(stock_validation_config, "require_batch_tracking", True)),
+                require_expiry=bool(getattr(stock_validation_config, "require_expiry_tracking", True)),
             )
             # Central validation: expired reject. Short-expiry only enforced at batch time (allow draft save).
             if item_data.batches:
@@ -845,10 +861,15 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
     multiplier = get_unit_multiplier_from_item(item, effective_unit_name)
     if multiplier is None:
         raise HTTPException(status_code=404, detail=f"Unit '{effective_unit_name}' not found for item {item.name}")
-    # For track_expiry items, require at least one batch with batch_number and expiry_date before adding to invoice
+    # For track_expiry items, require tracking fields based on company settings
     if getattr(item, "track_expiry", False):
+        cfg = get_stock_validation_config(db, item.company_id)
         _require_batch_and_expiry_for_track_expiry_item(
-            item.name or str(item_data.item_id), item_data.batches, from_dict=False
+            item.name or str(item_data.item_id),
+            item_data.batches,
+            from_dict=False,
+            require_batch=bool(getattr(cfg, "require_batch_tracking", True)),
+            require_expiry=bool(getattr(cfg, "require_expiry_tracking", True)),
         )
     line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
     vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
@@ -1062,7 +1083,11 @@ def update_supplier_invoice_item(
     elif payload.batches is not None and len(payload.batches) > 0:
         if getattr(item, "track_expiry", False):
             _require_batch_and_expiry_for_track_expiry_item(
-                item.name or str(item_id), payload.batches, from_dict=False
+                item.name or str(item_id),
+                payload.batches,
+                from_dict=False,
+                require_batch=bool(getattr(stock_validation_config, "require_batch_tracking", True)),
+                require_expiry=bool(getattr(stock_validation_config, "require_expiry_tracking", True)),
             )
             stock_validation_config = get_stock_validation_config(db, invoice.company_id)
             _validate_batches_central(
@@ -1165,12 +1190,14 @@ def update_supplier_invoice(
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
         
-        # Enforce batch + expiry for items with Track Expiry enabled
+        # Enforce tracking fields for items with Track Expiry enabled (company-level toggles decide what is required)
         if getattr(item, "track_expiry", False):
             _require_batch_and_expiry_for_track_expiry_item(
                 item.name or str(item_data.item_id),
                 item_data.batches,
                 from_dict=False,
+                require_batch=bool(getattr(stock_validation_config_update, "require_batch_tracking", True)),
+                require_expiry=bool(getattr(stock_validation_config_update, "require_expiry_tracking", True)),
             )
             if item_data.batches:
                 _validate_batches_central(
@@ -1474,14 +1501,14 @@ def batch_supplier_invoice(
                 detail=f"Unit '{invoice_item.unit_name}' not found for item {item.name}. Cannot batch."
             )
         
-        # Enforce batch + expiry for items with Track Expiry enabled (before batching)
+        # Enforce tracking fields for items with Track Expiry enabled (before batching)
         if getattr(item, "track_expiry", False):
             if not (invoice_item.batch_data and str(invoice_item.batch_data).strip()):
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"Item '{item.name}' has Track Expiry enabled. Use 'Manage Batches' and enter "
-                        "at least one batch with Batch Number and Expiry Date before batching."
+                        "at least one batch with the required tracking fields before batching."
                     ),
                 )
             try:
@@ -1491,7 +1518,7 @@ def batch_supplier_invoice(
                     status_code=400,
                     detail=(
                         f"Item '{item.name}' has invalid batch data. Use 'Manage Batches' and enter "
-                        "Batch Number and Expiry Date for each batch."
+                        "the required tracking fields for each batch."
                     ),
                 )
             if not batches_validate:
@@ -1499,13 +1526,15 @@ def batch_supplier_invoice(
                     status_code=400,
                     detail=(
                         f"Item '{item.name}' has Track Expiry enabled. Use 'Manage Batches' and enter "
-                        "at least one batch with Batch Number and Expiry Date before batching."
+                        "at least one batch with the required tracking fields before batching."
                     ),
                 )
             _require_batch_and_expiry_for_track_expiry_item(
                 item.name or str(invoice_item.item_id),
                 batches_validate,
                 from_dict=True,
+                require_batch=bool(getattr(stock_validation_config_batch, "require_batch_tracking", True)),
+                require_expiry=bool(getattr(stock_validation_config_batch, "require_expiry_tracking", True)),
             )
             _validate_batches_central(
                 item.name or str(invoice_item.item_id),

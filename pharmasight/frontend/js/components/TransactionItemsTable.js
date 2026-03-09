@@ -2968,6 +2968,28 @@
         }
         
         try {
+            // Load company-level tracking requirements once (defaults true to preserve existing behavior)
+            if (typeof config.REQUIRE_BATCH_TRACKING === 'undefined' || typeof config.REQUIRE_EXPIRY_TRACKING === 'undefined') {
+                try {
+                    if (config.COMPANY_ID && api.company && typeof api.company.getSettings === 'function') {
+                        const sres = await api.company.getSettings(config.COMPANY_ID);
+                        const s = (sres && sres.settings) ? sres.settings : {};
+                        config.REQUIRE_BATCH_TRACKING = (typeof s.require_batch_tracking === 'undefined')
+                            ? true
+                            : (s.require_batch_tracking === true || s.require_batch_tracking === 'true');
+                        config.REQUIRE_EXPIRY_TRACKING = (typeof s.require_expiry_tracking === 'undefined')
+                            ? true
+                            : (s.require_expiry_tracking === true || s.require_expiry_tracking === 'true');
+                    } else {
+                        config.REQUIRE_BATCH_TRACKING = true;
+                        config.REQUIRE_EXPIRY_TRACKING = true;
+                    }
+                } catch (e) {
+                    config.REQUIRE_BATCH_TRACKING = true;
+                    config.REQUIRE_EXPIRY_TRACKING = true;
+                }
+            }
+
             // Get item details to check batch tracking requirements
             let itemDetails = null;
             try {
@@ -2976,7 +2998,9 @@
                 console.warn('Could not fetch item details:', error);
             }
             
-            const requiresExpiry = itemDetails?.track_expiry || false;
+            const itemTracks = itemDetails?.track_expiry || false;
+            const requiresBatch = itemTracks && (config.REQUIRE_BATCH_TRACKING === true);
+            const requiresExpiry = itemTracks && (config.REQUIRE_EXPIRY_TRACKING === true);
             const baseUnit = itemDetails?.base_unit || '';
             
             // Get existing batches if any (stored in item.batches)
@@ -2992,6 +3016,7 @@
                     unitName: item.unit_name || '',
                     unitCost: parseFloat(item.unit_price) || 0,
                     baseUnit: baseUnit,
+                    requiresBatch: requiresBatch,
                     requiresExpiry: requiresExpiry,
                     existingBatches: existingBatches
                 });

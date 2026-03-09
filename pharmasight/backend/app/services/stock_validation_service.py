@@ -24,6 +24,24 @@ STOCK_VALIDATION_SETTING_KEY = "stock_validation_mode"
 STOCK_VALIDATION_MIN_EXPIRY_DAYS_KEY = "stock_validation_min_expiry_days"
 DEFAULT_MIN_EXPIRY_DAYS = 90
 
+# Company-level switches to require/skip tracking fields (independent).
+# Defaults are True to preserve existing behavior (batch+expiry required for tracked items).
+REQUIRE_BATCH_TRACKING_KEY = "require_batch_tracking"
+REQUIRE_EXPIRY_TRACKING_KEY = "require_expiry_tracking"
+
+
+def _parse_bool_setting(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if v in ("0", "false", "f", "no", "n", "off"):
+        return False
+    return default
+
 
 class StockValidationResult(BaseModel):
     """Result of stock entry validation."""
@@ -49,6 +67,8 @@ class StockValidationConfig:
 
     mode: str  # OFF | WARN | STRICT
     min_expiry_days: int
+    require_batch_tracking: bool
+    require_expiry_tracking: bool
 
 
 def get_stock_validation_config(db: "Session", company_id) -> StockValidationConfig:
@@ -60,13 +80,20 @@ def get_stock_validation_config(db: "Session", company_id) -> StockValidationCon
 
     mode = STOCK_VALIDATION_MODE_STRICT
     min_expiry_days = DEFAULT_MIN_EXPIRY_DAYS
+    require_batch_tracking = True
+    require_expiry_tracking = True
 
     rows = (
         db.query(CompanySetting.setting_key, CompanySetting.setting_value)
         .filter(
             CompanySetting.company_id == company_id,
             CompanySetting.setting_key.in_(
-                [STOCK_VALIDATION_SETTING_KEY, STOCK_VALIDATION_MIN_EXPIRY_DAYS_KEY]
+                [
+                    STOCK_VALIDATION_SETTING_KEY,
+                    STOCK_VALIDATION_MIN_EXPIRY_DAYS_KEY,
+                    REQUIRE_BATCH_TRACKING_KEY,
+                    REQUIRE_EXPIRY_TRACKING_KEY,
+                ]
             ),
         )
         .all()
@@ -83,8 +110,17 @@ def get_stock_validation_config(db: "Session", company_id) -> StockValidationCon
                 min_expiry_days = max(0, int(value))
             except (ValueError, TypeError):
                 pass
+        elif key == REQUIRE_BATCH_TRACKING_KEY:
+            require_batch_tracking = _parse_bool_setting(value, True)
+        elif key == REQUIRE_EXPIRY_TRACKING_KEY:
+            require_expiry_tracking = _parse_bool_setting(value, True)
 
-    return StockValidationConfig(mode=mode, min_expiry_days=min_expiry_days)
+    return StockValidationConfig(
+        mode=mode,
+        min_expiry_days=min_expiry_days,
+        require_batch_tracking=require_batch_tracking,
+        require_expiry_tracking=require_expiry_tracking,
+    )
 
 
 def validate_stock_entry_with_config(
@@ -93,6 +129,8 @@ def validate_stock_entry_with_config(
     expiry_date: Optional[date],
     track_expiry: bool,
     override: bool,
+    require_batch: Optional[bool] = None,
+    require_expiry: Optional[bool] = None,
     reference_date: Optional[date] = None,
 ) -> StockValidationResult:
     """
@@ -112,6 +150,8 @@ def validate_stock_entry_with_config(
             batch_number=batch_number,
             expiry_date=expiry_date,
             track_expiry=track_expiry,
+            require_batch=require_batch,
+            require_expiry=require_expiry,
             min_expiry_days=config.min_expiry_days,
             override=True,  # OFF: do not reject
             reference_date=reference_date,
@@ -124,6 +164,8 @@ def validate_stock_entry_with_config(
         batch_number=batch_number,
         expiry_date=expiry_date,
         track_expiry=track_expiry,
+        require_batch=require_batch,
+        require_expiry=require_expiry,
         min_expiry_days=config.min_expiry_days,
         override=use_override,
         reference_date=reference_date,
@@ -135,6 +177,8 @@ def validate_stock_entry(
     batch_number: Optional[str],
     expiry_date: Optional[date],
     track_expiry: bool,
+    require_batch: Optional[bool] = None,
+    require_expiry: Optional[bool] = None,
     min_expiry_days: int,
     override: bool,
     reference_date: Optional[date] = None,
@@ -145,18 +189,21 @@ def validate_stock_entry(
     Rules:
     - If track_expiry is False → always valid.
     - If track_expiry is True:
-      - batch_number required
-      - expiry_date required
-      - If expiry_date < today → raise StockValidationError (hard reject).
-      - If expiry_date <= today + min_expiry_days:
-        - mark short_expiry=True
-        - if override=False → return invalid (do NOT raise)
-      - Else → valid.
+      - If require_batch is True → batch_number required
+      - If require_expiry is True → expiry_date required
+      - If require_expiry is True:
+        - If expiry_date < today → raise StockValidationError (hard reject).
+        - If expiry_date <= today + min_expiry_days:
+          - mark short_expiry=True
+          - if override=False → return invalid (do NOT raise)
+        - Else → valid.
 
     Args:
-        batch_number: Batch/lot number (required when track_expiry=True)
-        expiry_date: Expiry date (required when track_expiry=True)
-        track_expiry: Whether the item requires batch/expiry tracking
+        batch_number: Batch/lot number (required when require_batch=True)
+        expiry_date: Expiry date (required when require_expiry=True)
+        track_expiry: Whether this entry should consider tracking validation at all.
+        require_batch: Whether batch_number is required (defaults to track_expiry behavior).
+        require_expiry: Whether expiry_date is required and validated (defaults to track_expiry behavior).
         min_expiry_days: Minimum days until expiry (short-expiry threshold)
         override: Whether short-expiry override is enabled
         reference_date: Date to use as "today" (for testability; default: date.today())
@@ -178,23 +225,36 @@ def validate_stock_entry(
             message=None,
         )
 
-    # track_expiry=True: batch_number and expiry_date required
-    if not (batch_number and str(batch_number).strip()):
+    # Backwards compatibility: if called with track_expiry only, require both.
+    req_batch = track_expiry if require_batch is None else bool(require_batch)
+    req_exp = track_expiry if require_expiry is None else bool(require_expiry)
+
+    # Required fields (independent)
+    if req_batch and not (batch_number and str(batch_number).strip()):
         return StockValidationResult(
             valid=False,
             expired=False,
             short_expiry=False,
             days_remaining=None,
-            message="Batch number is required for items with expiry tracking.",
+            message="Batch number is required for tracked items.",
         )
 
-    if not expiry_date:
+    if req_exp and not expiry_date:
         return StockValidationResult(
             valid=False,
             expired=False,
             short_expiry=False,
             days_remaining=None,
-            message="Expiry date is required for items with expiry tracking.",
+            message="Expiry date is required for tracked items.",
+        )
+
+    if not req_exp:
+        return StockValidationResult(
+            valid=True,
+            expired=False,
+            short_expiry=False,
+            days_remaining=None,
+            message=None,
         )
 
     # Hard reject: expired

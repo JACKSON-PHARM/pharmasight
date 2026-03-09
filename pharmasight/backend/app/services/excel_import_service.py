@@ -1058,6 +1058,8 @@ class ExcelImportService:
                                 batch_number=batch_number_open,
                                 expiry_date=expiry_date_open,
                                 track_expiry=True,
+                                require_batch=bool(getattr(stock_validation_config, "require_batch_tracking", True)),
+                                require_expiry=bool(getattr(stock_validation_config, "require_expiry_tracking", True)),
                                 override=False,
                             )
                         except StockValidationError as e:
@@ -1611,13 +1613,15 @@ class ExcelImportService:
                     batch_number_ob = None
                     expiry_date_ob = None
                     if getattr(item, 'track_expiry', False):
+                        require_batch = bool(getattr(stock_validation_config, "require_batch_tracking", True)) if stock_validation_config is not None else True
+                        require_expiry = bool(getattr(stock_validation_config, "require_expiry_tracking", True)) if stock_validation_config is not None else True
                         batch_number_ob = _safe_strip(_normalize_column_name(row, [
                             'Opening_Batch_Number', 'Opening Batch Number', 'opening_batch_number'
                         ]) or '')
                         expiry_date_raw = _safe_strip(_normalize_column_name(row, [
                             'Opening_Expiry_Date', 'Opening Expiry Date', 'opening_expiry_date'
                         ]) or '')
-                        if not batch_number_ob or not expiry_date_raw:
+                        if (require_batch and not batch_number_ob) or (require_expiry and not expiry_date_raw):
                             result.setdefault('errors', []).append(
                                 f"Item '{item_name}' has Track Expiry and opening stock. Provide Opening Batch Number and Opening Expiry Date (YYYY-MM-DD). Skipping opening balance for this row."
                             )
@@ -1640,6 +1644,8 @@ class ExcelImportService:
                                     batch_number=batch_number_ob,
                                     expiry_date=expiry_date_ob,
                                     track_expiry=True,
+                                    require_batch=require_batch,
+                                    require_expiry=require_expiry,
                                     override=False,
                                 )
                             except StockValidationError as e:

@@ -307,10 +307,11 @@ class BatchQuantityCorrectionRequest(BaseModel):
 
 
 class BatchMetadataCorrectionRequest(BaseModel):
-    """Metadata correction: fix batch_number or expiry_date for a batch."""
+    """Metadata correction: reassign quantity from source batch to new batch/expiry. No net quantity change."""
     branch_id: UUID = Field(..., description="Branch that owns the batch")
-    batch_number: str = Field(..., min_length=1, description="Current batch/lot number")
-    expiry_date: Optional[str] = Field(None, description="Current expiry YYYY-MM-DD")
+    batch_number: Optional[str] = Field(None, max_length=200, description="Current batch (omit for unbatched pool)")
+    expiry_date: Optional[str] = Field(None, description="Current expiry YYYY-MM-DD (omit for unbatched)")
+    quantity: float = Field(..., gt=0, description="Base units to reassign to new batch/expiry (cannot exceed source pool)")
     new_batch_number: Optional[str] = Field(None, max_length=200, description="New batch number (if correcting)")
     new_expiry_date: Optional[str] = Field(None, description="New expiry YYYY-MM-DD (if correcting)")
     reason: str = Field(..., min_length=1, description="Mandatory reason (audited)")

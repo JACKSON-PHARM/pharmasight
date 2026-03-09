@@ -1786,16 +1786,18 @@ def complete_branch_stock_take(
                     if not item:
                         logger.warning(f"Item {count.item_id} not found when completing stock take")
                         continue
-                    # When adding stock (variance > 0) for track_expiry items, require batch/expiry from count and validate
+                    # When adding stock (variance > 0) for track_expiry items, require tracking fields per company toggles and validate
                     if variance > 0 and getattr(item, "track_expiry", False):
                         bn = (count.batch_number or "").strip() or None
                         ed = count.expiry_date
                         if ed is not None and hasattr(ed, "date"):
                             ed = ed.date() if callable(ed.date) else ed
-                        if not bn or not ed:
+                        require_batch = bool(getattr(stock_validation_config_st, "require_batch_tracking", True))
+                        require_expiry = bool(getattr(stock_validation_config_st, "require_expiry_tracking", True))
+                        if (require_batch and not bn) or (require_expiry and not ed):
                             raise HTTPException(
                                 status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"Item '{item.name or count.item_id}' has Track Expiry. Stock take count must include Batch Number and Expiry Date when adding stock. Missing on completion.",
+                                detail=f"Item '{item.name or count.item_id}' has Track Expiry. Stock take count must include the required tracking fields when adding stock. Missing on completion.",
                             )
                         try:
                             res_st = validate_stock_entry_with_config(
@@ -1803,6 +1805,8 @@ def complete_branch_stock_take(
                                 batch_number=bn,
                                 expiry_date=ed,
                                 track_expiry=True,
+                                require_batch=require_batch,
+                                require_expiry=require_expiry,
                                 override=False,
                             )
                         except StockValidationError as e:

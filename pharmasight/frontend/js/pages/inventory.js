@@ -1467,19 +1467,39 @@ async function showAdjustStockModal(itemId) {
         if (qtyEl) qtyEl.addEventListener('input', updateImpactPreview);
         updateImpactPreview();
 
-        // When Add is selected, batch and expiry are required
+        // When Add is selected, batch/expiry are required only if company settings require them
         const directionRadios = document.querySelectorAll('input[name="adjustDirection"]');
         const batchInput = document.getElementById('adjustStockBatch');
         const expiryInput = document.getElementById('adjustStockExpiry');
         const batchReq = document.getElementById('adjustBatchRequired');
         const expiryReq = document.getElementById('adjustExpiryRequired');
+        let requireBatchTracking = true;
+        let requireExpiryTracking = true;
+        try {
+            const cid = (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) ? CONFIG.COMPANY_ID : null;
+            if (cid && typeof API !== 'undefined' && API.company && typeof API.company.getSettings === 'function') {
+                const sres = await API.company.getSettings(cid);
+                const s = (sres && sres.settings) ? sres.settings : {};
+                requireBatchTracking = (typeof s.require_batch_tracking === 'undefined')
+                    ? true
+                    : (s.require_batch_tracking === true || s.require_batch_tracking === 'true');
+                requireExpiryTracking = (typeof s.require_expiry_tracking === 'undefined')
+                    ? true
+                    : (s.require_expiry_tracking === true || s.require_expiry_tracking === 'true');
+                CONFIG.REQUIRE_BATCH_TRACKING = requireBatchTracking;
+                CONFIG.REQUIRE_EXPIRY_TRACKING = requireExpiryTracking;
+                if (typeof saveConfig === 'function') saveConfig();
+            }
+        } catch (_) {}
         function toggleAddRequired() {
             const addChecked = document.querySelector('input[name="adjustDirection"][value="add"]:checked');
             const isAdd = !!addChecked;
-            if (batchInput) batchInput.required = isAdd;
-            if (expiryInput) expiryInput.required = isAdd;
-            if (batchReq) batchReq.style.visibility = isAdd ? 'visible' : 'hidden';
-            if (expiryReq) expiryReq.style.visibility = isAdd ? 'visible' : 'hidden';
+            const needBatch = isAdd && requireBatchTracking;
+            const needExpiry = isAdd && requireExpiryTracking;
+            if (batchInput) batchInput.required = needBatch;
+            if (expiryInput) expiryInput.required = needExpiry;
+            if (batchReq) batchReq.style.visibility = needBatch ? 'visible' : 'hidden';
+            if (expiryReq) expiryReq.style.visibility = needExpiry ? 'visible' : 'hidden';
         }
         toggleAddRequired();
         directionRadios.forEach(function (r) {
@@ -1522,12 +1542,14 @@ async function submitAdjustStock(itemId) {
     const batchEl = document.getElementById('adjustStockBatch');
     const expiryEl = document.getElementById('adjustStockExpiry');
     if (dir === 'add') {
-        if (!batchEl || !batchEl.value.trim()) {
+        const requireBatchTracking = (typeof CONFIG !== 'undefined' && CONFIG.REQUIRE_BATCH_TRACKING === false) ? false : true;
+        const requireExpiryTracking = (typeof CONFIG !== 'undefined' && CONFIG.REQUIRE_EXPIRY_TRACKING === false) ? false : true;
+        if (requireBatchTracking && (!batchEl || !batchEl.value.trim())) {
             if (typeof showToast === 'function') showToast('Batch number is required when adding stock.', 'warning');
             else alert('Batch number is required when adding stock.');
             return;
         }
-        if (!expiryEl || !expiryEl.value) {
+        if (requireExpiryTracking && (!expiryEl || !expiryEl.value)) {
             if (typeof showToast === 'function') showToast('Expiry date is required when adding stock.', 'warning');
             else alert('Expiry date is required when adding stock.');
             return;
@@ -1838,14 +1860,22 @@ function renderManualAdjustmentsSubPage() {
             <div id="manualAdjustmentsMetadata" class="tab-pane" style="display: none;">
                 <div class="card" style="max-width: 32rem;">
                     <h3 style="margin-bottom: 0.75rem;">Metadata Correction</h3>
-                    <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Correct batch number or expiry date.</p>
-                    <div class="form-group">
-                        <label>Current batch number</label>
-                        <input type="text" id="metaBatchNumber" class="form-input" required>
+                    <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Reassign batch number or expiry for existing stock. No quantity is added or removed.</p>
+                    <div class="form-group" id="metaPoolGroup" style="display: none;">
+                        <label>Current batch / pool <span style="color: var(--danger-color);">*</span></label>
+                        <select id="metaCurrentBatchSelect" class="form-input">
+                            <option value="">Select item above first</option>
+                        </select>
+                        <small id="metaPoolHint" style="display: block; color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;"></small>
                     </div>
-                    <div class="form-group">
-                        <label>Current expiry date (optional)</label>
-                        <input type="date" id="metaExpiryDate" class="form-input">
+                    <div class="form-group" id="metaSinglePoolLabel" style="display: none;">
+                        <label>Stock pool</label>
+                        <p id="metaSinglePoolText" style="margin: 0; font-size: 0.9rem; color: var(--text-secondary);"></p>
+                    </div>
+                    <div class="form-group" id="metaQuantityGroup">
+                        <label>Quantity to reassign (base units) <span style="color: var(--danger-color);">*</span></label>
+                        <input type="number" id="metaQuantity" class="form-input" min="0.01" step="0.01" placeholder="Select item first">
+                        <small style="display: block; color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Prefilled with available stock. You can reduce but not increase.</small>
                     </div>
                     <div class="form-group">
                         <label>New batch number (optional)</label>
@@ -1885,10 +1915,103 @@ function setupManualAdjustmentsHandlers() {
             this.classList.add('active');
             const pane = document.getElementById('manualAdjustments' + (tab === 'cost' ? 'Cost' : 'Metadata'));
             if (pane) pane.style.display = 'block';
+            if (tab === 'metadata') loadMetadataPools(getAdjustmentItemId());
         });
     });
     var metaPane = document.getElementById('manualAdjustmentsMetadata');
     if (metaPane) metaPane.style.display = 'none';
+
+    var metaPools = []; // { batch_number, expiry_date, quantity } aggregated from ledger
+    function aggregateLedgerToPools(entries) {
+        var map = {};
+        (entries || []).forEach(function (e) {
+            var bn = (e.batch_number != null && String(e.batch_number).trim() !== '') ? String(e.batch_number).trim() : null;
+            var ed = (e.expiry_date != null && String(e.expiry_date).trim() !== '') ? String(e.expiry_date).trim() : null;
+            var key = (bn || '') + '|' + (ed || '');
+            if (!map[key]) map[key] = { batch_number: bn, expiry_date: ed, quantity: 0 };
+            map[key].quantity += parseFloat(e.quantity) || 0;
+        });
+        return Object.keys(map).map(function (k) {
+            var p = map[k];
+            return { batch_number: p.batch_number, expiry_date: p.expiry_date, quantity: p.quantity };
+        }).filter(function (p) { return p.quantity > 0; });
+    }
+    function loadMetadataPools(itemId) {
+        metaPools = [];
+        var poolSelect = document.getElementById('metaCurrentBatchSelect');
+        var poolGroup = document.getElementById('metaPoolGroup');
+        var singleLabel = document.getElementById('metaSinglePoolLabel');
+        var singleText = document.getElementById('metaSinglePoolText');
+        var qtyInput = document.getElementById('metaQuantity');
+        var hint = document.getElementById('metaPoolHint');
+        if (!itemId || !branchIdRaw || !API || !API.items || !API.items.getLedgerBatches) {
+            if (poolSelect) poolSelect.innerHTML = '<option value="">Select item above first</option>';
+            if (poolGroup) poolGroup.style.display = 'none';
+            if (singleLabel) singleLabel.style.display = 'none';
+            if (qtyInput) { qtyInput.value = ''; qtyInput.placeholder = 'Select item first'; qtyInput.max = ''; }
+            return;
+        }
+        API.items.getLedgerBatches(itemId, branchIdRaw).then(function (r) {
+            var entries = (r && r.entries) || [];
+            metaPools = aggregateLedgerToPools(entries);
+            if (metaPools.length === 0) {
+                if (poolGroup) poolGroup.style.display = 'none';
+                if (singleLabel) { singleLabel.style.display = 'block'; singleText.textContent = 'No stock for this item in this branch.'; }
+                if (qtyInput) { qtyInput.value = ''; qtyInput.placeholder = 'No stock'; qtyInput.max = ''; }
+                if (hint) hint.textContent = '';
+                return;
+            }
+            if (metaPools.length > 1) {
+                if (poolGroup) poolGroup.style.display = 'block';
+                if (singleLabel) singleLabel.style.display = 'none';
+                poolSelect.innerHTML = '<option value="">— Select batch / pool —</option>' + metaPools.map(function (p, i) {
+                    var label = (p.batch_number || 'Unbatched') + ' | Exp: ' + (p.expiry_date || '—') + ' | ' + p.quantity + ' base units';
+                    return '<option value="' + i + '">' + (typeof escapeHtml === 'function' ? escapeHtml(label) : label) + '</option>';
+                }).join('');
+                if (qtyInput) { qtyInput.value = ''; qtyInput.placeholder = 'Select a batch above'; qtyInput.max = ''; }
+                if (hint) hint.textContent = 'Select which batch/pool to correct, then set quantity to reassign.';
+            } else {
+                if (poolGroup) poolGroup.style.display = 'none';
+                if (singleLabel) {
+                    singleLabel.style.display = 'block';
+                    var p = metaPools[0];
+                    singleText.textContent = (p.batch_number || 'Unbatched') + (p.expiry_date ? ' | Exp: ' + p.expiry_date : '') + ' — ' + p.quantity + ' base units available.';
+                }
+                if (qtyInput) {
+                    qtyInput.value = String(metaPools[0].quantity);
+                    qtyInput.max = metaPools[0].quantity;
+                    qtyInput.placeholder = '';
+                }
+                if (hint) hint.textContent = '';
+            }
+        }).catch(function () {
+            metaPools = [];
+            if (poolSelect) poolSelect.innerHTML = '<option value="">Error loading batches</option>';
+            if (poolGroup) poolGroup.style.display = 'block';
+            if (singleLabel) singleLabel.style.display = 'none';
+            if (qtyInput) { qtyInput.value = ''; qtyInput.max = ''; }
+        });
+    }
+    function getSelectedMetaPool() {
+        var poolSelect = document.getElementById('metaCurrentBatchSelect');
+        if (metaPools.length === 0) return null;
+        if (metaPools.length === 1) return metaPools[0];
+        if (!poolSelect || poolSelect.value === '') return null;
+        var i = parseInt(poolSelect.value, 10);
+        if (isNaN(i) || i < 0 || i >= metaPools.length) return null;
+        return metaPools[i];
+    }
+    function updateMetaQuantityFromPool() {
+        var pool = getSelectedMetaPool();
+        var qtyInput = document.getElementById('metaQuantity');
+        if (!qtyInput) return;
+        if (!pool) {
+            if (metaPools.length > 1) { qtyInput.value = ''; qtyInput.max = ''; }
+            return;
+        }
+        qtyInput.max = pool.quantity;
+        if (parseFloat(qtyInput.value) > pool.quantity || !qtyInput.value) qtyInput.value = String(pool.quantity);
+    }
 
     // Shared item search (type-ahead, branch-scoped; no overview on load — avoids DB load)
     const searchInput = document.getElementById('adjustmentItemSearch');
@@ -2017,6 +2140,7 @@ function setupManualAdjustmentsHandlers() {
                                 dropdownEl.style.display = 'none';
                                 dropdownEl.innerHTML = '';
                                 loadBatchesForAdjustmentItem(id, { wholesale_unit: wu, retail_unit: ru, pack_size: parseInt(ps, 10) || 1 });
+                                loadMetadataPools(id);
                             });
                         });
                     }
@@ -2040,6 +2164,7 @@ function setupManualAdjustmentsHandlers() {
                 itemIdHidden.value = String(pre.itemId);
                 searchInput.value = (pre.itemName || '') + (pre.itemSku ? ' (' + pre.itemSku + ')' : '');
                 loadBatchesForAdjustmentItem(pre.itemId);
+                loadMetadataPools(pre.itemId);
             } catch (e) { /* ignore */ }
         }
         requestAnimationFrame(function () { applyPreselectedItem(); });
@@ -2076,28 +2201,65 @@ function setupManualAdjustmentsHandlers() {
             }).finally(function () { submitCost.disabled = false; });
         };
     }
+    var metaCurrentBatchSelect = document.getElementById('metaCurrentBatchSelect');
+    if (metaCurrentBatchSelect) {
+        metaCurrentBatchSelect.addEventListener('change', function () { updateMetaQuantityFromPool(); });
+    }
+
     // Submit Metadata
     const submitMeta = document.getElementById('submitMetadataCorrection');
     if (submitMeta) {
         submitMeta.onclick = function () {
             const itemId = getAdjustmentItemId();
-            const batchNumber = (document.getElementById('metaBatchNumber') && document.getElementById('metaBatchNumber').value || '').trim();
-            const expiryDate = document.getElementById('metaExpiryDate') && document.getElementById('metaExpiryDate').value || null;
+            const pool = getSelectedMetaPool();
+            const qtyEl = document.getElementById('metaQuantity');
+            const quantity = qtyEl ? parseFloat(qtyEl.value) : NaN;
             const newBatchNumber = (document.getElementById('metaNewBatchNumber') && document.getElementById('metaNewBatchNumber').value || '').trim() || null;
             const newExpiryDate = document.getElementById('metaNewExpiryDate') && document.getElementById('metaNewExpiryDate').value || null;
             const reason = (document.getElementById('metaReason') && document.getElementById('metaReason').value || '').trim();
-            if (!itemId || !batchNumber || !reason) {
-                if (typeof showToast === 'function') showToast('Select an item (search above), then current batch number and reason.', 'warning');
+            if (!itemId) {
+                if (typeof showToast === 'function') showToast('Select an item (search above) first.', 'warning');
+                return;
+            }
+            if (metaPools.length === 0) {
+                if (typeof showToast === 'function') showToast('No stock for this item in this branch.', 'warning');
+                return;
+            }
+            if (metaPools.length > 1 && !pool) {
+                if (typeof showToast === 'function') showToast('Select which batch/pool to correct.', 'warning');
+                return;
+            }
+            if (isNaN(quantity) || quantity <= 0) {
+                if (typeof showToast === 'function') showToast('Enter a valid quantity to reassign.', 'warning');
+                return;
+            }
+            if (pool && quantity > pool.quantity) {
+                if (typeof showToast === 'function') showToast('Quantity cannot exceed ' + pool.quantity + ' (available for selected pool).', 'warning');
+                return;
+            }
+            if (!reason) {
+                if (typeof showToast === 'function') showToast('Reason is required.', 'warning');
                 return;
             }
             if (!newBatchNumber && !newExpiryDate) {
                 if (typeof showToast === 'function') showToast('Provide at least one of new batch number or new expiry date.', 'warning');
                 return;
             }
+            const batchNumber = pool ? (pool.batch_number || null) : null;
+            const expiryDate = pool && pool.expiry_date ? pool.expiry_date : null;
             submitMeta.disabled = true;
-            API.items.corrections.batchMetadataCorrection(itemId, { branch_id: branchIdRaw, batch_number: batchNumber, expiry_date: expiryDate || undefined, new_batch_number: newBatchNumber, new_expiry_date: newExpiryDate || undefined, reason }).then(function (res) {
+            API.items.corrections.batchMetadataCorrection(itemId, {
+                branch_id: branchIdRaw,
+                batch_number: batchNumber || undefined,
+                expiry_date: expiryDate || undefined,
+                quantity: quantity,
+                new_batch_number: newBatchNumber,
+                new_expiry_date: newExpiryDate || undefined,
+                reason: reason
+            }).then(function (res) {
                 if (typeof showToast === 'function') showToast(res.message || 'Metadata corrected.', 'success');
                 document.getElementById('metaReason').value = '';
+                loadMetadataPools(itemId);
             }).catch(function (err) {
                 const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Failed';
                 if (typeof showToast === 'function') showToast(msg, 'error');

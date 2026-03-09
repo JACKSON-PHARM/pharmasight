@@ -16,6 +16,7 @@
         unitName: '',
         unitCost: 0,
         baseUnit: '',
+        requiresBatch: true,
         requiresExpiry: false,
         batches: []
     };
@@ -30,7 +31,8 @@
      * @param {string} options.unitName - Unit name (box, carton, etc.)
      * @param {number} options.unitCost - Unit cost
      * @param {string} options.baseUnit - Base unit name
-     * @param {boolean} options.requiresExpiry - Whether item requires expiry tracking
+     * @param {boolean} options.requiresBatch - Whether batch number is required
+     * @param {boolean} options.requiresExpiry - Whether expiry date is required
      * @param {Array} options.existingBatches - Existing batch distribution (for editing)
      */
     window.showBatchDistributionModal = function(options) {
@@ -43,6 +45,7 @@
             unitName: options.unitName || '',
             unitCost: parseFloat(options.unitCost) || 0,
             baseUnit: options.baseUnit || '',
+            requiresBatch: options.requiresBatch !== false,
             requiresExpiry: options.requiresExpiry || false,
             batches: options.existingBatches || []
         };
@@ -101,7 +104,7 @@
                     <table class="batch-table" style="width: 100%; border-collapse: collapse;">
                         <thead>
                             <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color);">
-                                <th style="padding: 0.75rem; text-align: left; font-weight: 600;">Batch Number *</th>
+                                <th style="padding: 0.75rem; text-align: left; font-weight: 600;">Batch Number${currentBatchData.requiresBatch ? ' *' : ''}</th>
                                 ${currentBatchData.requiresExpiry ? '<th style="padding: 0.75rem; text-align: left; font-weight: 600;">Expiry Date *</th>' : '<th style="padding: 0.75rem; text-align: left; font-weight: 600;">Expiry Date</th>'}
                                 <th style="padding: 0.75rem; text-align: left; font-weight: 600;">Quantity *</th>
                                 <th style="padding: 0.75rem; text-align: left; font-weight: 600;">Unit Cost *</th>
@@ -166,7 +169,7 @@
                                class="form-input batch-batch-number" 
                                value="${escapeHtml(batch.batch_number || '')}"
                                placeholder="BATCH001"
-                               required
+                               ${currentBatchData.requiresBatch ? 'required' : ''}
                                onchange="updateBatchField(${index}, 'batch_number', this.value)"
                                style="width: 100%;">
                     </td>
@@ -335,7 +338,7 @@
         
         // Check required fields
         currentBatchData.batches.forEach((batch, index) => {
-            if (!batch.batch_number || batch.batch_number.trim() === '') {
+            if (currentBatchData.requiresBatch && (!batch.batch_number || batch.batch_number.trim() === '')) {
                 errors.push(`Batch ${index + 1}: Batch number is required`);
             }
             if (currentBatchData.requiresExpiry && !batch.expiry_date) {

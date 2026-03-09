@@ -1175,12 +1175,16 @@ def adjust_stock(
                     },
                 )
         config_adjust = get_stock_validation_config(db, item.company_id)
+        require_batch = bool(getattr(config_adjust, "require_batch_tracking", True))
+        require_expiry = bool(getattr(config_adjust, "require_expiry_tracking", True))
         try:
             result = validate_stock_entry_with_config(
                 config_adjust,
                 batch_number=body.batch_number.strip() if body.batch_number else None,
                 expiry_date=expiry_date_parsed,
                 track_expiry=True,
+                require_batch=require_batch,
+                require_expiry=require_expiry,
                 override=short_expiry_override_adjust,
             )
         except StockValidationError as e:
@@ -1841,12 +1845,16 @@ def post_batch_quantity_correction(
     # When adding stock (quantity_delta > 0) for track_expiry items, validate batch/expiry
     if quantity_delta > 0 and getattr(item, "track_expiry", False):
         config_bqc = get_stock_validation_config(db, item.company_id)
+        require_batch = bool(getattr(config_bqc, "require_batch_tracking", True))
+        require_expiry = bool(getattr(config_bqc, "require_expiry_tracking", True))
         try:
             result_bqc = validate_stock_entry_with_config(
                 config_bqc,
                 batch_number=body.batch_number.strip() if body.batch_number else None,
                 expiry_date=expiry_date_parsed,
                 track_expiry=True,
+                require_batch=require_batch,
+                require_expiry=require_expiry,
                 override=False,
             )
         except StockValidationError as e:
@@ -1917,6 +1925,39 @@ def post_batch_quantity_correction(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _metadata_correction_source_pool(
+    db: Session, item_id: UUID, branch_id: UUID, batch_number: Optional[str], expiry_date: Optional[date]
+):
+    """Return (available_quantity, unit_cost) for the source pool (batch_number, expiry_date). Unbatched = (None, None)."""
+    q = (
+        db.query(
+            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("total"),
+            func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cost_sum"),
+        )
+        .filter(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.quantity_delta > 0,
+        )
+    )
+    if batch_number is not None and str(batch_number).strip():
+        q = q.filter(InventoryLedger.batch_number == str(batch_number).strip())
+        if expiry_date is not None:
+            q = q.filter(InventoryLedger.expiry_date == expiry_date)
+        else:
+            q = q.filter(InventoryLedger.expiry_date.is_(None))
+    else:
+        q = q.filter(or_(InventoryLedger.batch_number.is_(None), InventoryLedger.batch_number == ""))
+        q = q.filter(InventoryLedger.expiry_date.is_(None))
+    row = q.first()
+    if not row or float(row.total or 0) <= 0:
+        return 0.0, Decimal("0")
+    total = float(row.total)
+    cost_sum = Decimal(str(row.cost_sum or 0))
+    unit_cost = (cost_sum / Decimal(str(total))) if total else Decimal("0")
+    return total, unit_cost
+
+
 @router.post("/{item_id}/corrections/batch-metadata-correction", response_model=CorrectionResponse, status_code=status.HTTP_201_CREATED)
 def post_batch_metadata_correction(
     item_id: UUID,
@@ -1925,8 +1966,8 @@ def post_batch_metadata_correction(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Correct batch metadata (batch_number, expiry_date). No quantity or cost change.
-    Requires permission inventory.adjust_batch_metadata. Recorded in item_movements.
+    Reassign quantity from a source batch (or unbatched pool) to new batch/expiry. No net quantity change.
+    Requires permission inventory.adjust_batch_metadata. Recorded as two ledger entries + item_movement.
     """
     user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
@@ -1937,12 +1978,6 @@ def post_batch_metadata_correction(
     branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
     if not branch:
         raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
-    expiry_parsed = None
-    if body.expiry_date and body.expiry_date.strip():
-        try:
-            expiry_parsed = date.fromisoformat(body.expiry_date.strip())
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid expiry_date; use YYYY-MM-DD.")
     new_expiry_parsed = None
     if body.new_expiry_date and body.new_expiry_date.strip():
         try:
@@ -1952,52 +1987,87 @@ def post_batch_metadata_correction(
     new_batch_number = body.new_batch_number.strip() if body.new_batch_number and body.new_batch_number.strip() else None
     if not new_batch_number and new_expiry_parsed is None:
         raise HTTPException(status_code=400, detail="Provide at least one of new_batch_number or new_expiry_date.")
-    rows = (
-        db.query(InventoryLedger)
-        .filter(
-            InventoryLedger.item_id == item_id,
-            InventoryLedger.branch_id == body.branch_id,
-            InventoryLedger.batch_number == body.batch_number.strip(),
-        )
-        .with_for_update()
+    source_batch = body.batch_number.strip() if body.batch_number and body.batch_number.strip() else None
+    source_expiry = None
+    if body.expiry_date and body.expiry_date.strip():
+        try:
+            source_expiry = date.fromisoformat(body.expiry_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid expiry_date; use YYYY-MM-DD.")
+    available, unit_cost = _metadata_correction_source_pool(
+        db, item_id, body.branch_id, source_batch, source_expiry
     )
-    if expiry_parsed is not None:
-        rows = rows.filter(InventoryLedger.expiry_date == expiry_parsed)
-    else:
-        rows = rows.filter(InventoryLedger.expiry_date.is_(None))
-    rows = rows.all()
-    if not rows:
-        raise HTTPException(status_code=404, detail="No ledger rows found for this batch.")
+    if available <= 0:
+        raise HTTPException(
+            status_code=404,
+            detail="No stock found for the selected batch/pool. Select a batch with positive quantity or use unbatched.",
+        )
+    quantity = Decimal(str(body.quantity))
+    if quantity > Decimal(str(available)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Quantity cannot exceed available stock ({available} base units) for the selected batch/pool.",
+        )
+    total_cost = quantity * unit_cost
     metadata_before = {
-        "batch_number": body.batch_number.strip(),
+        "batch_number": source_batch if source_batch else None,
         "expiry_date": body.expiry_date if body.expiry_date else None,
     }
     metadata_after = {
-        "batch_number": new_batch_number if new_batch_number else body.batch_number.strip(),
-        "expiry_date": body.new_expiry_date if body.new_expiry_date else body.expiry_date,
+        "batch_number": new_batch_number,
+        "expiry_date": body.new_expiry_date if body.new_expiry_date else None,
     }
     if new_expiry_parsed is not None:
         metadata_after["expiry_date"] = new_expiry_parsed.isoformat()
     try:
+        out_entry = InventoryLedger(
+            company_id=item.company_id,
+            branch_id=body.branch_id,
+            item_id=item_id,
+            batch_number=source_batch,
+            expiry_date=source_expiry,
+            transaction_type="ADJUSTMENT",
+            reference_type="BATCH_METADATA_CORRECTION",
+            reference_id=None,
+            quantity_delta=-quantity,
+            unit_cost=unit_cost,
+            total_cost=-total_cost,
+            created_by=user.id,
+            notes=body.reason.strip()[:2000] if body.reason else None,
+        )
+        db.add(out_entry)
+        db.flush()
+        in_entry = InventoryLedger(
+            company_id=item.company_id,
+            branch_id=body.branch_id,
+            item_id=item_id,
+            batch_number=new_batch_number,
+            expiry_date=new_expiry_parsed,
+            transaction_type="ADJUSTMENT",
+            reference_type="BATCH_METADATA_CORRECTION",
+            reference_id=None,
+            quantity_delta=quantity,
+            unit_cost=unit_cost,
+            total_cost=total_cost,
+            created_by=user.id,
+            notes=body.reason.strip()[:2000] if body.reason else None,
+        )
+        db.add(in_entry)
+        db.flush()
         movement = ItemMovement(
             company_id=item.company_id,
             branch_id=body.branch_id,
             item_id=item_id,
             movement_type="BATCH_METADATA_CORRECTION",
-            ledger_id=rows[0].id,
-            quantity=Decimal("0"),
+            ledger_id=in_entry.id,
+            quantity=quantity,
             metadata_before=metadata_before,
             metadata_after=metadata_after,
             reason=body.reason.strip(),
             performed_by=user.id,
         )
         db.add(movement)
-        for row in rows:
-            if new_batch_number:
-                row.batch_number = new_batch_number
-            if new_expiry_parsed is not None:
-                row.expiry_date = new_expiry_parsed
-        db.flush()
+        SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, Decimal("0"))
         SnapshotRefreshService.schedule_snapshot_refresh(
             db, item.company_id, body.branch_id, item_id=item_id
         )
@@ -2005,7 +2075,7 @@ def post_batch_metadata_correction(
         db.refresh(movement)
         return CorrectionResponse(
             success=True,
-            message="Batch metadata updated. Audited.",
+            message=f"Reassigned {body.quantity} base units to new batch/expiry. Audited.",
             movement_id=movement.id,
             item_id=item_id,
             branch_id=body.branch_id,
