@@ -4666,15 +4666,7 @@ async function showNewPaymentModal(supplierId) {
 
     const initialInvoices = filterUnpaidInvoices();
     const allocationRows = buildAllocationRows(initialInvoices);
-        const bal = parseFloat(inv.balance) || 0;
-        return {
-            id: inv.id,
-            invoice_number: inv.invoice_number || '—',
-            due_date: inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-KE') : '—',
-            total: parseFloat(inv.total_inclusive) || 0,
-            balance: bal,
-        };
-    });
+
     const tableBody = allocationRows.length === 0
         ? '<tr><td colspan="7" style="padding: 1rem; color: var(--text-secondary);">No unpaid (posted) invoices in this period. Unallocated amount will become supplier credit.</td></tr>'
         : allocationRows.map((row, i) => `
