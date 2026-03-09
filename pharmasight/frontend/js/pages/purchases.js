@@ -113,6 +113,23 @@ async function loadPurchaseSubPage(subPage) {
     page.style.display = 'block';
     page.style.visibility = 'visible';
     
+    // Record payment page: subPage can be "record-payment" or "record-payment?supplier_id=xxx"
+    if (subPage === 'record-payment' || (subPage && String(subPage).indexOf('record-payment') === 0)) {
+        const hash = window.location.hash || '';
+        const fullSub = (subPage || '').toString();
+        const queryPart = fullSub.indexOf('?') >= 0 ? fullSub.slice(fullSub.indexOf('?') + 1) : (hash.indexOf('?') >= 0 ? hash.slice(hash.indexOf('?') + 1) : '');
+        let supplierId = '';
+        if (queryPart) {
+            try {
+                const params = new URLSearchParams(queryPart);
+                supplierId = (params.get('supplier_id') || '').trim();
+            } catch (_) {}
+        }
+        await renderRecordPaymentPage(supplierId);
+        updatePurchaseSubNavActiveState();
+        return;
+    }
+
     switch(subPage) {
         case 'orders':
             await renderPurchaseOrdersPage();
@@ -3668,6 +3685,9 @@ if (typeof window !== 'undefined') {
     window.approveSupplierReturn = approveSupplierReturn;
     window.showNewPaymentModal = showNewPaymentModal;
     window.showNewPaymentModalWithSupplierSelect = showNewPaymentModalWithSupplierSelect;
+    window.navigateToRecordPaymentPage = navigateToRecordPaymentPage;
+    window.showInvoiceDetailsModal = showInvoiceDetailsModal;
+    window.renderRecordPaymentPage = renderRecordPaymentPage;
     window.fetchSupplierDashboardData = fetchSupplierDashboardData;
     window.fetchSupplierPaymentsData = fetchSupplierPaymentsData;
     window.submitNewPayment = submitNewPayment;
@@ -4614,8 +4634,43 @@ async function renderSupplierMetricsTab(supplierId, cont) {
     `;
 }
 
-// New Payment Modal with full allocation UI
-async function showNewPaymentModal(supplierId) {
+// Navigate to record payment page (URL contains supplier_id for refresh safety)
+function navigateToRecordPaymentPage(supplierId) {
+    if (!supplierId) return;
+    window.location.hash = '#purchases-record-payment?supplier_id=' + encodeURIComponent(supplierId);
+}
+
+// Record Payment Page — same form and allocation table as former modal, with invoice drill-down
+async function renderRecordPaymentPage(supplierId) {
+    currentPurchaseSubPage = 'record-payment';
+    const page = document.getElementById('purchases');
+    if (!page) return;
+
+    if (!supplierId) {
+        page.innerHTML = `
+            <div class="card" id="recordPaymentPage" style="padding: 2rem;">
+                <h3 style="margin: 0 0 1rem 0;">Supplier not found</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">The supplier could not be loaded. Please select a supplier from the Supplier Payments page.</p>
+                <a href="#" class="btn btn-primary" onclick="window.location.hash='#purchases-supplier-payments'; if(window.loadPurchaseSubPage) window.loadPurchaseSubPage('supplier-payments'); return false;"><i class="fas fa-arrow-left"></i> Back to Supplier Payments</a>
+            </div>
+        `;
+        return;
+    }
+
+    let supplier = null;
+    try {
+        supplier = await API.suppliers.get(supplierId);
+    } catch (e) {
+        page.innerHTML = `
+            <div class="card" id="recordPaymentPage" style="padding: 2rem;">
+                <h3 style="margin: 0 0 1rem 0;">Supplier not found</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">The supplier could not be loaded. Please check the link or go back to Supplier Payments.</p>
+                <a href="#" class="btn btn-primary" onclick="window.location.hash='#purchases-supplier-payments'; if(window.loadPurchaseSubPage) window.loadPurchaseSubPage('supplier-payments'); return false;"><i class="fas fa-arrow-left"></i> Back to Supplier Payments</a>
+            </div>
+        `;
+        return;
+    }
+
     const payDate = new Date().toISOString().slice(0, 10);
     let unpaidInvoices = [];
     try {
@@ -4626,7 +4681,7 @@ async function showNewPaymentModal(supplierId) {
     } catch (e) {
         console.warn('Could not load invoices for allocation:', e);
     }
-    // Helper to filter invoices by date preset or custom range (uses invoice_date).
+
     let allocationDatePreset = 'this_month';
     let allocationDateFrom = null;
     let allocationDateTo = null;
@@ -4649,7 +4704,6 @@ async function showNewPaymentModal(supplierId) {
             return true;
         });
     }
-
     function buildAllocationRows(sourceInvoices) {
         return sourceInvoices.map(inv => {
             const bal = parseFloat(inv.balance) || 0;
@@ -4663,96 +4717,110 @@ async function showNewPaymentModal(supplierId) {
             };
         });
     }
-
     const initialInvoices = filterUnpaidInvoices();
     const allocationRows = buildAllocationRows(initialInvoices);
-
     const tableBody = allocationRows.length === 0
         ? '<tr><td colspan="7" style="padding: 1rem; color: var(--text-secondary);">No unpaid (posted) invoices in this period. Unallocated amount will become supplier credit.</td></tr>'
         : allocationRows.map((row, i) => `
-            <tr data-invoice-id="${row.id}" data-balance="${row.balance}">
+            <tr class="alloc-row-clickable" data-invoice-id="${row.id}" data-balance="${row.balance}" style="cursor: pointer;">
                 <td style="padding: 0.5rem;">${escapeHtml(row.invoice_number)}</td>
                 <td style="padding: 0.5rem;">${row.due_date}</td>
                 <td style="padding: 0.5rem;">${escapeHtml(row.supplier_invoice_number)}</td>
                 <td style="padding: 0.5rem; text-align: right;">${fmt(row.total)}</td>
                 <td style="padding: 0.5rem; text-align: right;">${fmt(row.balance)}</td>
-                <td style="padding: 0.5rem;"><input type="checkbox" class="alloc-check" data-idx="${i}" data-balance="${row.balance}"></td>
-                <td style="padding: 0.5rem;"><input type="number" class="form-input alloc-amount" data-invoice-id="${row.id}" data-balance="${row.balance}" step="0.01" min="0" max="${row.balance}" placeholder="0" style="width: 100px; text-align: right;"></td>
+                <td style="padding: 0.5rem;" onclick="event.stopPropagation();"><input type="checkbox" class="alloc-check" data-idx="${i}" data-balance="${row.balance}"></td>
+                <td style="padding: 0.5rem;" onclick="event.stopPropagation();"><input type="number" class="form-input alloc-amount" data-invoice-id="${row.id}" data-balance="${row.balance}" step="0.01" min="0" max="${row.balance}" placeholder="0" style="width: 100px; text-align: right;"></td>
             </tr>
         `).join('');
-    const content = `
-        <form id="newPaymentForm">
-            <div class="form-row">
-                <div class="form-group"><label class="form-label">Payment Date *</label><input type="date" class="form-input" name="payment_date" value="${payDate}" required></div>
-                <div class="form-group"><label class="form-label">Method *</label><select class="form-select" name="method" id="newPaymentMethod" required><option value="cash">Cash</option><option value="bank">Bank</option><option value="mpesa">MPesa</option><option value="card">Card</option><option value="cheque">Cheque</option></select></div>
+
+    const supplierName = escapeHtml(supplier.name || '—');
+    page.innerHTML = `
+        <div class="card" id="recordPaymentPage">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; gap: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <a href="#" class="btn btn-outline" onclick="window.location.hash='#purchases-supplier-payments'; if(window.loadPurchaseSubPage) window.loadPurchaseSubPage('supplier-payments'); return false;" title="Back to Supplier Payments"><i class="fas fa-arrow-left"></i></a>
+                    <h3 class="card-title" style="margin: 0; font-size: 1.25rem;">Record Supplier Payment</h3>
+                </div>
             </div>
-            <div class="form-group" id="newPaymentRefGroup"><label class="form-label" id="newPaymentRefLabel">Reference</label><input type="text" class="form-input" name="reference" id="newPaymentRefInput" placeholder="Optional"></div>
-            <div class="form-group"><label class="form-label">Amount (KES) *</label><input type="number" id="newPaymentAmount" class="form-input" name="amount" step="0.01" min="0.01" required></div>
-            <div class="form-group" style="margin-top: 1rem;">
-                <label class="form-label">Allocate to invoices</label>
-                <div class="form-row" style="margin-bottom: 0.5rem; gap: 0.5rem; align-items: center;">
-                    <div class="form-group">
-                        <select id="allocationDatePreset" class="form-select" style="min-width: 130px; font-size: 0.8rem;">
-                            <option value="today">Today</option>
-                            <option value="yesterday">Yesterday</option>
-                            <option value="this_week">This Week</option>
-                            <option value="last_week">Last Week</option>
-                            <option value="this_month" selected>This Month</option>
-                            <option value="last_month">Last Month</option>
-                            <option value="this_year">This Year</option>
-                            <option value="last_year">Last Year</option>
-                            <option value="custom">Custom</option>
-                        </select>
+            <div class="card-body" style="padding: 1.5rem;">
+                <div class="form-group" style="margin-bottom: 1.5rem; padding: 1rem; background: var(--bg-secondary, #f8f9fa); border-radius: 0.25rem;">
+                    <h4 style="margin: 0 0 0.5rem 0; font-size: 1rem;">Supplier</h4>
+                    <p style="margin: 0; font-weight: 600;">${supplierName}</p>
+                    <p style="margin: 0.25rem 0 0 0; font-size: 0.875rem; color: var(--text-secondary);">ID: ${escapeHtml(supplierId)}</p>
+                </div>
+                <form id="newPaymentForm">
+                    <input type="hidden" id="recordPaymentPageFlag" value="1">
+                    <div class="form-row">
+                        <div class="form-group"><label class="form-label">Payment Date *</label><input type="date" class="form-input" name="payment_date" value="${payDate}" required></div>
+                        <div class="form-group"><label class="form-label">Method *</label><select class="form-select" name="method" id="newPaymentMethod" required><option value="cash">Cash</option><option value="bank">Bank</option><option value="mpesa">MPesa</option><option value="card">Card</option><option value="cheque">Cheque</option></select></div>
                     </div>
-                    <div class="form-group" id="allocationDateCustom" style="display: none; gap: 0.25rem;">
-                        <input type="date" id="allocationDateFrom" class="form-input" style="width: 130px;">
-                        <input type="date" id="allocationDateTo" class="form-input" style="width: 130px;">
+                    <div class="form-group" id="newPaymentRefGroup"><label class="form-label" id="newPaymentRefLabel">Reference</label><input type="text" class="form-input" name="reference" id="newPaymentRefInput" placeholder="Optional"></div>
+                    <div class="form-group"><label class="form-label">Amount (KES) *</label><input type="number" id="newPaymentAmount" class="form-input" name="amount" step="0.01" min="0.01" required></div>
+                    <div class="form-group" style="margin-top: 1rem;">
+                        <label class="form-label">Allocate to invoices</label>
+                        <div class="form-row" style="margin-bottom: 0.5rem; gap: 0.5rem; align-items: center;">
+                            <div class="form-group">
+                                <select id="allocationDatePreset" class="form-select" style="min-width: 130px; font-size: 0.8rem;">
+                                    <option value="today">Today</option><option value="yesterday">Yesterday</option>
+                                    <option value="this_week">This Week</option><option value="last_week">Last Week</option>
+                                    <option value="this_month" selected>This Month</option><option value="last_month">Last Month</option>
+                                    <option value="this_year">This Year</option><option value="last_year">Last Year</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                            </div>
+                            <div class="form-group" id="allocationDateCustom" style="display: none; gap: 0.25rem;">
+                                <input type="date" id="allocationDateFrom" class="form-input" style="width: 130px;">
+                                <input type="date" id="allocationDateTo" class="form-input" style="width: 130px;">
+                            </div>
+                            <button type="button" class="btn btn-outline btn-sm" id="allocationDateApply">Apply</button>
+                        </div>
+                        <div class="table-container" style="overflow-x: auto; max-height: 320px; overflow-y: auto;">
+                            <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                                <thead><tr><th>Invoice</th><th>Due Date</th><th>Supplier Inv No</th><th>Total</th><th>Balance</th><th>Allocate?</th><th>Amount (KES)</th></tr></thead>
+                                <tbody id="newPaymentAllocTbody">${tableBody}</tbody>
+                            </table>
+                        </div>
+                        <div id="newPaymentAllocSummary" style="margin-top: 0.75rem; padding: 0.5rem; background: var(--bg-secondary, #f5f5f5); border-radius: 0.25rem; font-size: 0.875rem;">Payment Amount: KES 0.00 &nbsp;|&nbsp; Total Allocated: KES 0.00 &nbsp;|&nbsp; Unallocated: KES 0.00</div>
+                        <p id="newPaymentUnallocatedWarning" style="display: none; font-size: 0.875rem; color: var(--warning-color, #856404); margin-top: 0.5rem;">Unallocated amount will remain as supplier credit.</p>
                     </div>
-                    <button type="button" class="btn btn-outline btn-sm" id="allocationDateApply">Apply</button>
+                </form>
+                <div style="margin-top: 1.5rem; display: flex; gap: 0.5rem;">
+                    <a href="#" class="btn btn-secondary" onclick="window.location.hash='#purchases-supplier-payments'; if(window.loadPurchaseSubPage) window.loadPurchaseSubPage('supplier-payments'); return false;">Cancel</a>
+                    <button type="button" class="btn btn-primary" id="submitNewPaymentBtn" onclick="submitNewPayment('${supplierId}')">Record Payment</button>
                 </div>
-                <div class="table-container" style="overflow-x: auto; max-height: 220px; overflow-y: auto;">
-                    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
-                        <thead><tr><th>Invoice</th><th>Due Date</th><th>Supplier Inv No</th><th>Total</th><th>Balance</th><th>Allocate?</th><th>Amount (KES)</th></tr></thead>
-                        <tbody id="newPaymentAllocTbody">${tableBody}</tbody>
-                    </table>
-                </div>
-                <div id="newPaymentAllocSummary" style="margin-top: 0.75rem; padding: 0.5rem; background: var(--bg-secondary, #f5f5f5); border-radius: 0.25rem; font-size: 0.875rem;">
-                    Payment Amount: KES 0.00 &nbsp;|&nbsp; Total Allocated: KES 0.00 &nbsp;|&nbsp; Unallocated: KES 0.00
-                </div>
-                <p id="newPaymentUnallocatedWarning" style="display: none; font-size: 0.875rem; color: var(--warning-color, #856404); margin-top: 0.5rem;">Unallocated amount will remain as supplier credit.</p>
             </div>
-        </form>
+        </div>
     `;
-    const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="submitNewPaymentBtn" onclick="submitNewPayment('${supplierId}')">Record Payment</button>`;
-    showModal('New Payment', content, footer);
+
     const CASHLESS_METHODS = ['mpesa', 'bank', 'card', 'cheque'];
     const methodEl = document.getElementById('newPaymentMethod');
     const refInput = document.getElementById('newPaymentRefInput');
     const refLabel = document.getElementById('newPaymentRefLabel');
     function updateRefRequired() {
-        const m = (methodEl?.value || '').toLowerCase();
+        const m = (methodEl && methodEl.value || '').toLowerCase();
         const needsRef = CASHLESS_METHODS.includes(m);
         if (refInput) { refInput.required = needsRef; refInput.placeholder = needsRef ? 'M-Pesa code, transaction ID, cheque number, etc. *' : 'Optional'; }
         if (refLabel) refLabel.textContent = needsRef ? 'Reference *' : 'Reference';
     }
     if (methodEl) methodEl.addEventListener('change', updateRefRequired);
     updateRefRequired();
+
     const amountEl = document.getElementById('newPaymentAmount');
     const summaryEl = document.getElementById('newPaymentAllocSummary');
     const warningEl = document.getElementById('newPaymentUnallocatedWarning');
     function updateAllocSummary() {
-        const amount = parseFloat(amountEl?.value) || 0;
+        const amount = parseFloat(amountEl && amountEl.value) || 0;
         let totalAlloc = 0;
-        document.querySelectorAll('.alloc-amount').forEach(input => {
+        document.querySelectorAll('.alloc-amount').forEach(function(input) {
             totalAlloc += parseFloat(input.value) || 0;
         });
         const unallocated = Math.max(0, amount - totalAlloc);
-        if (summaryEl) summaryEl.innerHTML = `Payment Amount: ${fmt(amount)} &nbsp;|&nbsp; Total Allocated: ${fmt(totalAlloc)} &nbsp;|&nbsp; Unallocated: ${fmt(unallocated)}`;
+        if (summaryEl) summaryEl.innerHTML = 'Payment Amount: ' + fmt(amount) + ' &nbsp;|&nbsp; Total Allocated: ' + fmt(totalAlloc) + ' &nbsp;|&nbsp; Unallocated: ' + fmt(unallocated);
         if (warningEl) warningEl.style.display = (amount > 0 && unallocated > 0) ? 'block' : 'none';
     }
     function wireAllocationRowEvents() {
-        document.querySelectorAll('.alloc-check').forEach(cb => {
-            cb.addEventListener('change', function () {
+        document.querySelectorAll('.alloc-check').forEach(function(cb) {
+            cb.addEventListener('change', function() {
                 const row = this.closest('tr');
                 const input = row && row.querySelector('.alloc-amount');
                 if (input) {
@@ -4761,26 +4829,31 @@ async function showNewPaymentModal(supplierId) {
                 }
             });
         });
-        document.querySelectorAll('.alloc-amount').forEach(input => {
+        document.querySelectorAll('.alloc-amount').forEach(function(input) {
             input.addEventListener('input', updateAllocSummary);
+        });
+        document.querySelectorAll('#newPaymentAllocTbody tr.alloc-row-clickable').forEach(function(tr) {
+            tr.addEventListener('click', function(e) {
+                if (e.target.closest('input') || e.target.closest('button')) return;
+                const id = tr.dataset.invoiceId;
+                if (id && window.showInvoiceDetailsModal) window.showInvoiceDetailsModal(id);
+            });
         });
     }
     wireAllocationRowEvents();
     if (amountEl) amountEl.addEventListener('input', updateAllocSummary);
 
-    // Date filter controls for allocation table
     const allocationPresetEl = document.getElementById('allocationDatePreset');
     const allocationCustomEl = document.getElementById('allocationDateCustom');
     const allocationFromEl = document.getElementById('allocationDateFrom');
     const allocationToEl = document.getElementById('allocationDateTo');
     const allocationApplyBtn = document.getElementById('allocationDateApply');
-
     if (allocationPresetEl && allocationCustomEl && allocationApplyBtn) {
-        allocationPresetEl.addEventListener('change', () => {
+        allocationPresetEl.addEventListener('change', function() {
             allocationDatePreset = allocationPresetEl.value || 'this_month';
             allocationCustomEl.style.display = allocationDatePreset === 'custom' ? 'flex' : 'none';
         });
-        allocationApplyBtn.addEventListener('click', () => {
+        allocationApplyBtn.addEventListener('click', function() {
             if (allocationDatePreset === 'custom' && allocationFromEl && allocationToEl) {
                 allocationDateFrom = allocationFromEl.value || null;
                 allocationDateTo = allocationToEl.value || null;
@@ -4794,22 +4867,80 @@ async function showNewPaymentModal(supplierId) {
             if (filtered.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="7" style="padding: 1rem; color: var(--text-secondary);">No unpaid (posted) invoices in this period. Unallocated amount will become supplier credit.</td></tr>';
             } else {
-                tbody.innerHTML = filtered.map((row, i) => `
-                    <tr data-invoice-id="${row.id}" data-balance="${row.balance}">
-                        <td style="padding: 0.5rem;">${escapeHtml(row.invoice_number)}</td>
-                        <td style="padding: 0.5rem;">${row.due_date}</td>
-                        <td style="padding: 0.5rem;">${escapeHtml(row.supplier_invoice_number)}</td>
-                        <td style="padding: 0.5rem; text-align: right;">${fmt(row.total)}</td>
-                        <td style="padding: 0.5rem; text-align: right;">${fmt(row.balance)}</td>
-                        <td style="padding: 0.5rem;"><input type="checkbox" class="alloc-check" data-idx="${i}" data-balance="${row.balance}"></td>
-                        <td style="padding: 0.5rem;"><input type="number" class="form-input alloc-amount" data-invoice-id="${row.id}" data-balance="${row.balance}" step="0.01" min="0" max="${row.balance}" placeholder="0" style="width: 100px; text-align: right;"></td>
-                    </tr>
-                `).join('');
+                tbody.innerHTML = filtered.map(function(row, i) {
+                    return '<tr class="alloc-row-clickable" data-invoice-id="' + row.id + '" data-balance="' + row.balance + '" style="cursor: pointer;">' +
+                        '<td style="padding: 0.5rem;">' + escapeHtml(row.invoice_number) + '</td>' +
+                        '<td style="padding: 0.5rem;">' + row.due_date + '</td>' +
+                        '<td style="padding: 0.5rem;">' + escapeHtml(row.supplier_invoice_number) + '</td>' +
+                        '<td style="padding: 0.5rem; text-align: right;">' + fmt(row.total) + '</td>' +
+                        '<td style="padding: 0.5rem; text-align: right;">' + fmt(row.balance) + '</td>' +
+                        '<td style="padding: 0.5rem;" onclick="event.stopPropagation();"><input type="checkbox" class="alloc-check" data-idx="' + i + '" data-balance="' + row.balance + '"></td>' +
+                        '<td style="padding: 0.5rem;" onclick="event.stopPropagation();"><input type="number" class="form-input alloc-amount" data-invoice-id="' + row.id + '" data-balance="' + row.balance + '" step="0.01" min="0" max="' + row.balance + '" placeholder="0" style="width: 100px; text-align: right;"></td></tr>';
+                }).join('');
             }
             wireAllocationRowEvents();
             updateAllocSummary();
         });
     }
+}
+
+// Invoice Details modal (read-only) — opened when clicking an invoice row on the record payment page
+async function showInvoiceDetailsModal(invoiceId) {
+    if (!invoiceId || !window.API || !window.API.purchases || !window.API.purchases.getInvoice) return;
+    let invoice = null;
+    try {
+        invoice = await API.purchases.getInvoice(invoiceId);
+    } catch (e) {
+        showToast(e.message || 'Failed to load invoice', 'error');
+        return;
+    }
+    const ref = escapeHtml(invoice.invoice_number || '—');
+    const supplierRef = escapeHtml((invoice.reference || invoice.supplier_invoice_number || '—').toString());
+    const supplierName = escapeHtml(invoice.supplier_name || '—');
+    const invDate = invoice.invoice_date ? new Date(invoice.invoice_date).toLocaleDateString('en-KE') : '—';
+    const dueDate = invoice.due_date ? new Date(invoice.due_date).toLocaleDateString('en-KE') : '—';
+    const status = invoice.status || '—';
+    const total = fmt(invoice.total_inclusive);
+    const paid = fmt(invoice.amount_paid);
+    const balance = fmt(invoice.balance);
+    const items = (invoice.items || []).map(function(item) {
+        const name = escapeHtml((item.item_name || item.item_code || item.item && (item.item.name || item.item.code)) || '—');
+        const qty = item.quantity != null ? item.quantity : '—';
+        const unit = escapeHtml((item.unit_name || '—').toString());
+        const cost = fmt(item.unit_cost_exclusive);
+        const lineTotal = fmt(item.line_total_inclusive);
+        return '<tr><td style="padding: 0.5rem;">' + name + '</td><td style="padding: 0.5rem; text-align: right;">' + qty + '</td><td style="padding: 0.5rem;">' + unit + '</td><td style="padding: 0.5rem; text-align: right;">' + cost + '</td><td style="padding: 0.5rem; text-align: right;">' + lineTotal + '</td></tr>';
+    }).join('');
+    const content =
+        '<div style="max-height: 70vh; overflow-y: auto;">' +
+        '<div style="margin-bottom: 1rem;">' +
+        '<h4 style="margin: 0 0 0.5rem 0;">Invoice header</h4>' +
+        '<p style="margin: 0.25rem 0;"><strong>Invoice:</strong> ' + ref + '</p>' +
+        '<p style="margin: 0.25rem 0;"><strong>Supplier invoice number:</strong> ' + supplierRef + '</p>' +
+        '<p style="margin: 0.25rem 0;"><strong>Supplier:</strong> ' + supplierName + '</p>' +
+        '<p style="margin: 0.25rem 0;"><strong>Invoice date:</strong> ' + invDate + '</p>' +
+        '<p style="margin: 0.25rem 0;"><strong>Due date:</strong> ' + dueDate + '</p>' +
+        '<p style="margin: 0.25rem 0;"><strong>Status:</strong> ' + status + '</p>' +
+        '</div>' +
+        '<div style="margin-bottom: 1rem;">' +
+        '<h4 style="margin: 0 0 0.5rem 0;">Totals</h4>' +
+        '<p style="margin: 0.25rem 0;"><strong>Total:</strong> ' + total + '</p>' +
+        '<p style="margin: 0.25rem 0;"><strong>Paid:</strong> ' + paid + '</p>' +
+        '<p style="margin: 0.25rem 0;"><strong>Balance:</strong> ' + balance + '</p>' +
+        '</div>' +
+        '<div>' +
+        '<h4 style="margin: 0 0 0.5rem 0;">Line items</h4>' +
+        '<div class="table-container" style="overflow-x: auto;">' +
+        '<table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">' +
+        '<thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Unit cost</th><th>Line total</th></tr></thead>' +
+        '<tbody>' + items + '</tbody></table></div></div></div>';
+    const footer = '<button class="btn btn-secondary" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="closeModal(); if(window.viewSupplierInvoice) window.viewSupplierInvoice(\'' + invoiceId + '\');">Open Full Invoice</button>';
+    showModal('Invoice Details', content, footer);
+}
+
+// New Payment — navigates to record payment page (modal removed)
+async function showNewPaymentModal(supplierId) {
+    navigateToRecordPaymentPage(supplierId);
 }
 
 async function submitNewPayment(supplierId) {
@@ -4862,12 +4993,18 @@ async function submitNewPayment(supplierId) {
             allocations: allocations.length ? allocations : undefined,
         });
         showToast('Payment recorded', 'success');
-        closeModal();
-        if (window.currentSupplierDetailId && String(window.currentSupplierDetailId) === String(supplierId)) {
-            refreshSupplierDetailAfterAction(supplierId);
+        if (document.getElementById('recordPaymentPageFlag')) {
+            window.location.hash = '#purchases-supplier-payments';
+            if (window.loadPurchaseSubPage) window.loadPurchaseSubPage('supplier-payments');
+            if (document.getElementById('supplierPaymentsTable')) setTimeout(function() { if (window.fetchSupplierPaymentsData) window.fetchSupplierPaymentsData(); }, 100);
+        } else {
+            closeModal();
+            if (window.currentSupplierDetailId && String(window.currentSupplierDetailId) === String(supplierId)) {
+                refreshSupplierDetailAfterAction(supplierId);
+            }
+            if (document.getElementById('supplierPaymentsTable')) fetchSupplierPaymentsData();
+            else if (window.renderSupplierTabContent) renderSupplierTabContent(supplierId, 'payments');
         }
-        if (document.getElementById('supplierPaymentsTable')) fetchSupplierPaymentsData();
-        else renderSupplierTabContent(supplierId, 'payments');
     } catch (e) {
         showToast(e.message || (e.detail && (Array.isArray(e.detail) ? e.detail.map(x => x.msg || x).join(' ') : e.detail)) || 'Failed to record payment', 'error');
     } finally {
@@ -5221,7 +5358,7 @@ async function showNewPaymentModalWithSupplierSelect() {
         <div class="form-group"><label class="form-label">Select Supplier *</label>
         <select class="form-select" id="newPaymentSupplierSelect" required>${options}</select></div>
     `;
-    const footer = `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="const sid = document.getElementById('newPaymentSupplierSelect').value; closeModal(); showNewPaymentModal(sid);">Continue</button>`;
+    const footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="var sid = document.getElementById(\'newPaymentSupplierSelect\').value; closeModal(); if(window.navigateToRecordPaymentPage) window.navigateToRecordPaymentPage(sid);">Continue</button>';
     showModal('New Payment — Select Supplier', content, footer);
 }
 
