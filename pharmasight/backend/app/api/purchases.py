@@ -2529,8 +2529,9 @@ def regenerate_purchase_order_pdf(
     master_db: Session = Depends(get_master_db),
 ):
     """
-    Generate and store PDF for an already-approved purchase order that has no pdf_path.
-    Use after migration or when PDF was not generated at approval time. Embeds logo, stamp, signature.
+    Regenerate and store PDF for an already-approved purchase order (overwrites existing PDF if present).
+    Use when document branding changes (logo/stamp/signature) or after migration when PDF was not generated.
+    Embeds logo, stamp, signature.
     """
     user = user_db[0]
     db_order = db.query(PurchaseOrder).options(

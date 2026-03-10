@@ -2692,6 +2692,7 @@ async function viewPurchaseDocument(docId, docType) {
         `;
         
         const isPending = order.status === 'PENDING';
+        const isApproved = order.status === 'APPROVED';
         const footer = `
             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
             ${isPending ? `
@@ -2703,6 +2704,14 @@ async function viewPurchaseDocument(docId, docType) {
             </button>
             <button class="btn btn-primary btn-approve-po" data-order-id="${order.id}" onclick="closeModal(); if(window.approvePurchaseOrder) window.approvePurchaseOrder('${order.id}')" title="Approve (generates PDF)">
                 <i class="fas fa-check-circle"></i> Approve
+            </button>
+            ` : ''}
+            ${isApproved ? `
+            <button class="btn btn-outline" onclick="closeModal(); if(window.downloadPurchaseOrderPdf) window.downloadPurchaseOrderPdf('${order.id}')" title="Open PDF">
+                <i class="fas fa-file-pdf"></i> Open PDF
+            </button>
+            <button class="btn btn-primary" onclick="closeModal(); if(window.regeneratePurchaseOrderPdf) window.regeneratePurchaseOrderPdf('${order.id}')" title="Regenerate PDF with latest stamp/logo/signature">
+                <i class="fas fa-sync-alt"></i> Regenerate PDF
             </button>
             ` : ''}
             <button class="btn btn-primary" onclick="if(window.printPurchaseOrder) window.printPurchaseOrder('${order.id}')" title="Print">
@@ -2992,6 +3001,40 @@ async function downloadPurchaseOrderPdf(orderId) {
         console.error('Error opening PO PDF:', error);
         let msg = error && (error.message || (typeof error.detail === 'string' ? error.detail : error.detail && error.detail.detail ? error.detail.detail : null) || String(error));
         if (!msg || msg === '[object Object]') msg = 'Failed to open PDF';
+        if (typeof showToast === 'function') showToast(msg, 'error');
+    }
+}
+
+// Force regenerate PDF (useful after stamp/logo/signature updates)
+async function regeneratePurchaseOrderPdf(orderId) {
+    if (!orderId) {
+        if (typeof showToast === 'function') showToast('Invalid order', 'error');
+        return;
+    }
+    if (typeof API === 'undefined' || !API.purchases || typeof API.purchases.regenerateOrderPdf !== 'function') {
+        if (typeof showToast === 'function') showToast('PDF regeneration not available', 'error');
+        return;
+    }
+    try {
+        if (typeof showToast === 'function') showToast('Regenerating PDF with latest stamp...', 'info');
+        const order = await API.purchases.getOrder(orderId);
+        const isApproved = (order && (order.status || '').toUpperCase()) === 'APPROVED';
+        if (!order || !isApproved) {
+            if (typeof showToast === 'function') showToast('Only approved orders can have a PDF regenerated.', 'info');
+            return;
+        }
+        const res = await API.purchases.regenerateOrderPdf(orderId);
+        const url = res && res.url;
+        if (url) {
+            window.open(url, '_blank');
+            if (typeof showToast === 'function') showToast('Updated PDF opened in new tab.', 'success');
+        } else {
+            if (typeof showToast === 'function') showToast('Could not regenerate PDF URL. Ensure tenant/Supabase is configured.', 'error');
+        }
+    } catch (error) {
+        console.error('Error regenerating PO PDF:', error);
+        let msg = error && (error.message || (typeof error.detail === 'string' ? error.detail : error.detail && error.detail.detail ? error.detail.detail : null) || String(error));
+        if (!msg || msg === '[object Object]') msg = 'Failed to regenerate PDF';
         if (typeof showToast === 'function') showToast(msg, 'error');
     }
 }
@@ -3725,6 +3768,7 @@ if (typeof window !== 'undefined') {
     window.updatePurchaseOrder = updatePurchaseOrder;
     window.printPurchaseOrder = printPurchaseOrder;
     window.downloadPurchaseOrderPdf = downloadPurchaseOrderPdf;
+    window.regeneratePurchaseOrderPdf = regeneratePurchaseOrderPdf;
     window.approvePurchaseOrder = approvePurchaseOrder;
     // New Page-Shell First pattern functions
     window.fetchAndRenderPurchaseOrdersData = fetchAndRenderPurchaseOrdersData;

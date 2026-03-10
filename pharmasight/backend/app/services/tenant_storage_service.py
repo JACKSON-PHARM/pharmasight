@@ -208,6 +208,9 @@ def upload_file(
             content,
             file_options={
                 "content-type": content_type,
+                # Prevent stale cached assets when overwriting the same key (e.g. stamp.png)
+                # Supabase storage uses Cache-Control headers; 0 = no cache.
+                "cacheControl": "0",
                 "x-upsert": "true",
             },
         )
