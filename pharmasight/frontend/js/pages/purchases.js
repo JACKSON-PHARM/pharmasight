@@ -5434,6 +5434,9 @@ function renderOrderBookShell(suppliers = []) {
                         <option value="">All suppliers</option>
                         ${supplierOptions}
                     </select>
+                    <button class="btn btn-primary btn-sm" onclick="if(window.applyOrderBookFilters) window.applyOrderBookFilters()" title="Apply date and supplier filters and refresh">
+                        <i class="fas fa-check"></i> Apply Filters
+                    </button>
                     <input type="text" 
                            class="form-input" 
                            id="orderBookSearchInput" 
@@ -5539,6 +5542,14 @@ function getOrderBookDateRange(filter) {
             dateFrom = dateTo = t;
     }
     return { dateFrom, dateTo };
+}
+
+async function applyOrderBookFilters() {
+    const dateEl = document.getElementById('orderBookDateFilter');
+    const supplierEl = document.getElementById('orderBookSupplierFilter');
+    if (dateEl) orderBookDateFilter = dateEl.value || 'today';
+    if (supplierEl) orderBookSupplierFilter = (supplierEl.value && supplierEl.value.trim()) ? supplierEl.value.trim() : null;
+    await fetchAndRenderOrderBookData();
 }
 
 async function applyOrderBookDateFilter(value) {
@@ -5924,6 +5935,7 @@ function filterOrderBookEntries() {
 if (typeof window !== 'undefined') {
     window.renderOrderBookPage = renderOrderBookPage;
     window.fetchAndRenderOrderBookData = fetchAndRenderOrderBookData;
+    window.applyOrderBookFilters = applyOrderBookFilters;
     window.applyOrderBookDateFilter = applyOrderBookDateFilter;
     window.applyOrderBookSupplierFilter = applyOrderBookSupplierFilter;
     window.getOrderBookDateRange = getOrderBookDateRange;
