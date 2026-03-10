@@ -1311,6 +1311,11 @@
                 const cheapestSupplier = suggestion.cheapest_supplier || suggestion.last_supplier || '';
                 const baseUnit = suggestion.base_unit || '';
                 const retailUnit = suggestion.retail_unit || baseUnit || 'piece';
+
+                // Defensive field mapping (different APIs may return item_name/item_sku/item_code vs name/sku/code)
+                const sugName = (suggestion.name || suggestion.item_name || suggestion.itemName || (suggestion.item && (suggestion.item.name || suggestion.item.item_name))) || '';
+                const sugSku = (suggestion.sku || suggestion.item_sku || suggestion.itemSku || '') || '';
+                const sugCode = (suggestion.code || suggestion.item_code || suggestion.itemCode || sugSku) || '';
                 
                 // Purchase Order specific fields
                 const lastOrderDate = suggestion.last_order_date || null;
@@ -1373,9 +1378,9 @@
                     html += `
                         <div class="suggestion-item suggestion-item-option" 
                              data-item-id="${suggestion.id}"
-                             data-item-name="${escapeHtml(suggestion.name)}"
-                             data-item-sku="${escapeHtml(suggestion.sku || '')}"
-                             data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
+                             data-item-name="${escapeHtml(sugName)}"
+                             data-item-sku="${escapeHtml(sugSku)}"
+                             data-item-code="${escapeHtml(sugCode)}"
                              data-unit-name="${escapeHtml(lineUnit)}"
                              data-retail-unit="${escapeHtml(retailUnit)}"
                              data-wholesale-unit="${escapeHtml(suggestion.wholesale_unit || baseUnit || '')}"
@@ -1394,10 +1399,10 @@
                             <div style="display: grid; grid-template-columns: 2.5fr 0.8fr 0.9fr 0.9fr 1fr 1fr; column-gap: 0.5rem; align-items: center; font-size: 0.8rem;">
                                 <div>
                                     <div style="font-weight: 600; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.1rem;">
-                                        ${escapeHtml(suggestion.name)}
+                                        ${escapeHtml(sugName)}
                                     </div>
                                     <div style="font-size: 0.7rem; color: var(--text-secondary, #666);">
-                                        ${escapeHtml(suggestion.sku || suggestion.code || '')}
+                                        ${escapeHtml(sugSku || sugCode || '')}
                                     </div>
                                 </div>
                                 <div style="text-align: center;">
@@ -1447,9 +1452,9 @@
                     html += `
                         <div class="suggestion-item suggestion-item-option" 
                              data-item-id="${suggestion.id}"
-                             data-item-name="${escapeHtml(suggestion.name)}"
-                             data-item-sku="${escapeHtml(suggestion.sku || '')}"
-                             data-item-code="${escapeHtml(suggestion.code || suggestion.sku || '')}"
+                             data-item-name="${escapeHtml(sugName)}"
+                             data-item-sku="${escapeHtml(sugSku)}"
+                             data-item-code="${escapeHtml(sugCode)}"
                              data-unit-name="${escapeHtml(lineUnit)}"
                              data-retail-unit="${escapeHtml(retailUnit)}"
                              data-wholesale-unit="${escapeHtml(suggestion.wholesale_unit || baseUnit || '')}"
@@ -1468,10 +1473,10 @@
                             <div style="display: grid; grid-template-columns: 3fr 1.2fr 1.5fr 1.3fr; column-gap: 0.75rem; align-items: center;">
                                 <div>
                                     <div style="font-weight: 600; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.15rem;">
-                                        ${escapeHtml(suggestion.name)}
+                                        ${escapeHtml(sugName)}
                                     </div>
                                     <div style="font-size: 0.7rem; color: var(--text-secondary, #666);">
-                                        ${escapeHtml(suggestion.sku || suggestion.code || '')}
+                                        ${escapeHtml(sugSku || sugCode || '')}
                                     </div>
                                     ${additionalInfo}
                                 </div>
