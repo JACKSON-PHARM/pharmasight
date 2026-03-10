@@ -1,16 +1,19 @@
 """
 Supabase Storage for tenant assets (logos, stamps, signatures, PO PDFs).
 
-Single bucket for all tenants: one bucket "tenant-assets" with paths tenant-assets/{tenant_id}/...
-so there is no mix-up: each tenant's files live under their tenant_id. When generating signed URLs
-or downloading, we verify the path's tenant_id matches the request tenant and refuse otherwise.
+Supports company-based and user-based paths (no tenant required) plus legacy tenant paths:
+- company-assets/{company_id}/logo.png, company-assets/{company_id}/stamp.png
+- user-assets/{user_id}/signature.png
+- tenant-assets/{tenant_id}/... (legacy; resolved by path or tenant)
 
-Two modes:
+Single bucket per prefix. When generating signed URLs or downloading, company-assets and user-assets
+use global Supabase client (no tenant). tenant-assets can use tenant or, when tenant is None,
+global client for backward compatibility.
+
+Two modes for tenant-assets:
 - Single project (default): Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in env.
-  One bucket "tenant-assets"; isolation by path tenant-assets/{tenant_id}/...
 - Per-tenant project: Optional. Store supabase_storage_url and supabase_storage_service_role_key
-  on the Tenant row (master DB). When set, that tenant's storage uses their Supabase project
-  (e.g. for different clients with their own Supabase). Same bucket name "tenant-assets" per project.
+  on the Tenant row (master DB).
 
 Never expose raw storage paths to frontend; use signed URLs (5–15 min expiry).
 """
@@ -24,11 +27,31 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 BUCKET = "tenant-assets"
+COMPANY_ASSETS_PREFIX = "company-assets/"
+USER_ASSETS_PREFIX = "user-assets/"
+TENANT_ASSETS_PREFIX = "tenant-assets/"
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg"}
 MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2MB
 # Signed URL expiry: 5–15 min (10 min default). Never expose raw paths to frontend.
 SIGNED_URL_EXPIRY_SECONDS = 600  # 10 minutes
+
+
+def _bucket_and_key(stored_path: str) -> Optional[Tuple[str, str]]:
+    """
+    Parse stored_path into (bucket_name, object_key) for company-assets, user-assets, or tenant-assets.
+    Returns None if path is not a supported prefix.
+    """
+    if not stored_path or not isinstance(stored_path, str):
+        return None
+    path = stored_path.strip()
+    if path.startswith(COMPANY_ASSETS_PREFIX):
+        return ("company-assets", path[len(COMPANY_ASSETS_PREFIX):])
+    if path.startswith(USER_ASSETS_PREFIX):
+        return ("user-assets", path[len(USER_ASSETS_PREFIX):])
+    if path.startswith(TENANT_ASSETS_PREFIX):
+        return (BUCKET, path[len(TENANT_ASSETS_PREFIX):])
+    return None
 
 
 def tenant_id_from_stored_path(stored_path: str) -> Optional[str]:
@@ -121,19 +144,20 @@ def path_po_pdf(tenant_id: UUID, po_id: UUID) -> str:
     return f"{tenant_id}/documents/purchase_orders/{po_id}.pdf"
 
 
-def ensure_bucket(client: Client) -> None:
+def ensure_bucket(client: Client, bucket_name: Optional[str] = None) -> None:
     """
-    Ensure the single shared bucket exists and is private. Idempotent.
-    Do NOT create per-tenant buckets; all tenants share tenant-assets.
+    Ensure the given bucket exists and is private. Idempotent.
+    If bucket_name is None, uses BUCKET (tenant-assets).
     """
+    name = bucket_name or BUCKET
     try:
         buckets = client.storage.list_buckets()
         names = [b.name for b in (buckets or [])]
-        if BUCKET not in names:
-            client.storage.create_bucket(BUCKET, options={"private": True})
-            logger.info("Created single shared storage bucket %s (private)", BUCKET)
+        if name not in names:
+            client.storage.create_bucket(name, options={"private": True})
+            logger.info("Created storage bucket %s (private)", name)
     except Exception as e:
-        logger.warning("ensure_bucket %s: %s", BUCKET, e)
+        logger.warning("ensure_bucket %s: %s", name, e)
 
 
 def validate_image_upload(
@@ -248,17 +272,28 @@ def upload_po_pdf(
 
 
 def download_file(stored_path: str, tenant: Optional[Any] = None) -> Optional[bytes]:
-    """Download file bytes from tenant-assets by stored path. Pass tenant to use per-tenant Supabase."""
-    client = _client(tenant)
-    if not client or not stored_path or not stored_path.startswith(BUCKET + "/"):
+    """
+    Download file bytes by stored path from Supabase.
+    Paths: company-assets/{company_id}/..., user-assets/{user_id}/..., or tenant-assets/{tenant_id}/...
+    For company-assets and user-assets no tenant is required (uses global client).
+    For tenant-assets with tenant=None uses global client (backward compatibility).
+    """
+    parsed = _bucket_and_key(stored_path)
+    if not parsed:
         return None
-    # Single bucket: ensure path belongs to this tenant so we never return another tenant's file.
-    if tenant and not _path_belongs_to_tenant(stored_path, tenant):
+    bucket_name, object_path = parsed
+    # tenant-assets: when tenant is set, enforce path belongs to tenant
+    if bucket_name == BUCKET and tenant is not None and not _path_belongs_to_tenant(stored_path, tenant):
         logger.warning("download_file: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
         return None
+    client = _client(tenant) if (bucket_name == BUCKET and tenant is not None) else _client(None)
+    if not client:
+        client = _client(None)
+    if not client:
+        return None
+    ensure_bucket(client, bucket_name)
     try:
-        object_path = stored_path[len(BUCKET) + 1:]
-        data = client.storage.from_(BUCKET).download(object_path)
+        data = client.storage.from_(bucket_name).download(object_path)
         return data if isinstance(data, bytes) else None
     except Exception as e:
         logger.warning("download_file %s: %s", stored_path, e)
@@ -295,25 +330,28 @@ def get_signed_url(
     tenant: Optional[Any] = None,
 ) -> Optional[str]:
     """
-    stored_path: e.g. tenant-assets/{tenant_id}/stamp.png (path stored in DB; never expose to frontend).
-    Returns a signed URL for temporary read access. Pass tenant to use per-tenant Supabase project.
+    Return signed URL for stored_path (company-assets/, user-assets/, or tenant-assets/).
+    For company-assets and user-assets no tenant is required. For tenant-assets with tenant=None
+    uses global client (backward compatibility). Path must be as stored in DB.
     """
-    client = _client(tenant)
+    parsed = _bucket_and_key(stored_path)
+    if not parsed:
+        logger.warning("get_signed_url: unsupported path prefix: %s", stored_path[:80] if stored_path else "")
+        return None
+    bucket_name, object_path = parsed
+    if bucket_name == BUCKET and tenant is not None and not _path_belongs_to_tenant(stored_path, tenant):
+        logger.warning("get_signed_url: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
+        return None
+    client = _client(tenant) if (bucket_name == BUCKET and tenant is not None) else _client(None)
+    if not client:
+        client = _client(None)
     if not client:
         logger.warning(
             "get_signed_url: Supabase client not available. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
         )
         return None
-    if not stored_path or not stored_path.startswith(BUCKET + "/"):
-        logger.warning("get_signed_url: invalid stored_path (expected %s/...): %s", BUCKET, stored_path[:80] if stored_path else "")
-        return None
-    # Single bucket: ensure path belongs to this tenant so we never expose another tenant's document.
-    if tenant and not _path_belongs_to_tenant(stored_path, tenant):
-        logger.warning("get_signed_url: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
-        return None
     try:
-        object_path = stored_path[len(BUCKET) + 1:]
-        result = client.storage.from_(BUCKET).create_signed_url(object_path, expires_in)
+        result = client.storage.from_(bucket_name).create_signed_url(object_path, expires_in)
         url = None
         if isinstance(result, dict):
             url = (

@@ -3,7 +3,7 @@ Purchases API routes (GRN and Supplier Invoices)
 """
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session, selectinload
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
@@ -768,8 +768,9 @@ def get_supplier_invoice_pdf(
     current_user_and_db: tuple = Depends(get_current_user),
     tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
-    """Generate and return supplier invoice as PDF (Download PDF). On-demand only. Logo when tenant is set."""
+    """Generate and return supplier invoice as PDF (Download PDF). On-demand only. Logo from company-assets or tenant-assets."""
     user = current_user_and_db[0]
     invoice = db.query(SupplierInvoice).options(
         selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
@@ -789,9 +790,8 @@ def get_supplier_invoice_pdf(
             "line_total_exclusive": float(oi.line_total_exclusive or 0),
             "line_total_inclusive": float(oi.line_total_inclusive or 0),
         })
-    company_logo_bytes = None
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
-        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
+    logo_path = getattr(company, "logo_url", None) if company else None
+    company_logo_bytes = _resolve_asset_bytes(logo_path, tenant, master_db)
     try:
         pdf_bytes = build_supplier_invoice_pdf(
             company_name=company.name if company else "—",
@@ -2043,6 +2043,7 @@ def get_purchase_order(
     current_user_and_db: tuple = Depends(get_current_user),
     tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     """Get purchase order by ID with full item details"""
     user = current_user_and_db[0]
@@ -2056,10 +2057,11 @@ def get_purchase_order(
         order.supplier_name = order.supplier.name
     if order.branch:
         order.branch_name = order.branch.name
-    # Logo URL for print (when company has tenant-assets logo)
+    # Logo URL for print (company-assets or tenant-assets; works without tenant)
     company = getattr(order, "company", None) or db.query(Company).filter(Company.id == order.company_id).first()
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
-        order.logo_url = get_signed_url(company.logo_url, tenant=tenant)
+    logo_path = getattr(company, "logo_url", None) if company else None
+    if logo_path and _is_storage_path(logo_path):
+        order.logo_url = _resolve_signed_url(logo_path, tenant, master_db)
     # Load created_by user name
     created_by_user = db.query(User).filter(User.id == order.created_by).first()
     if created_by_user:
@@ -2092,6 +2094,7 @@ def add_purchase_order_item(
     current_user_and_db: tuple = Depends(get_current_user),
     tenant: Optional[Tenant] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     """Add one line to an existing PENDING purchase order. Rejects duplicate item_id. O(1) load with joinedload/selectinload."""
     from sqlalchemy.orm import joinedload
@@ -2194,8 +2197,9 @@ def add_purchase_order_item(
         order.supplier_name = order.supplier.name
     if order.branch:
         order.branch_name = order.branch.name
-    if order.company and getattr(order.company, "logo_url", None) and str(order.company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
-        order.logo_url = get_signed_url(order.company.logo_url, tenant=tenant)
+    logo_path = getattr(order.company, "logo_url", None) if order.company else None
+    if logo_path and _is_storage_path(logo_path):
+        order.logo_url = _resolve_signed_url(logo_path, tenant, master_db)
     if order.creator:
         order.created_by_name = order.creator.full_name or order.creator.email
     if order.approved_by_user:
@@ -2306,6 +2310,63 @@ def _tenant_for_stored_path(master_db: Session, stored_path: Optional[str]) -> O
         return None
 
 
+def _is_storage_path(path: Optional[str]) -> bool:
+    """True if path is company-assets/, user-assets/, or tenant-assets/ (stored in DB)."""
+    if not path or not isinstance(path, str):
+        return False
+    p = path.strip()
+    return p.startswith("company-assets/") or p.startswith("user-assets/") or p.startswith("tenant-assets/")
+
+
+def _resolve_asset_bytes(
+    stored_path: Optional[str],
+    tenant: Optional[Any],
+    master_db: Session,
+) -> Optional[bytes]:
+    """
+    Resolve asset bytes from stored path (company-assets/, user-assets/, or tenant-assets/).
+    Prefers path-based download (no tenant) so company/user assets work; falls back to tenant for legacy paths.
+    """
+    if not _is_storage_path(stored_path):
+        return None
+    # First try without tenant (works for company-assets, user-assets, and tenant-assets with global client)
+    data = download_file(stored_path, tenant=None)
+    if data is not None:
+        return data
+    if not str(stored_path).startswith("tenant-assets/"):
+        return None
+    if tenant is not None:
+        data = download_file(stored_path, tenant=tenant)
+        if data is not None:
+            return data
+    path_tenant = _tenant_for_stored_path(master_db, stored_path)
+    if path_tenant:
+        return download_file_with_path_tenant(stored_path, path_tenant)
+    return None
+
+
+def _resolve_signed_url(
+    stored_path: Optional[str],
+    tenant: Optional[Any],
+    master_db: Session,
+) -> Optional[str]:
+    """Resolve signed URL for stored path (company-assets/, user-assets/, or tenant-assets/). Works without tenant."""
+    if not _is_storage_path(stored_path):
+        return None
+    url = get_signed_url(stored_path, tenant=None)
+    if url:
+        return url
+    if tenant is not None:
+        url = get_signed_url(stored_path, tenant=tenant)
+        if url:
+            return url
+    if str(stored_path).startswith("tenant-assets/"):
+        path_tenant = _tenant_for_stored_path(master_db, stored_path)
+        if path_tenant:
+            return get_signed_url_with_path_tenant(stored_path, path_tenant)
+    return None
+
+
 @router.patch("/order/{order_id}/approve", response_model=PurchaseOrderResponse)
 def approve_purchase_order(
     order_id: UUID,
@@ -2366,29 +2427,13 @@ def approve_purchase_order(
     if hasattr(order_dt, "isoformat") and not isinstance(order_dt, datetime):
         order_dt = datetime.combine(order_dt, datetime.min.time().replace(tzinfo=timezone.utc))
 
-    # Download logo, stamp, signature (current tenant or path-tenant for legacy/pre-migration assets)
-    company_logo_bytes = None
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
-        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
-        if company_logo_bytes is None:
-            path_tenant = _tenant_for_stored_path(master_db, company.logo_url)
-            if path_tenant:
-                company_logo_bytes = download_file_with_path_tenant(company.logo_url, path_tenant)
-    stamp_bytes = None
-    if stamp_path and str(stamp_path).startswith("tenant-assets/"):
-        stamp_bytes = download_file(stamp_path, tenant=tenant)
-        if stamp_bytes is None:
-            path_tenant = _tenant_for_stored_path(master_db, stamp_path)
-            if path_tenant:
-                stamp_bytes = download_file_with_path_tenant(stamp_path, path_tenant)
-    signature_bytes = None
+    # Resolve logo from company (logo_url), stamp from document_branding (stamp_url), signature from user (signature_path)
+    # Supports company-assets/, user-assets/, and tenant-assets/ paths; fallback to tenant for legacy
+    company_logo_path = getattr(company, "logo_url", None) if company else None
+    company_logo_bytes = _resolve_asset_bytes(company_logo_path, tenant, master_db)
+    stamp_bytes = _resolve_asset_bytes(stamp_path, tenant, master_db)
     approver_sig_path = getattr(approver, "signature_path", None)
-    if approver_sig_path and str(approver_sig_path or "").startswith("tenant-assets/"):
-        signature_bytes = download_file(approver_sig_path, tenant=tenant)
-        if signature_bytes is None:
-            path_tenant = _tenant_for_stored_path(master_db, approver_sig_path)
-            if path_tenant:
-                signature_bytes = download_file_with_path_tenant(approver_sig_path, path_tenant)
+    signature_bytes = _resolve_asset_bytes(approver_sig_path, tenant, master_db)
 
     pdf_bytes = build_po_pdf(
         company_name=company.name or "—",
@@ -2464,11 +2509,8 @@ def get_purchase_order_pdf_url(
         path_tenant = _tenant_for_stored_path(master_db, order.pdf_path)
         if path_tenant:
             url = get_signed_url_with_path_tenant(order.pdf_path, path_tenant)
-    if not url and tenant is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Tenant required to generate PDF URL. Send X-Tenant-ID or X-Tenant-Subdomain, or add your database as a tenant.",
-        )
+    if not url:
+        url = get_signed_url(order.pdf_path, tenant=None)
     if not url:
         raise HTTPException(
             status_code=503,
@@ -2535,35 +2577,18 @@ def regenerate_purchase_order_pdf(
     if hasattr(approved_at, "isoformat") and not isinstance(approved_at, datetime):
         approved_at = datetime.combine(approved_at, datetime.min.time().replace(tzinfo=timezone.utc))
 
-    company_logo_bytes = None
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/"):
-        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
-        if company_logo_bytes is None:
-            path_tenant = _tenant_for_stored_path(master_db, company.logo_url)
-            if path_tenant:
-                company_logo_bytes = download_file_with_path_tenant(company.logo_url, path_tenant)
-    stamp_bytes = None
-    if stamp_path and str(stamp_path).startswith("tenant-assets/"):
-        stamp_bytes = download_file(stamp_path, tenant=tenant)
-        if stamp_bytes is None:
-            path_tenant = _tenant_for_stored_path(master_db, stamp_path)
-            if path_tenant:
-                stamp_bytes = download_file_with_path_tenant(stamp_path, path_tenant)
-    signature_bytes = None
+    company_logo_path = getattr(company, "logo_url", None) if company else None
+    company_logo_bytes = _resolve_asset_bytes(company_logo_path, tenant, master_db)
+    stamp_bytes = _resolve_asset_bytes(stamp_path, tenant, master_db)
     approver_sig_path = getattr(approver, "signature_path", None)
-    if approver_sig_path and str(approver_sig_path or "").startswith("tenant-assets/"):
-        signature_bytes = download_file(approver_sig_path, tenant=tenant)
-        if signature_bytes is None:
-            path_tenant = _tenant_for_stored_path(master_db, approver_sig_path)
-            if path_tenant:
-                signature_bytes = download_file_with_path_tenant(approver_sig_path, path_tenant)
+    signature_bytes = _resolve_asset_bytes(approver_sig_path, tenant, master_db)
 
     pdf_bytes = build_po_pdf(
         company_name=company.name or "—",
         company_address=company.address,
         company_phone=company.phone,
         company_pin=company.pin,
-        company_logo_path=company.logo_url if company else None,
+        company_logo_path=company_logo_path,
         company_logo_bytes=company_logo_bytes,
         branch_name=branch.name if branch else None,
         branch_address=branch.address if branch else None,
@@ -2591,7 +2616,7 @@ def regenerate_purchase_order_pdf(
         )
     db_order.pdf_path = stored_path
     db.commit()
-    url = get_signed_url(stored_path, tenant=tenant) or get_signed_url_with_path_tenant(stored_path, tenant)
+    url = _resolve_signed_url(stored_path, tenant, master_db)
     return {"url": url, "pdf_path": stored_path}
 
 
