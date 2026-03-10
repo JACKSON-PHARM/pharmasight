@@ -2318,6 +2318,41 @@ function handlePOFromBookSupplierFocus(event) {
 let isSavingDocument = false; // Flag to prevent duplicate submissions
 let isDeletingOrder = false; // Flag to prevent duplicate delete operations
 
+function getPrimaryFormActionButton(form) {
+    if (!form) return null;
+    // 1) Button inside the form
+    let btn = form.querySelector('button[type="submit"]');
+    if (btn) return btn;
+    // 2) Button associated via form="<id>" (sticky headers often place it outside)
+    const formId = form.getAttribute('id');
+    if (formId) {
+        try {
+            btn = document.querySelector(`button[type="submit"][form="${CSS.escape(formId)}"]`);
+        } catch {
+            btn = document.querySelector(`button[type="submit"][form="${formId}"]`);
+        }
+        if (btn) return btn;
+    }
+    // 3) Edit mode save button lives in header
+    return document.querySelector('.btn-save-order');
+}
+
+function setButtonSavingState(btn, isSaving, savingHtml) {
+    if (!btn) return;
+    if (btn.dataset && btn.dataset.originalHtml == null) {
+        btn.dataset.originalHtml = btn.innerHTML;
+    }
+    if (isSaving) {
+        btn.disabled = true;
+        btn.innerHTML = savingHtml;
+        return;
+    }
+    btn.disabled = false;
+    if (btn.dataset && btn.dataset.originalHtml != null) {
+        btn.innerHTML = btn.dataset.originalHtml;
+    }
+}
+
 async function savePurchaseDocument(event, documentType) {
     console.log('savePurchaseDocument()');
     
@@ -2335,14 +2370,11 @@ async function savePurchaseDocument(event, documentType) {
     }
     
     const form = event.target;
-    const submitButton = form.querySelector('button[type="submit"]');
+    const submitButton = getPrimaryFormActionButton(form);
     
     // Disable submit button and set flag
     isSavingDocument = true;
-    if (submitButton) {
-        submitButton.disabled = true;
-        submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
-    }
+    setButtonSavingState(submitButton, true, '<i class="fas fa-spinner fa-spin"></i> Saving...');
     
     const formData = new FormData(form);
     
@@ -2351,20 +2383,14 @@ async function savePurchaseDocument(event, documentType) {
     
     if (items.length === 0) {
         isSavingDocument = false;
-        if (submitButton) {
-            submitButton.disabled = false;
-            submitButton.innerHTML = '<i class="fas fa-save"></i> Save Purchase Order';
-        }
+        setButtonSavingState(submitButton, false);
         showToast('Please add at least one item', 'warning');
         return;
     }
     
     if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
         isSavingDocument = false;
-        if (submitButton) {
-            submitButton.disabled = false;
-            submitButton.innerHTML = '<i class="fas fa-save"></i> Save Purchase Order';
-        }
+        setButtonSavingState(submitButton, false);
         showToast('Company and Branch must be configured', 'error');
         return;
     }
@@ -2415,10 +2441,7 @@ async function savePurchaseDocument(event, documentType) {
             const supplierId = formData.get('supplier_id');
             if (!supplierId) {
                 isSavingDocument = false;
-                if (submitButton) {
-                    submitButton.disabled = false;
-                    submitButton.innerHTML = '<i class="fas fa-save"></i> Save & Add Stock';
-                }
+                setButtonSavingState(submitButton, false);
                 showToast('Please select a supplier', 'error');
                 return;
             }
@@ -2504,6 +2527,7 @@ async function savePurchaseDocument(event, documentType) {
                         invoiceData: fullInvoice
                     };
                     isSavingDocument = false;
+                    setButtonSavingState(submitButton, false);
                     await loadPurchaseSubPage('create-invoice');
                     return;
                 }
@@ -2518,6 +2542,7 @@ async function savePurchaseDocument(event, documentType) {
         currentDocument = null;
         transactionItemsTable = null;
         isSavingDocument = false; // Reset flag
+        setButtonSavingState(submitButton, false);
         
         // Navigate back and refresh data
         if (documentType === 'order') {
@@ -2561,11 +2586,7 @@ async function savePurchaseDocument(event, documentType) {
         
         showToast(errorMessage, 'error');
         isSavingDocument = false; // Reset flag on error
-        if (submitButton) {
-            const buttonText = documentType === 'order' ? 'Save Purchase Order' : 'Save & Add Stock';
-            submitButton.disabled = false;
-            submitButton.innerHTML = `<i class="fas fa-save"></i> ${buttonText}`;
-        }
+        setButtonSavingState(submitButton, false);
     }
 }
 
@@ -2803,15 +2824,11 @@ async function updatePurchaseOrder(event, orderId) {
     }
     
     const form = event.target;
-    const submitButton = form.querySelector('button[type="submit"], .btn-save-order');
+    const submitButton = getPrimaryFormActionButton(form);
     
     // Disable submit button and set flag
     isSavingDocument = true;
-    if (submitButton) {
-        submitButton.disabled = true;
-        const originalText = submitButton.innerHTML;
-        submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
-    }
+    setButtonSavingState(submitButton, true, '<i class="fas fa-spinner fa-spin"></i> Saving...');
     
     const formData = new FormData(form);
     
@@ -2825,10 +2842,7 @@ async function updatePurchaseOrder(event, orderId) {
     
     if (validItems.length === 0) {
         isSavingDocument = false;
-        if (submitButton) {
-            submitButton.disabled = false;
-            submitButton.innerHTML = '<i class="fas fa-save"></i> Save';
-        }
+        setButtonSavingState(submitButton, false);
         showToast('Please add at least one item', 'warning');
         return;
     }
@@ -2853,10 +2867,14 @@ async function updatePurchaseOrder(event, orderId) {
     try {
         const updatedOrder = await API.purchases.updateOrder(orderId, orderData);
         showToast('Purchase order updated successfully!', 'success');
+        isSavingDocument = false;
+        setButtonSavingState(submitButton, false);
         loadPurchaseSubPage('orders');
     } catch (error) {
         console.error('Error updating purchase order:', error);
         showToast(error.message || 'Error updating purchase order', 'error');
+        isSavingDocument = false;
+        setButtonSavingState(submitButton, false);
     }
 }
 
