@@ -176,7 +176,7 @@ class OrderBookService:
 
         # Order in wholesale units by default (last unit costs are per wholesale); 1 wholesale = pack_size retail
         quantity_needed_wholesale = max(1, math.ceil(float(quantity_needed_retail_units) / pack_size))
-        wholesale_unit_name = (item.wholesale_unit or item.base_unit or "unit").strip() or "unit"
+        wholesale_unit_name = (item.wholesale_unit or item.retail_unit or "unit").strip() or "unit"
 
         # Supplier with lowest unit cost (per wholesale), or item default from import
         supplier_id = OrderBookService.get_supplier_lowest_unit_cost(db, item_id, company_id)

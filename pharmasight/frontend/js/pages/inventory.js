@@ -1350,9 +1350,9 @@ async function showAdjustStockModal(itemId) {
         const branchIdNormalized = typeof branchId === 'string' ? branchId : (branchId && (branchId.id || branchId));
         const data = await API.items.get(itemId, branchIdNormalized);
         const itemName = (data && data.name) ? String(data.name) : 'Item';
-        const units = (data && data.units && data.units.length) ? data.units : [{ unit_name: data.base_unit || 'piece', multiplier_to_base: 1 }];
+        const units = (data && data.units && data.units.length) ? data.units : [{ unit_name: data.retail_unit || data.base_unit || 'piece', multiplier_to_base: 1 }];
         const lastCost = (data && (data.default_cost != null || data.default_cost_per_base != null)) ? (data.default_cost ?? data.default_cost_per_base) : 0;
-        const baseUnitName = (data && data.base_unit) ? String(data.base_unit) : 'piece';
+        const baseUnitName = (data && (data.retail_unit || data.base_unit)) ? String(data.retail_unit || data.base_unit) : 'piece';
         const hasMultipleUnits = Array.isArray(units) && units.length > 1;
         const unitOptions = (hasMultipleUnits
             ? `<option value="" selected disabled>Select unit / pack size</option>` +
@@ -2059,7 +2059,7 @@ function setupManualAdjustmentsHandlers() {
             updateCostAdjustmentUnitUI(unitsFromSearch.wholesale_unit, unitsFromSearch.retail_unit, unitsFromSearch.pack_size);
         } else {
             API.items.get(itemId, branchIdRaw).then(function (item) {
-                var w = (item.wholesale_unit || item.base_unit || 'packet').toString().trim() || 'packet';
+                var w = (item.wholesale_unit || 'packet').toString().trim() || 'packet';
                 var r = (item.retail_unit || 'tablet').toString().trim() || 'tablet';
                 var p = Math.max(1, parseInt(item.pack_size, 10) || 1);
                 updateCostAdjustmentUnitUI(w, r, p);
@@ -2121,7 +2121,7 @@ function setupManualAdjustmentsHandlers() {
                             else if (it.default_cost != null) costDisplay = fmt(it.default_cost);
                             var subLine = '<div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 2px;">Stock: ' + (typeof escapeHtml === 'function' ? escapeHtml(stockDisplay) : stockDisplay) + ' &nbsp; Price: ' + (typeof escapeHtml === 'function' ? escapeHtml(priceDisplay) : priceDisplay) + ' &nbsp; Cost: ' + (typeof escapeHtml === 'function' ? escapeHtml(costDisplay) : costDisplay) + '</div>';
                             var label = (typeof escapeHtml === 'function' ? escapeHtml(name + (sku ? ' (' + sku + ')' : '')) : (name + (sku ? ' (' + sku + ')' : '')));
-                            var wu = (it.wholesale_unit || it.base_unit || 'packet').toString().replace(/"/g, '&quot;');
+                            var wu = (it.wholesale_unit || 'packet').toString().replace(/"/g, '&quot;');
                             var ru = (it.retail_unit || 'tablet').toString().replace(/"/g, '&quot;');
                             var ps = (it.pack_size != null ? it.pack_size : 1);
                             return '<div class="dropdown-item" data-id="' + (it.id || '') + '" data-name="' + safeName + '" data-sku="' + safeSku + '" data-wholesale-unit="' + wu + '" data-retail-unit="' + ru + '" data-pack-size="' + ps + '" style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border-color);">' + label + subLine + '</div>';

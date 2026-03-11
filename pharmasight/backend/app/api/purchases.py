@@ -851,7 +851,7 @@ def get_supplier_invoice(
             invoice_item.item_code = invoice_item.item.sku or ''
             invoice_item.item_name = invoice_item.item.name or ''
             invoice_item.item_category = invoice_item.item.category or ''
-            invoice_item.base_unit = invoice_item.item.base_unit or ''
+            invoice_item.base_unit = (getattr(invoice_item.item, "retail_unit", None) or invoice_item.item.base_unit or "").strip() or ""
             # If line has no VAT set (0 or None), use item master's VAT so UI shows correct rate from item settings
             if (invoice_item.vat_rate is None or float(invoice_item.vat_rate) == 0) and getattr(invoice_item.item, "vat_rate", None) is not None:
                 pct = vat_rate_to_percent(invoice_item.item.vat_rate)
@@ -874,7 +874,7 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
         raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
     unit_name_raw = (item_data.unit_name or "").strip()
     if not unit_name_raw:
-        unit_name_raw = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
+        unit_name_raw = (item.wholesale_unit or item.retail_unit or "piece").strip() or "piece"
     effective_unit_name = unit_name_raw
     multiplier = get_unit_multiplier_from_item(item, effective_unit_name)
     if multiplier is None:
@@ -979,7 +979,7 @@ def add_supplier_invoice_item(
             invoice_item.item_code = it.sku or ''
             invoice_item.item_name = it.name or ''
             invoice_item.item_category = getattr(it, "category", None) or ''
-            invoice_item.base_unit = getattr(it, "base_unit", None) or ''
+            invoice_item.base_unit = (getattr(it, "retail_unit", None) or getattr(it, "base_unit", None) or "").strip() or ""
             if (invoice_item.vat_rate is None or float(invoice_item.vat_rate) == 0) and getattr(it, "vat_rate", None) is not None:
                 invoice_item.vat_rate = Decimal(str(vat_rate_to_percent(it.vat_rate)))
     if invoice.supplier:
@@ -1314,7 +1314,7 @@ def update_supplier_invoice(
             invoice_item.item_code = invoice_item.item.sku or ''
             invoice_item.item_name = invoice_item.item.name or ''
             invoice_item.item_category = invoice_item.item.category or ''
-            invoice_item.base_unit = invoice_item.item.base_unit or ''
+            invoice_item.base_unit = (getattr(invoice_item.item, "retail_unit", None) or invoice_item.item.base_unit or "").strip() or ""
             if (invoice_item.vat_rate is None or float(invoice_item.vat_rate) == 0) and getattr(invoice_item.item, "vat_rate", None) is not None:
                 pct = vat_rate_to_percent(invoice_item.item.vat_rate)
                 invoice_item.vat_rate = Decimal(str(pct))
@@ -1333,6 +1333,10 @@ def batch_supplier_invoice(
 ):
     """
     Batch Supplier Invoice - Add Stock to Inventory
+
+    This is the only path that writes to inventory_ledger and updates item_branch_snapshot
+    (stock and search/price). Creating or saving a supplier invoice (DRAFT) does not update
+    ledger or snapshot until this endpoint is called.
 
     Row-level lock on invoice prevents concurrent batch; status checked after lock.
     Only DRAFT invoices can be batched. Once batched, status changes to BATCHED.
@@ -1725,8 +1729,9 @@ def batch_supplier_invoice(
             )
             items_updated_for_cost.add(inv_item.item_id)
         db.flush()
-        # Refresh POS snapshot from ledger (last purchase price = latest PURCHASE in same transaction)
-        for iid in items_updated_for_cost:
+        # Refresh item_branch_snapshot for every item that got ledger entries (search/price stay in sync)
+        items_to_refresh = items_updated_for_cost | {e.item_id for e in ledger_entries}
+        for iid in items_to_refresh:
             SnapshotRefreshService.refresh_item_sync(db, invoice.company_id, invoice.branch_id, iid)
 
         # Update invoice status to BATCHED
@@ -2074,7 +2079,7 @@ def get_purchase_order(
             order_item.item_code = order_item.item.sku or ''
             order_item.item_name = order_item.item.name or ''
             order_item.item_category = order_item.item.category or ''
-            order_item.base_unit = order_item.item.base_unit or ''
+            order_item.base_unit = (getattr(order_item.item, "retail_unit", None) or order_item.item.base_unit or "").strip() or ""
             order_item.is_controlled = getattr(order_item.item, 'is_controlled', False)
             # Cost from inventory_ledger only (never from items table)
             from app.services.canonical_pricing import CanonicalPricingService
@@ -2184,7 +2189,7 @@ def add_purchase_order_item(
             order_item.item_code = it.sku or ''
             order_item.item_name = it.name or ''
             order_item.item_category = getattr(it, "category", None) or ''
-            order_item.base_unit = getattr(it, "base_unit", None) or ''
+            order_item.base_unit = (getattr(it, "retail_unit", None) or getattr(it, "base_unit", None) or "").strip() or ""
             order_item.is_controlled = getattr(it, "is_controlled", False)
             if order_item.item_id == item_data.item_id and order.branch_id:
                 from app.services.canonical_pricing import CanonicalPricingService

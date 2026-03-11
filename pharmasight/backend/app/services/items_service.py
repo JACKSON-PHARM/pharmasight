@@ -1,9 +1,10 @@
 """
-Items service – 3-tier UNIT system (base = wholesale).
+Items service – 3-tier UNIT system (base = retail).
 
-Base/reference = wholesale unit (1 per item). Stock in base = wholesale qty.
-- Retail: 1 wholesale = pack_size retail. retail_qty = wholesale_qty * pack_size.
-- Supplier: 1 supplier = wholesale_units_per_supplier wholesale. supplier_qty = wholesale_qty / N.
+Ledger and stock quantities are in retail units. base_unit is aligned with retail_unit.
+- Retail: smallest unit (tablet, piece, etc.).
+- Wholesale: 1 wholesale = pack_size retail.
+- Supplier: 1 supplier = pack_size * wholesale_units_per_supplier retail.
 """
 from __future__ import annotations
 
@@ -87,7 +88,7 @@ def create_item(db: Session, data: ItemCreate) -> Item:
     Create item with 3-tier units. Units are item characteristics (items table only; no item_units table).
 
     - Validates pack_size >= 1 and breakable => pack_size > 1 (done in schema).
-    - Sets base_unit = wholesale_unit (reference). Cost/price from inventory_ledger only.
+    - Sets base_unit = retail_unit (ledger and stock are in retail units). Cost/price from inventory_ledger only.
     - Rejects duplicate item names (same company, case-insensitive) to avoid duplicates from double-submit.
     """
     if data.pack_size < 1:
@@ -148,8 +149,9 @@ def create_item(db: Session, data: ItemCreate) -> Item:
             sku = f"A{n:05d}"
         dump["sku"] = sku
 
-    # Never persist a number as base_unit (e.g. price column mapped by mistake)
-    dump["base_unit"] = _sanitize_base_unit(dump.get("base_unit"), data.wholesale_unit or "piece")
+    # base_unit = retail_unit (ledger quantities and costs are per retail unit)
+    effective_retail = (dump.get("retail_unit") or dump.get("wholesale_unit") or "piece").strip() or "piece"
+    dump["base_unit"] = _sanitize_base_unit(effective_retail, "piece")
     # Do not persist deprecated price fields — cost from inventory_ledger only
     for key in ("default_cost", "purchase_price_per_supplier_unit", "wholesale_price_per_wholesale_unit", "retail_price_per_retail_unit"):
         dump.pop(key, None)
@@ -205,9 +207,10 @@ def update_item(db: Session, item_id: UUID, data: ItemUpdate) -> Item | None:
         if dump.get("can_break_bulk", getattr(item, "can_break_bulk", False)) and retail == wholesale:
             raise ValueError("When can break bulk and pack_size > 1, retail unit and wholesale unit must have different names (e.g. tablet vs packet)")
 
-    # Never persist a number as unit names
-    if "base_unit" in dump:
-        dump["base_unit"] = _sanitize_base_unit(dump["base_unit"], dump.get("wholesale_unit") or item.wholesale_unit or "piece")
+    # base_unit = retail_unit (ledger quantities and costs are per retail unit)
+    effective_retail = dump.get("retail_unit") or getattr(item, "retail_unit", None) or dump.get("wholesale_unit") or item.wholesale_unit or "piece"
+    effective_retail = (effective_retail or "piece").strip() or "piece"
+    dump["base_unit"] = _sanitize_base_unit(effective_retail, "piece")
     if "wholesale_unit" in dump:
         dump["wholesale_unit"] = _sanitize_base_unit(dump["wholesale_unit"], "piece")
     if "retail_unit" in dump:

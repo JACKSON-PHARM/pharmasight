@@ -27,8 +27,8 @@ def get_unit_multiplier_from_item(item: "Item", unit_name: str) -> Optional[Deci
     if not item or not (unit_name and str(unit_name).strip()):
         return None
     u = str(unit_name).strip().lower()
-    wholesale = (item.wholesale_unit or item.base_unit or "piece").strip().lower()
-    retail = (item.retail_unit or "").strip().lower()
+    wholesale = (item.wholesale_unit or "piece").strip().lower()
+    retail = (item.retail_unit or item.base_unit or "").strip().lower()
     supplier = (item.supplier_unit or "").strip().lower()
     pack = max(1, int(item.pack_size or 1))
     wups = max(Decimal("0.0001"), Decimal(str(item.wholesale_units_per_supplier or 1)))
@@ -99,9 +99,9 @@ def get_stock_display_unit(item: Optional["Item"], fallback: str = "piece") -> s
     pack = max(1, int(getattr(item, "pack_size", None) or 1))
     can_break = getattr(item, "can_break_bulk", True)
     if pack == 1 and not can_break:
-        # Single unit tier: use one name everywhere (wholesale = retail after enforcement)
-        return (item.wholesale_unit or item.base_unit or fallback or "piece").strip().lower()
-    return (item.retail_unit or fallback or "piece").strip().lower()
+        # Single unit tier: use one name everywhere (wholesale = retail)
+        return (item.wholesale_unit or item.retail_unit or fallback or "piece").strip().lower()
+    return (item.retail_unit or item.base_unit or fallback or "piece").strip().lower()
 
 
 def get_unit_display_short(item: Optional["Item"], unit_name: str) -> str:
@@ -117,8 +117,8 @@ def get_unit_display_short(item: Optional["Item"], unit_name: str) -> str:
     if getattr(item, "can_break_bulk", True) is False:
         return "P"
     u = (unit_name or "").strip().lower()
-    wholesale = (item.wholesale_unit or item.base_unit or "piece").strip().lower()
-    retail = (item.retail_unit or "").strip().lower()
+    wholesale = (item.wholesale_unit or "piece").strip().lower()
+    retail = (item.retail_unit or item.base_unit or "").strip().lower()
     supplier = (item.supplier_unit or "").strip().lower()
     # Match wholesale first so e.g. "pack" (1 pack = 100 caps) shows W not P when names differ
     if u == wholesale:

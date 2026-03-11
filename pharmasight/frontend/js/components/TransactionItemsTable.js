@@ -257,6 +257,11 @@
     TransactionItemsTable.prototype.getCostPerSelectedUnit = function(item) {
         if (!item) return 0;
         const mult = item.unit_multiplier != null && item.unit_multiplier > 0 ? item.unit_multiplier : 1;
+        // When search price/cost were already per retail and we set _price_is_per_retail,
+        // treat _basis_unit_cost as cost per retail unit and scale by selected unit multiplier.
+        if (item._price_is_per_retail && item._basis_unit_cost != null && !isNaN(Number(item._basis_unit_cost))) {
+            return Number(item._basis_unit_cost) * mult;
+        }
         if (item._basis_unit_cost != null && !isNaN(Number(item._basis_unit_cost)) &&
             item._basis_unit_multiplier != null && parseFloat(item._basis_unit_multiplier) > 0) {
             const basisCost = Number(item._basis_unit_cost);
@@ -701,11 +706,11 @@
                     if (!self.addRowItem || !self.addRowItem.item_id) return;
                     const salesType = salesTypeEl.value || 'RETAIL';
                     const it = self.addRowItem;
-                    let desiredUnit = it.retail_unit || it.base_unit || it.wholesale_unit || 'piece';
-                    if (salesType === 'WHOLESALE') desiredUnit = it.wholesale_unit || it.base_unit || desiredUnit;
+                    let desiredUnit = it.retail_unit || it.wholesale_unit || 'piece';
+                    if (salesType === 'WHOLESALE') desiredUnit = it.wholesale_unit || desiredUnit;
                     else if (salesType === 'SUPPLIER') {
                         const wups = Math.max(0.0001, parseFloat(it.wholesale_units_per_supplier) || 1);
-                        desiredUnit = (wups > 1 && it.supplier_unit) ? it.supplier_unit : (it.wholesale_unit || it.base_unit || desiredUnit);
+                        desiredUnit = (wups > 1 && it.supplier_unit) ? it.supplier_unit : (it.wholesale_unit || desiredUnit);
                     }
                     const units = it.available_units && it.available_units.length ? it.available_units : self.buildUnitsFrom3Tier(it);
                     it.available_units = units;
@@ -1604,13 +1609,13 @@
             const salesType = (salesTypeEl && salesTypeEl.value) ? salesTypeEl.value : 'RETAIL';
             let desiredUnit;
             if (this.mode === 'purchase') {
-                desiredUnit = item.wholesale_unit || item.base_unit || item.retail_unit || 'piece';
+                desiredUnit = item.wholesale_unit || item.retail_unit || 'piece';
             } else {
-                desiredUnit = item.retail_unit || item.base_unit || item.wholesale_unit || 'piece';
-                if (salesType === 'WHOLESALE') desiredUnit = item.wholesale_unit || item.base_unit || desiredUnit;
+                desiredUnit = item.retail_unit || item.wholesale_unit || 'piece';
+                if (salesType === 'WHOLESALE') desiredUnit = item.wholesale_unit || desiredUnit;
                 else if (salesType === 'SUPPLIER') {
                     const wups = Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1);
-                    desiredUnit = (wups > 1 && item.supplier_unit) ? item.supplier_unit : (item.wholesale_unit || item.base_unit || desiredUnit);
+                    desiredUnit = (wups > 1 && item.supplier_unit) ? item.supplier_unit : (item.wholesale_unit || desiredUnit);
                 }
             }
             const match = (item.available_units || []).find(u => (u.unit_name || '').toLowerCase() === (desiredUnit || '').toLowerCase());
@@ -1619,17 +1624,22 @@
                 item.unit_multiplier = parseFloat(match.multiplier_to_base) || 1;
             }
 
-            // Set basis multiplier from the configured wholesale_unit, then scale price to selected unit.
-            // This fixes cases where search returns wholesale price but UI defaults to retail unit.
-            const basisUnit = (item.wholesale_unit || item.base_unit || '').toString().trim();
+            // Search often returns price already per retail (tablet). Only scale when price is per a larger unit.
+            const basisUnit = (item.wholesale_unit || item.retail_unit || '').toString().trim();
             const basisMatch = (item.available_units || []).find(u => (u.unit_name || '').toString().trim().toLowerCase() === basisUnit.toLowerCase());
             const basisMult = basisMatch ? (parseFloat(basisMatch.multiplier_to_base) || 1) : (item.pack_size != null ? Math.max(1, parseInt(item.pack_size, 10) || 1) : 1);
             item._basis_unit_name = basisUnit || item._basis_unit_name;
             item._basis_unit_multiplier = basisMult;
             item._basis_unit_price = item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : null;
-            // Cost from search is in same unit as price (wholesale); store for unit-aware margin
             item._basis_unit_cost = (item.purchase_price != null && !isNaN(Number(item.purchase_price))) ? Number(item.purchase_price) : null;
-            if (item._basis_unit_price != null && basisMult > 0) {
+            // If selected unit is retail and basis is wholesale, we used to do price/56 then *1 → wrong. Skip rescale when
+            // selected unit multiplier is 1 and search price is already per retail (i.e. don't divide by pack_size again).
+            const selectedMult = parseFloat(item.unit_multiplier) || 1;
+            const priceAlreadyPerSelectedUnit = (selectedMult === 1 && basisMult > 1);
+            if (priceAlreadyPerSelectedUnit) {
+                item._price_is_per_retail = true; // so recalcAddRowPriceFromBasis scales correctly when user switches to packet
+            }
+            if (item._basis_unit_price != null && basisMult > 0 && !priceAlreadyPerSelectedUnit) {
                 const pricePerBase = item._basis_unit_price / basisMult;
                 item.unit_price = this.roundMoney(pricePerBase * (item.unit_multiplier || 1));
             }
@@ -1694,8 +1704,13 @@
         if (it._basis_unit_price == null || it._basis_unit_multiplier == null) return;
         const basisMult = parseFloat(it._basis_unit_multiplier) || 0;
         if (basisMult <= 0) return;
-        const pricePerBase = parseFloat(it._basis_unit_price) / basisMult;
         const mult = parseFloat(it.unit_multiplier) || 1;
+        // When search price was already per retail we stored _price_is_per_retail; then basis is retail, so unit_price = basis * mult.
+        if (it._price_is_per_retail) {
+            it.unit_price = this.roundMoney(parseFloat(it._basis_unit_price) * mult);
+            return;
+        }
+        const pricePerBase = parseFloat(it._basis_unit_price) / basisMult;
         it.unit_price = this.roundMoney(pricePerBase * mult);
     };
 
@@ -1748,7 +1763,7 @@
         const seq = (item._addRowAutoPriceSeq || 0) + 1;
         item._addRowAutoPriceSeq = seq;
         // Allow auto pricing on unit change / sales type change; if user starts typing price, we won't override.
-        const unitName = item.unit_name || (item.retail_unit || item.base_unit || item.wholesale_unit || 'piece');
+        const unitName = item.unit_name || (item.retail_unit || item.wholesale_unit || 'piece');
         const tier = this.getTierForUnit(item, unitName);
 
         api.items.getRecommendedPrice(item.item_id, branchId, config.COMPANY_ID, unitName, tier)
@@ -1785,7 +1800,7 @@
                 suggestionEl.dataset.itemName = newItem.name;
                 suggestionEl.dataset.itemSku = newItem.sku || '';
                 suggestionEl.dataset.itemCode = newItem.code || newItem.sku || '';
-                suggestionEl.dataset.unitName = newItem.base_unit || '';
+                suggestionEl.dataset.unitName = newItem.retail_unit || newItem.base_unit || '';
                 suggestionEl.dataset.salePrice = newItem.sale_price || 0;
                 suggestionEl.dataset.purchasePrice = newItem.purchase_price || 0;
                 this.handleSelectItem(suggestionEl, rowIndex);
@@ -2606,7 +2621,7 @@
      * So: retail multiplier_to_base = 1, wholesale = pack_size (1 packet = pack_size tablets), supplier = pack_size * wups.
      */
     TransactionItemsTable.prototype.buildUnitsFrom3Tier = function(full) {
-        const wholesaleName = (full.wholesale_unit || full.base_unit || 'piece').toString().trim() || 'piece';
+        const wholesaleName = (full.wholesale_unit || 'piece').toString().trim() || 'piece';
         const retailName = (full.retail_unit || '').toString().trim();
         const supplierName = (full.supplier_unit || '').toString().trim();
         const pack = Math.max(1, parseInt(full.pack_size, 10) || 1);
@@ -2663,7 +2678,7 @@
             }
             if (full.stock_display != null) item.stock_display = full.stock_display;
             if (typeof full.current_stock === 'number') item.available_stock = full.current_stock;
-            const wholesaleUnit = (units[0] && units[0].unit_name) || full.wholesale_unit || full.base_unit || 'piece';
+            const wholesaleUnit = (units[0] && units[0].unit_name) || full.wholesale_unit || full.retail_unit || 'piece';
             let currentUnit = item.unit_name || wholesaleUnit;
             let currentU = units.find(u => (u.unit_name || '') === currentUnit);
             // In sale/quotation add row: adapt unit and price to current sales type (retail/wholesale)
@@ -2672,11 +2687,11 @@
                 const salesType = (salesTypeEl && salesTypeEl.value) ? salesTypeEl.value : 'RETAIL';
                 const tier = salesType.toLowerCase();
                 let unitForTier = wholesaleUnit;
-                if (salesType === 'WHOLESALE') unitForTier = full.wholesale_unit || full.base_unit || 'piece';
-                else if (salesType === 'RETAIL') unitForTier = full.retail_unit || full.base_unit || 'piece';
+                if (salesType === 'WHOLESALE') unitForTier = full.wholesale_unit || 'piece';
+                else if (salesType === 'RETAIL') unitForTier = full.retail_unit || 'piece';
                 else if (salesType === 'SUPPLIER') {
                     const wups = Math.max(0.0001, parseFloat(full.wholesale_units_per_supplier) || 1);
-                    unitForTier = (wups > 1 && full.supplier_unit) ? full.supplier_unit : (full.wholesale_unit || full.base_unit || 'piece');
+                    unitForTier = (wups > 1 && full.supplier_unit) ? full.supplier_unit : (full.wholesale_unit || 'piece');
                 }
                 const matchUnit = units.find(u => (u.unit_name || '').toLowerCase() === (unitForTier || '').toLowerCase());
                 unitForTier = (matchUnit && matchUnit.unit_name) ? matchUnit.unit_name : unitForTier;

@@ -2680,7 +2680,7 @@ function renderItemsList(items) {
                 <div>
                     <strong>${item.name}</strong>
                     <p style="margin: 0.25rem 0; color: var(--text-secondary); font-size: 0.875rem;">
-                        ${item.sku || ''} | ${item.base_unit || ''} | ${item.category || 'Uncategorized'}
+                        ${item.sku || ''} | ${item.retail_unit || item.base_unit || ''} | ${item.category || 'Uncategorized'}
                     </p>
                 </div>
                 <button class="btn btn-primary">
@@ -2721,10 +2721,10 @@ async function addToCart(itemId) {
         const wups = Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1);
         const packSize = Math.max(1, parseInt(item.pack_size, 10) || 1);
         const baseQty = availability.total_base_units;
-        let unitForTier = item.base_unit || 'piece';
+        let unitForTier = item.retail_unit || item.base_unit || 'piece';
         let displayQty = baseQty;
         if (salesType === 'WHOLESALE') {
-            unitForTier = item.wholesale_unit || item.base_unit || 'piece';
+            unitForTier = item.wholesale_unit || 'piece';
             displayQty = baseQty;
         } else if (salesType === 'RETAIL') {
             unitForTier = item.retail_unit || item.base_unit || 'piece';
@@ -2734,7 +2734,7 @@ async function addToCart(itemId) {
                 unitForTier = item.supplier_unit;
                 displayQty = Math.floor(baseQty / wups);
             } else {
-                unitForTier = item.wholesale_unit || item.base_unit || 'piece';
+                unitForTier = item.wholesale_unit || 'piece';
                 displayQty = baseQty;
             }
         }
@@ -2753,7 +2753,7 @@ async function addToCart(itemId) {
 function showAddToCartModal(item, availability, priceInfo, tierInfo) {
     tierInfo = tierInfo || {};
     const salesType = tierInfo.salesType || 'RETAIL';
-    const unitForTier = tierInfo.unitForTier || (item.wholesale_unit || item.base_unit || 'piece');
+    const unitForTier = tierInfo.unitForTier || (item.wholesale_unit || item.retail_unit || 'piece');
     const displayQty = tierInfo.displayQty != null ? tierInfo.displayQty : (availability.total_base_units || 0);
     const unitOptions = `<option value="${unitForTier}">${unitForTier} (${displayQty} available)</option>`;
     

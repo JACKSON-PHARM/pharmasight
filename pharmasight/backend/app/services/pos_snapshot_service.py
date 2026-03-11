@@ -253,7 +253,7 @@ def refresh_pos_snapshot_for_item(
     next_expiry = _get_next_expiry_date(db, item_id, branch_id, company_id)
     search_text = _search_text_for_item(item)
 
-    base_unit = (item.base_unit or "piece").strip() or "piece"
+    base_unit = (getattr(item, "retail_unit", None) or item.base_unit or "piece").strip() or "piece"
     sku = (item.sku or "").strip() or None
     vat_rate = float(item.vat_rate) if item.vat_rate is not None else None
     vat_category = (item.vat_category or "ZERO_RATED").strip() or None

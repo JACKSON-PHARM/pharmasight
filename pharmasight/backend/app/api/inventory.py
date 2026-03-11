@@ -160,7 +160,7 @@ def get_all_stock(
         stock_list.append({
             "item_id": item.id,
             "item_name": item.name,
-            "base_unit": item.base_unit or "piece",
+            "base_unit": (getattr(item, "retail_unit", None) or item.base_unit or "piece"),
             "retail_unit": _unit_for_display(get_stock_display_unit(item), "piece"),
             "stock": stock_val,
             "base_quantity": stock_val,
@@ -406,7 +406,7 @@ def get_all_stock_overview(
             result.append({
                 "item_id": item.id,
                 "item_name": item.name,
-                "base_unit": item.base_unit,
+                "base_unit": (getattr(item, "retail_unit", None) or item.base_unit or "piece"),
                 "retail_unit": retail_unit,
                 "stock": stock,
                 "base_quantity": stock,
@@ -532,7 +532,7 @@ def get_stock_valuation(
         total_value += value
         # Build stock_display from item + qty (avoid N+1 get_stock_display)
         if stock_qty > 0:
-            wu = _unit_for_display(getattr(item, "wholesale_unit", None) or item.base_unit, "piece")
+            wu = _unit_for_display(getattr(item, "wholesale_unit", None), "piece")
             ru = _unit_for_display(getattr(item, "retail_unit", None), "piece")
             su = _unit_for_display(getattr(item, "supplier_unit", None), "piece")
             pack = max(1, int(getattr(item, "pack_size", None) or 1))
@@ -555,7 +555,7 @@ def get_stock_valuation(
         result_rows.append({
             "item_id": str(item.id),
             "item_name": item.name or "—",
-            "base_unit": (item.base_unit or "piece").strip() or "piece",
+            "base_unit": (getattr(item, "retail_unit", None) or item.base_unit or "piece").strip() or "piece",
             "stock": round(stock_qty, 4),
             "stock_display": stock_display,
             "unit_cost": round(cost, 4),

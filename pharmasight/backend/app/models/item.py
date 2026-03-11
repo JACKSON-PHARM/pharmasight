@@ -38,15 +38,15 @@ class Item(Base):
     category = Column(String(100))
     product_category = Column(String(50), nullable=True)  # PHARMACEUTICAL | COSMETICS | EQUIPMENT | SERVICE
     pricing_tier = Column(String(50), nullable=True)  # Drives default margin; if None, derived from product_category
-    base_unit = Column(String(50), nullable=False)  # = wholesale_unit (reference unit; stock in base = wholesale qty)
+    base_unit = Column(String(50), nullable=False)  # = retail_unit (ledger and stock quantities are in retail units)
     # VAT: vat_category + vat_rate only
     vat_category = Column(String(20), default="ZERO_RATED")  # ZERO_RATED | STANDARD_RATED
     vat_rate = Column(Numeric(5, 2), default=0)  # 0 for zero-rated, 16 for standard-rated
     is_active = Column(Boolean, default=True)
     # 3-tier units: supplier / wholesale / retail + conversion rates
     supplier_unit = Column(String(50), default="piece")
-    wholesale_unit = Column(String(50), default="piece")  # Base/reference unit
-    retail_unit = Column(String(50), default="piece")
+    wholesale_unit = Column(String(50), default="piece")  # 1 wholesale = pack_size retail
+    retail_unit = Column(String(50), default="piece")  # Smallest unit; ledger quantity_delta and unit_cost are per retail
     pack_size = Column(Integer, nullable=False, default=1)  # Wholesale-to-retail: 1 wholesale = pack_size retail
     wholesale_units_per_supplier = Column(Numeric(20, 4), nullable=False, default=1)  # Wholesale-to-supplier: 1 supplier = N wholesale
     can_break_bulk = Column(Boolean, nullable=False, default=True)

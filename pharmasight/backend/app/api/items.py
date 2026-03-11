@@ -163,6 +163,18 @@ def _get_user_role(user_id: UUID, branch_id: UUID, db: Session) -> Optional[str]
     return (role[0].lower() if role and role[0] else None)
 
 
+def _user_has_owner_or_admin_for_branch(db: Session, user_id: UUID, branch_id: UUID) -> bool:
+    """True if user has role 'owner', 'admin', or 'super admin' for this branch (bypasses role_permission matrix)."""
+    role_names = (
+        db.query(UserRole.role_name)
+        .join(UserBranchRole, UserBranchRole.role_id == UserRole.id)
+        .filter(UserBranchRole.user_id == user_id, UserBranchRole.branch_id == branch_id)
+        .all()
+    )
+    allowed = {"owner", "admin", "super admin"}
+    return any((r[0] or "").strip().lower() in allowed for r in role_names)
+
+
 def _user_has_correction_permission(db: Session, user_id: UUID, branch_id: UUID, permission_name: str) -> bool:
     """True if user has the given permission for this branch (via role). Accepts global or branch-scoped permission."""
     perm = db.query(Permission).filter(Permission.name == permission_name).first()
@@ -546,15 +558,15 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "category": item.category,
         "product_category": getattr(item, "product_category", None),
         "pricing_tier": getattr(item, "pricing_tier", None),
-        "base_unit": _unit_for_display(item.base_unit, "piece"),
+        "base_unit": _unit_for_display(item.retail_unit or item.base_unit, "piece"),
         "vat_category": getattr(item, "vat_category", None) or "ZERO_RATED",
         "vat_rate": vat_rate_to_percent(item.vat_rate),
         "is_active": item.is_active,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
         "supplier_unit": _unit_for_display(item.supplier_unit, "piece"),
-        "wholesale_unit": _unit_for_display(item.wholesale_unit or item.base_unit, "piece"),
-        "retail_unit": _unit_for_display(item.retail_unit, "piece"),
+        "wholesale_unit": _unit_for_display(item.wholesale_unit, "piece"),
+        "retail_unit": _unit_for_display(item.retail_unit or item.base_unit, "piece"),
         "pack_size": int(item.pack_size) if item.pack_size is not None else 1,
         "wholesale_units_per_supplier": float(item.wholesale_units_per_supplier) if item.wholesale_units_per_supplier is not None else 1.0,
         "can_break_bulk": item.can_break_bulk,
@@ -1657,32 +1669,65 @@ def get_ledger_batches(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    List ledger rows with positive quantity for this item/branch (for cost-adjustment batch selection).
-    Returns ledger_id, batch_number, expiry_date, unit_cost, quantity per row.
+    List BATCHES with remaining stock for this item/branch (for cost-adjustment batch selection).
+    Uses inventory_ledger as source of truth and groups by (batch_number, expiry_date):
+    - remaining = sum(quantity_delta) for that batch
+    - only batches with remaining > 0 are returned
+    - ledger_id = most recent positive ledger row for that batch (row whose cost will be adjusted)
     """
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    # Fetch all positive movements for this item/branch, then aggregate per batch in Python.
     rows = (
         db.query(InventoryLedger)
         .filter(
             InventoryLedger.item_id == item_id,
             InventoryLedger.branch_id == branch_id,
-            InventoryLedger.quantity_delta > 0,
+            InventoryLedger.quantity_delta != 0,
         )
-        .order_by(InventoryLedger.expiry_date.asc().nulls_last(), InventoryLedger.batch_number.asc())
+        .order_by(InventoryLedger.expiry_date.asc().nulls_last(), InventoryLedger.batch_number.asc(), InventoryLedger.created_at.asc())
         .all()
     )
-    entries = [
-        LedgerBatchEntry(
-            ledger_id=r.id,
-            batch_number=r.batch_number,
-            expiry_date=r.expiry_date.isoformat() if r.expiry_date else None,
-            unit_cost=float(r.unit_cost or 0),
-            quantity=float(r.quantity_delta or 0),
+
+    # Aggregate by (batch_number, expiry_date): remaining = sum(quantity_delta),
+    # latest_row = last ledger row in time (used as target for cost adjustment).
+    from collections import OrderedDict
+
+    batches = OrderedDict()
+    for r in rows:
+        key = (r.batch_number or "", r.expiry_date)
+        agg = batches.get(key)
+        if not agg:
+            agg = {"remaining": 0.0, "latest": r}
+            batches[key] = agg
+        agg["remaining"] += float(r.quantity_delta or 0)
+        # Keep the latest row for this batch (by created_at, fallback to id ordering)
+        latest = agg["latest"]
+        if getattr(r, "created_at", None) and getattr(latest, "created_at", None):
+            if r.created_at >= latest.created_at:
+                agg["latest"] = r
+        else:
+            # Fallback: later row in iteration wins
+            agg["latest"] = r
+
+    entries: list[LedgerBatchEntry] = []
+    for (batch_number, expiry_date), agg in batches.items():
+        remaining = agg["remaining"]
+        if remaining <= 0:
+            # Skip fully depleted batches so UI only shows batches with stock.
+            continue
+        latest = agg["latest"]
+        entries.append(
+            LedgerBatchEntry(
+                ledger_id=latest.id,
+                batch_number=batch_number or None,
+                expiry_date=expiry_date.isoformat() if expiry_date else None,
+                unit_cost=float(latest.unit_cost or 0),
+                quantity=remaining,
+            )
         )
-        for r in rows
-    ]
+
     return LedgerBatchesResponse(entries=entries)
 
 
@@ -1718,17 +1763,24 @@ def post_cost_adjustment(
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    if not _user_has_correction_permission(db, user.id, body.branch_id, "inventory.adjust_cost"):
+    has_perm = _user_has_correction_permission(db, user.id, body.branch_id, "inventory.adjust_cost")
+    has_owner_admin = _user_has_owner_or_admin_for_branch(db, user.id, body.branch_id)
+    if not has_perm and not has_owner_admin:
         raise HTTPException(status_code=403, detail="Permission inventory.adjust_cost required for this branch.")
-    bs = db.query(BranchSetting).filter(BranchSetting.branch_id == body.branch_id).first()
-    if bs is not None and not bs.allow_adjust_cost:
+    # Validate branch belongs to the item's company first, then apply branch-level settings.
+    branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
+    if not branch:
+        raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
+    bs = (
+        db.query(BranchSetting)
+        .filter(BranchSetting.branch_id == body.branch_id)
+        .first()
+    )
+    if bs is not None and bs.allow_adjust_cost is False:
         raise HTTPException(
             status_code=403,
             detail="Cost adjustment is disabled for this branch. Enable it in Settings → Branches → Branch inventory.",
         )
-    branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
-    if not branch:
-        raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
     ledger_row = (
         db.query(InventoryLedger)
         .filter(

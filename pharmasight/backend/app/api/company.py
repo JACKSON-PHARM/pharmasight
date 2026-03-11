@@ -18,6 +18,7 @@ from app.schemas.company import (
     BranchSettingResponse, BranchSettingUpdate,
 )
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.branch_settings_service import ensure_default_branch_settings
 from app.services.tenant_storage_service import (
     upload_stamp,
     upload_logo,
@@ -467,6 +468,8 @@ def create_branch(
         branch_data = branch.model_dump() if hasattr(branch, 'model_dump') else branch.dict()
         db_branch = Branch(**branch_data)
         db.add(db_branch)
+        db.flush()
+        ensure_default_branch_settings(db, db_branch.id)
         db.commit()
         db.refresh(db_branch)
         return db_branch

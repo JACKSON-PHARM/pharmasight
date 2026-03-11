@@ -246,7 +246,7 @@ function debounce(func, wait) {
 // Format stock display (e.g., "8 boxes + 40 tablets")
 function formatStockDisplay(availability) {
     if (!availability || !availability.unit_breakdown || availability.unit_breakdown.length === 0) {
-        return `${availability?.total_base_units || 0} ${availability?.base_unit || ''}`;
+        return `${availability?.total_base_units || 0} ${availability?.retail_unit || availability?.base_unit || ''}`;
     }
     
     const display = availability.unit_breakdown[0].display;

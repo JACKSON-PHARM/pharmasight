@@ -64,7 +64,7 @@ def generate_temporary_password() -> str:
 
 def _user_has_owner_or_admin_role(db: Session, user_id: UUID) -> bool:
     """
-    True if the user has role 'owner' or 'admin' in any branch in this tenant.
+    True if the user has role 'owner', 'admin', or 'super admin' in any branch in this tenant.
     db is the tenant DB session; roles are branch-scoped within the same tenant.
     No global role; no cross-tenant. Caller must ensure db is the resolved tenant DB from auth context.
     """
@@ -74,7 +74,7 @@ def _user_has_owner_or_admin_role(db: Session, user_id: UUID) -> bool:
         .filter(UserBranchRole.user_id == user_id)
         .all()
     )
-    allowed = {"owner", "admin"}
+    allowed = {"owner", "admin", "super admin"}
     return any((r[0] or "").strip().lower() in allowed for r in role_names)
 
 

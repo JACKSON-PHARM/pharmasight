@@ -1022,7 +1022,7 @@ async function selectItemForCounting(itemId) {
         
         // Get item units for unit selection
         const itemUnits = item.units || [];
-        const baseUnit = item.base_unit || 'UNIT';
+        const baseUnit = item.retail_unit || item.base_unit || 'UNIT';
         
         // Show counting form
         const formContainer = document.getElementById('countingFormContainer');

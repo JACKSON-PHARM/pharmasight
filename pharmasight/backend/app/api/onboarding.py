@@ -23,6 +23,7 @@ from app.utils.username_generator import generate_username_from_name
 from app.utils.auth_internal import hash_password
 from app.models.user import User, UserRole, UserBranchRole
 from app.models.company import Company, Branch
+from app.services.branch_settings_service import ensure_default_branch_settings
 
 router = APIRouter()
 
@@ -51,6 +52,7 @@ def _ensure_company_and_branch_for_tenant(tenant_db: Session, tenant) -> None:
         )
         tenant_db.add(branch)
         tenant_db.flush()
+        ensure_default_branch_settings(tenant_db, branch.id)
 
 
 def _ensure_user_branch_role_for_tenant(tenant_db: Session, user_id, tenant) -> None:

@@ -88,7 +88,7 @@
             item_name: item.name || item.item_name,
             item_sku: item.sku || item.item_code,
             item_code: item.item_code || item.sku,
-            unit_name: item.base_unit || item.unit_name || 'Unit',
+            unit_name: item.retail_unit || item.wholesale_unit || item.base_unit || item.unit_name || 'Unit',
             quantity: 1,
             unit_price: price,
             discount_percent: 0,

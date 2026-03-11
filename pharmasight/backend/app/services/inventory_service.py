@@ -109,7 +109,7 @@ class InventoryService:
         if not item:
             return None
         
-        wholesale_name = _unit_for_display(item.wholesale_unit or item.base_unit, "piece")
+        wholesale_name = _unit_for_display(item.wholesale_unit, "piece")
         retail_name = _unit_for_display(item.retail_unit, "piece")
         supplier_raw = (item.supplier_unit or "").strip()
         supplier_name = _unit_for_display(item.supplier_unit, "piece") if supplier_raw else ""
@@ -165,7 +165,7 @@ class InventoryService:
         return StockAvailability(
             item_id=item_id,
             item_name=item.name,
-            base_unit=item.base_unit,
+            base_unit=item.retail_unit or item.base_unit,
             total_base_units=total_base_units,
             unit_breakdown=unit_breakdown,
             batch_breakdown=batch_breakdown
@@ -378,9 +378,7 @@ class InventoryService:
         if not item:
             return "0"
         total_retail = InventoryService.get_current_stock(db, item_id, branch_id)  # retail (base) qty
-        wholesale_unit = _unit_for_display(
-            getattr(item, "wholesale_unit", None) or item.base_unit, "piece"
-        )
+        wholesale_unit = _unit_for_display(getattr(item, "wholesale_unit", None), "piece")
         retail_unit = _unit_for_display(getattr(item, "retail_unit", None), "piece")
         supplier_unit = _unit_for_display(getattr(item, "supplier_unit", None), "piece")
         pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
@@ -416,7 +414,7 @@ class InventoryService:
             from app.services.item_units_helper import get_stock_display_unit
             single_unit = get_stock_display_unit(item, "piece")
             return f"{int(total_retail)} {single_unit}"
-        wholesale_unit = _unit_for_display(getattr(item, "wholesale_unit", None) or item.base_unit, "piece")
+        wholesale_unit = _unit_for_display(getattr(item, "wholesale_unit", None), "piece")
         retail_unit = _unit_for_display(getattr(item, "retail_unit", None), "piece")
         supplier_unit = _unit_for_display(getattr(item, "supplier_unit", None), "piece")
         pack_size = max(1, int(getattr(item, "pack_size", None) or 1))

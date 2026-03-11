@@ -404,7 +404,7 @@ function renderItemsTable() {
                         <tr ${rowClass}>
                             <td>${escapeHtml(item.name)}</td>
                             <td><code>${escapeHtml(item.sku || '—')}</code></td>
-                            <td>${escapeHtml(item.base_unit)}</td>
+                            <td>${escapeHtml(item.retail_unit || item.base_unit || 'piece')}</td>
                             <td>${escapeHtml(item.category || '—')}</td>
                             <td>${stockDisplay}</td>
                             <td>
@@ -1709,7 +1709,7 @@ async function editItem(itemId) {
                         name="wholesale_unit"
                         id="edit_wholesale_unit"
                         list="editUnitOptions"
-                        value="${escapeHtml((item.wholesale_unit || item.base_unit || 'piece').trim())}"
+                        value="${escapeHtml((item.wholesale_unit || 'piece').trim())}"
                         placeholder="e.g. packet, vial, bottle"
                         autocomplete="off"
                         required
@@ -1726,7 +1726,7 @@ async function editItem(itemId) {
                     <div class="form-row" style="align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
                         <div style="display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;">
                             <span>1</span>
-                            <span id="editRetailWholesaleLabel">${escapeHtml(item.wholesale_unit || item.base_unit || 'piece')}</span>
+                            <span id="editRetailWholesaleLabel">${escapeHtml(item.wholesale_unit || 'piece')}</span>
                             <span>=</span>
                         </div>
                         <div class="form-group" style="margin-bottom: 0; flex: 0 0 100px;">
@@ -1790,7 +1790,7 @@ async function editItem(itemId) {
                                 ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                             >
                         </div>
-                        <span id="editSupplierWholesaleLabel">${escapeHtml(item.wholesale_unit || item.base_unit || 'piece')}</span>
+                        <span id="editSupplierWholesaleLabel">${escapeHtml(item.wholesale_unit || 'piece')}</span>
                     </div>
                     ${isLocked ? '<input type="hidden" name="wholesale_units_per_supplier" value="' + (Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)) + '">' : ''}
                 </div>
@@ -1826,7 +1826,7 @@ async function editItem(itemId) {
                 data-cost-wholesale="${(item.default_cost != null ? item.default_cost : 0)}"
                 data-pack-size="${Math.max(1, parseInt(item.pack_size, 10) || 1)}"
                 data-wups="${Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)}"
-                data-wholesale-unit="${escapeHtml((item.wholesale_unit || item.base_unit || 'piece'))}"
+                data-wholesale-unit="${escapeHtml((item.wholesale_unit || 'piece'))}"
                 data-retail-unit="${escapeHtml((item.retail_unit || 'piece'))}"
                 data-supplier-unit="${escapeHtml((item.supplier_unit || 'piece'))}">
                 <div class="form-section-title">
@@ -1839,7 +1839,7 @@ async function editItem(itemId) {
                     <div class="form-group" style="margin-bottom: 0;">
                         <label class="form-label">Show cost per</label>
                         <select id="editItemUnitCostSelect" class="form-select" style="min-width: 140px;">
-                            <option value="wholesale">Wholesale (${escapeHtml((item.wholesale_unit || item.base_unit || 'piece'))})</option>
+                            <option value="wholesale">Wholesale (${escapeHtml((item.wholesale_unit || 'piece'))})</option>
                             <option value="retail">Retail (${escapeHtml((item.retail_unit || 'piece'))})</option>
                             <option value="supplier">Supplier (${escapeHtml((item.supplier_unit || 'piece'))})</option>
                         </select>
@@ -2108,9 +2108,10 @@ async function updateItem(event, itemId) {
 
     // Unit names (wholesale_unit, retail_unit, supplier_unit) are always editable; send them every time.
     const wholesaleUnit = (formData.get('wholesale_unit') || '').toString().trim() || 'piece';
+    const retailUnit = (formData.get('retail_unit') || 'tablet').toString().trim() || 'piece';
     updateData.wholesale_unit = wholesaleUnit;
-    updateData.base_unit = wholesaleUnit;
-    updateData.retail_unit = formData.get('retail_unit') || 'tablet';
+    updateData.base_unit = retailUnit;  // base_unit = retail_unit (ledger and stock are in retail units)
+    updateData.retail_unit = retailUnit;
     updateData.supplier_unit = formData.get('supplier_unit') || 'carton';
     // Conversion rates (pack_size, wholesale_units_per_supplier, can_break_bulk) only when item has no transactions.
     if (!hasTransactions) {
@@ -2202,14 +2203,14 @@ async function viewItemUnits(itemId) {
         return;
     }
 
-    const wholesale = (item.wholesale_unit || item.base_unit || 'piece').toString().trim() || 'piece';
+    const wholesale = (item.wholesale_unit || 'piece').toString().trim() || 'piece';
     const retail = (item.retail_unit || '').toString().trim();
     const supplier = (item.supplier_unit || '').toString().trim();
     const pack = Math.max(1, parseInt(item.pack_size, 10) || 1);
     const wups = Math.max(1, parseInt(item.wholesale_units_per_supplier, 10) || 1);
 
     const lines = [];
-    lines.push(`<li><strong>Wholesale (base):</strong> ${escapeHtml(wholesale)}</li>`);
+    lines.push(`<li><strong>Wholesale:</strong> ${escapeHtml(wholesale)}</li>`);
     if (retail) {
         lines.push(`<li><strong>Retail:</strong> ${escapeHtml(retail)} (1 ${escapeHtml(wholesale)} = ${pack} ${escapeHtml(retail)})</li>`);
     }
@@ -2304,7 +2305,7 @@ async function showItemFullDetailsModal(itemId) {
         <div style="max-height: 70vh; overflow-y: auto;">
             <div style="margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-color);">
                 <div style="font-weight: 600; font-size: 1.05rem;">${escapeHtml(item.name || '')}</div>
-                <div style="color: var(--text-secondary); font-size: 0.875rem;">Code: ${escapeHtml(item.sku || '')} ${item.barcode ? '| Barcode: ' + escapeHtml(item.barcode) : ''} | Base unit: ${escapeHtml(item.base_unit || '')}</div>
+                <div style="color: var(--text-secondary); font-size: 0.875rem;">Code: ${escapeHtml(item.sku || '')} ${item.barcode ? '| Barcode: ' + escapeHtml(item.barcode) : ''} | Retail unit: ${escapeHtml(item.retail_unit || item.base_unit || '')}</div>
             </div>
             <div class="form-section" style="margin-bottom: 1.25rem;">${orderSupplyHtml}</div>
             <div class="form-section" style="margin-bottom: 1.25rem;">${stockHtml}</div>

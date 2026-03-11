@@ -17,6 +17,7 @@ from app.models import (
     Company, Branch, User, UserRole, UserBranchRole,
     CompanyPricingDefault, DocumentSequence
 )
+from app.services.branch_settings_service import ensure_default_branch_settings
 
 
 class StartupService:
@@ -149,6 +150,7 @@ class StartupService:
             )
             db.add(branch)
             db.flush()
+            ensure_default_branch_settings(db, branch.id)
             db.add(UserBranchRole(
                 user_id=admin_user.id,
                 branch_id=branch.id,
@@ -253,6 +255,7 @@ class StartupService:
         )
         db.add(branch)
         db.flush()
+        ensure_default_branch_settings(db, branch.id)
 
         # Step 6: Assign admin role to branch
         user_branch_role = UserBranchRole(

@@ -69,10 +69,10 @@ class ItemBase(BaseModel):
     category: Optional[str] = None
     product_category: Optional[str] = Field(None, description="PHARMACEUTICAL | COSMETICS | EQUIPMENT | SERVICE")
     pricing_tier: Optional[str] = Field(None, description="Margin tier: CHRONIC_MEDICATION, STANDARD, BEAUTY_COSMETICS, etc.")
-    base_unit: Optional[str] = Field(None, description="Legacy: base unit = wholesale_unit")
+    base_unit: Optional[str] = Field(None, description="base_unit = retail_unit (ledger quantities and costs are per retail unit)")
     # 3-tier units
     supplier_unit: str = Field(default="packet", description="Supplier unit name")
-    wholesale_unit: str = Field(default="packet", description="Wholesale unit name (base)")
+    wholesale_unit: str = Field(default="packet", description="Wholesale unit name (1 wholesale = pack_size retail)")
     retail_unit: str = Field(default="tablet", description="Retail unit name")
     pack_size: int = Field(default=1, ge=1, description="Wholesale-to-retail: 1 wholesale = pack_size retail")
     wholesale_units_per_supplier: float = Field(default=1, ge=1, description="Wholesale-to-supplier: 1 supplier = N wholesale (integer, e.g. 12)")
