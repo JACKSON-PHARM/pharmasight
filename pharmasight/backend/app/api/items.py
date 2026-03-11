@@ -46,7 +46,7 @@ from app.services.items_service import (
 )
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.inventory_service import InventoryService, _unit_for_display
-from app.services.item_units_helper import get_stock_display_unit
+from app.services.item_units_helper import get_stock_display_unit, get_unit_multiplier_from_item
 from app.services.excel_import_service import ExcelImportService
 from app.services.snapshot_service import SnapshotService
 from app.services.order_book_service import OrderBookService
@@ -1800,7 +1800,19 @@ def post_cost_adjustment(
             detail="Cannot adjust cost for a batch with no remaining stock (batch fully depleted).",
         )
     previous_cost = Decimal(str(ledger_row.unit_cost))
-    new_cost = Decimal(str(body.new_unit_cost))
+    # UI sends new_unit_cost in the batch entry unit (wholesale/base packet).
+    # Ledger stores unit_cost per retail unit, so convert using the wholesale→retail multiplier.
+    wholesale_unit_name = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
+    multiplier = get_unit_multiplier_from_item(item, wholesale_unit_name) or 1
+    try:
+        mult_dec = Decimal(str(multiplier))
+    except Exception:
+        mult_dec = Decimal("1")
+    if mult_dec <= 0:
+        mult_dec = Decimal("1")
+    # raw_cost is per wholesale/base; divide by multiplier to get cost per retail unit.
+    raw_cost = Decimal(str(body.new_unit_cost))
+    new_cost = raw_cost / mult_dec
     if previous_cost == new_cost:
         raise HTTPException(status_code=400, detail="New cost is unchanged.")
     # Cost outlier control: compare against branch weighted average and require override when far off
