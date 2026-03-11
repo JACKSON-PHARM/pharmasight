@@ -5,8 +5,8 @@ Master DB: tenant management only. Never users, companies, branches, items.
 Tenant DB: one per tenant; full app schema. Data isolated per tenant.
 Legacy/default DB: current DATABASE_URL. No tenant header → use this.
 
-Auth: get_current_user_optional / get_current_user accept internal JWT or (when
-SUPABASE_JWT_SECRET set) Supabase JWT. Tenant from token or X-Tenant-* header.
+Auth: get_current_user_optional / get_current_user accept PharmaSight internal JWT only.
+Tenant comes from token claims or X-Tenant-* header (legacy/default DB when none).
 """
 from urllib.parse import urlparse, quote
 import time as _time
@@ -31,7 +31,7 @@ from app.models.user import User
 from app.utils.auth_internal import (
     CLAIM_JTI,
     CLAIM_TENANT_SUBDOMAIN,
-    decode_token_dual,
+    decode_internal_token,
 )
 
 logger = logging.getLogger(__name__)
@@ -475,7 +475,7 @@ def get_current_user_optional(
     master_db: Session = Depends(get_master_db),
 ) -> Generator[Optional[Tuple[User, Session]], None, None]:
     """
-    If Authorization: Bearer <token> present and valid (internal or Supabase JWT),
+    If Authorization: Bearer <token> present and valid (internal JWT),
     yield (user, tenant_db_session). Otherwise yield None. Uses app DB when tenant
     missing or tenant DB unreachable (same as get_current_user).
     """
@@ -484,7 +484,7 @@ def get_current_user_optional(
     if not token:
         yield None
         return
-    payload = decode_token_dual(token)
+    payload = decode_internal_token(token)
     if not payload or not payload.get("sub"):
         yield None
         return
@@ -621,7 +621,7 @@ def get_current_user(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_token_dual(token)
+    payload = decode_internal_token(token)
     if not payload or not payload.get("sub"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -7,6 +7,8 @@
 
 let availableBranches = [];
 let isLoadingBranches = false;
+/** Guard: only one branch selection in progress; blocks duplicate Proceed clicks and multiple toasts */
+let branchSelectInProgress = false;
 
 async function loadBranchSelect() {
     console.log('[BRANCH SELECT] loadBranchSelect() called');
@@ -97,6 +99,17 @@ async function loadBranches() {
     isLoadingBranches = true;
     
     try {
+        const normalizeCompanies = (res) => {
+            if (Array.isArray(res)) return res;
+            if (res && Array.isArray(res.companies)) return res.companies;
+            return [];
+        };
+        const normalizeBranches = (res) => {
+            if (Array.isArray(res)) return res;
+            if (res && Array.isArray(res.branches)) return res.branches;
+            return [];
+        };
+
         const user = AuthBootstrap.getCurrentUser();
         if (!user) {
             throw new Error('User not authenticated');
@@ -105,8 +118,8 @@ async function loadBranches() {
         // Get user's company (must exist in this tenant). Prefer list() so we only use companies that exist.
         let companyId = null;
         try {
-            const companies = await API.company.list();
-            if (companies && companies.length > 0) {
+            const companies = normalizeCompanies(await API.company.list());
+            if (companies.length > 0) {
                 companyId = companies[0].id;
                 CONFIG.COMPANY_ID = companyId;
                 saveConfig();
@@ -150,18 +163,35 @@ async function loadBranches() {
             }
         }
         
-        // No company yet: first user must complete company + first branch via setup wizard (company first!)
+        // No company yet: navigation (e.g. to setup) is decided centrally in app.js.
+        // Here we only render a friendly message.
         if (!companyId) {
-            console.log('[BRANCH SELECT] No company found, redirecting to setup wizard (company then branch)');
-            window.location.hash = '#setup';
-            if (window.loadPage) window.loadPage('setup');
+            console.log('[BRANCH SELECT] No company found; showing message (navigation handled by app.js)');
+            page.innerHTML = `
+                <div class="login-container">
+                    <div class="login-card">
+                        <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                        <h2>Select Branch</h2>
+                        <div class="error-message" style="display: block; margin: 1rem 0;">
+                            <i class="fas fa-exclamation-triangle"></i> 
+                            No company is configured for this tenant. Please complete setup first.
+                        </div>
+                    </div>
+                </div>
+            `;
             return;
         }
-        
-        // Load branches for company
-        const branches = await API.branch.list(companyId);
-        availableBranches = branches || [];
-        
+
+        // Load branches for company (with timeout so we don't spin forever)
+        const LOAD_BRANCHES_TIMEOUT_MS = 20000;
+        const branches = await Promise.race([
+            API.branch.list(companyId),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Loading branches took too long. Check your connection and try again.')), LOAD_BRANCHES_TIMEOUT_MS)
+            )
+        ]);
+        availableBranches = normalizeBranches(branches || []);
+
         // Render branch selection UI (or "create first branch" if none)
         renderBranchSelection();
         
@@ -209,17 +239,13 @@ function renderBranchSelection() {
         renderCreateFirstBranch();
         return;
     }
-    
-    // If only one branch, auto-select it (unless user is explicitly on branch-select route)
-    // GUARD: do NOT auto-select when user is explicitly on #branch-select route.
-    // Branch selection must be user-invoked on this route.
+
+    // Always render the dropdown first so we never leave the user on the spinner.
+    // If only one branch and not on branch-select route, we'll auto-call selectBranch after rendering.
     const currentHash = window.location.hash || '';
     const isOnBranchSelectRoute = currentHash.replace('#', '').split('?')[0] === 'branch-select';
-    if (availableBranches.length === 1 && !isOnBranchSelectRoute) {
-        selectBranch(availableBranches[0]);
-        return;
-    }
-    
+    const shouldAutoSelectOneBranch = availableBranches.length === 1 && !isOnBranchSelectRoute;
+
     // Build options for select dropdown
     const branchOptions = availableBranches.map(branch => `
         <option value="${branch.id}">
@@ -338,6 +364,9 @@ function renderBranchSelection() {
     const logoutBtn = document.getElementById('branchSelectLogoutBtn');
     
     if (proceedBtn && dropdown) {
+        if (availableBranches.length === 1) {
+            dropdown.value = availableBranches[0].id;
+        }
         proceedBtn.onclick = () => {
             const selectedId = dropdown.value;
             if (!selectedId) {
@@ -359,6 +388,11 @@ function renderBranchSelection() {
                 window.location.reload();
             }
         };
+    }
+
+    // If only one branch and we're not on branch-select route, auto-proceed so user isn't stuck on spinner
+    if (shouldAutoSelectOneBranch) {
+        selectBranch(availableBranches[0]);
     }
 }
 
@@ -454,25 +488,36 @@ function renderCreateFirstBranch() {
 }
 
 async function selectBranch(branch) {
+    if (branchSelectInProgress) return;
+    branchSelectInProgress = true;
+    const proceedBtn = document.getElementById('branchSelectProceedBtn');
+    if (proceedBtn) {
+        proceedBtn.disabled = true;
+        proceedBtn.textContent = 'Proceeding...';
+    }
     try {
         // Set branch in context
         BranchContext.setBranch(branch);
-        
         showToast(`Selected branch: ${branch.name}`, 'success');
-        
+
         // Wait a moment for state to update
         await new Promise(resolve => setTimeout(resolve, 300));
-        
+
         // Trigger app flow to continue
         if (window.handleBranchSelected) {
-            window.handleBranchSelected();
+            await window.handleBranchSelected();
         } else {
-            // Fallback: navigate to landing
             loadPage('landing');
         }
     } catch (error) {
         console.error('Error selecting branch:', error);
         showToast('Failed to select branch', 'error');
+    } finally {
+        branchSelectInProgress = false;
+        if (proceedBtn) {
+            proceedBtn.disabled = false;
+            proceedBtn.textContent = 'Proceed';
+        }
     }
 }
 

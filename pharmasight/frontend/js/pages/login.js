@@ -455,8 +455,9 @@ async function loadLogin() {
                             try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
                             try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
                         } else {
-                            try { if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('pharmasight_tenant_subdomain'); } catch (_) {}
-                            try { if (typeof localStorage !== 'undefined') localStorage.removeItem('pharmasight_tenant_subdomain'); } catch (_) {}
+                            // IMPORTANT: Do not clear an existing tenant context when the backend doesn't return one.
+                            // In single-tenant / legacy deployments, tenant_subdomain may be null even though the app
+                            // still needs a stable tenant context to load company/branches correctly.
                         }
                         // Clear company/branch from any previous session so we never show another tenant's data.
                         if (typeof CONFIG !== 'undefined') {
@@ -581,103 +582,19 @@ async function loadLogin() {
                     return;
                 }
                 
-                // Now authenticate with Supabase using the email
-                const data = await AuthBootstrap.signIn(userEmail, password);
-                
-                if (data.user) {
-                    // Clear failed attempts on successful login
-                    if (window.LoginSecurity) {
-                        window.LoginSecurity.clearAttempts(username);
-                    }
-                    
-                    // Check if this user is also an admin (for tenant admins)
-                    // This allows tenant admins to access both their tenant app and admin panel
-                    const loggedInUserEmail = data.user.email?.toLowerCase();
-                    const isTenantAdmin = loggedInUserEmail === 'pharmasightsolutions@gmail.com' || 
-                                         loggedInUserEmail === 'admin@pharmasight.com';
-                    
-                    // Store user ID in config
-                    CONFIG.USER_ID = data.user.id;
-                    saveConfig();
-                    
-                    // Clear admin flags for regular users
-                    localStorage.removeItem('admin_token');
-                    localStorage.removeItem('is_admin');
-                    
-                    // Refresh auth state
-                    await AuthBootstrap.refresh();
-                    
-                    showToast('Welcome!', 'success');
-                    
-                    // Switch to app layout after successful login
-                    if (window.renderAppLayout) {
-                        window.renderAppLayout();
-                    }
-                    
-                    // Initialize session timeout
-                    if (window.SessionTimeout) {
-                        window.SessionTimeout.init();
-                    }
-                    
-                    // FIXED: Check if this is a special flow requiring password setup
-                    // Reset currentScreen to allow navigation
-                    if (window.currentScreen !== undefined) {
-                        window.currentScreen = null;
-                    }
-                    
-                    // Check URL parameters to determine flow type
-                    const hash = window.location.hash || '';
-                    const fullUrl = window.location.href || '';
-                    
-                    // Parse URL parameters - handle both hash and full URL formats
-                    let paramsString = '';
-                    if (hash.includes('?')) {
-                        paramsString = hash.split('?')[1];
-                    } else if (hash.includes('=')) {
-                        paramsString = hash.replace('#', '');
-                    } else if (fullUrl.includes('?')) {
-                        paramsString = fullUrl.split('?')[1].split('#')[0];
-                    }
-                    
-                    const urlParams = new URLSearchParams(paramsString);
-                    const isPasswordResetFlow = urlParams.get('type') === 'recovery' || 
-                                              hash.includes('type=recovery') || 
-                                              hash.includes('type%3Drecovery') ||
-                                              fullUrl.includes('type=recovery');
-                    const hasInvitationToken = urlParams.get('invitation_token') || 
-                                              hash.includes('invitation_token') ||
-                                              fullUrl.includes('invitation_token');
-                    
-                    didComplete = true;
-                    if (isPasswordResetFlow || hasInvitationToken) {
-                        // User needs to set/reset password (invitation/reset flow)
-                        console.log('[LOGIN] Password setup required (invitation/reset flow)');
-                        if (window.loadPage) {
-                            window.loadPage('password-set');
-                        } else {
-                            window.location.hash = '#password-set';
-                        }
-                    } else {
-                        // Normal login - check if user already has password
-                        const needsPassword = await AuthBootstrap.needsPasswordSetup(data.user, 'login');
-                        if (needsPassword) {
-                            console.log('[LOGIN] Password setup required (first login)');
-                            if (window.loadPage) {
-                                window.loadPage('password-set');
-                            } else {
-                                window.location.hash = '#password-set';
-                            }
-                        } else {
-                            // Normal login - password already set, go to branch selection
-                            console.log('[LOGIN] Normal login, redirecting to branch-select');
-                            if (window.loadPage) {
-                                window.loadPage('branch-select');
-                            } else {
-                                window.location.hash = '#branch-select';
-                            }
-                        }
-                    }
+                // PharmaSight is the single authentication authority.
+                // If we reached here, backend did not return internal tokens, so we must not attempt Supabase login.
+                if (errorDiv) {
+                    errorDiv.innerHTML =
+                        '<span>This account is not enabled for PharmaSight internal authentication.</span>' +
+                        '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">' +
+                        'Ask an admin to complete account setup (set password in PharmaSight) then try again.' +
+                        '</p>';
+                    errorDiv.style.display = 'block';
+                } else {
+                    showToast('This account is not enabled for PharmaSight internal authentication.', 'error');
                 }
+                return;
             } catch (error) {
                 console.error('Login error:', error);
                 

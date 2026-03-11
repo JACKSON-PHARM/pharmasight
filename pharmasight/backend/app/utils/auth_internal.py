@@ -1,6 +1,5 @@
 """
 Internal authentication: password hashing (bcrypt) and JWT (access, refresh, reset).
-Dual-auth: internal JWT is primary; Supabase JWT can be accepted when configured.
 Uses bcrypt directly to avoid passlib/bcrypt 4.x compatibility issues.
 """
 from datetime import datetime, timezone, timedelta
@@ -313,40 +312,10 @@ def revoke_oldest_refresh_tokens_over_limit(session: Session, user_id: str, max_
         raise
 
 
-def decode_supabase_token(token: str) -> Optional[dict]:
-    """Decode and verify Supabase JWT if SUPABASE_JWT_SECRET is set. Returns payload or None."""
-    secret = getattr(settings, "SUPABASE_JWT_SECRET", None) or ""
-    if not secret:
-        return None
-    try:
-        # Supabase uses same HS256; issuer is typically "supabase" or project ref
-        payload = jwt.decode(
-            token,
-            secret,
-            algorithms=["HS256"],
-            options={"verify_iss": False, "verify_aud": False},
-        )
-        return payload
-    except (JWTError, Exception):
-        return None
-
-
 def decode_token_dual(token: str) -> Optional[dict]:
     """
-    Try internal JWT first, then Supabase JWT.
-    Returns payload with at least sub; internal adds tenant_subdomain, email, type.
+    Decode and verify PharmaSight internal JWT only.
+
+    NOTE: Supabase JWT verification has been removed. Supabase must not participate in authentication.
     """
-    payload = decode_internal_token(token)
-    if payload:
-        return payload
-    payload = decode_supabase_token(token)
-    if payload:
-        # Normalize: Supabase uses 'sub' for user id; no tenant in token
-        return {
-            CLAIM_SUB: payload.get("sub"),
-            CLAIM_EMAIL: payload.get("email"),
-            CLAIM_TENANT_SUBDOMAIN: None,  # Must come from header
-            CLAIM_COMPANY_ID: payload.get("company_id"),  # Internal JWT only; Supabase has none
-            CLAIM_TYPE: TYPE_ACCESS,
-        }
-    return None
+    return decode_internal_token(token)

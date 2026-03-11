@@ -1,21 +1,25 @@
 """
-User Invitation API
+User Invitation API (internal-only).
 
-Handles inviting admin users via Supabase Auth.
-This endpoint requires admin privileges and uses Supabase Service Role Key.
+Invites are accepted using a one-time `invitation_token` stored in the tenant DB.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from app.dependencies import get_current_user
-from app.services.invite_service import InviteService
-from app.services.startup_service import StartupService
+from uuid import UUID
+
+from app.dependencies import get_current_user, get_tenant_from_header, get_tenant_db
 from app.schemas.invite import (
     InviteAdminRequest,
     InviteAdminResponse,
     UpdateUserMetadataRequest,
-    SetupStatusResponse
+    SetupStatusResponse,
+    AcceptInviteRequest,
+    AcceptInviteResponse,
 )
-from uuid import UUID
+from app.models.user import User
+from app.utils.auth_internal import hash_password, validate_new_password
+from datetime import datetime, timezone
+from app.services.startup_service import StartupService
 
 router = APIRouter()
 
@@ -26,71 +30,23 @@ def invite_admin_user(
     current_user_and_db: tuple = Depends(get_current_user),
 ):
     """
-    Invite an admin user via Supabase Auth
-    
-    This endpoint:
-    1. Creates a user in Supabase Auth (no password)
-    2. Sends invite email to user
-    3. Sets metadata: role=company_admin, must_setup_company=true
-    4. Returns user ID for app database record creation
-    
-    **Security**: This endpoint requires Supabase Service Role Key.
-    Should be protected by additional admin authentication in production.
-    
-    **Email**: Invite email will be sent from pharmasightsolutions@gmail.com
-    (configured in Supabase project settings)
+    Deprecated: Supabase Auth invite flow removed.
     """
-    try:
-        result = InviteService.invite_admin_user(
-            email=request.email,
-            full_name=request.full_name,
-            redirect_to=request.redirect_to or "/setup"
-        )
-        
-        if result["success"]:
-            return InviteAdminResponse(**result)
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result.get("error", "Failed to invite admin user")
-            )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error inviting admin user: {str(e)}"
-        )
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Supabase Auth invitation endpoints have been removed. Use internal invite flow endpoints instead.",
+    )
 
 
 @router.post("/invite/update-metadata", status_code=status.HTTP_200_OK)
 def update_user_metadata(request: UpdateUserMetadataRequest):
     """
-    Update user metadata in Supabase Auth
-    
-    Used to update user metadata after setup completion.
+    Deprecated: Supabase Auth metadata updates removed.
     """
-    try:
-        result = InviteService.update_user_metadata(
-            user_id=str(request.user_id),
-            metadata=request.metadata
-        )
-        
-        if result["success"]:
-            return {"success": True, "message": result["message"]}
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result.get("error", "Failed to update user metadata")
-            )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error updating user metadata: {str(e)}"
-        )
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Supabase Auth metadata endpoints have been removed.",
+    )
 
 
 @router.post("/invite/mark-setup-complete", status_code=status.HTTP_200_OK)
@@ -99,25 +55,39 @@ def mark_setup_complete(
     current_user_and_db: tuple = Depends(get_current_user),
 ):
     """
-    Mark company setup as complete for a user
-    
-    Updates user metadata: must_setup_company = false
+    Deprecated: Supabase Auth metadata updates removed.
     """
-    try:
-        result = InviteService.mark_setup_complete(str(user_id))
-        
-        if result["success"]:
-            return {"success": True, "message": result["message"]}
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result.get("error", "Failed to mark setup as complete")
-            )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error marking setup as complete: {str(e)}"
-        )
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Supabase Auth metadata endpoints have been removed.",
+    )
+
+
+@router.post("/invite/accept", response_model=AcceptInviteResponse, status_code=status.HTTP_200_OK)
+def accept_invite(
+    body: AcceptInviteRequest,
+    tenant=Depends(get_tenant_from_header),
+    db: Session = Depends(get_tenant_db),
+):
+    """Accept an invite using internal `invitation_token` stored in tenant DB."""
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tenant context required (X-Tenant-Subdomain)")
+    user = db.query(User).filter(User.invitation_token == body.invitation_token, User.deleted_at.is_(None)).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or expired invitation")
+    pw_error = validate_new_password(body.new_password)
+    if pw_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pw_error)
+    user.password_hash = hash_password(body.new_password)
+    user.password_updated_at = datetime.now(timezone.utc)
+    user.password_set = True
+    user.is_pending = False
+    user.invitation_token = None
+    user.is_active = True
+    if hasattr(user, "must_change_password"):
+        user.must_change_password = False
+    db.commit()
+    return AcceptInviteResponse(message="Password set. Sign in with your username and password.")
 
 
 @router.get("/setup/status", response_model=SetupStatusResponse)

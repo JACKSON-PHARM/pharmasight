@@ -184,7 +184,43 @@ async function shouldRedirectToSetup() {
         // Not logged in - redirect to login
         return { redirect: 'login', reason: 'not_authenticated' };
     }
-    
+
+    // Fast-path: if this tenant already has a company (and ideally branches), do NOT redirect to setup.
+    // Existing live tenants should go straight to branch selection / app, not through the setup wizard.
+    try {
+        const normalizeCompanies = (res) => {
+            if (Array.isArray(res)) return res;
+            if (res && Array.isArray(res.companies)) return res.companies;
+            return [];
+        };
+        const normalizeBranches = (res) => {
+            if (Array.isArray(res)) return res;
+            if (res && Array.isArray(res.branches)) return res.branches;
+            return [];
+        };
+        if (typeof API !== 'undefined' && API.company && typeof API.company.list === 'function') {
+            const companies = normalizeCompanies(await API.company.list());
+            if (companies.length > 0) {
+                // Optional: if branch API is wired, check for at least one branch.
+                try {
+                    if (API.branch && typeof API.branch.list === 'function') {
+                        const branches = normalizeBranches(await API.branch.list(companies[0].id));
+                        if (branches.length > 0) {
+                            return { redirect: null, reason: 'company_and_branches_exist' };
+                        }
+                    }
+                } catch (_) {
+                    // Ignore branch check errors; presence of a company is enough to skip setup.
+                    return { redirect: null, reason: 'company_exists' };
+                }
+                return { redirect: null, reason: 'company_exists' };
+            }
+        }
+    } catch (e) {
+        console.warn('Company existence check failed; falling back to setup status logic:', e);
+        // Fall through to existing setupStatus logic below.
+    }
+
     // Check user metadata
     const metadata = getUserMetadata(user);
     const mustSetupCompany = metadata?.must_setup_company === 'true' || metadata?.must_setup_company === true;

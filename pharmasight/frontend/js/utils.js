@@ -38,12 +38,26 @@ async function safeSubmit(buttonOrId, inFlightKey, fn) {
     }
 }
 
+// Toast dedupe: block repeated identical toasts within a short window (stops "response after every click" stacking)
+const TOAST_DEDUPE_MS = 2500;
+let _lastToastKey = '';
+let _lastToastTime = 0;
+
 // Show toast notification
 function showToast(message, type = 'info') {
     // Error noise reduction: suppress error toasts during navigation transition
     if (window.__suppressToasts === true && type === 'error') {
         return;
     }
+    // Dedupe: same message+type within window = show only one
+    const key = String(message) + '|' + type;
+    const now = Date.now();
+    if (key === _lastToastKey && (now - _lastToastTime) < TOAST_DEDUPE_MS) {
+        return;
+    }
+    _lastToastKey = key;
+    _lastToastTime = now;
+
     const container = document.getElementById('toastContainer');
     if (!container) return;
     const toast = document.createElement('div');

@@ -14,6 +14,12 @@ let salesDraftCreateTimeout = null; // Debounce draft creation so quantity (e.g.
 /** True while first-item draft creation is in flight; prevents double Add from creating two drafts */
 let draftCreationInProgress = false;
 
+// Guard state for viewing sales invoices to prevent duplicate API calls and stale UI updates
+let salesInvoiceViewInProgress = false;
+let salesInvoiceViewCurrentId = null;
+/** Guard: only one save/update in progress; blocks duplicate Update Invoice clicks and multiple toasts */
+let salesInvoiceSaveInProgress = false;
+
 // Initialize sales page
 async function loadSales() {
     console.log('loadSales() called');
@@ -1603,11 +1609,17 @@ async function saveSalesInvoice(event) {
     }
     
     if (isEditMode) {
-        // Update existing invoice
+        // Update existing invoice — single-flight: block duplicate clicks and multiple toasts
+        if (salesInvoiceSaveInProgress) return;
+        salesInvoiceSaveInProgress = true;
+        const updateBtn = document.getElementById('salesUpdateInvoiceBtn');
+        if (updateBtn) {
+            updateBtn.disabled = true;
+            updateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating...';
+        }
         try {
             showToast('Updating invoice...', 'info');
-            
-            // Update invoice details
+
             await API.sales.updateInvoice(currentInvoice.id, {
                 customer_name: formData.get('customer_name') || null,
                 customer_pin: formData.get('customer_pin') || null,
@@ -1615,17 +1627,18 @@ async function saveSalesInvoice(event) {
                 payment_mode: formData.get('payment_mode') || 'cash',
                 payment_status: 'UNPAID'  // Keep as UNPAID for DRAFT
             });
-            
-            // Note: Items update would require deleting and recreating items
-            // For now, we'll just update the header fields
-            // TODO: Implement full item update if needed
-            
+
             showToast('Invoice updated successfully', 'success');
-            // Refresh the invoice view
             await viewSalesInvoice(currentInvoice.id);
         } catch (error) {
             console.error('Error updating sales invoice:', error);
             showToast(error.message || 'Error updating sales invoice', 'error');
+        } finally {
+            salesInvoiceSaveInProgress = false;
+            if (updateBtn) {
+                updateBtn.disabled = false;
+                updateBtn.innerHTML = '<i class="fas fa-save"></i> Update Invoice';
+            }
         }
     } else {
         // Create new invoice
@@ -1651,7 +1664,15 @@ async function saveSalesInvoice(event) {
             })),
             created_by: CONFIG.USER_ID
         };
-        
+
+        if (salesInvoiceSaveInProgress) return;
+        salesInvoiceSaveInProgress = true;
+        const createSubmitBtn = form.querySelector('button[type="submit"]') || document.getElementById('salesUpdateInvoiceBtn');
+        if (createSubmitBtn) {
+            createSubmitBtn.disabled = true;
+            createSubmitBtn.dataset.originalHtml = createSubmitBtn.innerHTML;
+            createSubmitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
+        }
         try {
             showToast('Creating invoice...', 'info');
             const invoice = await API.sales.createInvoice(invoiceData);
@@ -1660,6 +1681,12 @@ async function saveSalesInvoice(event) {
         } catch (error) {
             console.error('Error creating sales invoice:', error);
             showToast(error.message || 'Error creating sales invoice', 'error');
+        } finally {
+            salesInvoiceSaveInProgress = false;
+            if (createSubmitBtn) {
+                createSubmitBtn.disabled = false;
+                if (createSubmitBtn.dataset.originalHtml) createSubmitBtn.innerHTML = createSubmitBtn.dataset.originalHtml;
+            }
         }
     }
 }
@@ -2369,8 +2396,29 @@ function filterSalesInvoices() {
 
 // View Sales Invoice (READ-ONLY - KRA Compliant)
 async function viewSalesInvoice(invoiceId) {
+    if (!invoiceId) return;
+
+    // If we're already loading this exact invoice, ignore duplicate clicks.
+    if (salesInvoiceViewInProgress && String(salesInvoiceViewCurrentId) === String(invoiceId)) {
+        return;
+    }
+
+    salesInvoiceViewInProgress = true;
+    salesInvoiceViewCurrentId = invoiceId;
+
+    const pageOverlay = document.getElementById('pageLoadOverlay');
+    if (pageOverlay) {
+        pageOverlay.style.display = 'flex';
+    }
+
     try {
         const invoice = await API.sales.getInvoice(invoiceId);
+
+        // If another invoice was requested after this one, ignore this response.
+        if (String(salesInvoiceViewCurrentId) !== String(invoiceId)) {
+            return;
+        }
+
         const status = invoice.status || 'DRAFT';
         const isDraft = status === 'DRAFT';
         
@@ -2555,6 +2603,15 @@ async function viewSalesInvoice(invoiceId) {
     } catch (error) {
         console.error('Error loading sales invoice:', error);
         showToast(error.message || 'Error loading invoice', 'error');
+    } finally {
+        // Only clear global loading state if this is still the active invoice.
+        if (String(salesInvoiceViewCurrentId) === String(invoiceId)) {
+            salesInvoiceViewInProgress = false;
+            salesInvoiceViewCurrentId = null;
+        }
+        if (pageOverlay && !salesInvoiceViewInProgress) {
+            pageOverlay.style.display = 'none';
+        }
     }
 }
 

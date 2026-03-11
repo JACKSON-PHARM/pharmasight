@@ -3,10 +3,14 @@
 class APIClient {
     constructor(baseURL) {
         this.baseURL = baseURL;
+        // Track in-flight requests to prevent duplicate calls from rapid user interactions.
+        // Keyed by HTTP method + URL + (optional) body fingerprint.
+        this.inFlightRequests = new Map();
     }
 
     async request(endpoint, options = {}) {
         const url = `${this.baseURL}${endpoint}`;
+        const method = (options.method || 'GET').toUpperCase();
         
         // Add timeout using AbortController (default 60 seconds for startup)
         const timeoutMs = options.timeout || 60000;
@@ -35,6 +39,33 @@ class APIClient {
             config.headers = { ...config.headers, ...options.headers };
         }
 
+        // REQUEST DEDUPLICATION (single-flight):
+        // For identical in-flight requests (same method, URL, and body fingerprint),
+        // return the existing promise instead of firing another network call.
+        // This prevents API spam from rapid double-clicks without changing business logic.
+        const dedupeDisabled = options._skipDedupe === true;
+        let bodyFingerprint = '';
+        if (!dedupeDisabled) {
+            try {
+                if (isFormData) {
+                    bodyFingerprint = '|form-data';
+                } else if (typeof config.body === 'string') {
+                    // Limit fingerprint size to keep keys small.
+                    bodyFingerprint = '|' + config.body.slice(0, 200);
+                }
+            } catch (_) {
+                bodyFingerprint = '';
+            }
+        }
+
+        const requestKey = dedupeDisabled ? null : `${method} ${url}${bodyFingerprint}`;
+
+        if (!dedupeDisabled && requestKey && this.inFlightRequests.has(requestKey)) {
+            return this.inFlightRequests.get(requestKey);
+        }
+
+        const executeRequest = async () => {
+
         // Tenant context (database-per-tenant): send X-Tenant-Subdomain for app APIs when set.
         // Skip for /api/admin/* (master-only). No header → legacy DB.
         try {
@@ -49,8 +80,10 @@ class APIClient {
             }
         } catch (_) {}
 
-        // Internal auth: send Bearer token when we have one.
-        // Admin routes (except login): use admin_token. Other app routes: use pharmasight_access_token. Skip for auth endpoints.
+        // Auth: send Bearer token when we have one.
+        // Admin routes (except login): use admin_token.
+        // App routes: use internal pharmasight_access_token only (no Supabase fallback).
+        // Skip for auth endpoints.
         const isAuthEndpoint = endpoint.indexOf('/api/auth/username-login') !== -1 ||
             endpoint.indexOf('/api/auth/refresh') !== -1 ||
             endpoint.indexOf('/api/auth/request-reset') !== -1 ||
@@ -158,6 +191,21 @@ class APIClient {
             console.error('API Request Failed:', { url, error: error.message });
             throw new Error(`Network error: ${error.message}. Please check if the backend server is running on ${this.baseURL}`);
         }
+        };
+
+        const promise = executeRequest();
+
+        if (!dedupeDisabled && requestKey) {
+            this.inFlightRequests.set(requestKey, promise);
+            promise.finally(() => {
+                // Clean up once the request settles so future calls can fire again.
+                if (this.inFlightRequests.get(requestKey) === promise) {
+                    this.inFlightRequests.delete(requestKey);
+                }
+            });
+        }
+
+        return promise;
     }
 
     get(endpoint, params = {}, requestOptions = {}) {

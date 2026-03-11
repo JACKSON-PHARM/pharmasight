@@ -34,3 +34,14 @@ class SetupStatusResponse(BaseModel):
     company_exists: bool = Field(..., description="Whether company exists in database")
     user_id: Optional[UUID] = None
     must_setup_company: Optional[bool] = None
+
+
+class AcceptInviteRequest(BaseModel):
+    """Accept an invitation and set an initial password (internal auth only)."""
+    invitation_token: str = Field(..., min_length=8, description="Invitation token from invite link")
+    new_password: str = Field(..., min_length=8, description="New password to set")
+
+
+class AcceptInviteResponse(BaseModel):
+    """Response from invite acceptance."""
+    message: str

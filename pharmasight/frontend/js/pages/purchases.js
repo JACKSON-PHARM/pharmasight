@@ -22,6 +22,10 @@ let supplierInvoicesUserFilter = 'self';
 let purchaseOrdersDateFilter = 'this_week';
 let purchaseOrdersUserFilter = 'self';
 
+// Guard state for viewing supplier invoices to prevent duplicate API calls and stale UI updates
+let supplierInvoiceViewInProgress = false;
+let supplierInvoiceViewCurrentId = null;
+
 /** Return today's date as YYYY-MM-DD in the user's local timezone (so "Today" filter and form default match). */
 function getLocalDateString() {
     const n = new Date();
@@ -2362,13 +2366,10 @@ async function savePurchaseDocument(event, documentType) {
         showToast('BATCHED invoices are read-only. Only payment can be updated.', 'info');
         return;
     }
-    
-    // Prevent duplicate submissions
-    if (isSavingDocument) {
-        showToast('Please wait, order is being saved...', 'warning');
-        return;
-    }
-    
+
+    // Prevent duplicate submissions — block silently (no extra toast)
+    if (isSavingDocument) return;
+
     const form = event.target;
     const submitButton = getPrimaryFormActionButton(form);
     
@@ -3264,8 +3265,29 @@ function updatePurchaseSubNavActiveState() {
 
 // View/Edit Supplier Invoice - Navigate to create page (DRAFT = edit, BATCHED = read-only)
 async function viewSupplierInvoice(invoiceId) {
+    if (!invoiceId) return;
+
+    // If we're already loading this exact invoice, ignore duplicate clicks.
+    if (supplierInvoiceViewInProgress && String(supplierInvoiceViewCurrentId) === String(invoiceId)) {
+        return;
+    }
+
+    supplierInvoiceViewInProgress = true;
+    supplierInvoiceViewCurrentId = invoiceId;
+
+    const pageOverlay = document.getElementById('pageLoadOverlay');
+    if (pageOverlay) {
+        pageOverlay.style.display = 'flex';
+    }
+
     try {
         const invoice = await API.purchases.getInvoice(invoiceId);
+
+        // If another invoice was requested after this one, ignore this response.
+        if (String(supplierInvoiceViewCurrentId) !== String(invoiceId)) {
+            return;
+        }
+
         const isDraft = invoice.status === 'DRAFT';
         const isBatched = invoice.status === 'BATCHED';
 
@@ -3285,6 +3307,15 @@ async function viewSupplierInvoice(invoiceId) {
     } catch (error) {
         console.error('Error loading supplier invoice:', error);
         showToast(error.message || 'Error loading invoice', 'error');
+    } finally {
+        // Only clear global loading state if this is still the active invoice.
+        if (String(supplierInvoiceViewCurrentId) === String(invoiceId)) {
+            supplierInvoiceViewInProgress = false;
+            supplierInvoiceViewCurrentId = null;
+        }
+        if (pageOverlay && !supplierInvoiceViewInProgress) {
+            pageOverlay.style.display = 'none';
+        }
     }
 }
 

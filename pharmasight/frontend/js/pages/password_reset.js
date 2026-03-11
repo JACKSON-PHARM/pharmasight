@@ -33,19 +33,12 @@ async function loadPasswordReset() {
     // Clear page
     page.innerHTML = '';
     
-    const hash = window.location.hash || '';
-    const fullUrl = window.location.href || '';
-    const hasSupabaseToken = (
-        (hash.includes('access_token') && hash.includes('type=recovery')) ||
-        (fullUrl.includes('access_token') && fullUrl.includes('type=recovery'))
-    );
-    const hasInternalToken = (fullUrl.indexOf('token=') >= 0 || hash.indexOf('token=') >= 0) && !hasSupabaseToken;
-    const hasTokenFlag = window.__PASSWORD_RESET_TOKEN_PRESENT === true;
-    const hasToken = hasSupabaseToken || hasInternalToken || hasTokenFlag;
+    const token = getResetTokenFromUrl();
+    const hasToken = Boolean(token);
 
     if (hasToken) {
-        console.log('[PASSWORD RESET] Showing password update form (token detected)', { hasSupabaseToken, hasInternalToken });
-        await renderPasswordUpdateForm(page, hasInternalToken);
+        console.log('[PASSWORD RESET] Showing password update form (internal token detected)');
+        await renderPasswordUpdateForm(page);
     } else {
         // No token - show email request form
         console.log('[PASSWORD RESET] Showing email request form (no token)');
@@ -183,7 +176,7 @@ function getResetTokenFromUrl() {
     return null;
 }
 
-async function renderPasswordUpdateForm(page, isInternalReset) {
+async function renderPasswordUpdateForm(page) {
     page.innerHTML = `
         <div class="login-container">
             <div class="login-card">
@@ -221,13 +214,6 @@ async function renderPasswordUpdateForm(page, isInternalReset) {
             </div>
         </div>
     `;
-    
-    // First, let Supabase process the token naturally
-    console.log('[PASSWORD RESET] Waiting for Supabase to process recovery token...');
-    
-    // Wait a moment for Supabase to process the token
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
     // Now setup the form
     const form = document.getElementById('passwordUpdateForm');
     const newPasswordInput = document.getElementById('newPassword');
@@ -344,87 +330,23 @@ async function renderPasswordUpdateForm(page, isInternalReset) {
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating...';
             
             try {
-                if (isInternalReset) {
-                    const token = getResetTokenFromUrl();
-                    if (!token) throw new Error('Reset link invalid or expired.');
-                    const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
-                        ? CONFIG.API_BASE_URL
-                        : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
-                    if (!baseUrl) throw new Error('Configuration error.');
-                    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/reset-password`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ token: token, new_password: newPassword })
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(data.detail || data.message || 'Failed to reset password.');
-                    if (typeof showToast === 'function') showToast('Password reset. Sign in with your username and password.', 'success');
-                    window.history.replaceState(null, null, window.location.pathname);
-                    setTimeout(() => { (window.loadPage && window.loadPage('login')) || (window.location.hash = '#login'); }, 1500);
-                    return;
-                }
-                const supabase = window.initSupabaseClient();
-                if (!supabase) throw new Error('Supabase client not available');
-                const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-                
-                if (sessionError) throw sessionError;
-                
-                if (!sessionData.session) {
-                    // Try one more time with a small delay
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    const { data: retryData } = await supabase.auth.getSession();
-                    
-                    if (!retryData.session) {
-                        throw new Error('No valid recovery session. The link may have expired or already been used.');
-                    }
-                }
-                
-                // Update password
-                const { error: updateError } = await supabase.auth.updateUser({
-                    password: newPassword
+                const token = getResetTokenFromUrl();
+                if (!token) throw new Error('Reset link invalid or expired.');
+                const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
+                    ? CONFIG.API_BASE_URL
+                    : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
+                if (!baseUrl) throw new Error('Configuration error.');
+                const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/reset-password`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: token, new_password: newPassword })
                 });
-                
-                if (updateError) throw updateError;
-                
-                console.log('[PASSWORD RESET] ✅ Password updated successfully!');
-
-                // Also mark password_set = true in our backend profile so app flow doesn't
-                // keep sending the user to the password-set screen after login.
-                try {
-                    const activeSession = sessionData.session || (await supabase.auth.getSession())?.data?.session;
-                    const userId = activeSession?.user?.id;
-                    if (userId && window.API && window.API.users && window.API.users.update) {
-                        await API.users.update(userId, { password_set: true });
-                        console.log('[PASSWORD RESET] Updated password_set flag in user profile');
-                    } else {
-                        console.warn('[PASSWORD RESET] Could not update password_set flag (no userId or API.users.update)');
-                    }
-                } catch (profileError) {
-                    console.warn('[PASSWORD RESET] Error updating password_set flag:', profileError);
-                    // Non-critical; user can still log in, but might see password-set once more
-                }
-                
-                showToast('Password updated successfully! You can now login with your new password.', 'success');
-                
-                // Sign out the recovery session to ensure fresh login
-                try {
-                    await supabase.auth.signOut();
-                    console.log('[PASSWORD RESET] Signed out recovery session');
-                } catch (signOutError) {
-                    console.warn('[PASSWORD RESET] Error signing out:', signOutError);
-                    // Non-critical - continue with redirect
-                }
-                
-                // Clear hash and redirect to login
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || data.message || 'Failed to reset password.');
+                if (typeof showToast === 'function') showToast('Password reset. Sign in with your username and password.', 'success');
                 window.history.replaceState(null, null, window.location.pathname);
-                setTimeout(() => {
-                    if (window.loadPage) {
-                        window.loadPage('login');
-                    } else {
-                        window.location.hash = '#login';
-                    }
-                }, 1500);
-                
+                setTimeout(() => { (window.loadPage && window.loadPage('login')) || (window.location.hash = '#login'); }, 1500);
+                return;
             } catch (error) {
                 console.error('Password update error:', error);
                 showError(error.message || 'Failed to update password. Please try again.');

@@ -9,7 +9,6 @@
  */
 
 // Private state (not exposed to window)
-let authListener = null;
 let currentUser = null;
 let currentSession = null;
 let authInitialized = false;
@@ -20,8 +19,10 @@ let authStateListeners = new Set();
 const AUTH_CHANNEL_NAME = 'pharmasight_auth';
 let authChannel = null;
 
-// Store the Supabase client instance once after initialization
-let supabaseClientInstance = null;
+/**
+ * PharmaSight internal auth only.
+ * Supabase must not be used for session restoration or identity verification.
+ */
 
 /**
  * Initialize BroadcastChannel for multi-tab communication
@@ -93,7 +94,36 @@ function getInternalAuthState() {
 }
 
 /**
- * Refresh auth state: internal token first, then Supabase.
+ * Attempt internal refresh-token rotation via PharmaSight backend.
+ */
+async function tryRefreshInternalSession() {
+    try {
+        if (typeof localStorage === 'undefined') return null;
+        const refresh = localStorage.getItem('pharmasight_refresh_token');
+        const userId = localStorage.getItem('pharmasight_user_id');
+        if (!refresh || !userId) return null;
+        const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null) ? CONFIG.API_BASE_URL : '';
+        const resp = await fetch(`${base}/api/auth/refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: refresh })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data || !data.access_token) {
+            return null;
+        }
+        try {
+            localStorage.setItem('pharmasight_access_token', data.access_token);
+            if (data.refresh_token) localStorage.setItem('pharmasight_refresh_token', data.refresh_token);
+        } catch (_) {}
+        return getInternalAuthState();
+    } catch (_) {
+        return null;
+    }
+}
+
+/**
+ * Refresh auth state: internal tokens only (with optional refresh rotation).
  */
 async function refreshAuthState() {
     const internal = getInternalAuthState();
@@ -103,28 +133,17 @@ async function refreshAuthState() {
         notifyAuthStateListeners(currentUser, currentSession);
         return { user: currentUser, session: currentSession };
     }
-    if (!supabaseClientInstance) return { user: null, session: null };
-    
-    try {
-        const { data: { session }, error: sessionError } = await supabaseClientInstance.auth.getSession();
-        if (sessionError) {
-            console.error('Error getting session:', sessionError);
-            currentSession = null;
-            currentUser = null;
-        } else {
-            currentSession = session;
-            currentUser = session?.user || null;
-        }
-        
+    const refreshed = await tryRefreshInternalSession();
+    if (refreshed) {
+        currentUser = refreshed.user;
+        currentSession = refreshed.session;
         notifyAuthStateListeners(currentUser, currentSession);
         return { user: currentUser, session: currentSession };
-    } catch (error) {
-        console.error('Error refreshing auth state:', error);
-        currentSession = null;
-        currentUser = null;
-        notifyAuthStateListeners(null, null);
-        return { user: null, session: null };
     }
+    currentSession = null;
+    currentUser = null;
+    notifyAuthStateListeners(null, null);
+    return { user: null, session: null };
 }
 
 /**
@@ -150,62 +169,12 @@ async function initAuthBootstrap() {
     
     authInitializing = true;
     
-    try {
-        // Initialize Supabase client ONCE and store the result
-        if (!window.initSupabaseClient) {
-            throw new Error('Supabase client init function not available. Ensure supabase_client.js loads before auth_bootstrap.js');
-        }
-        
-        supabaseClientInstance = window.initSupabaseClient();
-        if (!supabaseClientInstance) {
-            throw new Error('Supabase client initialization failed');
-        }
-        
-        // Initialize BroadcastChannel
-        initAuthChannel();
-        
-        // Get initial session
-        await refreshAuthState();
-        
-        // Set up auth state change listener
-        // CRITICAL: This listener NEVER navigates or calls startAppFlow
-        // It ONLY updates state and notifies listeners (UI updates only)
-        // When using internal auth (username/password), Supabase may fire INITIAL_SESSION or SIGNED_OUT with session=null.
-        // Do NOT overwrite with null if we still have valid internal auth - avoids false "user logged out" and dashboard disappearing.
-        authListener = supabaseClientInstance.auth.onAuthStateChange((event, session) => {
-            console.log('[AUTH BOOTSTRAP] Auth state changed:', event);
-            
-            if (session) {
-                currentSession = session;
-                currentUser = session.user || null;
-            } else {
-                const internal = getInternalAuthState();
-                if (internal) {
-                    // Keep internal auth; ignore Supabase "signed out" when we're using our own token
-                    currentUser = internal.user;
-                    currentSession = internal.session;
-                } else {
-                    currentSession = null;
-                    currentUser = null;
-                }
-            }
-            
-            // Broadcast to other tabs
-            broadcastAuthStateChange(currentUser, currentSession);
-            
-            // Notify listeners (ONLY state updates, NO navigation)
-            notifyAuthStateListeners(currentUser, currentSession);
-        });
-        
-        authInitialized = true;
-        authInitializing = false;
-        
-        return { user: currentUser, session: currentSession };
-    } catch (error) {
-        console.error('Error initializing auth bootstrap:', error);
-        authInitializing = false;
-        return { user: null, session: null };
-    }
+    // Internal auth only: initialize channel and hydrate from storage/refresh.
+    initAuthChannel();
+    await refreshAuthState();
+    authInitialized = true;
+    authInitializing = false;
+    return { user: currentUser, session: currentSession };
 }
 
 /**
@@ -251,19 +220,33 @@ function onAuthStateChange(callback) {
  * Sign in with email and password
  */
 async function signIn(email, password) {
-    if (!supabaseClientInstance) {
-        throw new Error('Supabase client not initialized');
-    }
-    
-    const { data, error } = await supabaseClientInstance.auth.signInWithPassword({
-        email,
-        password
+    // PharmaSight is the single authentication authority.
+    // This method now delegates to the PharmaSight backend and stores internal tokens.
+    const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null) ? CONFIG.API_BASE_URL : '';
+    const resp = await fetch(`${base}/api/auth/username-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: email, password })
     });
-    
-    if (error) throw error;
-    
-    // State will be updated by auth listener
-    return data;
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+        const msg = (typeof data.detail === 'string' ? data.detail : (data.detail && data.detail.message)) || data.message || 'Login failed';
+        throw new Error(msg);
+    }
+    if (!data.access_token || !data.refresh_token) {
+        throw new Error('Account is not enabled for internal authentication');
+    }
+    try {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('pharmasight_access_token', data.access_token);
+            localStorage.setItem('pharmasight_refresh_token', data.refresh_token);
+            localStorage.setItem('pharmasight_user_id', data.user_id);
+            localStorage.setItem('pharmasight_user_email', data.email || '');
+        }
+    } catch (_) {}
+    // Update cached state immediately
+    await refreshAuthState();
+    return { user: { id: data.user_id, email: data.email || '' }, session: { access_token: data.access_token } };
 }
 
 /**
@@ -271,6 +254,17 @@ async function signIn(email, password) {
  */
 async function signOut() {
     try {
+        // Best-effort server-side logout (revokes current access token) if available.
+        try {
+            const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null) ? CONFIG.API_BASE_URL : '';
+            const token = typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_access_token') : null;
+            if (token) {
+                await fetch(`${base}/api/auth/logout`, {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                }).catch(() => {});
+            }
+        } catch (_) {}
         if (typeof localStorage !== 'undefined') {
             localStorage.removeItem('pharmasight_access_token');
             localStorage.removeItem('pharmasight_refresh_token');
@@ -282,31 +276,14 @@ async function signOut() {
     currentSession = null;
     notifyAuthStateListeners(null, null);
     if (authChannel) authChannel.postMessage({ type: 'AUTH_STATE_CHANGE', user: null, session: null, timestamp: Date.now() });
-    if (!supabaseClientInstance) return;
-    try {
-        await supabaseClientInstance.auth.signOut();
-    } catch (error) {
-        console.error('Sign out error:', error);
-        throw error;
-    }
 }
 
 /**
  * Update password (for invited users)
  */
 async function updatePassword(newPassword) {
-    if (!supabaseClientInstance) {
-        throw new Error('Supabase client not initialized');
-    }
-    
-    const { data, error } = await supabaseClientInstance.auth.updateUser({
-        password: newPassword
-    });
-    
-    if (error) throw error;
-    
-    // State will be updated by auth listener
-    return data;
+    // Supabase auth removed. Password changes are handled via PharmaSight backend endpoints.
+    throw new Error('Password update is not available via AuthBootstrap (Supabase auth removed).');
 }
 
 /**
@@ -349,17 +326,15 @@ async function needsPasswordSetup(user, context = 'login') {
         if (hash.includes('?')) {
             paramsString = hash.split('?')[1];
         } else if (hash.includes('=')) {
-            // Hash might be in root format: #access_token=...&type=recovery
+            // Hash might be in root format: #key=value&...
             paramsString = hash.replace('#', '');
         } else if (fullUrl.includes('?')) {
             paramsString = fullUrl.split('?')[1].split('#')[0];
         }
         
         const urlParams = new URLSearchParams(paramsString);
-        const isPasswordReset = urlParams.get('type') === 'recovery' ||
-                              hash.includes('type=recovery') ||
-                              hash.includes('type%3Drecovery') ||
-                              fullUrl.includes('type=recovery');
+        const routeBase = (hash || '').replace('#', '').split('?')[0];
+        const isPasswordReset = routeBase === 'password-reset' || routeBase === 'reset-password';
         const hasInvitationTokenInUrl = !!urlParams.get('invitation_token') ||
                                       hash.includes('invitation_token') ||
                                       fullUrl.includes('invitation_token');
@@ -376,7 +351,6 @@ async function needsPasswordSetup(user, context = 'login') {
         });
         
         // Case 1: Password reset flow - handled entirely by password_reset.js
-        // Do NOT treat this as a password-set flow
         if (isPasswordReset) {
             console.log('[AUTH] Password reset flow detected - password_set page not required');
             return false;

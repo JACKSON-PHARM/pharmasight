@@ -1,8 +1,7 @@
 """
 Authentication API
 Handles username-based login (looks up email from username).
-Dual-auth: when user has password_hash we verify password and return internal JWT;
-otherwise return email for Supabase sign-in.
+Internal auth only: verifies password and returns internal JWT.
 
 Login always uses legacy + tenant discovery (ignores X-Tenant-Subdomain for lookup).
 Logout revokes the access token server-side so the session is fully terminated.
@@ -89,7 +88,7 @@ class UsernameLoginRequest(BaseModel):
 
 
 class UsernameLoginResponse(BaseModel):
-    """Username login response. When internal auth used: access_token/refresh_token set; else email for Supabase."""
+    """Username login response (internal auth tokens)."""
     email: str
     user_id: str
     username: Optional[str] = None
@@ -119,9 +118,9 @@ def _find_user_in_db(db: Session, normalized_username: str, check_email: bool) -
 
 
 def _require_password_if_internal(user: User, password: str) -> None:
-    """If user has password_hash, verify password; else no-op (Supabase will verify). Raises 401 if wrong."""
+    """Verify password against internal password_hash. Raises 401 if wrong."""
     if not getattr(user, "password_hash", None):
-        return
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account not enabled for password login")
     if not verify_password(password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid password")
 
@@ -233,7 +232,7 @@ def username_login(
     master_db: Session = Depends(get_master_db),
 ):
     """
-    Lookup user by username and return email for Supabase Auth.
+    Lookup user by username and return email.
 
     Always uses legacy + tenant discovery: first search legacy DB, then all tenant DBs
     (from master). Ignores X-Tenant-Subdomain for lookup so master and tenant users
@@ -548,7 +547,7 @@ def auth_request_reset(
     """
     Send password reset email if user exists. Always returns 200 to avoid leaking existence.
     Email is sent in the background so the API returns quickly (avoids long waits and repeated clicks).
-    Requires SMTP configured. Reset link uses internal JWT (no Supabase).
+    Requires SMTP configured. Reset link uses internal JWT.
     Reset link base URL: APP_PUBLIC_URL when set (non-localhost); else request Origin (so Render works).
     """
     email_or_username = (body.email or body.username or "").strip().lower()

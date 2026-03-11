@@ -17,7 +17,7 @@ function parseUrlParams() {
     if (hash.includes('?')) {
         paramsString = hash.split('?')[1];
     } else if (hash.includes('=')) {
-        // Hash might be in root format: #access_token=...&type=recovery
+        // Hash might be in root format: #key=value&...
         paramsString = hash.replace('#', '');
     } else if (fullUrl.includes('?')) {
         // Try full URL
@@ -30,41 +30,41 @@ function parseUrlParams() {
 
 async function loadPasswordSet() {
     console.log('[PASSWORD SET] Loading password set page');
-    
-    // Check if user should be here
-    const user = AuthBootstrap.getCurrentUser();
-    if (!user) {
-        console.error('[PASSWORD SET] No user found');
+
+    // Check if this is a valid password set scenario
+    const { urlParams, hash, fullUrl } = parseUrlParams();
+    const invitationToken = urlParams.get('invitation_token') || urlParams.get('token');
+    const hasInvitationToken = invitationToken || 
+                              hash.includes('invitation_token') ||
+                              fullUrl.includes('invitation_token');
+
+    // Authenticated user (seeded/forced change) OR unauthenticated invite via token
+    const user = (window.AuthBootstrap && typeof AuthBootstrap.getCurrentUser === 'function')
+        ? AuthBootstrap.getCurrentUser()
+        : null;
+    if (!user && !hasInvitationToken) {
+        console.error('[PASSWORD SET] No user and no invitation token; redirecting to login');
         window.location.hash = 'login';
         return;
     }
-    
-    // Check if this is a valid password set scenario
-    const { urlParams, hash, fullUrl } = parseUrlParams();
-    const isPasswordReset = urlParams.get('type') === 'recovery' || 
-                          hash.includes('type=recovery') || 
-                          hash.includes('type%3Drecovery') ||
-                          fullUrl.includes('type=recovery');
-    const hasInvitationToken = urlParams.get('invitation_token') || 
-                              hash.includes('invitation_token') ||
-                              fullUrl.includes('invitation_token');
     
     // Get user profile to check password_set flag
     let alreadyHasPassword = false;
     let userProfile = null;
     try {
-        userProfile = await API.users.get(user.id);
-        alreadyHasPassword = userProfile.password_set === true;
+        if (user?.id) {
+            userProfile = await API.users.get(user.id);
+            alreadyHasPassword = userProfile.password_set === true;
+        }
     } catch (error) {
         console.warn('[PASSWORD SET] Could not check user profile:', error);
         // Continue anyway - better to show page than block user
     }
     
     // User shouldn't be here if:
-    // 1. Not in reset flow AND
-    // 2. Not in invitation flow AND  
-    // 3. Already has password set
-    if (!isPasswordReset && !hasInvitationToken && alreadyHasPassword) {
+    // 1. Not in invitation flow AND
+    // 2. Already has password set
+    if (!hasInvitationToken && alreadyHasPassword) {
         console.warn('[PASSWORD SET] User already has password, redirecting to dashboard');
         window.location.hash = 'dashboard';
         return;
@@ -103,8 +103,8 @@ async function loadPasswordSet() {
     page.style.display = 'block';
     page.style.visibility = 'visible';
     
-    // Re-use the already-fetched user from above
     const email = user?.email || 'your email';
+    const isInviteFlow = Boolean(hasInvitationToken);
     
     page.innerHTML = `
         <div class="login-container">
@@ -116,6 +116,14 @@ async function loadPasswordSet() {
                     <br><small>Email: <strong>${escapeHtml(email)}</strong></small>
                 </p>
                 <form id="passwordSetForm">
+                    ${isInviteFlow ? '' : `
+                    <div class="form-group">
+                        <label for="currentPassword">Current Password</label>
+                        <input type="password" id="currentPassword" required
+                               placeholder="Enter current password"
+                               autocomplete="current-password">
+                    </div>
+                    `}
                     <div class="form-group">
                         <label for="newPassword">New Password</label>
                         <input type="password" id="newPassword" required 
@@ -213,8 +221,49 @@ async function loadPasswordSet() {
             }
             
             try {
-                // Update password via Supabase
-                await AuthBootstrap.updatePassword(newPassword);
+                const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
+                    ? CONFIG.API_BASE_URL
+                    : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
+                const base = (baseUrl || '').replace(/\/$/, '');
+                if (!base) throw new Error('Configuration error.');
+
+                if (isInviteFlow) {
+                    const token = invitationToken || urlParams.get('invitation_token') || urlParams.get('token');
+                    if (!token) throw new Error('Invitation link invalid or expired.');
+                    const tenantSubdomain = (() => {
+                        try { return localStorage.getItem('pharmasight_tenant_subdomain'); } catch (_) { return null; }
+                    })();
+                    if (!tenantSubdomain) {
+                        throw new Error('Tenant context missing. Please open the invite link on the correct tenant URL.');
+                    }
+                    const res = await fetch(`${base}/api/invite/accept`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Tenant-Subdomain': tenantSubdomain
+                        },
+                        body: JSON.stringify({ invitation_token: token, new_password: newPassword })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.detail || data.message || 'Failed to accept invitation.');
+
+                    showToast('Password set. Sign in with your username and password.', 'success');
+                    window.history.replaceState(null, null, window.location.pathname);
+                    setTimeout(() => { (window.loadPage && window.loadPage('login')) || (window.location.hash = '#login'); }, 1500);
+                    return;
+                }
+
+                // Seeded/forced change (authenticated): change password via internal backend
+                const currentPasswordEl = document.getElementById('currentPassword');
+                const currentPassword = currentPasswordEl ? currentPasswordEl.value : '';
+                if (!currentPassword) throw new Error('Current password is required.');
+                const res = await fetch(`${base}/api/auth/update-password`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || data.message || 'Failed to update password.');
                 
                 // Update password_set flag in user profile via API
                 // Backend should handle this, but we ensure it's set and cache it locally

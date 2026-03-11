@@ -30,7 +30,7 @@ function isAuthenticated() {
 function isAuthRoute(hash) {
     const authRoutes = ['login', 'password-set', 'password-reset', 'reset-password'];
     const route = hash.replace('#', '').split('?')[0];
-    return authRoutes.includes(route) || hash.includes('access_token') || hash.includes('invite');
+    return authRoutes.includes(route) || route === 'tenant-invite-setup';
 }
 
 /**
@@ -132,27 +132,6 @@ function initializeAppShell() {
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('✅ DOM Content Loaded - Initializing app...');
     
-    // CRITICAL: Check for password reset token IMMEDIATELY before anything else
-    // This must happen before any other processing
-    const initialHash = window.location.hash || '';
-    const initialUrl = window.location.href;
-    const earlyHasAccessToken = initialHash.includes('access_token') || initialUrl.includes('access_token');
-    const earlyHasRecoveryType = initialHash.includes('type=recovery') || 
-                            initialHash.includes('type%3Drecovery') || 
-                            initialUrl.includes('type=recovery') ||
-                            initialUrl.includes('type%3Drecovery');
-    
-    console.log('🔍 [EARLY CHECK] Initial hash:', initialHash);
-    console.log('🔍 [EARLY CHECK] Initial URL:', initialUrl);
-    console.log('🔍 [EARLY CHECK] Has access_token:', earlyHasAccessToken);
-    console.log('🔍 [EARLY CHECK] Has type=recovery:', earlyHasRecoveryType);
-    
-    // If this is a password reset token, DO NOT REWRITE THE HASH
-    // Supabase needs the token in root format: #access_token=...&type=recovery
-    if (earlyHasAccessToken && earlyHasRecoveryType && !initialHash.includes('password-reset')) {
-        console.log('🚨 [EARLY CHECK] PASSWORD RESET TOKEN DETECTED - NOT modifying hash (Supabase needs root format)');
-    }
-    
     // Keep loading indicator visible until appReady (set after auth + branch settle and first page is determined)
     // Do NOT hide appLoading here – prevents flicker before layout is decided
 
@@ -162,8 +141,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (authLayout) authLayout.style.display = 'none';
     if (appLayout) appLayout.style.display = 'none';
     
-    // Check if we're on the invite route or have an access token in hash
-    // CRITICAL: Don't treat password-reset links as invite links
+    // Check if we're on the invite route
     const hash = window.location.hash || '';
     const pathname = window.location.pathname || '';
     const fullUrl = window.location.href;
@@ -172,64 +150,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.log('[INIT] Hash:', hash);
     console.log('[INIT] Full URL:', fullUrl);
     
-    const isPasswordReset = hash.includes('password-reset');
-    
-    // Check if this is a password reset token (Supabase format: #access_token=...&type=recovery)
-    // Also check full URL in case token is in query params
-    const hasAccessToken = hash.includes('access_token') || fullUrl.includes('access_token');
-    const hasRecoveryType = hash.includes('type=recovery') || 
-                            hash.includes('type%3Drecovery') || 
-                            fullUrl.includes('type=recovery') ||
-                            fullUrl.includes('type%3Drecovery');
-    
-    const isPasswordResetToken = hasAccessToken && hasRecoveryType;
-    
-    console.log('[INIT] isPasswordReset:', isPasswordReset);
-    console.log('[INIT] hasAccessToken:', hasAccessToken);
-    console.log('[INIT] hasRecoveryType:', hasRecoveryType);
-    console.log('[INIT] isPasswordResetToken:', isPasswordResetToken);
-    
-    // Persist a flag for password reset flow so we can still detect it after Supabase cleans the hash
-    if (isPasswordResetToken) {
-        window.__PASSWORD_RESET_TOKEN_PRESENT = true;
-        window.__PASSWORD_RESET_ORIGINAL_URL = fullUrl;
-        console.log('[PASSWORD RESET] Stored recovery token flag on window.__PASSWORD_RESET_TOKEN_PRESENT');
-    }
-    
-    // If it's a password reset token but not already on password-reset page, go straight to password reset form
-    if (isPasswordResetToken && !isPasswordReset) {
-        console.log('[PASSWORD RESET] ✅ Detected password reset token in URL');
-        
-        // DO NOT REWRITE THE HASH - Supabase needs it in root format
-        console.log('[PASSWORD RESET] Token format is correct for Supabase, not modifying hash');
-        
-        // Initialize auth bootstrap first (needed for Supabase recovery session)
-        try {
-            console.log('🔐 Initializing Auth Bootstrap for password reset...');
-            await AuthBootstrap.init();
-        } catch (error) {
-            console.error('Error initializing auth bootstrap:', error);
-        }
-        
-        // Always stay in auth layout for recovery
-        renderAuthLayout();
-        
-        // BYPASS generic router: load password reset UI directly
-        if (typeof window.loadPasswordReset === 'function') {
-            console.log('[PASSWORD RESET] 🚀 Calling window.loadPasswordReset() directly (bypassing router)');
-            window.loadPasswordReset();
-        } else {
-            console.error('[PASSWORD RESET] ❌ window.loadPasswordReset is not defined – falling back to loadPage(\"password-reset\")');
-            loadPage('password-reset');
-        }
-        window.appReady = true;
-        const loadingIndicator = document.getElementById('appLoading');
-        if (loadingIndicator) loadingIndicator.style.display = 'none';
-        return; // CRITICAL: Stop here, don't continue with normal auth flow
-    }
-    
-    // Only treat as invite if it's not a password reset link
-    if (!isPasswordReset && !isPasswordResetToken && (hash.includes('access_token') || pathname === '/invite' || hash.includes('#invite'))) {
+    // Internal invite links should use explicit routes (e.g. #tenant-invite-setup?token=...)
+    if (pathname === '/invite' || hash.includes('#invite')) {
         console.log('[INVITE] Detected invite link');
         await renderInviteHandler();
         return; // Don't continue with normal auth flow
@@ -257,41 +179,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         const routeHash = window.location.hash || '';
         const isAuthRoute_ = isAuthRoute(routeHash);
         
-        // Check if this is a password reset/recovery flow
-        // Recovery sessions should stay in auth layout even if authenticated
-        const isRecoveryTokenFlow = routeHash.includes('access_token') && 
-                                   (routeHash.includes('type=recovery') || routeHash.includes('type%3Drecovery'));
-        
         // STEP 3: Render appropriate layout based on auth state
-        // CRITICAL: Recovery token flows must stay in auth layout even if authenticated
-        if (!authenticated || isAuthRoute_ || isRecoveryTokenFlow) {
+        if (!authenticated || isAuthRoute_) {
             // UNAUTHENTICATED OR AUTH ROUTE OR RECOVERY FLOW: Render Auth Layout
-            if (isRecoveryTokenFlow) {
-                console.log('[AUTH GATE] Recovery token detected, rendering Auth Layout (even though authenticated)');
-            } else {
-                console.log('[AUTH GATE] User not authenticated or auth route, rendering Auth Layout');
-            }
+            console.log('[AUTH GATE] User not authenticated or auth route, rendering Auth Layout');
             renderAuthLayout();
             
             // Set up auth state listener (only updates UI, never navigates for password recovery)
             AuthBootstrap.onAuthStateChange((user, session) => {
                 const hashNow = window.location.hash || '';
-                const isRecoveryToken =
-                    hashNow.includes('access_token') &&
-                    (hashNow.includes('type=recovery') || hashNow.includes('type%3Drecovery'));
                 const isPasswordResetRoute = hashNow.includes('password-reset');
 
                 // For normal sign-ins (not password recovery), switch to app layout
-                if (user && session && !isRecoveryToken && !isPasswordResetRoute) {
+                if (user && session && !isPasswordResetRoute) {
                     console.log('[AUTH STATE CHANGE] User logged in, switching to App Layout');
                     renderAppLayout();
                     // Reset screen tracking for new layout
                     currentScreen = null;
                     // Start app flow
                     startAppFlow();
-                } else if (isRecoveryToken || isPasswordResetRoute) {
-                    // For recovery sessions, stay in auth layout so password-reset page can handle update
-                    console.log('[AUTH STATE CHANGE] Password recovery session detected, staying in Auth Layout');
+                } else if (isPasswordResetRoute) {
+                    // Stay in auth layout so password-reset page can handle update
+                    console.log('[AUTH STATE CHANGE] Password reset route detected, staying in Auth Layout');
                 }
             });
             
@@ -337,7 +246,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Set up auth state listener for authenticated state
             AuthBootstrap.onAuthStateChange((user, session) => {
                 if (!user || !session) {
-                    // Supabase may fire null when using internal auth only - don't treat as logout if we still have internal auth
                     const stillLoggedIn = AuthBootstrap.getCurrentUser && AuthBootstrap.getCurrentUser();
                     if (stillLoggedIn) {
                         return; // Ignore spurious sign-out; keep app layout and dashboard
@@ -431,11 +339,6 @@ function initializeHashRouting() {
             console.log('[HASH ROUTING] App not ready, ignoring hashchange');
             return;
         }
-        // If we're in the middle of a password reset recovery flow, ignore hash changes
-        if (window.__PASSWORD_RESET_TOKEN_PRESENT === true) {
-            console.log('[HASH ROUTING] Password reset flow active, ignoring hashchange event');
-            return;
-        }
 
         const hash = window.location.hash.replace('#', '') || 'landing';
         const routeBase = hash.split('?')[0] || hash;
@@ -464,15 +367,6 @@ function initializeHashRouting() {
         }
         
         // Handle auth routes
-        // CRITICAL: Check for recovery token - these should always go to password-reset page
-        const isRecoveryToken = hash.includes('access_token') && 
-                               (hash.includes('type=recovery') || hash.includes('type%3Drecovery'));
-        if (isRecoveryToken) {
-            console.log('[HASH ROUTING] Recovery token detected, forcing password-reset route');
-            loadPage('password-reset');
-            return;
-        }
-        
         if (isAuthRoute || routeBase === 'setup' || routeBase === 'invite') {
             let pageToLoad = routeBase;
             if (pageToLoad === 'login' && (window.location.search || '').includes('token=')) {
@@ -514,7 +408,10 @@ function initializeHashRouting() {
 }
 
 /**
- * Handle invite link from Supabase email
+ * Handle invite link (internal-only).
+ *
+ * Legacy Supabase invite links are no longer supported.
+ * Internal invites should use `#/tenant-invite-setup?token=...` (or `?token=...#tenant-invite-setup`).
  */
 async function renderInviteHandler() {
     console.log('[INVITE] Handling invite link');
@@ -540,56 +437,19 @@ async function renderInviteHandler() {
     }
     
     try {
-        // Initialize Supabase if not already initialized
-        Auth.initSupabase();
-        
-        // Supabase automatically parses access_token from hash when getSession() is called
-        // Wait a moment for Supabase to process the hash
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Get Supabase client from shared module
-        const supabaseClient = window.initSupabaseClient ? window.initSupabaseClient() : null;
-        if (supabaseClient) {
-            const { data, error } = await supabaseClient.auth.getSession();
-            
-            if (error || !data?.session) {
-                console.error('[INVITE] Invalid or expired invitation link:', error);
-                window.appReady = true;
-                const loadingIndicator = document.getElementById('appLoading');
-                if (loadingIndicator) loadingIndicator.style.display = 'none';
-                if (invitePage) {
-                    invitePage.innerHTML = `
-                        <div style="display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; gap: 1rem; padding: 2rem;">
-                            <i class="fas fa-exclamation-triangle" style="font-size: 3rem; color: #e74c3c;"></i>
-                            <h2>Invalid or Expired Invitation</h2>
-                            <p>The invitation link is invalid or has expired.</p>
-                            <button class="btn btn-primary" onclick="window.location.hash = '#login'">Go to Login</button>
-                        </div>
-                    `;
-                } else {
-                    alert('Invalid or expired invitation link');
-                    window.location.hash = '#login';
-                }
-                return;
+        const token = new URLSearchParams(window.location.search || '').get('token');
+        if (token) {
+            // Preserve the existing query string, but move the user onto the internal invite setup route.
+            window.location.hash = '#tenant-invite-setup';
+            if (typeof window.loadPage === 'function') {
+                window.loadPage('tenant-invite-setup');
             }
-            
-            console.log('[INVITE] Invite session accepted');
-            
-            // User is now authenticated
-            // Clear the pathname and hash to remove the token
-            window.history.replaceState(null, '', window.location.origin + '/');
-            
-            // Initialize auth bootstrap if not already done
-            await AuthBootstrap.init();
-            
-            // Refresh auth state
-            await AuthBootstrap.refresh();
-            
-            // Continue with normal app flow (will handle password set, branch select, etc.)
-            await startAppFlow();
-        } else {
-            throw new Error('Supabase not configured');
+            window.appReady = true;
+            const loadingIndicator = document.getElementById('appLoading');
+            if (loadingIndicator) loadingIndicator.style.display = 'none';
+            return;
         }
+        throw new Error('Invitation link missing token. Please request a new invite.');
     } catch (error) {
         console.error('[INVITE] Error handling invite:', error);
         window.appReady = true;
@@ -599,13 +459,13 @@ async function renderInviteHandler() {
             invitePage.innerHTML = `
                 <div style="display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; gap: 1rem; padding: 2rem;">
                     <i class="fas fa-exclamation-triangle" style="font-size: 3rem; color: #e74c3c;"></i>
-                    <h2>Error Processing Invitation</h2>
-                    <p>${error.message || 'An error occurred while processing the invitation link.'}</p>
+                    <h2>Invitation Link Not Supported</h2>
+                    <p>${error.message || 'This invitation link format is not supported. Please request a new invite.'}</p>
                     <button class="btn btn-primary" onclick="window.location.hash = '#login'">Go to Login</button>
                 </div>
             `;
         } else {
-            alert('Error processing invitation link. Please try again.');
+            alert(error.message || 'Invitation link not supported.');
             window.location.hash = '#login';
         }
     }
@@ -623,12 +483,7 @@ async function startAppFlow() {
         return;
     }
 
-    // If a password reset recovery flow is active, do NOT run normal app routing.
-    // The password-reset page is responsible for handling the flow and redirecting to login.
-    if (window.__PASSWORD_RESET_TOKEN_PRESENT === true) {
-        console.log('[APP FLOW] Password reset flow active, skipping startAppFlow routing');
-        return;
-    }
+    // Password resets are handled on `#password-reset` via internal token links.
     
     // GUARD: If user is on branch-select route, do NOT redirect away from it.
     // Branch selection must be user-invoked only, and startAppFlow should not interfere.
@@ -734,22 +589,12 @@ async function startAppFlow() {
         }
         
         const urlParams = new URLSearchParams(paramsString);
-        const isPasswordReset = urlParams.get('type') === 'recovery' || 
-                              hash.includes('type=recovery') || 
-                              hash.includes('type%3Drecovery') ||
-                              fullUrl.includes('type=recovery');
         const hasInvitationToken = urlParams.get('invitation_token') || 
                                   hash.includes('invitation_token') ||
                                   fullUrl.includes('invitation_token');
         const hashRoute = hash.replace('#', '').split('?')[0];
         
-        // Case 1: User is in password reset flow
-        if (isPasswordReset) {
-            console.log('[APP FLOW] Password reset flow detected');
-            // Let password_reset.js handle it (already handled earlier in DOMContentLoaded)
-            isInitializing = false;
-            return;
-        }
+        // Case 1: Password reset is handled on the explicit route `#password-reset?token=...`
         
         // Case 2: User is accepting invitation
         if (hasInvitationToken) {
@@ -795,33 +640,67 @@ async function startAppFlow() {
         }
         
         // Case 4: Normal login with password already set
-        console.log('[APP FLOW] Normal login, checking branch selection');
-        
-        // Check if company setup is needed
-        let needsSetup = false;
-        try {
-            const redirect = await Promise.race([
-                Auth.shouldRedirectToSetup(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
-            ]);
-            needsSetup = redirect.redirect === 'setup';
-        } catch (error) {
-            console.warn('Setup check timed out:', error);
+        console.log('[APP FLOW] Normal login, resolving company/branch state');
+
+        // ---- CENTRAL NAVIGATION DECISION (single authority) ----
+        // Only this block decides where to go after login.
+
+        // 1) Determine if a company exists
+        let hasCompany = false;
+        let companyId = CONFIG.COMPANY_ID || null;
+        const normalizeCompanies = (res) => {
+            if (Array.isArray(res)) return res;
+            if (res && Array.isArray(res.companies)) return res.companies;
+            return [];
+        };
+        const normalizeBranches = (res) => {
+            if (Array.isArray(res)) return res;
+            if (res && Array.isArray(res.branches)) return res.branches;
+            return [];
+        };
+
+        if (API && API.company && typeof API.company.list === 'function') {
+            try {
+                const companies = normalizeCompanies(await API.company.list());
+                if (companies.length > 0) {
+                    hasCompany = true;
+                    if (!companyId) {
+                        companyId = companies[0].id;
+                        CONFIG.COMPANY_ID = companyId;
+                        saveConfig();
+                    }
+                }
+            } catch (e) {
+                console.warn('[APP FLOW] company.list failed; assuming no company for navigation:', e);
+            }
         }
-        
-        if (needsSetup) {
+
+        // 2) If no company or no branches, go to setup
+        let hasBranches = false;
+        if (hasCompany && API && API.branch && typeof API.branch.list === 'function') {
+            try {
+                const branches = normalizeBranches(await API.branch.list(companyId));
+                if (branches.length > 0) {
+                    hasBranches = true;
+                }
+            } catch (e) {
+                console.warn('[APP FLOW] branch.list failed; assuming no branches for navigation:', e);
+            }
+        }
+
+        if (!hasCompany || !hasBranches) {
             if (currentScreen !== 'setup') {
-                console.log('⚙️ Setup required, redirecting to setup wizard...');
+                console.log('⚙️ No company or branches found, redirecting to setup wizard...');
                 currentScreen = 'setup';
                 loadPage('setup');
             }
             isInitializing = false;
             return;
         }
-        
-        // Check if branch is selected and validate access
+
+        // 3) Company and branches exist: check if a branch is selected
         let branch = BranchContext.getBranch();
-        // After setup wizard we have CONFIG.BRANCH_ID but BranchContext may be empty - restore from API
+        // Restore from CONFIG if needed
         if (!branch && CONFIG.BRANCH_ID && API && typeof API.branch.get === 'function') {
             try {
                 const fetched = await API.branch.get(CONFIG.BRANCH_ID);
@@ -833,23 +712,22 @@ async function startAppFlow() {
                 console.warn('Could not restore branch from CONFIG:', e);
             }
         }
+
         if (!branch) {
-            // No branch selected - show branch selection
             if (currentScreen !== 'branch-select') {
-                console.log('🌳 No branch selected, showing branch selection...');
+                console.log('🌳 Company and branches exist but no branch selected, showing branch selection...');
                 currentScreen = 'branch-select';
                 loadPage('branch-select');
             }
             isInitializing = false;
             return;
         }
-        
-        // Validate branch access on refresh (re-validate branch exists and user has access)
+
+        // 4) Validate branch access (if invalid, force branch-select)
         try {
             const branchValid = await validateBranchAccess(branch.id);
             if (!branchValid) {
-                // Branch no longer accessible - clear and show selection
-                console.log('🌳 Branch access invalid, clearing selection...');
+                console.log('🌳 Branch access invalid, clearing selection and redirecting to branch-select...');
                 BranchContext.clearBranch();
                 if (currentScreen !== 'branch-select') {
                     currentScreen = 'branch-select';
@@ -862,13 +740,13 @@ async function startAppFlow() {
             console.error('Error validating branch access:', error);
             // On error, allow continuation (don't block user)
         }
-        
-        // All checks passed - show landing (lightweight home)
-        if (currentScreen !== 'landing') {
-            console.log('✅ All checks passed, showing landing...');
-            currentScreen = 'landing';
+
+        // 5) All checks passed: branch selected and valid → go to dashboard
+        if (currentScreen !== 'dashboard') {
+            console.log('✅ Company, branches, and branch selection OK – showing dashboard...');
+            currentScreen = 'dashboard';
             await updateStatusBar(user);
-            loadPage('landing');
+            loadPage('dashboard');
         }
         
     } catch (error) {
@@ -1453,34 +1331,12 @@ async function loadPage(pageName) {
     
     currentPage = pageName;
     
-    // BEFORE loading any page, check if this is a password reset link
     const currentHash = window.location.hash || '';
-    
-    // Check for password reset token
-    if (currentHash.includes('access_token') && (currentHash.includes('type=recovery') || currentHash.includes('type%3Drecovery'))) {
-        console.log('🔧 [ROUTER] Password reset link detected, forcing password-reset route');
-        
-        // DO NOT REWRITE THE HASH - Supabase needs token in root format: #access_token=...&type=recovery
-        console.log('🔧 [ROUTER] Token format is correct for Supabase, not modifying hash');
-        
-        // CRITICAL: Always set pageName to 'password-reset' when token is present
-        // This ensures isAuthPage check passes
-        pageName = 'password-reset';
-        currentPage = 'password-reset';
-        console.log('✅ [ROUTER] Forced pageName to password-reset');
-    }
     
     // Check if this is an auth route (setup lives in auth layout so it must be treated as auth page for correct visibility)
     const authRoutes = ['login', 'password-set', 'password-reset', 'reset-password', 'tenant-invite-setup', 'setup'];
     const isAuthPage = authRoutes.includes(pageName);
     const authenticated = isAuthenticated();
-    
-    // Check if this is a password reset/recovery flow
-    // Recovery sessions are temporary and should allow password-reset page
-    // (currentHash already declared above)
-    const isRecoveryToken = currentHash.includes('access_token') && 
-                           (currentHash.includes('type=recovery') || currentHash.includes('type%3Drecovery'));
-    const isPasswordResetFlow = (pageName === 'password-reset' || pageName === 'reset-password') && isRecoveryToken;
     
     // ENFORCE LAYOUT ISOLATION: App pages must use App Layout and require auth
     // CRITICAL: This check happens FIRST to prevent app pages from loading in auth layout
@@ -1502,12 +1358,13 @@ async function loadPage(pageName) {
     // GUARD: Do NOT redirect away from branch-select or setup - user must select branch or complete company setup
     const hashRoute = currentHash.replace('#', '').split('?')[0];
     const isOnBranchSelectRoute = hashRoute === 'branch-select';
+    const isPasswordResetPage = pageName === 'password-reset' || pageName === 'reset-password';
     const isPasswordSetPage = pageName === 'password-set';
     const isSetupPage = pageName === 'setup';
-    if (isAuthPage && authenticated && !isPasswordResetFlow && !isPasswordSetPage && !isSetupPage && layoutRendered !== 'auth' && !isOnBranchSelectRoute) {
+    if (isAuthPage && authenticated && !isPasswordResetPage && !isPasswordSetPage && !isSetupPage && layoutRendered !== 'auth' && !isOnBranchSelectRoute) {
         console.warn('[ROUTING] Auth page requested but user is authenticated, redirecting to landing...');
         // Don't load auth pages in app layout - redirect to landing
-        // UNLESS it's a password reset flow with recovery token
+        // UNLESS it's a password reset page
         // UNLESS it's password-set page (new users need to set password)
         // UNLESS it's setup page (first user must complete company + branch)
         // UNLESS user is on branch-select route (must allow user to select branch)
@@ -1575,30 +1432,15 @@ async function loadPage(pageName) {
     // Update URL hash
     try {
         const currentHash = window.location.hash || '';
-        
-        // Special handling for password reset pages with tokens
-        if (pageName === 'password-reset' && currentHash.includes('access_token') && currentHash.includes('type=recovery')) {
-            // DO NOT REWRITE THE HASH - Supabase needs token in root format
-            console.log('🔧 [HASH] Password reset token detected, not modifying hash');
-            
-            // Only add route prefix if hash is pure token (starts with #access_token) and doesn't have route yet
-            if (currentHash.startsWith('#access_token') && !currentHash.includes('password-reset')) {
-                // Add route prefix without breaking the token format
-                const newHash = `#password-reset/${currentHash.substring(1)}`;
-                window.history.replaceState(null, null, window.location.pathname + newHash);
-                console.log('✅ [HASH] Added route prefix while preserving token format');
-            }
-        } else if (pageName !== 'password-reset') {
-            // Normal hash update for other pages (preserve query e.g. #items?item_id=xxx)
-            const curBase = (currentHash.replace('#', '') || '').split('?')[0];
-            const hasQuery = currentHash.includes('?');
-            if (hasQuery && curBase === pageName) {
-                // Keep existing hash so e.g. #items?item_id=xxx is not overwritten
-            } else {
-                window.location.hash = `#${pageName}`;
-            }
+
+        // Normal hash update (preserve query e.g. #items?item_id=xxx or #password-reset?token=...)
+        const curBase = (currentHash.replace('#', '') || '').split('?')[0];
+        const hasQuery = currentHash.includes('?');
+        if (hasQuery && curBase === pageName) {
+            // Keep existing hash so query params are not overwritten
+        } else {
+            window.location.hash = `#${pageName}`;
         }
-        // For password-reset without token, let the default hash update happen
     } catch (e) {
         console.warn('Could not update URL hash:', e);
     }
