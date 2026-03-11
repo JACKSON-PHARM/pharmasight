@@ -8,7 +8,7 @@ for that branch.
 
 Usage:
   cd pharmasight/backend && python -m scripts.process_snapshot_refresh_queue [--batch-size=50] [--once]
-  With --once: process one batch and exit. Without: run in a loop every --interval seconds.
+  Night batch (faster): --once --quiet --chunk-size=1000
 """
 import argparse
 import logging
@@ -18,12 +18,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+def _enable_quiet_mode() -> None:
+    """Suppress SQL logging to speed up batch refresh."""
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.dialects").setLevel(logging.WARNING)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Process snapshot_refresh_queue")
     parser.add_argument("--batch-size", type=int, default=50, help="Max jobs per batch")
+    parser.add_argument("--chunk-size", type=int, default=None, metavar="N", help="Items per commit for branch-wide (default 200). Use 1000 for night runs.")
+    parser.add_argument("--quiet", action="store_true", help="Suppress SQL logging (faster).")
     parser.add_argument("--interval", type=float, default=60.0, help="Seconds between runs (when not --once)")
     parser.add_argument("--once", action="store_true", help="Process one batch and exit")
     args = parser.parse_args()
+
+    if args.quiet:
+        _enable_quiet_mode()
 
     try:
         from app.database import SessionLocal
@@ -35,7 +47,11 @@ def main():
     while True:
         db = SessionLocal()
         try:
-            n = SnapshotRefreshService.process_queue_batch(db, batch_size=args.batch_size)
+            n = SnapshotRefreshService.process_queue_batch(
+                db,
+                batch_size=args.batch_size,
+                branch_wide_chunk_size=args.chunk_size,
+            )
             db.commit()
             if n:
                 logger.info("Processed %s snapshot refresh job(s)", n)

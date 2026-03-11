@@ -13,7 +13,7 @@ either runs sync refresh or enqueues.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Callable, List, Optional
 from uuid import UUID
 
 from sqlalchemy import text
@@ -169,15 +169,28 @@ class SnapshotRefreshService:
     BRANCH_WIDE_CHUNK_SIZE = 200
 
     @staticmethod
-    def process_queue_batch(db: Session, batch_size: int = 50) -> int:
+    def process_queue_batch(
+        db: Session,
+        batch_size: int = 50,
+        progress_callback: Optional[Callable[..., None]] = None,
+        branch_wide_chunk_size: Optional[int] = None,
+    ) -> int:
         """
         Process up to batch_size pending jobs from snapshot_refresh_queue.
         - Item jobs: refresh that (item_id, branch_id) in one transaction, mark processed.
         - Branch-wide jobs (item_id IS NULL): claim row, then process items in chunks of
-          BRANCH_WIDE_CHUNK_SIZE; commit after each chunk. Only then mark processed.
-          This avoids loading 10k+ items into one transaction.
+          branch_wide_chunk_size (default BRANCH_WIDE_CHUNK_SIZE); commit after each chunk.
+          Use a larger chunk size (e.g. 1000) for night batch runs to reduce commit overhead.
+
+        progress_callback: optional callable(event: str, **kwargs). Events:
+          - "job_start": job_type="branch_wide"|"single_item", company_id, branch_id, item_id (or None)
+          - "branch_total": total_items=N (branch-wide only, before chunks)
+          - "chunk_done": offset, refreshed, total_items, percent (branch-wide only)
+          - "job_done": job_type, success=True
         """
         from app.models import Item
+        chunk_size = branch_wide_chunk_size if branch_wide_chunk_size is not None else SnapshotRefreshService.BRANCH_WIDE_CHUNK_SIZE
+        chunk_size = max(1, chunk_size)
         # Include rows claimed >1h ago (stuck worker)
         rows = db.execute(
             text("""
@@ -198,15 +211,27 @@ class SnapshotRefreshService:
             qid, company_id, branch_id, item_id = row[0], UUID(str(row[1])), UUID(str(row[2])), row[3]
             try:
                 if item_id is None:
+                    if progress_callback:
+                        progress_callback("job_start", job_type="branch_wide", company_id=company_id, branch_id=branch_id, item_id=None)
                     # Branch-wide: claim so we can commit in chunks without another worker taking the row
                     db.execute(
                         text("UPDATE snapshot_refresh_queue SET claimed_at = NOW() WHERE id = :id"),
                         {"id": str(qid)},
                     )
                     db.commit()
-                    # Process items in chunks: fetch 200, refresh, commit, repeat
+                    # Get total count for progress
+                    total_result = db.execute(
+                        text("""
+                            SELECT COUNT(*) FROM items
+                            WHERE company_id = :company_id AND is_active = true
+                        """),
+                        {"company_id": str(company_id)},
+                    ).scalar()
+                    total_items = total_result or 0
+                    if progress_callback:
+                        progress_callback("branch_total", total_items=total_items)
+                    # Process items in chunks; commit after each chunk
                     offset = 0
-                    chunk_size = SnapshotRefreshService.BRANCH_WIDE_CHUNK_SIZE
                     while True:
                         chunk = db.execute(
                             text("""
@@ -232,6 +257,10 @@ class SnapshotRefreshService:
                                     iid, branch_id, e,
                                 )
                         db.commit()
+                        refreshed_so_far = offset + len(chunk)
+                        if progress_callback and total_items > 0:
+                            pct = min(100, round(100.0 * refreshed_so_far / total_items, 1))
+                            progress_callback("chunk_done", offset=offset, refreshed=len(chunk), total_items=total_items, refreshed_so_far=refreshed_so_far, percent=pct)
                         offset += chunk_size
                         if len(chunk) < chunk_size:
                             break
@@ -240,15 +269,23 @@ class SnapshotRefreshService:
                         {"id": str(qid)},
                     )
                     db.commit()
+                    if progress_callback:
+                        progress_callback("job_done", job_type="branch_wide", success=True)
                 else:
+                    if progress_callback:
+                        progress_callback("job_start", job_type="single_item", company_id=company_id, branch_id=branch_id, item_id=item_id)
                     refresh_pos_snapshot_for_item(db, company_id, branch_id, UUID(str(item_id)))
                     db.execute(
                         text("UPDATE snapshot_refresh_queue SET processed_at = NOW() WHERE id = :id"),
                         {"id": str(qid)},
                     )
                     db.commit()
+                    if progress_callback:
+                        progress_callback("job_done", job_type="single_item", success=True)
                 processed += 1
             except Exception as e:
                 logger.warning("Queue job %s failed: %s", qid, e)
                 db.rollback()
+                if progress_callback:
+                    progress_callback("job_done", job_type="branch_wide" if item_id is None else "single_item", success=False, error=str(e))
         return processed
