@@ -4901,12 +4901,30 @@ async function renderRecordPaymentPage(supplierId) {
     const amountEl = document.getElementById('newPaymentAmount');
     const summaryEl = document.getElementById('newPaymentAllocSummary');
     const warningEl = document.getElementById('newPaymentUnallocatedWarning');
-    function updateAllocSummary() {
-        const amount = parseFloat(amountEl && amountEl.value) || 0;
-        let totalAlloc = 0;
+    function getTotalSelectedAllocation() {
+        let total = 0;
         document.querySelectorAll('.alloc-amount').forEach(function(input) {
-            totalAlloc += parseFloat(input.value) || 0;
+            total += parseFloat(input.value) || 0;
         });
+        return total;
+    }
+    function syncPaymentAmountToSelection() {
+        if (!amountEl) return;
+        const totalAlloc = getTotalSelectedAllocation();
+        if (totalAlloc > 0) {
+            amountEl.value = totalAlloc.toFixed(2);
+            amountEl.readOnly = true;
+            amountEl.style.backgroundColor = 'var(--bg-secondary, #f0f0f0)';
+        }
+        else {
+            amountEl.readOnly = false;
+            amountEl.style.backgroundColor = '';
+        }
+    }
+    function updateAllocSummary() {
+        syncPaymentAmountToSelection();
+        const amount = parseFloat(amountEl && amountEl.value) || 0;
+        const totalAlloc = getTotalSelectedAllocation();
         const unallocated = Math.max(0, amount - totalAlloc);
         if (summaryEl) summaryEl.innerHTML = 'Payment Amount: ' + fmt(amount) + ' &nbsp;|&nbsp; Total Allocated: ' + fmt(totalAlloc) + ' &nbsp;|&nbsp; Unallocated: ' + fmt(unallocated);
         if (warningEl) warningEl.style.display = (amount > 0 && unallocated > 0) ? 'block' : 'none';
@@ -4918,12 +4936,24 @@ async function renderRecordPaymentPage(supplierId) {
                 const input = row && row.querySelector('.alloc-amount');
                 if (input) {
                     input.value = this.checked ? (row.dataset.balance || '0') : '';
+                    if (row) {
+                        row.style.backgroundColor = this.checked ? 'rgba(52, 152, 219, 0.08)' : '';
+                    }
                     updateAllocSummary();
                 }
             });
         });
         document.querySelectorAll('.alloc-amount').forEach(function(input) {
-            input.addEventListener('input', updateAllocSummary);
+            input.addEventListener('input', function() {
+                const row = this.closest('tr');
+                const val = parseFloat(this.value) || 0;
+                if (row) {
+                    row.style.backgroundColor = val > 0 ? 'rgba(52, 152, 219, 0.08)' : '';
+                    const cb = row.querySelector('.alloc-check');
+                    if (cb) cb.checked = val > 0;
+                }
+                updateAllocSummary();
+            });
         });
         document.querySelectorAll('#newPaymentAllocTbody tr.alloc-row-clickable').forEach(function(tr) {
             tr.addEventListener('click', function(e) {
@@ -4935,6 +4965,7 @@ async function renderRecordPaymentPage(supplierId) {
     }
     wireAllocationRowEvents();
     if (amountEl) amountEl.addEventListener('input', updateAllocSummary);
+    updateAllocSummary();
 
     const allocationPresetEl = document.getElementById('allocationDatePreset');
     const allocationCustomEl = document.getElementById('allocationDateCustom');
@@ -4945,6 +4976,12 @@ async function renderRecordPaymentPage(supplierId) {
         allocationPresetEl.addEventListener('change', function() {
             allocationDatePreset = allocationPresetEl.value || 'this_month';
             allocationCustomEl.style.display = allocationDatePreset === 'custom' ? 'flex' : 'none';
+            // For quick presets like Today, Yesterday, etc., immediately apply the filter
+            if (allocationDatePreset !== 'custom') {
+                allocationDateFrom = null;
+                allocationDateTo = null;
+                allocationApplyBtn.click();
+            }
         });
         allocationApplyBtn.addEventListener('click', function() {
             if (allocationDatePreset === 'custom' && allocationFromEl && allocationToEl) {

@@ -210,7 +210,7 @@ def create_supplier_payment(
             method=body.method,
             reference=body.reference,
             amount=body.amount,
-            is_allocated=bool(allocations_to_create),
+            is_allocated=bool(allocations_by_invoice),
             created_by=user.id,
         )
         db.add(payment)
@@ -276,7 +276,6 @@ def create_supplier_payment(
                 supplier_invoice_id=a.supplier_invoice_id,
                 allocated_amount=a.allocated_amount,
                 invoice_number=getattr(a.supplier_invoice, "invoice_number", None) if a.supplier_invoice else None,
-                created_at=a.created_at,
             )
             for a in payment.allocations
         ],

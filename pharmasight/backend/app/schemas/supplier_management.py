@@ -47,7 +47,7 @@ class SupplierPaymentAllocationResponse(BaseModel):
     supplier_invoice_id: UUID
     allocated_amount: Decimal
     invoice_number: Optional[str] = None
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
