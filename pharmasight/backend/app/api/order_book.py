@@ -111,6 +111,8 @@ def _serialize_order_book_entry(entry, _get_stock, days_in_book_90: Optional[int
         "status": entry.status or "PENDING",
         "purchase_order_id": _uuid(entry.purchase_order_id),
         "branch_order_id": _uuid(getattr(entry, "branch_order_id", None)),
+        "ordered_at": _dt(getattr(entry, "ordered_at", None)),
+        "received_at": _dt(getattr(entry, "received_at", None)),
         "created_by": _uuid(entry.created_by),
         "created_at": _dt(entry.created_at),
         "updated_at": _dt(entry.updated_at),
@@ -798,12 +800,14 @@ def create_purchase_order_from_book(
                     db, company_id, branch_id, item.item_id, order_date
                 )
 
+            order_time = datetime.utcnow()
             for entry in entries:
                 entry.status = "ORDERED"
                 entry.purchase_order_id = purchase_order.id
                 entry.supplier_id = supplier_id  # record the supplier used for this PO
-                entry.updated_at = datetime.utcnow()
-                # Keep entry in daily_order_book so it shows as "Converted" in the UI
+                entry.ordered_at = order_time
+                entry.updated_at = order_time
+                # Optional ORDERED row in history for audit; CLOSED row added when stock is received
                 history_entry = OrderBookHistory(
                     company_id=entry.company_id,
                     branch_id=entry.branch_id,
@@ -818,12 +822,16 @@ def create_purchase_order_from_book(
                     priority=entry.priority,
                     status="ORDERED",
                     purchase_order_id=purchase_order.id,
+                    branch_order_id=getattr(entry, "branch_order_id", None),
+                    entry_date=entry.entry_date,
+                    ordered_at=order_time,
+                    received_at=None,
                     created_by=entry.created_by,
                     created_at=entry.created_at,
-                    updated_at=datetime.utcnow()
+                    updated_at=order_time,
                 )
                 db.add(history_entry)
-                # Do not delete: entry stays in order book labeled as converted (ORDERED)
+                # Entry stays in daily_order_book until stock received (then archived as CLOSED)
 
             db.commit()
             db.refresh(purchase_order)
@@ -849,16 +857,37 @@ def get_order_book_history(
     branch_id: UUID = Query(..., description="Branch ID"),
     company_id: UUID = Query(..., description="Company ID"),
     limit: int = Query(100, ge=1, le=1000),
+    date_from: Optional[str] = Query(None, description="Filter by entry_date >= (YYYY-MM-DD) for day/week/month review"),
+    date_to: Optional[str] = Query(None, description="Filter by entry_date <= (YYYY-MM-DD)"),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Get order book history (ordered or cancelled entries)
+    Get order book history (ORDERED, CANCELLED, CLOSED). Filter by entry_date for day/week/month review.
     """
-    entries = db.query(OrderBookHistory).filter(
+    query = db.query(OrderBookHistory).filter(
         OrderBookHistory.branch_id == branch_id,
         OrderBookHistory.company_id == company_id
-    ).order_by(OrderBookHistory.archived_at.desc()).limit(limit).all()
+    )
+    if date_from:
+        try:
+            start = date.fromisoformat(date_from.strip())
+            if hasattr(OrderBookHistory, "entry_date"):
+                query = query.filter(OrderBookHistory.entry_date >= start)
+            else:
+                query = query.filter(func.date(OrderBookHistory.created_at) >= start)
+        except (ValueError, TypeError):
+            pass
+    if date_to:
+        try:
+            end = date.fromisoformat(date_to.strip())
+            if hasattr(OrderBookHistory, "entry_date"):
+                query = query.filter(OrderBookHistory.entry_date <= end)
+            else:
+                query = query.filter(func.date(OrderBookHistory.created_at) <= end)
+        except (ValueError, TypeError):
+            pass
+    entries = query.order_by(OrderBookHistory.archived_at.desc()).limit(limit).all()
     
     result = []
     for entry in entries:
@@ -877,6 +906,10 @@ def get_order_book_history(
             "priority": entry.priority,
             "status": entry.status,
             "purchase_order_id": entry.purchase_order_id,
+            "branch_order_id": getattr(entry, "branch_order_id", None),
+            "entry_date": getattr(entry, "entry_date", None),
+            "ordered_at": getattr(entry, "ordered_at", None),
+            "received_at": getattr(entry, "received_at", None),
             "created_by": entry.created_by,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,

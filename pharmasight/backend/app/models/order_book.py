@@ -33,9 +33,11 @@ class DailyOrderBook(Base):
     source_reference_id = Column(UUID(as_uuid=True), nullable=True)
     notes = Column(Text, nullable=True)
     priority = Column(Integer, default=5)  # 1-10, higher = more urgent
-    status = Column(String(50), default="PENDING")  # PENDING, ORDERED, CANCELLED
+    status = Column(String(50), default="PENDING")  # PENDING, ORDERED, RECEIVED, CANCELLED
     purchase_order_id = Column(UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=True)
     branch_order_id = Column(UUID(as_uuid=True), ForeignKey("branch_orders.id", ondelete="SET NULL"), nullable=True)
+    ordered_at = Column(TIMESTAMP(timezone=True), nullable=True)   # When status became ORDERED
+    received_at = Column(TIMESTAMP(timezone=True), nullable=True)   # When stock received (before archive)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -74,12 +76,16 @@ class OrderBookHistory(Base):
     source_reference_id = Column(UUID(as_uuid=True), nullable=True)
     notes = Column(Text, nullable=True)
     priority = Column(Integer, default=5)
-    status = Column(String(50), nullable=False)  # ORDERED, CANCELLED
+    status = Column(String(50), nullable=False)  # ORDERED, CANCELLED, CLOSED
     purchase_order_id = Column(UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=True)
+    branch_order_id = Column(UUID(as_uuid=True), ForeignKey("branch_orders.id", ondelete="SET NULL"), nullable=True)
+    entry_date = Column(Date, nullable=True)  # Day the shortage event belonged to (filter by day/week/month)
+    ordered_at = Column(TIMESTAMP(timezone=True), nullable=True)   # When order was placed
+    received_at = Column(TIMESTAMP(timezone=True), nullable=True)  # When stock arrived
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False)  # Original creation time
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False)  # Shortage detected
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False)  # When status changed
-    archived_at = Column(TIMESTAMP(timezone=True), server_default=func.now())  # When moved to history
+    archived_at = Column(TIMESTAMP(timezone=True), server_default=func.now())  # When moved to history (closed_at)
 
     # Relationships
     company = relationship("Company")
@@ -87,8 +93,9 @@ class OrderBookHistory(Base):
     item = relationship("Item")
     supplier = relationship("Supplier")
     purchase_order = relationship("PurchaseOrder")
+    branch_order = relationship("BranchOrder", foreign_keys=[branch_order_id])
     creator = relationship("User", foreign_keys=[created_by])
 
     __table_args__ = (
-        {"comment": "Historical archive of order book entries that were ordered or cancelled."},
+        {"comment": "Historical archive of order book entries (ORDERED, CANCELLED, CLOSED)."},
     )

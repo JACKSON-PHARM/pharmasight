@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 
 from app.models import (
-    DailyOrderBook, Item, InventoryLedger, Supplier,
+    DailyOrderBook, OrderBookHistory, Item, InventoryLedger, Supplier,
     SalesInvoiceItem, SalesInvoice
 )
 from app.services.inventory_service import InventoryService
@@ -464,3 +464,67 @@ class OrderBookService:
                 continue
         
         return entries_created
+
+    @staticmethod
+    def mark_items_received(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID,
+        item_ids: List[UUID],
+        *,
+        received_at: Optional[datetime] = None,
+    ) -> None:
+        """
+        After stock is received (GRN or branch receipt): find ORDERED order book entries
+        for (company, branch, item_ids), set status=RECEIVED and received_at, then archive
+        to order_book_history as CLOSED and remove from daily_order_book so the daily book
+        stays clean. Caller must commit.
+        """
+        if not item_ids:
+            return
+        now = received_at or datetime.utcnow()
+        entries = (
+            db.query(DailyOrderBook)
+            .filter(
+                DailyOrderBook.company_id == company_id,
+                DailyOrderBook.branch_id == branch_id,
+                DailyOrderBook.item_id.in_(item_ids),
+                DailyOrderBook.status == "ORDERED",
+            )
+            .all()
+        )
+        for entry in entries:
+            entry.status = "RECEIVED"
+            entry.received_at = now
+            entry.updated_at = now
+
+            # Archive to history as CLOSED (full timeline for day/week/month review)
+            history_row = OrderBookHistory(
+                company_id=entry.company_id,
+                branch_id=entry.branch_id,
+                item_id=entry.item_id,
+                supplier_id=entry.supplier_id,
+                quantity_needed=entry.quantity_needed,
+                unit_name=entry.unit_name,
+                reason=entry.reason,
+                source_reference_type=entry.source_reference_type,
+                source_reference_id=entry.source_reference_id,
+                notes=entry.notes,
+                priority=entry.priority,
+                status="CLOSED",
+                purchase_order_id=entry.purchase_order_id,
+                branch_order_id=getattr(entry, "branch_order_id", None),
+                entry_date=entry.entry_date,
+                ordered_at=getattr(entry, "ordered_at", None),
+                received_at=now,
+                created_by=entry.created_by,
+                created_at=entry.created_at,
+                updated_at=now,
+                archived_at=now,
+            )
+            db.add(history_row)
+            logger.info(
+                "Order book entry archived as CLOSED for item %s (branch %s): received_at=%s",
+                entry.item_id, entry.branch_id, now,
+            )
+            db.delete(entry)

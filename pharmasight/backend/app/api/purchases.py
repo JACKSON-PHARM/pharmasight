@@ -30,6 +30,7 @@ from app.services.inventory_service import InventoryService
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.order_book_service import OrderBookService
 from app.services.supplier_ledger_service import SupplierLedgerService
 from app.services.pricing_config_service import (
     check_stock_adjustment_requires_confirmation,
@@ -388,6 +389,13 @@ def create_grn(
             db_grn.supplier_id
         )
         SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
+
+    # Order book lifecycle: mark ORDERED entries as received and archive to history (CLOSED)
+    grn_item_ids = list({e.item_id for e in ledger_entries})
+    OrderBookService.mark_items_received(
+        db, db_grn.company_id, db_grn.branch_id, grn_item_ids,
+        received_at=datetime.now(timezone.utc),
+    )
 
     db.commit()
     db.refresh(db_grn)
@@ -1748,6 +1756,13 @@ def batch_supplier_invoice(
             reference_id=invoice.id,
             debit=invoice.total_inclusive or Decimal("0"),
             credit=Decimal("0"),
+        )
+
+        # Order book lifecycle: mark ORDERED entries as received and archive to history (CLOSED)
+        invoice_item_ids = list({e.item_id for e in ledger_entries})
+        OrderBookService.mark_items_received(
+            db, invoice.company_id, invoice.branch_id, invoice_item_ids,
+            received_at=datetime.now(timezone.utc),
         )
 
         db.commit()

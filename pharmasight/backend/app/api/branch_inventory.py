@@ -39,6 +39,7 @@ from app.schemas.branch_inventory import (
 from app.services.inventory_service import InventoryService
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.order_book_service import OrderBookService
 from app.services.document_service import DocumentService
 
 router = APIRouter()
@@ -424,6 +425,7 @@ def batch_branch_order(
 
     # Add/update order book entries for ordering branch (mark as ORDERED with branch_order_id), same pattern as PO
     entry_date = date.today()
+    order_time = datetime.utcnow()
     for line in order.lines:
         existing = (
             db.query(DailyOrderBook)
@@ -440,6 +442,7 @@ def batch_branch_order(
         if existing:
             existing.status = "ORDERED"
             existing.branch_order_id = order.id
+            existing.ordered_at = order_time
             existing.source_reference_type = "branch_order"
             existing.source_reference_id = order.id
             existing.quantity_needed = (float(existing.quantity_needed or 0)) + qty
@@ -458,6 +461,7 @@ def batch_branch_order(
                 source_reference_id=order.id,
                 status="ORDERED",
                 branch_order_id=order.id,
+                ordered_at=order_time,
                 created_by=user.id,
             )
             db.add(ob_entry)
@@ -762,8 +766,14 @@ def confirm_branch_receipt(
                 db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta
             )
             SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
+        # Order book lifecycle: mark ORDERED entries as received and archive to history (CLOSED)
+        receipt_item_ids = list({e.item_id for e in ledger_entries})
+        received_at = datetime.utcnow()
+        OrderBookService.mark_items_received(
+            db, company_id, receiving_branch_id, receipt_item_ids, received_at=received_at
+        )
         receipt.status = "RECEIVED"
-        receipt.received_at = datetime.utcnow()
+        receipt.received_at = received_at
         receipt.received_by = user.id
         db.commit()
     except HTTPException:

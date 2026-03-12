@@ -34,6 +34,9 @@ class OrderBookEntryResponse(OrderBookEntryBase):
     entry_date: Optional[date] = None
     status: str
     purchase_order_id: Optional[UUID] = None
+    branch_order_id: Optional[UUID] = None
+    ordered_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime
@@ -89,7 +92,7 @@ class AutoGenerateRequest(BaseModel):
 
 
 class OrderBookHistoryResponse(BaseModel):
-    """Schema for order book history entry"""
+    """Schema for order book history entry (resolved events: ORDERED, CANCELLED, CLOSED)"""
     id: UUID
     company_id: UUID
     branch_id: UUID
@@ -104,6 +107,10 @@ class OrderBookHistoryResponse(BaseModel):
     priority: int
     status: str
     purchase_order_id: Optional[UUID] = None
+    branch_order_id: Optional[UUID] = None
+    entry_date: Optional[date] = None
+    ordered_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime
