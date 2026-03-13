@@ -577,10 +577,11 @@ class OrderBookService:
         if not invoice:
             return []
         
-        # Only process BATCHED invoices (stock has been reduced)
-        # Quotations and DRAFT invoices don't reduce stock, so they shouldn't trigger order book
-        if invoice.status != "BATCHED":
-            logger.debug(f"Invoice {invoice_id} status is {invoice.status}, not BATCHED - skipping order book check")
+        # Only process invoices whose stock has been reduced (BATCHED or PAID).
+        # Cash sales set status to PAID during batch; both mean stock was reduced.
+        # Quotations and DRAFT invoices don't reduce stock, so they shouldn't trigger order book.
+        if invoice.status not in ("BATCHED", "PAID"):
+            logger.debug(f"Invoice {invoice_id} status is {invoice.status}, not BATCHED/PAID - skipping order book check")
             return []
         
         entries_created = []
