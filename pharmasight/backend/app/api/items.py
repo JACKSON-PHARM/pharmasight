@@ -50,6 +50,7 @@ from app.services.item_units_helper import get_stock_display_unit, get_unit_mult
 from app.services.excel_import_service import ExcelImportService
 from app.services.snapshot_service import SnapshotService
 from app.services.order_book_service import OrderBookService
+from app.services.order_book_service import OrderBookService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.item_search_service import ItemSearchService
 from app.services.pricing_config_service import (
@@ -1263,6 +1264,21 @@ def adjust_stock(
             db, item.company_id, body.branch_id, item_id,
             unit_cost, datetime.now(timezone.utc), None,
         )
+        # Replenishment-based fulfilment: if stock was increased manually for this
+        # (company, branch, item), close any open order book entries (PENDING/ORDERED).
+        try:
+            OrderBookService.mark_items_received(
+                db=db,
+                company_id=item.company_id,
+                branch_id=body.branch_id,
+                item_ids=[item_id],
+                received_at=datetime.now(timezone.utc),
+            )
+        except Exception:
+            logger.exception(
+                "Order book fulfilment from manual stock adjustment failed for item %s at branch %s",
+                item_id, body.branch_id,
+            )
     SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
     db.commit()
 

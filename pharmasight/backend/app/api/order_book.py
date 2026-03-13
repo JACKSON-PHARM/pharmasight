@@ -845,7 +845,8 @@ def get_order_book_history(
     """
     query = db.query(OrderBookHistory).filter(
         OrderBookHistory.branch_id == branch_id,
-        OrderBookHistory.company_id == company_id
+        OrderBookHistory.company_id == company_id,
+        OrderBookHistory.status == "CLOSED",
     )
     if date_from:
         try:

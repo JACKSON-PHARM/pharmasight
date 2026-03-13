@@ -634,7 +634,7 @@ class OrderBookService:
                 DailyOrderBook.company_id == company_id,
                 DailyOrderBook.branch_id == branch_id,
                 DailyOrderBook.item_id.in_(item_ids),
-                DailyOrderBook.status == "ORDERED",
+                DailyOrderBook.status.in_(["PENDING", "ORDERED"]),
             )
             .all()
         )
