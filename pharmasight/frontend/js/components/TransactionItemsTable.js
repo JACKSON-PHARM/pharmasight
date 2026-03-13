@@ -1637,6 +1637,22 @@
                 item._basis_unit_price = item.unit_price;
                 item._basis_unit_cost = item.unit_price;
                 delete item._price_is_per_retail;
+            } else if (this.mode === 'sale' || this.mode === 'quotation') {
+                // For sales flows, treat salePrice from search as per BASE unit and default the displayed unit_price
+                // to price per SELECTED unit (e.g. packet when sales type = WHOLESALE).
+                const mult = parseFloat(item.unit_multiplier) || 1;
+                const basePrice = item.unit_price != null && !isNaN(Number(item.unit_price))
+                    ? Number(item.unit_price)
+                    : 0;
+                item.unit_price = this.roundMoney(basePrice * mult);
+                item._basis_unit_name = item.unit_name;
+                item._basis_unit_multiplier = mult;
+                item._basis_unit_price = item.unit_price;
+                // Keep cost basis from snapshot (per base) so margin calculations can still use it.
+                item._basis_unit_cost = (item.purchase_price != null && !isNaN(Number(item.purchase_price)))
+                    ? Number(item.purchase_price)
+                    : null;
+                delete item._price_is_per_retail;
             } else {
                 // Search often returns price already per retail (tablet). Only scale when price is per a larger unit.
                 const basisUnit = (item.wholesale_unit || item.retail_unit || '').toString().trim();
