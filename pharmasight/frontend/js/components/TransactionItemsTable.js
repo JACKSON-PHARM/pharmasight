@@ -1624,24 +1624,47 @@
                 item.unit_multiplier = parseFloat(match.multiplier_to_base) || 1;
             }
 
-            // Search often returns price already per retail (tablet). Only scale when price is per a larger unit.
-            const basisUnit = (item.wholesale_unit || item.retail_unit || '').toString().trim();
-            const basisMatch = (item.available_units || []).find(u => (u.unit_name || '').toString().trim().toLowerCase() === basisUnit.toLowerCase());
-            const basisMult = basisMatch ? (parseFloat(basisMatch.multiplier_to_base) || 1) : (item.pack_size != null ? Math.max(1, parseInt(item.pack_size, 10) || 1) : 1);
-            item._basis_unit_name = basisUnit || item._basis_unit_name;
-            item._basis_unit_multiplier = basisMult;
-            item._basis_unit_price = item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : null;
-            item._basis_unit_cost = (item.purchase_price != null && !isNaN(Number(item.purchase_price))) ? Number(item.purchase_price) : null;
-            // If selected unit is retail and basis is wholesale, we used to do price/56 then *1 → wrong. Skip rescale when
-            // selected unit multiplier is 1 and search price is already per retail (i.e. don't divide by pack_size again).
-            const selectedMult = parseFloat(item.unit_multiplier) || 1;
-            const priceAlreadyPerSelectedUnit = (selectedMult === 1 && basisMult > 1);
-            if (priceAlreadyPerSelectedUnit) {
-                item._price_is_per_retail = true; // so recalcAddRowPriceFromBasis scales correctly when user switches to packet
-            }
-            if (item._basis_unit_price != null && basisMult > 0 && !priceAlreadyPerSelectedUnit) {
-                const pricePerBase = item._basis_unit_price / basisMult;
-                item.unit_price = this.roundMoney(pricePerBase * (item.unit_multiplier || 1));
+            // For purchase flows (purchase orders, supplier invoices), treat purchase_price from search as per BASE unit
+            // and default the displayed unit_price to cost per SELECTED unit (e.g. packet).
+            if (this.mode === 'purchase') {
+                const mult = parseFloat(item.unit_multiplier) || 1;
+                const baseCost = item.purchase_price != null && !isNaN(Number(item.purchase_price))
+                    ? Number(item.purchase_price)
+                    : 0;
+                item.unit_price = this.roundMoney(baseCost * mult);
+                item._basis_unit_name = item.unit_name;
+                item._basis_unit_multiplier = mult;
+                item._basis_unit_price = item.unit_price;
+                item._basis_unit_cost = item.unit_price;
+                delete item._price_is_per_retail;
+            } else {
+                // Search often returns price already per retail (tablet). Only scale when price is per a larger unit.
+                const basisUnit = (item.wholesale_unit || item.retail_unit || '').toString().trim();
+                const basisMatch = (item.available_units || []).find(
+                    u => (u.unit_name || '').toString().trim().toLowerCase() === basisUnit.toLowerCase()
+                );
+                const basisMult = basisMatch
+                    ? (parseFloat(basisMatch.multiplier_to_base) || 1)
+                    : (item.pack_size != null ? Math.max(1, parseInt(item.pack_size, 10) || 1) : 1);
+                item._basis_unit_name = basisUnit || item._basis_unit_name;
+                item._basis_unit_multiplier = basisMult;
+                item._basis_unit_price = item.unit_price != null && !isNaN(Number(item.unit_price))
+                    ? Number(item.unit_price)
+                    : null;
+                item._basis_unit_cost = (item.purchase_price != null && !isNaN(Number(item.purchase_price)))
+                    ? Number(item.purchase_price)
+                    : null;
+                // If selected unit is retail and basis is wholesale, skip rescale when selected multiplier is 1 and
+                // search price is already per retail (i.e. don't divide by pack_size again).
+                const selectedMult = parseFloat(item.unit_multiplier) || 1;
+                const priceAlreadyPerSelectedUnit = (selectedMult === 1 && basisMult > 1);
+                if (priceAlreadyPerSelectedUnit) {
+                    item._price_is_per_retail = true; // so recalcAddRowPriceFromBasis scales correctly when user switches to packet
+                }
+                if (item._basis_unit_price != null && basisMult > 0 && !priceAlreadyPerSelectedUnit) {
+                    const pricePerBase = item._basis_unit_price / basisMult;
+                    item.unit_price = this.roundMoney(pricePerBase * (item.unit_multiplier || 1));
+                }
             }
 
             this.addRowItem = item;
