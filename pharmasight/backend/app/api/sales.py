@@ -185,6 +185,11 @@ def create_sales_invoice(
         item = db.query(Item).filter(Item.id == item_data.item_id).first()
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+        if not getattr(item, "setup_complete", True):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item '{item.name}' is not ready for transactions. Complete item setup (pack size, units) in Items before adding to a sale."
+            )
         
         # Copy VAT classification from item (Kenya: percentage e.g. 16; normalize if stored as 0.16)
         item_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
@@ -616,6 +621,11 @@ def add_sales_invoice_item(
     item = db.query(Item).filter(Item.id == item_data.item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+    if not getattr(item, "setup_complete", True):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Item '{item.name}' is not ready for transactions. Complete item setup (pack size, units) in Items before adding to a sale."
+        )
 
     item_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
     is_available, available, required = InventoryService.check_stock_availability(

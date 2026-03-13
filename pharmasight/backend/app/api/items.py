@@ -1356,6 +1356,9 @@ def update_item(
     for field, value in update_data.items():
         setattr(item, field, value)
     
+    # When user saves item (pack size, units, etc.), mark setup complete so it can be used in transactions
+    item.setup_complete = True
+    
     # Refresh snapshot in same transaction (e.g. floor_price, name, search_text) so search/stocks stay in sync
     SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, item.company_id, item_id)
     db.commit()

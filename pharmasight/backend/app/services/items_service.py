@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import logging
 from decimal import Decimal
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import func
@@ -64,11 +65,25 @@ def _sanitize_base_unit(value, fallback: str) -> str:
 
 def _generate_sku(company_id: UUID, db: Session) -> str:
     """Generate unique SKU for company (A00001, A00002, ...)."""
+    return generate_sku_for_company(company_id, db, reserved=None)
+
+
+def generate_sku_for_company(
+    company_id: UUID,
+    db: Session,
+    reserved: Optional[set] = None,
+) -> str:
+    """
+    Generate next unique SKU for company (A00001, A00002, ...).
+    Used by API create_item and Excel import. If reserved is provided (e.g. SKUs
+    assigned in current batch), the returned SKU will not be in reserved; caller
+    should add the result to reserved when using in a batch.
+    """
     last = (
         db.query(Item.sku)
         .filter(Item.company_id == company_id, Item.sku.isnot(None), Item.sku != "")
         .order_by(Item.sku.desc())
-        .limit(100)
+        .limit(500)
         .all()
     )
     max_n = 0
@@ -80,6 +95,15 @@ def _generate_sku(company_id: UUID, db: Session) -> str:
                     max_n = max(max_n, int(m.group(2)))
                 except ValueError:
                     pass
+    if reserved:
+        for s in reserved:
+            if s:
+                m = re.match(r"^([A-Z]{1,3})(\d+)$", (s or "").upper())
+                if m:
+                    try:
+                        max_n = max(max_n, int(m.group(2)))
+                    except ValueError:
+                        pass
     return f"A{(max_n + 1):05d}"
 
 

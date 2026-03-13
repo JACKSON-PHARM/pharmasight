@@ -62,6 +62,8 @@ class Item(Base):
     promo_price_retail = Column(Numeric(20, 4), nullable=True)
     promo_start_date = Column(Date, nullable=True)
     promo_end_date = Column(Date, nullable=True)
+    # When False, item was imported with minimal data; user must complete pack size and units before transacting
+    setup_complete = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

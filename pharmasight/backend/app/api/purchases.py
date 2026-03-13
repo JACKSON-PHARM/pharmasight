@@ -214,6 +214,11 @@ def create_grn(
         item = grn_items_map.get(item_data.item_id)
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+        if not getattr(item, "setup_complete", True):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item '{item.name}' is not ready for transactions. Complete item setup (pack size, units) in Items before adding to a GRN."
+            )
         
         # Unit multiplier from item columns (items table is source of truth)
         multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
@@ -880,6 +885,11 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
     item = db.query(Item).filter(Item.id == item_data.item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+    if not getattr(item, "setup_complete", True):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Item '{item.name}' is not ready for transactions. Complete item setup (pack size, units) in Items before adding to a purchase."
+        )
     unit_name_raw = (item_data.unit_name or "").strip()
     if not unit_name_raw:
         unit_name_raw = (item.wholesale_unit or item.retail_unit or "piece").strip() or "piece"

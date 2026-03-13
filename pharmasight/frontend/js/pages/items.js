@@ -834,11 +834,11 @@ function downloadItemTemplate() {
         ['Item_Code', 'SKU', 'No'],
         ['Barcode', 'Barcode', 'No'],
         ['Category', 'Category', 'No'],
-        ['Supplier_Unit', 'e.g. carton', 'No'],
-        ['Wholesale_Unit', 'Base unit, e.g. box', 'No'],
-        ['Retail_Unit', 'e.g. tablet', 'No'],
-        ['Pack_Size', 'Retail per 1 wholesale (e.g. 100)', 'No'],
-        ['Wholesale_Units_per_Supplier', 'e.g. 12', 'No'],
+        ['Supplier_Unit', 'Supplier unit name (e.g. carton, crate)', 'No'],
+        ['Wholesale_Unit', 'Wholesale unit name (e.g. box, bottle)', 'No'],
+        ['Retail_Unit', 'Retail unit name (e.g. tablet, piece)', 'No'],
+        ['Pack_Size', 'Conversion: retail per 1 wholesale (e.g. 100)', 'No'],
+        ['Wholesale_Units_per_Supplier', 'Conversion: wholesale per 1 supplier (e.g. 12)', 'No'],
         ['Can_Break_Bulk', 'Yes/No', 'No'],
         ['Track_Expiry', 'Yes/No; if Yes and stock>0, fill Opening_Batch_Number and Opening_Expiry_Date', 'No'],
         ['Purchase_Price_per_Supplier_Unit', 'Cost per supplier unit', 'No'],
@@ -1376,6 +1376,12 @@ async function importExcelFile() {
                 if (stats.items_skipped) message += `, ${stats.items_skipped} skipped`;
                 if (stats.opening_balances_created) message += ` | Opening balances: ${stats.opening_balances_created} created`;
                 if (stats.suppliers_created) message += ` | Suppliers: ${stats.suppliers_created} created`;
+                if (stats.rows_skipped_duplicate_name) {
+                    const names = Array.isArray(stats.duplicate_item_names) ? stats.duplicate_item_names : [];
+                    const dupes = names.slice(0, 5);
+                    const dupeList = dupes.length ? dupes.join(', ') + (names.length > 5 ? '...' : '') : 'see list';
+                    message += ` | ${stats.rows_skipped_duplicate_name} row(s) skipped (duplicate names: ${dupeList})`;
+                }
                 if (stats.errors && stats.errors.length > 0) {
                     console.warn('Import errors:', stats.errors);
                     message += ` | ${stats.errors.length} errors (check console)`;
@@ -1449,6 +1455,12 @@ async function importExcelFile() {
                     if (stats.items_skipped) message += `, ${stats.items_skipped} skipped`;
                     if (stats.opening_balances_created) message += ` | Opening balances: ${stats.opening_balances_created} created`;
                     if (stats.suppliers_created) message += ` | Suppliers: ${stats.suppliers_created} created`;
+                    if (stats.rows_skipped_duplicate_name) {
+                        const names = Array.isArray(stats.duplicate_item_names) ? stats.duplicate_item_names : [];
+                        const dupes = names.slice(0, 5);
+                        const dupeList = dupes.length ? dupes.join(', ') + (names.length > 5 ? '...' : '') : 'see list';
+                        message += ` | ${stats.rows_skipped_duplicate_name} row(s) skipped (duplicate names: ${dupeList})`;
+                    }
                     if (stats.errors && stats.errors.length > 0) {
                         console.warn('Import errors:', stats.errors);
                         message += ` | ${stats.errors.length} errors (check console)`;

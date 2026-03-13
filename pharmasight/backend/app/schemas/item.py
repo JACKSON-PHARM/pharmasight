@@ -149,6 +149,7 @@ class ItemResponse(ItemBase):
     id: UUID
     company_id: UUID
     is_active: bool
+    setup_complete: bool = Field(default=True, description="When false, complete pack size and units in Items before using in sales/purchases/GRN")
     created_at: datetime
     updated_at: datetime
     units: List[ItemUnitResponse] = []

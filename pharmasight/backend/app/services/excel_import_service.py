@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.items_service import generate_sku_for_company
 from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
@@ -68,10 +69,10 @@ EXPECTED_EXCEL_FIELDS: List[Dict] = [
     {'id': 'item_code', 'label': 'Item Code (SKU)', 'required': False},
     {'id': 'barcode', 'label': 'Barcode', 'required': False},
     {'id': 'category', 'label': 'Category', 'required': False},
-    # 3-tier units only: wholesale (base), retail, supplier + conversion numbers
-    {'id': 'wholesale_unit', 'label': 'Wholesale Unit (base = 1 per item; e.g. box, bottle)', 'required': False},
-    {'id': 'retail_unit', 'label': 'Retail Unit (e.g. tablet, piece, ml)', 'required': False},
-    {'id': 'supplier_unit', 'label': 'Supplier Unit (e.g. carton, crate, dozen)', 'required': False},
+    # 3-tier unit names + conversion numbers
+    {'id': 'supplier_unit', 'label': 'Supplier unit name (e.g. carton, crate, dozen)', 'required': False},
+    {'id': 'wholesale_unit', 'label': 'Wholesale unit name (base = 1 per item; e.g. box, bottle)', 'required': False},
+    {'id': 'retail_unit', 'label': 'Retail unit name (e.g. tablet, piece, ml)', 'required': False},
     {'id': 'pack_size', 'label': 'Pack Size (retail per wholesale: 1 wholesale = N retail)', 'required': False},
     {'id': 'wholesale_units_per_supplier', 'label': 'Wholesale per Supplier (e.g. 12 = 1 carton has 12 wholesale)', 'required': False},
     {'id': 'can_break_bulk', 'label': 'Can Break Bulk', 'required': False},
@@ -106,6 +107,12 @@ def _apply_column_mapping(row: Dict, column_mapping: Dict[str, str]) -> Dict:
         val = row.get(excel_header)
         out[canonical] = val  # Pass through (validation will catch missing/empty item name)
     return out
+
+
+def _get_item_name_from_row(row: Dict) -> Optional[str]:
+    """Get item name from row using all known column variants. Returns None if blank/missing."""
+    name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name', 'Description'])
+    return _safe_strip(name) if name else None
 
 
 def _normalize_column_name(row: Dict, possible_names: List[str]) -> Optional[str]:
@@ -282,6 +289,7 @@ def _default_cost_per_base_from_row(row: Dict) -> Decimal:
         'Wholesale_Unit_Price',
         'Wholesale Unit Price',
         'Wholesale unit price',
+        'Wsale price',
         'Purchase Price (Wholesale)',
         'Cost per Wholesale Unit'
     ])
@@ -292,6 +300,7 @@ def _default_cost_per_base_from_row(row: Dict) -> Decimal:
         'Purchase Price per Supplier Unit',
         'Price_List_Last_Cost',
         'Purchase price',
+        'Cost price',
         'Last Cost',
         'Last_Cost'
     ]) or '0'
@@ -301,30 +310,78 @@ def _default_cost_per_base_from_row(row: Dict) -> Decimal:
 
 
 def _normalize_product_category_from_row(row: Dict) -> Optional[str]:
-    """Extract product_category from row; return only if valid (PHARMACEUTICAL, COSMETICS, EQUIPMENT, SERVICE)."""
+    """Extract product_category from row; return only if valid (PHARMACEUTICAL, COSMETICS, EQUIPMENT, SERVICE).
+    Accepts client columns: Category (PHARMACY→PHARMACY, COSMETICS→COSMETICS), Sub Category (cosmetic-like→COSMETICS).
+    """
     from app.models.item import PRODUCT_CATEGORIES
-    raw = _safe_strip(_normalize_column_name(row, ['Product_Category', 'Product Category', 'product_category']) or '')
+    raw = _safe_strip(_normalize_column_name(row, [
+        'Product_Category', 'Product Category', 'product_category',
+        'Category', 'category', 'Sub Category', 'Sub_Category', 'sub category'
+    ]) or '')
     if not raw:
         return None
     val = raw.upper().replace(' ', '_').replace('-', '_')
     if val in PRODUCT_CATEGORIES:
         return val
-    # Allow common synonyms
+    if val == 'PHARMACY':
+        return 'PHARMACEUTICAL'
     if val in ('COSMETIC', 'BEAUTY'):
         return 'COSMETICS'
+    # Sub Category cosmetic-like → COSMETICS
+    cosmetic_like = (
+        'MOISTURIZER', 'LOTION', 'BODY_SPLASH', 'SUNSCREEN', 'SKIN_CARE', 'ORAL_TREATMENT',
+        'PERFUMES', 'OPTHALMIC_SOL', 'CONDOMS', 'SOAP', 'SERUM', 'SHOWER_GEL', 'LIPBALM',
+        'BODY_SCRUB', 'GEL', 'FACE_MASK', 'SKINCARE', 'TONER', 'EYE_PENCIL', 'ROLL_ON',
+        'SHAMPOO', 'CLEANSER', 'LIPSTICK', 'MISCELLANEOUS'
+    )
+    if val in cosmetic_like or 'COSMETIC' in val or 'BEAUTY' in val or 'SKIN' in val:
+        return 'COSMETICS'
+    # Default pharmacy-style subcategories to PHARMACEUTICAL
+    if val in ('SUPPLEMENTS', 'NON_PHARM', 'CONTROLLED', 'PHARMACY'):
+        return 'PHARMACEUTICAL'
     return None
 
 
-def _normalize_pricing_tier_from_row(row: Dict) -> Optional[str]:
-    """Extract pricing_tier from row; return only if valid tier name."""
+# Map client "Sub Category" and similar values to PharmaSight pricing_tier (keys: normalized with spaces and underscores)
+def _sub_category_to_tier(sub: str) -> Optional[str]:
     from app.models.item import PRICING_TIERS
-    raw = _safe_strip(_normalize_column_name(row, ['Pricing_Tier', 'Pricing Tier', 'pricing_tier']) or '')
+    if not sub or not sub.strip():
+        return None
+    raw = sub.strip().upper()
+    raw_underscore = raw.replace(' ', '_').replace('-', '_')
+    mapping = {
+        'SUPPLEMENTS': 'NUTRITION_SUPPLEMENTS',
+        'NON PHARM': 'STANDARD', 'NON_PHARM': 'STANDARD',
+        'MOISTURIZER': 'BEAUTY_COSMETICS', 'LOTION': 'BEAUTY_COSMETICS',
+        'BODY SPLASH': 'BEAUTY_COSMETICS', 'BODY_SPLASH': 'BEAUTY_COSMETICS',
+        'SUNSCREEN': 'BEAUTY_COSMETICS', 'SKIN CARE': 'BEAUTY_COSMETICS', 'SKINCARE': 'BEAUTY_COSMETICS',
+        'PERFUMES': 'BEAUTY_COSMETICS', 'SOAP': 'BEAUTY_COSMETICS', 'SHOWER GEL': 'BEAUTY_COSMETICS',
+        'SHAMPOO': 'BEAUTY_COSMETICS', 'CLEANSER': 'BEAUTY_COSMETICS', 'LIPSTICK': 'BEAUTY_COSMETICS',
+        'INSULIN INJ': 'INJECTABLES', 'VACCINE INJ': 'INJECTABLES', 'INJECTABLES': 'INJECTABLES',
+        'CONTROLLED': 'STANDARD', 'ANTIHYPERTENSIVE': 'CHRONIC_MEDICATION', 'ANTIDIABETICS': 'CHRONIC_MEDICATION',
+        'STATINS': 'CHRONIC_MEDICATION', 'ANTICOAGULANT': 'CHRONIC_MEDICATION', 'INHALERS': 'STANDARD',
+        'INHALER': 'STANDARD', 'IMMUNOSUPPRESANT': 'CHRONIC_MEDICATION', 'ANTICONVULSANTS': 'CHRONIC_MEDICATION',
+    }
+    tier = mapping.get(raw) or mapping.get(raw_underscore)
+    return tier if tier and tier in PRICING_TIERS else None
+
+
+def _normalize_pricing_tier_from_row(row: Dict) -> Optional[str]:
+    """Extract pricing_tier from row; return only if valid tier name.
+    Accepts client columns: Sub Category (mapped via _sub_category_to_tier), Pricing_Tier.
+    """
+    from app.models.item import PRICING_TIERS
+    raw = _safe_strip(_normalize_column_name(row, [
+        'Pricing_Tier', 'Pricing Tier', 'pricing_tier',
+        'Sub Category', 'Sub_Category', 'sub category', 'SubCategory'
+    ]) or '')
     if not raw:
         return None
     val = raw.upper().replace(' ', '_').replace('-', '_')
     if val in PRICING_TIERS:
         return val
-    return None
+    tier = _sub_category_to_tier(raw)
+    return tier
 
 
 def convert_quantity_supplier_to_wholesale(
@@ -408,46 +465,13 @@ class ExcelImportService:
     @staticmethod
     def validate_excel_data(excel_data: List[Dict]) -> Tuple[bool, List[str]]:
         """
-        Validate Excel data structure.
-        
-        Returns:
-            Tuple[bool, List[str]]: (is_valid, error_messages)
+        Validate Excel data structure. Call after filtering out blank rows and deduplicating.
+        - Only checks that there is at least one row left to import.
+        - Duplicate item names are handled by deduplication (keep first, skip rest) before this.
         """
-        errors = []
-        # Accept multiple column name formats for item name
-        item_name_fields = ['Item_Name', 'Item name*', 'Item name', 'Item Name']
-        # Stock quantity is optional (defaults to 0 if missing) - no validation needed
-        
         if not excel_data:
-            errors.append("Excel file is empty")
-            return False, errors
-        
-        for idx, row in enumerate(excel_data, start=2):  # Start at row 2 (header is row 1)
-            # Check if at least one item name field exists and has a value
-            item_name = None
-            for field in item_name_fields:
-                if field in row and row[field] is not None:
-                    value = _safe_strip(row[field])
-                    if value:
-                        item_name = value
-                        break
-            
-            if not item_name:
-                # Try case-insensitive and normalized matching
-                for key in row.keys():
-                    normalized_key = key.replace(' ', '_').replace('-', '_').replace('*', '').lower()
-                    if normalized_key in ['item_name', 'itemname']:
-                        value = _safe_strip(row[key])
-                        if value:
-                            item_name = value
-                            break
-                
-                if not item_name:
-                    errors.append(f"Row {idx}: Missing required field 'Item name' (tried: {', '.join(item_name_fields)})")
-            
-            # Stock quantity is optional - no validation needed, will default to 0
-        
-        return len(errors) == 0, errors
+            return False, ["Excel file is empty or has no rows with item name."]
+        return True, []
     
     @staticmethod
     def import_excel_data(
@@ -480,10 +504,33 @@ class ExcelImportService:
         # Apply column mapping if provided (user matched their Excel headers to system fields)
         if column_mapping:
             excel_data = [_apply_column_mapping(row, column_mapping) for row in excel_data]
-        # Validate data
+        # Skip rows with blank item name (silent)
+        excel_data = [row for row in excel_data if _get_item_name_from_row(row)]
+        if not excel_data:
+            raise ValueError(
+                "No valid rows: every row has blank or missing item name. "
+                "Use a column that contains the product name (e.g. Item Name, Description) and ensure it is mapped."
+            )
+        # Deduplicate by item name (keep first occurrence, skip later duplicates) so import does not abort
+        seen_name_lower = set()
+        deduped = []
+        duplicate_names = []
+        for row in excel_data:
+            name = _get_item_name_from_row(row)
+            if not name:
+                continue
+            key = name.lower().strip()
+            if key in seen_name_lower:
+                if name not in duplicate_names:
+                    duplicate_names.append(name)
+                continue
+            seen_name_lower.add(key)
+            deduped.append(row)
+        rows_skipped_duplicate = len(excel_data) - len(deduped)
+        excel_data = deduped
         is_valid, errors = ExcelImportService.validate_excel_data(excel_data)
         if not is_valid:
-            raise ValueError(f"Excel data validation failed: {', '.join(errors)}")
+            raise ValueError(f"Excel data validation failed: {'; '.join(errors)}")
         
         # Detect mode
         if force_mode:
@@ -496,13 +543,19 @@ class ExcelImportService:
         logger.info(f"Excel import mode: {mode} for company {company_id}")
         
         if mode == 'AUTHORITATIVE':
-            return ExcelImportService._import_authoritative(
+            result = ExcelImportService._import_authoritative(
                 db, company_id, branch_id, user_id, excel_data, job_id=job_id
             )
         else:
-            return ExcelImportService._import_non_destructive(
+            result = ExcelImportService._import_non_destructive(
                 db, company_id, branch_id, user_id, excel_data, job_id=job_id
             )
+        if rows_skipped_duplicate:
+            stats = result.get("stats") or {}
+            stats["rows_skipped_duplicate_name"] = rows_skipped_duplicate
+            stats["duplicate_item_names"] = duplicate_names
+            result["stats"] = stats
+        return result
 
     @staticmethod
     def _get_items_with_real_transactions(
@@ -582,7 +635,7 @@ class ExcelImportService:
         # Reuse the same parsing logic as create for consistency
         description = _normalize_column_name(row, ['Description', 'Generic_Name', 'Generic Name', 'Generic name']) or ''
         barcode = _normalize_column_name(row, ['Barcode', 'barcode', 'BARCODE']) or ''
-        category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY']) or ''
+        category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY', 'Brand']) or ''
 
         supplier_unit_raw = _normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit', 'supplier_unit']) or ''
         wholesale_unit_raw = _normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit', 'wholesale_unit']) or ''
@@ -590,7 +643,7 @@ class ExcelImportService:
         supplier_unit = _sanitize_unit_label(supplier_unit_raw, 'packet')
         wholesale_unit = _sanitize_unit_label(wholesale_unit_raw, 'packet')
         retail_unit = _sanitize_unit_label(retail_unit_raw, 'tablet')
-        pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack_size', 'Conversion Rate (n) (x = ny)', 'Conversion_To_Retail']) or '1'
+        pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack size', 'pack_size', 'Conversion Rate (n) (x = ny)', 'Conversion_To_Retail']) or '1'
         pack_size = int(ExcelImportService._parse_decimal(pack_size_raw)) if pack_size_raw else 1
         pack_size = max(1, int(pack_size))
         wholesale_units_per_supplier = _parse_wholesale_units_per_supplier_from_row(row)
@@ -758,7 +811,7 @@ class ExcelImportService:
                                 db.rollback()
                             except:
                                 pass
-                            item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name']) or 'Unknown'
+                            item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name', 'Description']) or 'Unknown'
                             error_msg = f"Error processing row {row_number} for '{item_name}': {str(row_error)}"
                             logger.error(error_msg)
                             stats['errors'].append(error_msg)
@@ -882,7 +935,7 @@ class ExcelImportService:
                     except Exception as e:
                         # Rollback this row's transaction, but continue with next row
                         db.rollback()
-                        item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name']) or 'Unknown'
+                        item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name', 'Description']) or 'Unknown'
                         error_msg = f"Error processing row {row_number} for '{item_name}': {str(e)}"
                         logger.error(error_msg, exc_info=True)
                         stats['errors'].append(error_msg)
@@ -927,7 +980,7 @@ class ExcelImportService:
         }
         
         # Use normalize_column_name to handle various column name formats
-        item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name']) or ''
+        item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name', 'Description']) or ''
         item_name = _safe_strip(item_name) or ''
         if not item_name:
             return result
@@ -985,7 +1038,7 @@ class ExcelImportService:
                 'Wholesale_Price_per_Wholesale_Unit',
                 'Wholesale_Unit_Price',
                 'Wholesale Unit Price',
-                'Wholesale unit price',
+                'Wsale price',
                 'Purchase Price (Wholesale)',
                 'Cost per Wholesale Unit'
             ])
@@ -997,6 +1050,7 @@ class ExcelImportService:
                     'Purchase Price per Supplier Unit',
                     'Price_List_Last_Cost',
                     'Purchase price',
+                    'Cost price',
                     'Last Cost',
                     'Last_Cost'
                 ]) or '0'
@@ -1021,6 +1075,7 @@ class ExcelImportService:
                     'Current Stock Quantity',
                     'Current stock',
                     'Stock Quantity',
+                    'Quantity Available',
                     'stock quantity'
                 ]) or '0'
                 stock_qty = ExcelImportService._parse_quantity(stock_qty_raw)
@@ -1101,7 +1156,7 @@ class ExcelImportService:
             'supplier_created': 0
         }
         
-        item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name']) or ''
+        item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name', 'Description']) or ''
         item_name = _safe_strip(item_name) or ''
         if not item_name:
             return result
@@ -1153,11 +1208,12 @@ class ExcelImportService:
         row: Dict
     ) -> Item:
         """Create a new item from Excel row with 3-tier UNIT system"""
-        item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name']) or ''
+        item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name', 'Description']) or ''
         description = _normalize_column_name(row, ['Description', 'Generic_Name', 'Generic Name', 'Generic name']) or ''
-        item_code = _normalize_column_name(row, ['Item_Code', 'Item Code', 'Item code', 'SKU', 'sku']) or ''
+        item_code_raw = _normalize_column_name(row, ['Item_Code', 'Item Code', 'Item code', 'SKU', 'sku']) or ''
+        item_code = _safe_strip(item_code_raw) or generate_sku_for_company(company_id, db)
         barcode = _normalize_column_name(row, ['Barcode', 'barcode', 'BARCODE']) or ''
-        category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY']) or ''
+        category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY', 'Brand']) or ''
         
         # 3-TIER UNIT SYSTEM (from Excel template); sanitize so we never store a number as unit name
         supplier_unit_raw = _normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit', 'supplier_unit']) or ''
@@ -1166,7 +1222,7 @@ class ExcelImportService:
         supplier_unit = _sanitize_unit_label(supplier_unit_raw, 'packet')
         wholesale_unit = _sanitize_unit_label(wholesale_unit_raw, 'packet')
         retail_unit = _sanitize_unit_label(retail_unit_raw, 'tablet')
-        pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack_size', 'Conversion Rate (n) (x = ny)', 'Conversion_To_Retail']) or '1'
+        pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'pack size', 'pack_size', 'Conversion Rate (n) (x = ny)', 'Conversion_To_Retail']) or '1'
         pack_size = max(1, int(ExcelImportService._parse_decimal(pack_size_raw)) if pack_size_raw else 1)
         wholesale_units_per_supplier = _parse_wholesale_units_per_supplier_from_row(row)
         wholesale_unit, retail_unit, supplier_unit = _normalize_units_for_excel_item(
@@ -1198,7 +1254,7 @@ class ExcelImportService:
             company_id=company_id,
             name=_safe_strip(item_name) or '',
             description=_safe_strip(description),
-            sku=_safe_strip(item_code),
+            sku=item_code,
             barcode=_safe_strip(barcode),
             category=_safe_strip(category),
             base_unit=_safe_strip(base_unit) or 'piece',
@@ -1213,7 +1269,8 @@ class ExcelImportService:
             track_expiry=_parse_bool_from_row(row, ['Track_Expiry', 'Track Expiry', 'track_expiry'], False),
             is_controlled=_parse_bool_from_row(row, ['Is_Controlled', 'Is Controlled', 'is_controlled'], False),
             is_cold_chain=_parse_bool_from_row(row, ['Is_Cold_Chain', 'Is Cold Chain', 'is_cold_chain'], False),
-            is_active=True
+            is_active=True,
+            setup_complete=False,
         )
         db.add(item)
         db.flush()  # Get ID
@@ -1226,7 +1283,7 @@ class ExcelImportService:
         description = _normalize_column_name(row, ['Description', 'Generic_Name', 'Generic Name', 'Generic name'])
         if description:
             item.description = _safe_strip(description)
-        category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY'])
+        category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY', 'Brand'])
         if category:
             item.category = _safe_strip(category)
         
@@ -1406,7 +1463,7 @@ class ExcelImportService:
         valid_rows = []
         
         for row in batch:
-            item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name']) or ''
+            item_name = _normalize_column_name(row, ['Item_Name', 'Item name*', 'Item name', 'Item Name', 'Description']) or ''
             item_name = _safe_strip(item_name)
             if item_name:
                 item_names.append(item_name)
@@ -1471,7 +1528,8 @@ class ExcelImportService:
         opening_balances = []
         suppliers_to_create = []
         item_name_to_row = {}  # For later reference
-        
+        reserved_skus = set()  # SKUs assigned this batch so we don't duplicate when auto-generating
+
         for item_name, row in valid_rows:
             item_name_lower = item_name.lower()
             item_name_to_row[item_name_lower] = (item_name, row)
@@ -1484,6 +1542,9 @@ class ExcelImportService:
                     replaceable_item_ids.add(item.id)
                     # Full overwrite mapping (includes structural fields)
                     item_dict = ExcelImportService._create_item_dict_for_bulk(company_id, row, item_name)
+                    if not (item_dict.get('sku') or '').strip():
+                        item_dict['sku'] = generate_sku_for_company(company_id, db, reserved_skus)
+                        reserved_skus.add(item_dict['sku'])
                     item_dict['id'] = item.id
                     update_mappings_replaceable.append(item_dict)
                 else:
@@ -1492,7 +1553,7 @@ class ExcelImportService:
                     description = _normalize_column_name(row, ['Description', 'Generic_Name', 'Generic Name', 'Generic name'])
                     if description:
                         safe['description'] = _safe_strip(description)
-                    category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY'])
+                    category = _normalize_column_name(row, ['Category', 'category', 'CATEGORY', 'Brand'])
                     if category:
                         safe['category'] = _safe_strip(category)
                     barcode = _normalize_column_name(row, ['Barcode', 'barcode', 'BARCODE'])
@@ -1519,6 +1580,9 @@ class ExcelImportService:
             else:
                 # Prepare new item
                 item_dict = ExcelImportService._create_item_dict_for_bulk(company_id, row, item_name)
+                if not (item_dict.get('sku') or '').strip():
+                    item_dict['sku'] = generate_sku_for_company(company_id, db, reserved_skus)
+                    reserved_skus.add(item_dict['sku'])
                 items_to_insert.append(item_dict)
         
         # Step 4b: Build supplier name -> id (existing + just-created) and add default_supplier_id to item dicts
@@ -1606,6 +1670,7 @@ class ExcelImportService:
                         'Current Stock Quantity',
                         'Current stock',
                         'Stock Quantity',
+                        'Quantity Available',
                         'stock quantity'
                     ]) or '0'
                 )
@@ -1662,7 +1727,7 @@ class ExcelImportService:
                         'Wholesale_Price_per_Wholesale_Unit',
                         'Wholesale_Unit_Price',
                         'Wholesale Unit Price',
-                        'Wholesale unit price',
+                        'Wsale price',
                         'Purchase Price (Wholesale)',
                         'Cost per Wholesale Unit'
                     ])
@@ -1673,6 +1738,7 @@ class ExcelImportService:
                             'Purchase_Price_per_Supplier_Unit',
                             'Purchase Price per Supplier Unit',
                             'Price_List_Last_Cost',
+                            'Cost price',
                             'Last Cost',
                             'Purchase price'
                         ]) or '0'
@@ -1766,7 +1832,7 @@ class ExcelImportService:
             'description': _safe_strip(_normalize_column_name(row, ['Description', 'Generic_Name', 'Generic Name', 'Description']) or ''),
             'sku': _safe_strip(_normalize_column_name(row, ['Item_Code', 'SKU', 'Item Code', 'sku']) or ''),
             'barcode': _safe_strip(_normalize_column_name(row, ['Barcode', 'barcode']) or ''),
-            'category': _safe_strip(_normalize_column_name(row, ['Category', 'category']) or ''),
+            'category': _safe_strip(_normalize_column_name(row, ['Category', 'category', 'Brand']) or ''),
             'base_unit': wholesale_unit,
             **_vat_from_row(row),
             'is_active': True,
@@ -1782,6 +1848,7 @@ class ExcelImportService:
             'default_cost_per_base': _default_cost_per_base_from_row(row),
             'product_category': _normalize_product_category_from_row(row),
             'pricing_tier': _normalize_pricing_tier_from_row(row),
+            'setup_complete': False,
         }
     
     @staticmethod
