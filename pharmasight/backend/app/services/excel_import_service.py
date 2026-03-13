@@ -82,7 +82,7 @@ EXPECTED_EXCEL_FIELDS: List[Dict] = [
     {'id': 'purchase_price_per_supplier_unit', 'label': 'Purchase Price per Supplier Unit (fallback)', 'required': False},
     {'id': 'wholesale_price_per_wholesale_unit', 'label': 'Wholesale Price', 'required': False},
     {'id': 'retail_price_per_retail_unit', 'label': 'Retail Price / Sale Price', 'required': False},
-    {'id': 'current_stock_quantity', 'label': 'Current Stock Quantity', 'required': False},
+    {'id': 'current_stock_quantity', 'label': 'Current Stock Quantity (in wholesale/base units)', 'required': False},
     {'id': 'opening_batch_number', 'label': 'Opening Batch Number (required when Track Expiry=Yes and opening stock > 0)', 'required': False},
     {'id': 'opening_expiry_date', 'label': 'Opening Expiry Date YYYY-MM-DD (required when Track Expiry=Yes and opening stock > 0)', 'required': False},
     {'id': 'supplier', 'label': 'Supplier', 'required': False},

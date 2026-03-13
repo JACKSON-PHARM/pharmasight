@@ -25,6 +25,8 @@ class ItemMovementRow(BaseModel):
     running_balance: Decimal
     batch_number: Optional[str] = None
     expiry_date: Optional[date] = None
+    party_name: Optional[str] = None  # Customer (sale), supplier (purchase), "Stock adjustment", "Stock take", etc.
+    unit_price_or_cost: Optional[Decimal] = None  # Price for Sale, cost for Supplier Invoice; blank for stock take and others
 
 
 class ItemMovementReportResponse(BaseModel):

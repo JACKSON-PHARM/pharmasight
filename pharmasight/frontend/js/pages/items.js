@@ -786,48 +786,83 @@ function downloadItemTemplate() {
         return;
     }
     
-    // 3-tier unit template: base = wholesale, conversion to retail (pack_size), conversion to supplier (wholesale_units_per_supplier)
+    // Template matches backend EXPECTED_EXCEL_FIELDS and SYSTEM_TO_CANONICAL_HEADER.
+    // Base unit = wholesale. Current stock must be in wholesale (base) units.
     const headers = [
-        'Item name*',
-        'Generic Name',
-        'Item code',
+        'Item_Name',
+        'Description',
+        'Item_Code',
         'Barcode',
         'Category',
-        'Supplier Unit',
-        'Wholesale Unit',
-        'Retail Unit',
-        'Pack Size (retail per wholesale)',
-        'Wholesale Units per Supplier',
-        'Purchase Price per Supplier Unit',
-        'Wholesale Price per Wholesale Unit',
-        'Retail Price per Retail Unit',
-        'Current stock quantity',
+        'Supplier_Unit',
+        'Wholesale_Unit',
+        'Retail_Unit',
+        'Pack_Size',
+        'Wholesale_Units_per_Supplier',
+        'Can_Break_Bulk',
+        'Track_Expiry',
+        'Purchase_Price_per_Supplier_Unit',
+        'Wholesale_Price_per_Wholesale_Unit',
+        'Retail_Price_per_Retail_Unit',
+        'Current_Stock_Quantity',
+        'Opening_Batch_Number',
+        'Opening_Expiry_Date',
         'Supplier',
-        'VAT Category',
-        'VAT Rate',
-        'Can Break Bulk'
+        'VAT_Category',
+        'VAT_Rate',
+        'Product_Category',
+        'Pricing_Tier'
     ];
     
-    // Create workbook and worksheet
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([headers]);
     
-    // Set column widths for better readability
-    const colWidths = headers.map((header, idx) => {
-        // Calculate width based on header length, with minimums
-        const baseWidth = Math.max(header.length + 2, 12);
-        return { wch: Math.min(baseWidth, 40) };
-    });
+    const colWidths = headers.map((header) => ({
+        wch: Math.min(Math.max(header.length + 2, 12), 45)
+    }));
     ws['!cols'] = colWidths;
     
-    // Add worksheet to workbook with exact sheet name
     XLSX.utils.book_append_sheet(wb, ws, 'Pharmasight Template');
     
-    // Generate file and download (matching original filename)
+    // Instructions sheet (import reads first sheet only)
+    const instructions = [
+        ['PharmaSight Excel import – column guide'],
+        [],
+        ['Column', 'Meaning', 'Required'],
+        ['Item_Name', 'Item name', 'Yes'],
+        ['Description', 'Generic name / description', 'No'],
+        ['Item_Code', 'SKU', 'No'],
+        ['Barcode', 'Barcode', 'No'],
+        ['Category', 'Category', 'No'],
+        ['Supplier_Unit', 'e.g. carton', 'No'],
+        ['Wholesale_Unit', 'Base unit, e.g. box', 'No'],
+        ['Retail_Unit', 'e.g. tablet', 'No'],
+        ['Pack_Size', 'Retail per 1 wholesale (e.g. 100)', 'No'],
+        ['Wholesale_Units_per_Supplier', 'e.g. 12', 'No'],
+        ['Can_Break_Bulk', 'Yes/No', 'No'],
+        ['Track_Expiry', 'Yes/No; if Yes and stock>0, fill Opening_Batch_Number and Opening_Expiry_Date', 'No'],
+        ['Purchase_Price_per_Supplier_Unit', 'Cost per supplier unit', 'No'],
+        ['Wholesale_Price_per_Wholesale_Unit', 'Selling price per wholesale unit', 'No'],
+        ['Retail_Price_per_Retail_Unit', 'Selling price per retail unit', 'No'],
+        ['Current_Stock_Quantity', 'Opening stock in WHOLESALE (base) units only', 'No'],
+        ['Opening_Batch_Number', 'Required if Track_Expiry=Yes and opening stock>0', 'No'],
+        ['Opening_Expiry_Date', 'YYYY-MM-DD; required if Track_Expiry=Yes and opening stock>0', 'No'],
+        ['Supplier', 'Supplier name', 'No'],
+        ['VAT_Category', 'ZERO_RATED or STANDARD_RATED', 'No'],
+        ['VAT_Rate', 'e.g. 0 or 16', 'No'],
+        ['Product_Category', 'PHARMACEUTICAL, COSMETICS, EQUIPMENT, SERVICE', 'No'],
+        ['Pricing_Tier', 'Optional', 'No'],
+        [],
+        ['Important: Current stock must be in wholesale (base) units. Example: if item is in boxes of 100 tablets, enter number of boxes, not tablets.']
+    ];
+    const wsInstructions = XLSX.utils.aoa_to_sheet(instructions);
+    wsInstructions['!cols'] = [{ wch: 35 }, { wch: 60 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, wsInstructions, 'Instructions');
+    
     const fileName = `pharmasight_template.xlsx`;
     XLSX.writeFile(wb, fileName);
     
-    showToast('Template downloaded! Fill it with your items and upload.', 'success');
+    showToast('Template downloaded! Current stock must be in wholesale (base) units.', 'success');
 }
 
 /** Clear all company data (including transactions) for fresh Excel import. Schema is left intact. Requires password confirmation. */

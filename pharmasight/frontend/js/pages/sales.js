@@ -909,6 +909,9 @@ async function renderCreateSalesInvoicePage() {
         : 'Sales Invoice';
     
     page.innerHTML = `
+        <div class="invoice-context-banner invoice-context-sales" role="status">
+            <i class="fas fa-file-invoice-dollar"></i> Sales Invoice — You are entering a sale to a customer (outgoing).
+        </div>
         <div class="card sales-invoice-transaction-page" style="margin-bottom: 0; padding: 0; display: flex; flex-direction: column; min-height: calc(100vh - 6rem); max-height: calc(100vh - 6rem); box-shadow: none; border: 1px solid var(--border-color);">
             <!-- Transaction bar: Back (left) | Sales Invoice (center) | actions (right, edit only) -->
             <div style="display: flex; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); flex-shrink: 0;">

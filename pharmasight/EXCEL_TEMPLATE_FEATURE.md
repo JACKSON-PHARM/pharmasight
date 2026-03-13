@@ -1,132 +1,57 @@
-# ✅ Excel Template Download Feature
+# Excel Template Download and Import
 
-## What Was Implemented
+## Template format (current)
 
-### 1. **Template Download Button**
-- Added "Download Template" button on the Items page
-- Button is placed before the "Import Excel" button
-- Downloads a properly formatted Excel template with exact headers
+The **Download Template** button (Items / Inventory page) generates an Excel file that matches the backend import format.
 
-### 2. **Template Headers**
-The template includes these exact headers (matching your specification):
-1. **Item name*** (required)
-2. **Item code**
-3. **Description**
-4. **Category**
-5. **HSN**
-6. **Sale price**
-7. **Purchase price**
-8. **opening stock quantity**
-9. **Tax Rate**
-10. **Inclusive Of Tax**
-11. **Base Unit (x)**
-12. **Secondary Unit (y)**
-13. **Conversion Rate (n) (x = ny)**
+### Headers (row 1)
 
-### 3. **Updated Import Mapping**
-The import function now correctly maps template headers to item fields:
-- `Item name*` → `name` (required)
-- `Item code` → `sku`
-- `Description` → `generic_name`
-- `Category` → `category`
-- `Purchase price` → `default_cost`
-- `Base Unit (x)` → `base_unit` (required)
-- `Secondary Unit (y)` + `Conversion Rate (n)` → `ItemUnit` conversion
+| Column | Meaning | Required |
+|--------|--------|----------|
+| Item_Name | Item name | **Yes** |
+| Description | Generic name / description | No |
+| Item_Code | SKU | No |
+| Barcode | Barcode | No |
+| Category | Category | No |
+| Supplier_Unit | e.g. carton | No |
+| Wholesale_Unit | Base unit, e.g. box | No |
+| Retail_Unit | e.g. tablet | No |
+| Pack_Size | Retail per 1 wholesale (e.g. 100) | No |
+| Wholesale_Units_per_Supplier | e.g. 12 | No |
+| Can_Break_Bulk | Yes/No | No |
+| Track_Expiry | Yes/No | No |
+| Purchase_Price_per_Supplier_Unit | Cost per supplier unit | No |
+| Wholesale_Price_per_Wholesale_Unit | Selling price per wholesale unit | No |
+| Retail_Price_per_Retail_Unit | Selling price per retail unit | No |
+| **Current_Stock_Quantity** | **Opening stock in wholesale (base) units only** | No |
+| Opening_Batch_Number | Required if Track_Expiry=Yes and opening stock > 0 | No |
+| Opening_Expiry_Date | YYYY-MM-DD | No |
+| Supplier | Supplier name | No |
+| VAT_Category | ZERO_RATED or STANDARD_RATED | No |
+| VAT_Rate | e.g. 0 or 16 | No |
+| Product_Category | PHARMACEUTICAL, COSMETICS, EQUIPMENT, SERVICE | No |
+| Pricing_Tier | Optional | No |
 
-### 4. **User Flow**
+### Current stock (units)
 
-1. **Download Template:**
-   - Click "Download Template" button
-   - Excel file downloads: `PharmaSight_Items_Template_YYYY-MM-DD.xlsx`
-   - File has headers in row 1
+- **Base unit in PharmaSight = wholesale unit** (e.g. box, bottle). All ledger quantities are stored in wholesale (base) units.
+- **Current_Stock_Quantity** must be in **wholesale (base) units**, not retail.
+  - Example: item “Paracetamol 500mg box of 100 tablets” — if you have 50 boxes, enter **50**, not 5000 (tablets).
+- There is a single column for opening stock. If you only have retail counts, convert to wholesale first (e.g. 5000 tablets ÷ 100 per box = 50 boxes).
 
-2. **Fill Template:**
-   - Open the downloaded template
-   - Fill in your items (keep headers unchanged)
-   - Save the file
+### Instructions sheet
 
-3. **Import:**
-   - Click "Import Excel" button
-   - Select your filled template
-   - Preview shows first 5 rows
-   - Click "Import Items" to upload
+The downloaded file has a second sheet **Instructions** with the same column guide. Import uses only the first sheet (**Pharmasight Template**).
 
-## Fields Mapping Details
+### User flow
 
-### Imported Fields:
-- ✅ **Item name*** → Item name (required)
-- ✅ **Item code** → SKU
-- ✅ **Description** → Generic name
-- ✅ **Category** → Category
-- ✅ **Purchase price** → Default cost
-- ✅ **Base Unit (x)** → Base unit (required)
-- ✅ **Secondary Unit (y)** + **Conversion Rate (n)** → Unit conversion
-
-### Not Currently Imported (Future Enhancement):
-- **HSN** - Not in current item model
-- **Sale price** - Calculated from purchase price using markup
-- **opening stock quantity** - Requires inventory import separately
-- **Tax Rate** - Uses default 16% (can be configured per item later)
-- **Inclusive Of Tax** - Uses default false (can be configured later)
-
-These fields are included in the template for future use or manual configuration.
-
-## Usage Example
-
-### Template Row:
-```
-Item name*: FELVIN (PIROXICAM 20MG)
-Item code: 
-Description: nsaids
-Category: F
-HSN: 
-Sale price: 500
-Purchase price: 65
-opening stock quantity: 15
-Tax Rate: 
-Inclusive Of Tax: 
-Base Unit (x): packets
-Secondary Unit (y): capsules
-Conversion Rate (n): 100
-```
-
-### Creates:
-- Item name: "FELVIN (PIROXICAM 20MG)"
-- SKU: (empty)
-- Generic name: "nsaids"
-- Category: "F"
-- Default cost: 65
-- Base unit: "packets"
-- Unit conversion: 1 packet = 100 capsules
-
-## Testing
-
-1. **Download Template:**
-   ```javascript
-   // In browser console
-   downloadItemTemplate()
-   ```
-   Should download Excel file with headers.
-
-2. **Fill Template:**
-   - Open downloaded file
-   - Add at least one item with:
-     - Item name* (required)
-     - Purchase price (required)
-     - Base Unit (x) (required)
-
-3. **Import:**
-   - Click "Import Excel"
-   - Select filled template
-   - Preview should show your data
-   - Click "Import Items"
-   - Items should appear in the items list
+1. Click **Download Template** → `pharmasight_template.xlsx` downloads.
+2. Fill data from row 2 onward; keep row 1 headers unchanged.
+3. Click **Import Excel**, select the file, map columns if needed, then run import.
 
 ## Notes
 
-- Template uses XLSX.js library (already loaded in `index.html`)
-- Headers must match exactly (case-sensitive for import)
-- Users should NOT change header row
-- Empty cells are handled gracefully
-- Required fields: Item name*, Purchase price, Base Unit (x)
-- Template filename includes date: `PharmaSight_Items_Template_2026-01-10.xlsx`
+- Template uses the XLSX.js library (loaded in `index.html`).
+- Backend accepts these exact headers and common variants (e.g. "Item name*", "Current stock quantity"); the template uses canonical names (e.g. Item_Name, Current_Stock_Quantity).
+- Required for import: **Item_Name**. Other fields are optional.
+- For items with **Track_Expiry = Yes** and opening stock > 0, provide **Opening_Batch_Number** and **Opening_Expiry_Date** (YYYY-MM-DD).

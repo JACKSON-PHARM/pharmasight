@@ -513,7 +513,7 @@ function renderMovementTableToElement(res, contentEl, options) {
     const showExpiry = !!displayOpts.show_expiry_date;
 
     const th = (t, align) => '<th style="padding: 8px 10px; border: 1px solid #333; background: #f5f5f5; text-align: ' + (align || 'left') + '; font-weight: 600;">' + t + '</th>';
-    let tableHeaders = th('Date') + th('Document type') + th('Reference') + th('Qty In', 'right') + th('Qty Out', 'right') + th('Run Bal', 'right');
+    let tableHeaders = th('Date') + th('Document type') + th('Reference') + th('Party') + th('Cost', 'right') + th('Qty In', 'right') + th('Qty Out', 'right') + th('Run Bal', 'right');
     if (showBatch) tableHeaders += th('Batch');
     if (showExpiry) tableHeaders += th('Expiry');
 
@@ -522,13 +522,15 @@ function renderMovementTableToElement(res, contentEl, options) {
         const dateStr = r.date ? (typeof r.date === 'string' ? r.date.slice(0, 19).replace('T', ' ') : r.date) : '';
         const docType = (r.document_type != null && r.document_type !== undefined) ? String(r.document_type) : '';
         const ref = (r.reference != null && r.reference !== undefined) ? String(r.reference) : '';
+        const party = (r.party_name != null && r.party_name !== undefined) ? String(r.party_name) : '';
+        const cost = (r.unit_price_or_cost != null && r.unit_price_or_cost !== undefined && r.unit_price_or_cost !== '') ? String(r.unit_price_or_cost) : '';
         const qtyIn = (r.qty_in != null && r.qty_in !== undefined) ? Number(r.qty_in) : 0;
         const qtyOut = (r.qty_out != null && r.qty_out !== undefined) ? Number(r.qty_out) : 0;
         const runBal = (r.running_balance != null && r.running_balance !== undefined) ? Number(r.running_balance) : 0;
         const batch = showBatch ? (r.batch_number != null ? String(r.batch_number) : '') : '';
         const expiry = showExpiry ? (r.expiry_date != null ? String(r.expiry_date).slice(0, 10) : '') : '';
         const td = (v, align) => '<td style="padding: 6px 10px; border: 1px solid #ddd;">' + (align === 'right' ? '<span style="text-align:right;display:block;">' + v + '</span>' : _escapeHtml(v)) + '</td>';
-        let row = td(dateStr) + td(docType) + td(ref) + td(String(qtyIn), 'right') + td(String(qtyOut), 'right') + td(String(runBal), 'right');
+        let row = td(dateStr) + td(docType) + td(ref) + td(party) + td(cost, 'right') + td(String(qtyIn), 'right') + td(String(qtyOut), 'right') + td(String(runBal), 'right');
         if (showBatch) row += td(batch);
         if (showExpiry) row += td(expiry);
         return '<tr>' + row + '</tr>';
@@ -600,7 +602,13 @@ if (typeof window !== 'undefined') {
 }
 
 async function loadMovementReport() {
-    const root = window.__itemMovementReportRoot || document;
+    let root = window.__itemMovementReportRoot || document;
+    // When on Inventory → Item Movement, prefer the visible form (avoids reading wrong/stale root)
+    const inventoryMovementContainer = document.getElementById('inventoryMovementContainer');
+    const inventoryPage = document.getElementById('inventory');
+    if (inventoryMovementContainer && inventoryMovementContainer.querySelector('#imItemId') && inventoryPage && inventoryPage.offsetParent !== null) {
+        root = inventoryMovementContainer;
+    }
     const mode = root.__movementReportMode || 'item';
     const isBatch = mode === 'batch';
 
@@ -719,7 +727,7 @@ function downloadItemMovementCSV() {
         if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
         return s;
     };
-    let headers = ['Date', 'Document type', 'Reference', 'Qty In', 'Qty Out', 'Running balance'];
+    let headers = ['Date', 'Document type', 'Reference', 'Party', 'Cost', 'Qty In', 'Qty Out', 'Running balance'];
     if (showBatch) headers.push('Batch');
     if (showExpiry) headers.push('Expiry');
     const lines = [headers.map(escapeCsv).join(',')];
@@ -729,6 +737,8 @@ function downloadItemMovementCSV() {
             dateStr,
             (r.document_type != null ? String(r.document_type) : ''),
             (r.reference != null ? String(r.reference) : ''),
+            (r.party_name != null ? String(r.party_name) : ''),
+            (r.unit_price_or_cost != null && r.unit_price_or_cost !== '' ? String(r.unit_price_or_cost) : ''),
             (r.qty_in != null ? r.qty_in : 0),
             (r.qty_out != null ? r.qty_out : 0),
             (r.running_balance != null ? r.running_balance : 0)

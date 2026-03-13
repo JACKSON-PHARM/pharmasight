@@ -159,11 +159,19 @@
                         <span id="statusBranch">Not Set</span>
                     </div>
                 </div>
-                <!-- Global Item Search: same row as logout so it behaves like other top-bar controls -->
+                <!-- Global Item Search + quick actions (Add Sale, Add Supplier Invoice) in one row -->
                 <div id="globalItemSearchBar" class="global-item-search-bar top-bar-search">
                     <div class="global-item-search-wrap">
                         <input type="text" id="globalItemSearchInput" class="form-input" placeholder="Search item (name, SKU)…" autocomplete="off" aria-label="Search items" oninput="if(window.handleGlobalSearchInput)window.handleGlobalSearchInput(this);">
                         <div id="globalItemSearchDropdown" class="global-item-search-dropdown" style="display: none;" aria-hidden="true"></div>
+                    </div>
+                    <div class="top-bar-quick-actions" id="topBarQuickActions">
+                        <button type="button" class="btn btn-quick-sale btn-sm" id="globalAddSaleBtn" title="New sales invoice" onclick="if(window.loadPage) window.loadPage('sales'); if(window.loadSalesSubPage) setTimeout(function(){ window.loadSalesSubPage('create-invoice'); }, 150);">
+                            <i class="fas fa-plus"></i> Sale
+                        </button>
+                        <button type="button" class="btn btn-quick-purchase btn-sm" id="globalAddSupplierInvoiceBtn" title="New supplier invoice (receive stock)" onclick="if(window.loadPage) window.loadPage('purchases'); if(window.loadPurchaseSubPage) setTimeout(function(){ window.loadPurchaseSubPage('create-invoice'); }, 150);">
+                            <i class="fas fa-plus"></i> Purchase
+                        </button>
                     </div>
                     <div id="globalSelectedItemRow" class="global-selected-item-row" style="display: none;">
                         <span id="globalSelectedItemName" class="global-selected-name"></span>
@@ -178,9 +186,6 @@
                 <div class="top-bar-right">
                     <button class="btn btn-primary" id="newPurchaseBtn" style="display: none;">
                         <i class="fas fa-plus"></i> New Purchase
-                    </button>
-                    <button class="btn btn-secondary" id="logoutBtnTop" onclick="if(window.globalLogout) window.globalLogout()" title="Logout">
-                        <i class="fas fa-sign-out-alt"></i> Logout
                     </button>
                 </div>
             </header>

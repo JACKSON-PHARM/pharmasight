@@ -1512,6 +1512,9 @@ async function renderCreateSupplierInvoicePage() {
     ` : '');
     
     page.innerHTML = `
+        <div class="invoice-context-banner invoice-context-supplier" role="status">
+            <i class="fas fa-truck-loading"></i> Supplier Invoice — You are receiving stock from a supplier (incoming).
+        </div>
         <div class="card" id="supplierInvoiceDocumentCard" style="transform-origin: top left; transition: transform 0.2s;">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: white; z-index: 10;">
                 <div style="display: flex; align-items: center; gap: 1rem;">

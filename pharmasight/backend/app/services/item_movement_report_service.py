@@ -17,7 +17,9 @@ from app.models import (
     InventoryLedger,
     CompanySetting,
     SalesInvoice,
+    SalesInvoiceItem,
     GRN,
+    Supplier,
     SupplierInvoice,
     BranchTransfer,
     BranchReceipt,
@@ -66,7 +68,7 @@ def _resolve_references_batch(
     """
     result: Dict[Tuple[str, UUID], Dict[str, Any]] = {}
 
-    # sales_invoice -> Sale, invoice_no (+ customer_name, payment_mode)
+    # sales_invoice -> Sale, invoice_no (+ customer_name for cash only)
     for rid in refs_by_type.get("sales_invoice") or []:
         inv = db.query(SalesInvoice).filter(SalesInvoice.id == rid).first()
         if inv:
@@ -75,12 +77,14 @@ def _resolve_references_batch(
                 ref_parts.append(str(inv.customer_name))
             if getattr(inv, "payment_mode", None):
                 ref_parts.append(str(inv.payment_mode))
+            customer_name = str(inv.customer_name).strip() if inv.customer_name else None
             result[("sales_invoice", rid)] = {
                 "document_type": "Sale",
                 "reference": " ".join(ref_parts).strip() or inv.invoice_no or "",
+                "customer_name": customer_name,
             }
         else:
-            result[("sales_invoice", rid)] = {"document_type": "Sale", "reference": ""}
+            result[("sales_invoice", rid)] = {"document_type": "Sale", "reference": "", "customer_name": None}
 
     # grn -> GRN, grn_no
     for rid in refs_by_type.get("grn") or []:
@@ -90,12 +94,17 @@ def _resolve_references_batch(
             "reference": grn.grn_no if grn else "",
         }
 
-    # purchase_invoice -> Supplier Invoice, invoice_number
+    # purchase_invoice -> Supplier Invoice, invoice_number, supplier_name
     for rid in refs_by_type.get("purchase_invoice") or []:
         inv = db.query(SupplierInvoice).filter(SupplierInvoice.id == rid).first()
+        supplier_name = None
+        if inv and inv.supplier_id:
+            sup = db.query(Supplier).filter(Supplier.id == inv.supplier_id).first()
+            supplier_name = (sup.name or "").strip() if sup else None
         result[("purchase_invoice", rid)] = {
             "document_type": "Supplier Invoice",
             "reference": inv.invoice_number if inv else "",
+            "supplier_name": supplier_name,
         }
 
     # branch_transfer -> Branch Transfer Out, transfer_number
@@ -123,6 +132,23 @@ def _resolve_references_batch(
         }
 
     return result
+
+
+def _get_sales_unit_price_by_invoice(
+    db: Session, item_id: UUID, sales_invoice_ids: List[UUID]
+) -> Dict[UUID, Optional[Decimal]]:
+    """Return map sales_invoice_id -> unit_price_exclusive for this item (from first matching line)."""
+    if not sales_invoice_ids:
+        return {}
+    rows = (
+        db.query(SalesInvoiceItem.sales_invoice_id, SalesInvoiceItem.unit_price_exclusive)
+        .filter(
+            SalesInvoiceItem.sales_invoice_id.in_(sales_invoice_ids),
+            SalesInvoiceItem.item_id == item_id,
+        )
+        .all()
+    )
+    return {r.sales_invoice_id: (Decimal(str(r.unit_price_exclusive)) if r.unit_price_exclusive is not None else None) for r in rows}
 
 
 def build_item_movement_report(
@@ -187,6 +213,8 @@ def build_item_movement_report(
         refs_by_type[k] = list(dict.fromkeys(refs_by_type[k]))
 
     ref_map = _resolve_references_batch(db, refs_by_type)
+    sales_invoice_ids = refs_by_type.get("sales_invoice") or []
+    sales_price_map = _get_sales_unit_price_by_invoice(db, item_id, sales_invoice_ids)
 
     # Build output rows: synthetic opening row first, then ledger rows with running balance
     rows_out: List[ItemMovementRow] = []
@@ -202,6 +230,8 @@ def build_item_movement_report(
         running_balance=opening_balance,
         batch_number=None,
         expiry_date=None,
+        party_name=None,
+        unit_price_or_cost=None,
     ))
 
     for row in ledger_rows:
@@ -213,16 +243,29 @@ def build_item_movement_report(
         running += qty_delta
 
         rt = (row.reference_type or "").strip()
+        party_name = None
+        unit_price_or_cost = None
         if rt == "MANUAL_ADJUSTMENT":
             doc_type, ref = "Adjustment", (row.notes or "Adjustment").strip() or "Adjustment"
+            party_name = "Stock adjustment"
         elif rt == "OPENING_BALANCE":
             doc_type, ref = "Opening Balance", ""
         elif rt == "BATCH_QUANTITY_CORRECTION":
             doc_type, ref = "Quantity correction", (row.notes or "Batch quantity correction").strip() or "Batch quantity correction"
+            party_name = "Stock adjustment"
         else:
             info = ref_map.get((rt, row.reference_id)) if row.reference_id else None
             doc_type = (info or {}).get("document_type", rt or "—")
             ref = (info or {}).get("reference", "")
+            if doc_type == "Sale":
+                party_name = (info or {}).get("customer_name") or ""
+                unit_price_or_cost = sales_price_map.get(row.reference_id) if row.reference_id else None
+            elif doc_type == "Supplier Invoice":
+                party_name = (info or {}).get("supplier_name") or ""
+                unit_price_or_cost = Decimal(str(row.unit_cost)) if row.unit_cost is not None else None
+            elif doc_type == "Stock Take":
+                party_name = "Stock take"
+                unit_price_or_cost = None
 
         expiry = row.expiry_date
         if expiry is not None and hasattr(expiry, "date") and callable(getattr(expiry, "date", None)):
@@ -236,6 +279,8 @@ def build_item_movement_report(
             running_balance=running,
             batch_number=row.batch_number if display_options.show_batch_number else None,
             expiry_date=expiry if display_options.show_expiry_date else None,
+            party_name=party_name or None,
+            unit_price_or_cost=unit_price_or_cost,
         ))
 
     closing_balance = running
