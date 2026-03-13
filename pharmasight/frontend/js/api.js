@@ -1036,9 +1036,6 @@ const API = {
         // Delete entry
         delete: (entryId) => api.delete(`/api/order-book/${entryId}`),
         
-        // Auto-generate
-        autoGenerate: (branchId, companyId) => api.post('/api/order-book/auto-generate', { branch_id: branchId, company_id: companyId }),
-        
         // Create purchase order from selected entries
         createPurchaseOrder: (data, companyId, branchId, createdBy) => {
             const queryParams = new URLSearchParams({
@@ -1055,9 +1052,11 @@ const API = {
             return api.get('/api/order-book/today-summary', params);
         },
         
-        // Get history
-        getHistory: (branchId, companyId, limit = 100) => {
+        // Get history (replenished/archived entries). Optional: dateFrom, dateTo for period.
+        getHistory: (branchId, companyId, limit = 500, options = {}) => {
             const params = { branch_id: branchId, company_id: companyId, limit };
+            if (options.dateFrom) params.date_from = options.dateFrom;
+            if (options.dateTo) params.date_to = options.dateTo;
             return api.get('/api/order-book/history', params);
         },
     },

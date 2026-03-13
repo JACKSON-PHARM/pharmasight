@@ -5500,6 +5500,8 @@ let orderBookEntries = [];
 let selectedOrderBookEntries = new Set();
 let orderBookDateFilter = 'today'; // today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year
 let orderBookSupplierFilter = null; // UUID or null = all suppliers
+let orderBookHistoryEntries = [];
+let orderBookHistoryDateFilter = 'this_month';
 
 // Render Order Book Page (Page-Shell-First Pattern)
 async function renderOrderBookPage() {
@@ -5518,8 +5520,9 @@ async function renderOrderBookPage() {
     // Render shell first (with supplier dropdown)
     renderOrderBookShell(suppliers);
 
-    // Then fetch and render data
+    // Then fetch and render data (open items + history)
     await fetchAndRenderOrderBookData();
+    await fetchAndRenderOrderBookHistory();
 }
 
 function renderOrderBookShell(suppliers = []) {
@@ -5537,8 +5540,8 @@ function renderOrderBookShell(suppliers = []) {
                     <i class="fas fa-clipboard-list"></i> Daily Order Book
                 </h3>
                 <div style="display: flex; gap: 0.5rem;">
-                    <button class="btn btn-outline" onclick="if(window.autoGenerateOrderBook) window.autoGenerateOrderBook()">
-                        <i class="fas fa-magic"></i> Auto-Generate
+                    <button class="btn btn-outline" onclick="if(window.showUnservicedOrderBookSummary) window.showUnservicedOrderBookSummary()" title="Show items in the order book that have not been replenished yet">
+                        <i class="fas fa-list-ul"></i> Summary: Unserviced items
                     </button>
                     <button class="btn btn-primary" id="createPOFromBookBtn" onclick="if(window.createPurchaseOrderFromSelected) window.createPurchaseOrderFromSelected()" disabled>
                         <i class="fas fa-shopping-cart"></i> Create Purchase Order
@@ -5547,6 +5550,9 @@ function renderOrderBookShell(suppliers = []) {
             </div>
             
             <div class="card-body" style="padding: 1.5rem;">
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">
+                    Use <strong>Date</strong> to see what was in the order book for that period. Entries listed here have <strong>not been replenished yet</strong> (still open). Once stock is received, they move to history.
+                </p>
                 <div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
                     <label style="font-weight: 500; margin-right: 0.25rem;">Date:</label>
                     <select id="orderBookDateFilter" class="form-input" style="width: 160px;" onchange="if(window.applyOrderBookDateFilter) window.applyOrderBookDateFilter(this.value)">
@@ -5606,6 +5612,50 @@ function renderOrderBookShell(suppliers = []) {
                                     <p style="color: var(--text-secondary);">Loading order book entries...</p>
                                 </td>
                             </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <div class="card" style="margin-top: 1.5rem;">
+            <div class="card-header" style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0; font-size: 1.2rem;">
+                    <i class="fas fa-history"></i> Order book history (replenished)
+                </h3>
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin: 0.5rem 0 0 0;">Entries that were ordered and stock received. Use Date to review by period.</p>
+                <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                    <label style="font-weight: 500;">Date:</label>
+                    <select id="orderBookHistoryDateFilter" class="form-input" style="width: 160px;" onchange="if(window.applyOrderBookHistoryDateFilter) window.applyOrderBookHistoryDateFilter(this.value)">
+                        <option value="today" ${orderBookHistoryDateFilter === 'today' ? 'selected' : ''}>Today</option>
+                        <option value="yesterday" ${orderBookHistoryDateFilter === 'yesterday' ? 'selected' : ''}>Yesterday</option>
+                        <option value="this_week" ${orderBookHistoryDateFilter === 'this_week' ? 'selected' : ''}>This Week</option>
+                        <option value="last_week" ${orderBookHistoryDateFilter === 'last_week' ? 'selected' : ''}>Last Week</option>
+                        <option value="this_month" ${orderBookHistoryDateFilter === 'this_month' ? 'selected' : ''}>This Month</option>
+                        <option value="last_month" ${orderBookHistoryDateFilter === 'last_month' ? 'selected' : ''}>Last Month</option>
+                        <option value="this_year" ${orderBookHistoryDateFilter === 'this_year' ? 'selected' : ''}>This Year</option>
+                        <option value="last_year" ${orderBookHistoryDateFilter === 'last_year' ? 'selected' : ''}>Last Year</option>
+                    </select>
+                    <button class="btn btn-primary btn-sm" onclick="if(window.fetchAndRenderOrderBookHistory) window.fetchAndRenderOrderBookHistory()">
+                        <i class="fas fa-sync-alt"></i> Refresh
+                    </button>
+                </div>
+            </div>
+            <div class="card-body" style="padding: 1rem 1.5rem;">
+                <div class="table-container" style="max-height: 400px; overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 10;">
+                            <tr>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">SKU</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: right;">Qty</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Unit</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Supplier</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Status</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Received</th>
+                            </tr>
+                        </thead>
+                        <tbody id="orderBookHistoryTableBody">
+                            <tr><td colspan="7" style="padding: 1.5rem; text-align: center; color: var(--text-secondary);">Loading history...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -5692,6 +5742,53 @@ async function applyOrderBookSupplierFilter(value) {
     await fetchAndRenderOrderBookData();
 }
 
+async function fetchAndRenderOrderBookHistory() {
+    const tbody = document.getElementById('orderBookHistoryTableBody');
+    if (!tbody) return;
+    try {
+        if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
+            tbody.innerHTML = '<tr><td colspan="7" style="padding: 1.5rem; text-align: center; color: var(--text-secondary);">Please configure Company and Branch</td></tr>';
+            return;
+        }
+        const { dateFrom, dateTo } = getOrderBookDateRange(orderBookHistoryDateFilter);
+        orderBookHistoryEntries = await API.orderBook.getHistory(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, 500, { dateFrom, dateTo });
+        renderOrderBookHistoryTable();
+    } catch (error) {
+        console.error('Error loading order book history:', error);
+        tbody.innerHTML = `<tr><td colspan="7" style="padding: 1.5rem; text-align: center; color: var(--danger-color);">Error: ${error.message}</td></tr>`;
+    }
+}
+
+function renderOrderBookHistoryTable() {
+    const tbody = document.getElementById('orderBookHistoryTableBody');
+    if (!tbody) return;
+    if (!orderBookHistoryEntries || orderBookHistoryEntries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="padding: 1.5rem; text-align: center; color: var(--text-secondary);">No replenished entries in this period</td></tr>';
+        return;
+    }
+    const fmt = (d) => {
+        if (!d) return '—';
+        const s = typeof d === 'string' ? d : (d && d.toISOString ? d.toISOString() : String(d));
+        return s.slice(0, 10);
+    };
+    tbody.innerHTML = orderBookHistoryEntries.map(entry => `
+        <tr style="border-bottom: 1px solid var(--border-color);">
+            <td style="padding: 0.5rem;">${escapeHtml(entry.item_name || '—')}</td>
+            <td style="padding: 0.5rem;"><code>${escapeHtml(entry.item_sku || '—')}</code></td>
+            <td style="padding: 0.5rem; text-align: right;">${parseFloat(entry.quantity_needed) || 0}</td>
+            <td style="padding: 0.5rem;">${escapeHtml(entry.unit_name || '—')}</td>
+            <td style="padding: 0.5rem;">${escapeHtml(entry.supplier_name || '—')}</td>
+            <td style="padding: 0.5rem;"><span class="badge badge-success">${escapeHtml(entry.status || 'CLOSED')}</span></td>
+            <td style="padding: 0.5rem;">${fmt(entry.received_at)}</td>
+        </tr>
+    `).join('');
+}
+
+async function applyOrderBookHistoryDateFilter(value) {
+    orderBookHistoryDateFilter = value || 'this_month';
+    await fetchAndRenderOrderBookHistory();
+}
+
 async function fetchAndRenderOrderBookData() {
     try {
         if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
@@ -5726,7 +5823,7 @@ function renderOrderBookTable() {
                 <td colspan="10" style="padding: 3rem; text-align: center; color: var(--text-secondary);">
                     <i class="fas fa-clipboard-list" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
                     <p style="font-size: 1.1rem;">No order book entries</p>
-                    <p style="font-size: 0.875rem;">Click "Auto-Generate" to create entries based on stock thresholds</p>
+                    <p style="font-size: 0.875rem;">Items are added by sale-triggered, stock-level, or manual add only. Use <strong>Summary: Unserviced items</strong> to see what has not been replenished yet.</p>
                 </td>
             </tr>
         `;
@@ -5829,19 +5926,25 @@ function updateCreatePOButtonState() {
     }
 }
 
-async function autoGenerateOrderBook() {
+// Summary of items in the order book that have not been replenished yet (no new entries created)
+async function showUnservicedOrderBookSummary() {
     try {
         if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
             showToast('Please configure Company and Branch', 'warning');
             return;
         }
-        
-        showToast('Auto-generating order book entries...', 'info');
-        const result = await API.orderBook.autoGenerate(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID);
-        showToast(`Created ${result.entries_created} order book entries`, 'success');
+        // Default to This month so owner sees what has not been worked on
+        orderBookDateFilter = 'this_month';
+        const dateEl = document.getElementById('orderBookDateFilter');
+        if (dateEl) dateEl.value = 'this_month';
+        showToast('Loading unserviced order book items...', 'info');
         await fetchAndRenderOrderBookData();
+        const n = orderBookEntries.length;
+        showToast(n > 0
+            ? `Showing ${n} item(s) in the order book not yet replenished (This month). Use Date to change period.`
+            : 'No unserviced items in the order book for this period.', n > 0 ? 'success' : 'info');
     } catch (error) {
-        console.error('Error auto-generating order book:', error);
+        console.error('Error loading unserviced summary:', error);
         showToast(`Error: ${error.message}`, 'error');
     }
 }
@@ -6073,7 +6176,9 @@ if (typeof window !== 'undefined') {
     window.selectAllOrderBookEntries = selectAllOrderBookEntries;
     window.deselectAllOrderBookEntries = deselectAllOrderBookEntries;
     window.toggleSelectAllOrderBook = toggleSelectAllOrderBook;
-    window.autoGenerateOrderBook = autoGenerateOrderBook;
+    window.showUnservicedOrderBookSummary = showUnservicedOrderBookSummary;
+    window.fetchAndRenderOrderBookHistory = fetchAndRenderOrderBookHistory;
+    window.applyOrderBookHistoryDateFilter = applyOrderBookHistoryDateFilter;
     window.createPurchaseOrderFromSelected = createPurchaseOrderFromSelected;
     window.confirmCreatePOFromBook = confirmCreatePOFromBook;
     window.editOrderBookEntry = editOrderBookEntry;

@@ -21,7 +21,7 @@ from app.models import (
 from app.schemas.order_book import (
     OrderBookEntryCreate, OrderBookEntryResponse, OrderBookEntryUpdate,
     OrderBookBulkCreate, OrderBookBulkCreateResponse, CreatePurchaseOrderFromBook,
-    AutoGenerateRequest, OrderBookHistoryResponse
+    OrderBookHistoryResponse
 )
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
@@ -675,31 +675,9 @@ def delete_order_book_entry(
     return None
 
 
-@router.post("/auto-generate", response_model=dict)
-def auto_generate_order_book_entries(
-    request: AutoGenerateRequest,
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
-):
-    """
-    Auto-generate order book entries based on stock thresholds
-    
-    Uses the database function to calculate thresholds and create entries.
-    """
-    # Call the database function
-    result = db.execute(
-        func.auto_generate_order_book_entries(
-            request.branch_id,
-            request.company_id
-        )
-    )
-    entries_created = result.scalar() or 0
-    
-    return {
-        "entries_created": entries_created,
-        "branch_id": str(request.branch_id),
-        "company_id": str(request.company_id)
-    }
+# Items enter the order book only via: sale-triggered, stock-level-triggered, or manual add.
+# There is no bulk "auto-generate" that creates new entries; use the Date filter and list
+# endpoint to see "unserviced" items (open entries for a period).
 
 
 @router.post("/create-purchase-order", response_model=dict)

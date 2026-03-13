@@ -53,22 +53,8 @@ class OrderBookService:
             logger.warning(f"Item {item_id} not found for order book check")
             return None
         
-        # Check if item has had sales before (at least one sale in history)
-        has_sales = db.query(SalesInvoiceItem).join(
-            SalesInvoice, SalesInvoiceItem.sales_invoice_id == SalesInvoice.id
-        ).filter(
-            and_(
-                SalesInvoiceItem.item_id == item_id,
-                SalesInvoice.company_id == company_id,
-                SalesInvoice.branch_id == branch_id,
-                SalesInvoice.status.in_(["BATCHED", "PAID"])
-            )
-        ).first() is not None
-        
-        if not has_sales:
-            logger.debug(f"Item {item.name} ({item_id}) has no sales history - skipping order book")
-            return None
-        
+        # No longer require prior sales history: first sale that leaves stock low/zero can
+        # trigger order book (recommend stocking for return business).
         # Get current stock in retail units (base units)
         stock_query = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
             and_(
@@ -122,13 +108,13 @@ class OrderBookService:
         
         monthly_sales_float = float(monthly_sales_retail_units)
 
-        # Rule 1: stock < pack_size (below one wholesale unit)
+        # Rule 1: stock at or below one wholesale unit (<= pack_size) so "one bottle left" triggers
         # Rule 2: stock < monthly_sales/2 when monthly_sales > 0 (accumulated sales over month)
         # Rule 3: stock fell to zero after sale - add even without monthly sales data
-        below_one_wholesale = current_stock_retail_units < pack_size
+        at_or_below_one_wholesale = current_stock_retail_units <= pack_size
         below_half_monthly = monthly_sales_float > 0 and current_stock_retail_units < (monthly_sales_float / 2)
         stock_fell_to_zero = current_stock_retail_units <= 0
-        if not below_one_wholesale and not below_half_monthly and not stock_fell_to_zero:
+        if not at_or_below_one_wholesale and not below_half_monthly and not stock_fell_to_zero:
             logger.debug(
                 f"Item {item.name} ({item_id}) stock ({current_stock_retail_units}) does not meet thresholds "
                 f"(pack_size={pack_size}, monthly_sales/2={monthly_sales_float/2 if monthly_sales_float > 0 else 0}) - skipping order book"
@@ -139,9 +125,9 @@ class OrderBookService:
         if stock_fell_to_zero and monthly_sales_float <= 0:
             # Rule 3: Stock fell to zero, no monthly sales data - order at least 1 pack
             quantity_needed_retail_units = pack_size
-        elif below_one_wholesale:
-            # Rule 1: Bring stock up to at least pack_size
-            quantity_needed_retail_units = max(pack_size - current_stock_retail_units, 0)
+        elif at_or_below_one_wholesale:
+            # Rule 1: At or below one wholesale unit - recommend at least one pack (so "one left" triggers reorder)
+            quantity_needed_retail_units = max(pack_size - current_stock_retail_units, pack_size)
         else:
             # Rule 2: Triggered by below_half_monthly - order enough to reach half of monthly sales
             quantity_needed_retail_units = max((monthly_sales_float / 2) - current_stock_retail_units, 0)
@@ -411,6 +397,165 @@ class OrderBookService:
                     best_supplier_id = sup_id
             result[item_id] = best_supplier_id if best_supplier_id is not None else getattr(item, "default_supplier_id", None)
         return result
+
+    @staticmethod
+    def auto_generate_entries(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID,
+        user_id: UUID,
+        entry_date: Optional[date] = None,
+    ) -> int:
+        """
+        Auto-generate order book entries for items that need reorder, using the same
+        rules as sale-triggered logic. Only considers items that have had at least one
+        sale at this branch (so we don't recommend restocking everything). Quantities
+        are in wholesale packs (pack_size), not supplier or raw base units.
+        """
+        if entry_date is None:
+            entry_date = datetime.utcnow().date()
+
+        # Items that have had at least one BATCHED/PAID sale at this branch
+        items_with_sales = (
+            db.query(SalesInvoiceItem.item_id)
+            .join(SalesInvoice, SalesInvoiceItem.sales_invoice_id == SalesInvoice.id)
+            .filter(
+                and_(
+                    SalesInvoice.company_id == company_id,
+                    SalesInvoice.branch_id == branch_id,
+                    SalesInvoice.status.in_(["BATCHED", "PAID"]),
+                )
+            )
+            .distinct()
+            .all()
+        )
+        item_ids = [row.item_id for row in items_with_sales]
+        if not item_ids:
+            logger.info("Auto-generate: no items with sales at branch - nothing to add")
+            return 0
+
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        entries_created = 0
+        supplier_map = OrderBookService.get_cheapest_supplier_ids_batch(db, item_ids, company_id)
+
+        for item_id in item_ids:
+            item = db.query(Item).filter(Item.id == item_id).first()
+            if not item:
+                continue
+            pack_size = max(1, int(item.pack_size or 1))
+
+            # Current stock in retail units
+            stock_row = (
+                db.query(func.sum(InventoryLedger.quantity_delta))
+                .filter(
+                    and_(
+                        InventoryLedger.item_id == item_id,
+                        InventoryLedger.branch_id == branch_id,
+                        InventoryLedger.company_id == company_id,
+                    )
+                )
+                .scalar()
+            )
+            current_stock_retail_units = float(stock_row or 0)
+
+            # Monthly sales (30d) in retail units
+            monthly_rows = (
+                db.query(SalesInvoiceItem.quantity, SalesInvoiceItem.unit_name)
+                .join(SalesInvoice, SalesInvoiceItem.sales_invoice_id == SalesInvoice.id)
+                .filter(
+                    and_(
+                        SalesInvoiceItem.item_id == item_id,
+                        SalesInvoice.company_id == company_id,
+                        SalesInvoice.branch_id == branch_id,
+                        SalesInvoice.status.in_(["BATCHED", "PAID"]),
+                        SalesInvoice.created_at >= thirty_days_ago,
+                    )
+                )
+                .all()
+            )
+            monthly_sales_retail_units = Decimal("0")
+            for sale_item in monthly_rows:
+                try:
+                    qty_base = InventoryService.convert_to_base_units(
+                        db, item_id, float(sale_item.quantity), sale_item.unit_name or ""
+                    )
+                    monthly_sales_retail_units += Decimal(str(qty_base))
+                except (ValueError, AttributeError, TypeError):
+                    monthly_sales_retail_units += Decimal(str(sale_item.quantity))
+            monthly_sales_float = float(monthly_sales_retail_units)
+
+            at_or_below_one_wholesale = current_stock_retail_units <= pack_size
+            below_half_monthly = monthly_sales_float > 0 and current_stock_retail_units < (monthly_sales_float / 2)
+            stock_fell_to_zero = current_stock_retail_units <= 0
+
+            if not at_or_below_one_wholesale and not below_half_monthly and not stock_fell_to_zero:
+                continue
+
+            if stock_fell_to_zero and monthly_sales_float <= 0:
+                quantity_needed_retail_units = pack_size
+            elif at_or_below_one_wholesale:
+                quantity_needed_retail_units = max(pack_size - current_stock_retail_units, pack_size)
+            else:
+                quantity_needed_retail_units = max((monthly_sales_float / 2) - current_stock_retail_units, 0)
+
+            if monthly_sales_float > 0:
+                quantity_needed_retail_units = min(quantity_needed_retail_units, monthly_sales_float)
+
+            if quantity_needed_retail_units <= 0:
+                continue
+
+            quantity_supplier_units = quantity_needed_retail_units / pack_size
+            if quantity_supplier_units <= 0:
+                packs_needed = 0
+            elif quantity_supplier_units <= 1.5:
+                packs_needed = 1
+            else:
+                packs_needed = int(quantity_supplier_units) + (1 if quantity_supplier_units % 1 > 0 else 0)
+
+            if packs_needed <= 0:
+                continue
+
+            quantity_needed_wholesale = max(1, packs_needed)
+            wholesale_unit_name = (item.wholesale_unit or item.retail_unit or "unit").strip() or "unit"
+
+            existing = (
+                db.query(DailyOrderBook)
+                .filter(
+                    DailyOrderBook.branch_id == branch_id,
+                    DailyOrderBook.item_id == item_id,
+                    DailyOrderBook.status.in_(["PENDING", "ORDERED"]),
+                )
+            )
+            if hasattr(DailyOrderBook, "entry_date"):
+                existing = existing.filter(DailyOrderBook.entry_date == entry_date)
+            if existing.first():
+                continue
+
+            supplier_id = supplier_map.get(item_id)
+
+            create_kw = dict(
+                company_id=company_id,
+                branch_id=branch_id,
+                item_id=item_id,
+                supplier_id=supplier_id,
+                quantity_needed=Decimal(str(quantity_needed_wholesale)),
+                unit_name=wholesale_unit_name,
+                reason="AUTO_THRESHOLD",
+                source_reference_type=None,
+                source_reference_id=None,
+                priority=5,
+                status="PENDING",
+                created_by=user_id,
+            )
+            if hasattr(DailyOrderBook, "entry_date"):
+                create_kw["entry_date"] = entry_date
+            db.add(DailyOrderBook(**create_kw))
+            entries_created += 1
+
+        if entries_created:
+            db.commit()
+        logger.info("Auto-generate created %s order book entries for branch %s (entry_date=%s)", entries_created, branch_id, entry_date)
+        return entries_created
 
     @staticmethod
     def process_sale_for_order_book(
