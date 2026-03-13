@@ -2,7 +2,7 @@
 Order Book API routes
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func, and_, or_
@@ -26,6 +26,7 @@ from app.schemas.order_book import (
 from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
 from app.services.order_book_service import OrderBookService
+from app.api.users import _user_has_owner_or_admin_role
 
 router = APIRouter()
 
@@ -900,3 +901,270 @@ def get_order_book_history(
         result.append(OrderBookHistoryResponse(**entry_dict))
     
     return result
+
+
+@router.get("/intelligence/aging", response_model=List[dict])
+def get_aging_order_book_entries(
+    branch_id: UUID = Query(..., description="Branch ID"),
+    company_id: UUID = Query(..., description="Company ID"),
+    threshold_days: int = Query(7, ge=1, le=365, description="Minimum age in days for an entry to be considered aging"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Intelligence: aging order book entries.
+
+    Returns open PENDING entries whose entry_date is older than threshold_days.
+    """
+    today = date.today()
+    cutoff_date = today - timedelta(days=threshold_days)
+
+    q = (
+        db.query(DailyOrderBook, Item.name.label("item_name"))
+        .join(Item, Item.id == DailyOrderBook.item_id)
+        .filter(
+            DailyOrderBook.company_id == company_id,
+            DailyOrderBook.branch_id == branch_id,
+            DailyOrderBook.status == "PENDING",
+            DailyOrderBook.entry_date < cutoff_date,
+        )
+        .order_by(DailyOrderBook.entry_date.asc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+    rows = q.all()
+    result = []
+    for entry, item_name in rows:
+        age_days = (today - (entry.entry_date or entry.created_at.date())).days
+        result.append(
+            {
+                "item_id": str(entry.item_id),
+                "item_name": item_name,
+                "branch_id": str(entry.branch_id),
+                "entry_date": (entry.entry_date or entry.created_at.date()).isoformat(),
+                "age_days": age_days,
+                "quantity_needed": float(entry.quantity_needed or 0),
+                "reason": entry.reason,
+            }
+        )
+    return result
+
+
+@router.get("/intelligence/repeated", response_model=List[dict])
+def get_repeated_shortages(
+    branch_id: UUID = Query(..., description="Branch ID"),
+    company_id: UUID = Query(..., description="Company ID"),
+    days_window: int = Query(30, ge=1, le=365, description="Lookback window in days"),
+    min_count: int = Query(3, ge=1, le=365, description="Minimum shortage occurrences to include"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Intelligence: repeated shortages.
+
+    Uses order_book_history to find items that have appeared frequently in the
+    order book within the time window (any status).
+    """
+    today = date.today()
+    since = today - timedelta(days=days_window)
+
+    subq = (
+        db.query(
+            OrderBookHistory.item_id.label("item_id"),
+            OrderBookHistory.branch_id.label("branch_id"),
+            func.count().label("shortage_count"),
+            func.max(
+                func.coalesce(
+                    OrderBookHistory.entry_date,
+                    func.date(OrderBookHistory.created_at),
+                )
+            ).label("last_entry_date"),
+        )
+        .filter(
+            OrderBookHistory.company_id == company_id,
+            OrderBookHistory.branch_id == branch_id,
+            func.coalesce(
+                OrderBookHistory.entry_date,
+                func.date(OrderBookHistory.created_at),
+            )
+            >= since,
+        )
+        .group_by(OrderBookHistory.item_id, OrderBookHistory.branch_id)
+        .having(func.count() >= min_count)
+        .subquery()
+    )
+
+    q = (
+        db.query(
+            subq.c.item_id,
+            subq.c.branch_id,
+            subq.c.shortage_count,
+            subq.c.last_entry_date,
+            Item.name.label("item_name"),
+        )
+        .join(Item, Item.id == subq.c.item_id)
+        .order_by(subq.c.shortage_count.desc(), subq.c.last_entry_date.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+    rows = q.all()
+    result = []
+    for row in rows:
+        result.append(
+            {
+                "item_id": str(row.item_id),
+                "item_name": row.item_name,
+                "branch_id": str(row.branch_id),
+                "shortage_count": int(row.shortage_count or 0),
+                "last_entry_date": row.last_entry_date.isoformat() if row.last_entry_date else None,
+            }
+        )
+    return result
+
+
+@router.get("/intelligence/multiple-open", response_model=List[dict])
+def get_multiple_open_entries(
+    branch_id: UUID = Query(..., description="Branch ID"),
+    company_id: UUID = Query(..., description="Company ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Intelligence: multiple open entries.
+
+    Finds items with more than one open PENDING entry in the order book.
+    """
+    subq = (
+        db.query(
+            DailyOrderBook.item_id.label("item_id"),
+            DailyOrderBook.branch_id.label("branch_id"),
+            func.count().label("open_entries"),
+            func.min(
+                func.coalesce(
+                    DailyOrderBook.entry_date,
+                    func.date(DailyOrderBook.created_at),
+                )
+            ).label("oldest_entry_date"),
+        )
+        .filter(
+            DailyOrderBook.company_id == company_id,
+            DailyOrderBook.branch_id == branch_id,
+            DailyOrderBook.status == "PENDING",
+        )
+        .group_by(DailyOrderBook.item_id, DailyOrderBook.branch_id)
+        .having(func.count() > 1)
+        .subquery()
+    )
+
+    q = (
+        db.query(
+            subq.c.item_id,
+            subq.c.branch_id,
+            subq.c.open_entries,
+            subq.c.oldest_entry_date,
+            Item.name.label("item_name"),
+        )
+        .join(Item, Item.id == subq.c.item_id)
+        .order_by(subq.c.oldest_entry_date.asc(), subq.c.open_entries.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+    rows = q.all()
+    result = []
+    for row in rows:
+        result.append(
+            {
+                "item_id": str(row.item_id),
+                "item_name": row.item_name,
+                "branch_id": str(row.branch_id),
+                "open_entries": int(row.open_entries or 0),
+                "oldest_entry_date": row.oldest_entry_date.isoformat() if row.oldest_entry_date else None,
+            }
+        )
+    return result
+
+
+@router.post("/{entry_id}/manual-close", response_model=dict)
+def manual_close_order_book_entry(
+    entry_id: UUID,
+    reason: Optional[str] = Body(None, embed=True, description="Optional manual close reason or note"),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Manually close an order book entry.
+
+    - Only allowed for owner/admin users.
+    - Does NOT change inventory or procurement flows.
+    - Moves the entry to order_book_history with status=CLOSED and a manual note.
+    """
+    user, _ = current_user_and_db
+    if not _user_has_owner_or_admin_role(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only owner or admin users can manually close order book entries.",
+        )
+
+    entry = db.query(DailyOrderBook).filter(DailyOrderBook.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order book entry not found")
+
+    if entry.status not in ("PENDING", "ORDERED"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot manually close entry with status {entry.status}. Only PENDING or ORDERED entries can be closed.",
+        )
+
+    now = datetime.utcnow()
+
+    manual_note = "MANUAL_CLOSE"
+    if reason:
+        manual_note = f"MANUAL_CLOSE: {reason.strip()}"
+    notes = (entry.notes or "").strip()
+    if notes:
+        notes = notes + "\n" + manual_note
+    else:
+        notes = manual_note
+
+    history_row = OrderBookHistory(
+        company_id=entry.company_id,
+        branch_id=entry.branch_id,
+        item_id=entry.item_id,
+        supplier_id=entry.supplier_id,
+        quantity_needed=entry.quantity_needed,
+        unit_name=entry.unit_name,
+        reason=entry.reason,
+        source_reference_type=entry.source_reference_type,
+        source_reference_id=entry.source_reference_id,
+        notes=notes,
+        priority=entry.priority,
+        status="CLOSED",
+        purchase_order_id=entry.purchase_order_id,
+        branch_order_id=getattr(entry, "branch_order_id", None),
+        entry_date=getattr(entry, "entry_date", None),
+        ordered_at=getattr(entry, "ordered_at", None),
+        received_at=None,
+        created_by=entry.created_by,
+        created_at=entry.created_at,
+        updated_at=now,
+        archived_at=now,
+    )
+    db.add(history_row)
+    db.delete(entry)
+    db.commit()
+
+    return {
+        "entry_id": str(entry_id),
+        "status": "CLOSED",
+        "closed_at": now.isoformat(),
+        "reason": reason,
+    }
