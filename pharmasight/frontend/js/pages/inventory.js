@@ -1350,7 +1350,20 @@ async function showAdjustStockModal(itemId) {
         const branchIdNormalized = typeof branchId === 'string' ? branchId : (branchId && (branchId.id || branchId));
         const data = await API.items.get(itemId, branchIdNormalized);
         const itemName = (data && data.name) ? String(data.name) : 'Item';
-        const units = (data && data.units && data.units.length) ? data.units : [{ unit_name: data.retail_unit || data.base_unit || 'piece', multiplier_to_base: 1 }];
+        // Build units array using 3-tier units so base unit is ALWAYS the retail unit (tablet).
+        const retailUnit = (data && (data.retail_unit || data.base_unit)) ? String(data.retail_unit || data.base_unit) : 'piece';
+        const wholesaleUnit = data && data.wholesale_unit ? String(data.wholesale_unit) : null;
+        const supplierUnit = data && data.supplier_unit ? String(data.supplier_unit) : null;
+        const packSize = data && data.pack_size != null ? Number(data.pack_size) || 1 : 1;
+        const wups = data && data.wholesale_units_per_supplier != null ? Number(data.wholesale_units_per_supplier) || 1 : 1;
+        const units = [];
+        units.push({ unit_name: retailUnit, multiplier_to_base: 1 });
+        if (wholesaleUnit && wholesaleUnit !== retailUnit) {
+            units.push({ unit_name: wholesaleUnit, multiplier_to_base: Math.max(1, packSize) });
+        }
+        if (supplierUnit && supplierUnit !== retailUnit && supplierUnit !== wholesaleUnit) {
+            units.push({ unit_name: supplierUnit, multiplier_to_base: Math.max(1, packSize * wups) });
+        }
         const lastCost = (data && (data.default_cost != null || data.default_cost_per_base != null)) ? (data.default_cost ?? data.default_cost_per_base) : 0;
         const baseUnitName = (data && (data.retail_unit || data.base_unit)) ? String(data.retail_unit || data.base_unit) : 'piece';
         const hasMultipleUnits = Array.isArray(units) && units.length > 1;
@@ -1848,7 +1861,7 @@ function renderManualAdjustmentsSubPage() {
                     <div class="form-group">
                         <label id="costNewCostLabel">New unit cost (per base unit — select item above to see unit name)</label>
                         <input type="number" id="costNewCost" class="form-input" min="0" step="0.01" required placeholder="e.g. 150.00">
-                        <small style="display: block; color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Base unit = wholesale unit (e.g. packet). Ledger stores cost per wholesale.</small>
+                        <small style="display: block; color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Base unit = retail unit (e.g. tablet). Ledger stores cost per retail/base unit.</small>
                     </div>
                     <div class="form-group">
                         <label>Reason <span style="color: var(--danger-color);">*</span></label>
