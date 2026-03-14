@@ -569,7 +569,7 @@ function showAddItemModal() {
                     </div>
                     <div class="form-group">
                         <label class="form-label">Wholesale per supplier</label>
-                        <input type="number" class="form-input" name="wholesale_units_per_supplier" min="0.0001" step="0.01" value="1" placeholder="e.g. 10">
+                        <input type="number" class="form-input input-direct" name="wholesale_units_per_supplier" min="1" step="1" value="1" placeholder="e.g. 10">
                         <small style="color: var(--text-secondary); font-size: 0.85rem;">1 supplier = N wholesale (e.g. 10 boxes per carton)</small>
                     </div>
                     <div class="form-group" style="display: flex; align-items: flex-end; padding-bottom: 0.5rem;">
@@ -1867,18 +1867,18 @@ async function editItem(itemId) {
                         <div class="form-group" style="margin-bottom: 0; flex: 0 0 100px;">
                             <input 
                                 type="number" 
-                                class="form-input" 
+                                class="form-input input-direct" 
                                 name="wholesale_units_per_supplier" 
-                                min="0.0001" 
-                                step="0.01"
-                                value="${Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)}"
+                                min="1" 
+                                step="1"
+                                value="${Math.max(1, Math.round(parseFloat(item.wholesale_units_per_supplier) || 1))}"
                                 placeholder="e.g. 12"
                                 ${isLocked ? 'readonly style="background-color: #f5f5f5; cursor: not-allowed;"' : ''}
                             >
                         </div>
                         <span id="editSupplierWholesaleLabel">${escapeHtml(item.wholesale_unit || 'piece')}</span>
                     </div>
-                    ${isLocked ? '<input type="hidden" name="wholesale_units_per_supplier" value="' + (Math.max(0.0001, parseFloat(item.wholesale_units_per_supplier) || 1)) + '">' : ''}
+                    ${isLocked ? '<input type="hidden" name="wholesale_units_per_supplier" value="' + (Math.max(1, Math.round(parseFloat(item.wholesale_units_per_supplier) || 1))) + '">' : ''}
                 </div>
 
                 <!-- Break bulk & Track expiry -->
