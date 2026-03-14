@@ -1766,15 +1766,20 @@ def get_ledger_batches(
     return LedgerBatchesResponse(entries=entries)
 
 
-def _batch_current_quantity(db: Session, item_id: UUID, branch_id: UUID, batch_number: str, expiry_date: Optional[date]) -> float:
-    """Current quantity (sum of quantity_delta) for batch (batch_number, expiry_date)."""
+def _batch_current_quantity(db: Session, item_id: UUID, branch_id: UUID, batch_number: Optional[str], expiry_date: Optional[date]) -> float:
+    """Current quantity (sum of quantity_delta) for batch (batch_number, expiry_date).
+    Matches list endpoint: treat None and '' as same (empty batch identifier).
+    """
     q = db.query(func.coalesce(func.sum(InventoryLedger.quantity_delta), 0)).filter(
-        and_(
-            InventoryLedger.item_id == item_id,
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.batch_number == batch_number,
-        )
+        InventoryLedger.item_id == item_id,
+        InventoryLedger.branch_id == branch_id,
     )
+    # Normalize batch_number so NULL and '' match the same rows as in list batches aggregation
+    batch_key = (batch_number or "").strip() if batch_number is not None else ""
+    if batch_key == "":
+        q = q.filter(or_(InventoryLedger.batch_number == "", InventoryLedger.batch_number.is_(None)))
+    else:
+        q = q.filter(InventoryLedger.batch_number == batch_key)
     if expiry_date is not None:
         q = q.filter(InventoryLedger.expiry_date == expiry_date)
     else:
