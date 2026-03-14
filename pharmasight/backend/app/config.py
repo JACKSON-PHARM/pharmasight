@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "PharmaSight"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
     
     # Database (Supabase)
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
@@ -131,10 +132,10 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
     ALGORITHM: str = "HS256"
-    # Access token lifetime: extended for long pharmacy sessions (approx. 12 hours)
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "720"))
-    # Refresh token lifetime: extended to reduce re-logins while still bounded (approx. 60 days)
-    REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "60"))
+    # Access token lifetime (short for security; refresh used for long sessions)
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+    # Refresh token lifetime
+    REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "14"))
     RESET_TOKEN_EXPIRE_MINUTES: int = 60
 
     class Config:
@@ -143,6 +144,13 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Production: SECRET_KEY must be set to a non-default value
+if getattr(settings, "ENVIRONMENT", "development") == "production":
+    if getattr(settings, "SECRET_KEY", "") == "change-me-in-production" or not (settings.SECRET_KEY or "").strip():
+        raise RuntimeError(
+            "SECRET_KEY must be set in production. Set ENVIRONMENT=production and a strong SECRET_KEY in your environment."
+        )
 
 
 def is_supabase_owner_email(email: str) -> bool:

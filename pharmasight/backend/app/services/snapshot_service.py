@@ -2,7 +2,10 @@
 Snapshot service: maintains inventory_balances and item_branch_purchase_snapshot
 in sync with inventory_ledger. Called from every write point in the same transaction.
 """
+from __future__ import annotations
+
 from decimal import Decimal
+from typing import List, Tuple, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -31,6 +34,37 @@ class SnapshotService:
             """),
             {"company_id": str(company_id), "branch_id": str(branch_id), "item_id": str(item_id), "qty": qty},
         )
+
+    @staticmethod
+    def upsert_inventory_balance_bulk(
+        db: Session,
+        rows: List[Tuple[UUID, UUID, UUID, Any]],
+    ) -> None:
+        """
+        Bulk upsert inventory_balances. rows = [(company_id, branch_id, item_id, quantity_delta), ...].
+        Single round-trip for Excel import / bulk opening balance.
+        """
+        if not rows:
+            return
+        value_parts = []
+        params = {}
+        for i, (company_id, branch_id, item_id, qty) in enumerate(rows):
+            q = float(qty)
+            value_parts.append(
+                f"(:c{i}, :b{i}, :i{i}, :q{i}, NOW())"
+            )
+            params[f"c{i}"] = str(company_id)
+            params[f"b{i}"] = str(branch_id)
+            params[f"i{i}"] = str(item_id)
+            params[f"q{i}"] = q
+        sql = f"""
+            INSERT INTO inventory_balances (company_id, branch_id, item_id, current_stock, updated_at)
+            VALUES {", ".join(value_parts)}
+            ON CONFLICT (item_id, branch_id) DO UPDATE SET
+                current_stock = inventory_balances.current_stock + EXCLUDED.current_stock,
+                updated_at = NOW()
+        """
+        db.execute(text(sql), params)
 
     @staticmethod
     def upsert_inventory_balance_delta(
@@ -78,6 +112,43 @@ class SnapshotService:
                 "supplier_id": supplier_str,
             },
         )
+
+    @staticmethod
+    def upsert_purchase_snapshot_bulk(
+        db: Session,
+        rows: List[Tuple[UUID, UUID, UUID, Any, Any, Any]],
+    ) -> None:
+        """
+        Bulk upsert item_branch_purchase_snapshot.
+        rows = [(company_id, branch_id, item_id, last_purchase_price, last_purchase_date, last_supplier_id), ...].
+        """
+        if not rows:
+            return
+        value_parts = []
+        params = {}
+        for i, (company_id, branch_id, item_id, price, dt, supplier_id) in enumerate(rows):
+            p = float(price) if price is not None else None
+            sup = str(supplier_id) if supplier_id is not None else None
+            value_parts.append(
+                f"(:c{i}, :b{i}, :i{i}, :p{i}, :dt{i}, :s{i}, NOW())"
+            )
+            params[f"c{i}"] = str(company_id)
+            params[f"b{i}"] = str(branch_id)
+            params[f"i{i}"] = str(item_id)
+            params[f"p{i}"] = p
+            params[f"dt{i}"] = dt
+            params[f"s{i}"] = sup
+        sql = f"""
+            INSERT INTO item_branch_purchase_snapshot
+                (company_id, branch_id, item_id, last_purchase_price, last_purchase_date, last_supplier_id, updated_at)
+            VALUES {", ".join(value_parts)}
+            ON CONFLICT (item_id, branch_id) DO UPDATE SET
+                last_purchase_price = EXCLUDED.last_purchase_price,
+                last_purchase_date = EXCLUDED.last_purchase_date,
+                last_supplier_id = EXCLUDED.last_supplier_id,
+                updated_at = NOW()
+        """
+        db.execute(text(sql), params)
 
     @staticmethod
     def upsert_search_snapshot_last_order(

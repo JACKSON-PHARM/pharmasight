@@ -87,15 +87,17 @@ def start_backend(project_root, venv_python, port=8000):
             print_colored(f"⚠️  Could not free port {port}: {e}. Trying port 8001...", Colors.YELLOW)
             port = 8001
     
-    # Start uvicorn server
+    # Start uvicorn server (use RELOAD=0 to disable reload and avoid file-watcher shutdown noise)
+    use_reload = os.environ.get("RELOAD", "1").strip().lower() not in ("0", "false", "no")
     cmd = [
         str(venv_python),
         "-m", "uvicorn",
         "app.main:app",
         "--host", "0.0.0.0",
         "--port", str(port),
-        "--reload"
     ]
+    if use_reload:
+        cmd.append("--reload")
     
     proc = subprocess.Popen(
         cmd,
@@ -221,7 +223,7 @@ def main():
             print()
             print_colored("🛑 Stopping servers...", Colors.YELLOW)
             
-            # Terminate all processes
+            # Terminate all processes (backend may log CancelledError on exit — that's normal)
             for name, proc in processes:
                 if proc.poll() is None:  # Still running
                     print_colored(f"   Stopping {name}...", Colors.YELLOW)
@@ -232,6 +234,7 @@ def main():
                         proc.kill()
             
             print_colored("✅ All servers stopped", Colors.GREEN)
+            print_colored("   (Backend may have printed CancelledError on exit — that's normal when stopping.)", Colors.CYAN)
     
     except Exception as e:
         print_colored(f"❌ Error starting servers: {e}", Colors.RED)

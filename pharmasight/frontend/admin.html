@@ -158,21 +158,88 @@
         .access-dropdown button:hover {
             background: #f0f0f0;
         }
+        .admin-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .admin-tab {
+            padding: 10px 18px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 15px;
+            color: #666;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+        }
+        .admin-tab:hover { color: #333; }
+        .admin-tab.active {
+            color: #007bff;
+            font-weight: 600;
+            border-bottom-color: #007bff;
+        }
+        .admin-tab-content { display: none; }
+        .admin-tab-content.active { display: block; }
+        .platform-dashboard { position: relative; }
+        .platform-dashboard-title { margin-top: 0; }
+        .platform-dashboard-subtitle { color: #666; font-size: 0.9rem; margin-bottom: 24px; }
+        .platform-dashboard-section { margin-bottom: 28px; }
+        .platform-dashboard-section h3 { margin-bottom: 12px; font-size: 1.1rem; }
+        .platform-metrics-cards {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .platform-metric-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 16px 20px;
+            min-width: 140px;
+        }
+        .platform-metric-card--highlight { background: #e8f7f5; border: 1px solid #14b8a6; }
+        .platform-metric-value { display: block; font-size: 1.5rem; font-weight: 700; }
+        .platform-metric-label { font-size: 0.85rem; color: #666; }
+        .platform-metrics-meta { font-size: 0.8rem; color: #888; margin: 8px 0 0 0; }
+        .platform-health-status { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+        .platform-health-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+        }
+        .platform-health-status--healthy .platform-health-dot { background: #28a745; }
+        .platform-health-status--degraded .platform-health-dot { background: #dc3545; }
+        .platform-dashboard-grid-2 {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+        }
+        .platform-dashboard-actions { margin-top: 24px; }
     </style>
 </head>
 <body>
     <div class="admin-container">
         <div class="admin-header">
             <div>
-                <h1>Organization management</h1>
-                <p style="margin: 4px 0 0 0; font-size: 0.9rem; color: #666;">Shared app database; data isolated by company. Manage trial, status, and invites.</p>
+                <h1>Platform Admin</h1>
+                <p style="margin: 4px 0 0 0; font-size: 0.9rem; color: #666;">Organization management and platform metrics. Data isolated by company.</p>
             </div>
             <div class="admin-header-actions">
-                <button id="create-tenant-btn" class="btn btn-primary">Create new organization</button>
                 <button id="logout-btn" class="btn btn-danger">Logout</button>
             </div>
         </div>
-        
+
+        <div class="admin-tabs">
+            <button type="button" class="admin-tab active" data-tab="tenants">Tenants</button>
+            <button type="button" class="admin-tab" data-tab="platform-dashboard">Platform Dashboard</button>
+        </div>
+
+        <div id="tenants-content" class="admin-tab-content active">
+            <div class="admin-header" style="margin-bottom: 16px;">
+                <div><h2 style="margin: 0; font-size: 1.1rem;">Organization management</h2></div>
+                <div class="admin-header-actions">
+                    <button id="create-tenant-btn" class="btn btn-primary">Create new organization</button>
+                </div>
+            </div>
         <div class="filters">
             <input 
                 type="text" 
@@ -215,8 +282,14 @@
             <span id="page-info">Page 1 of 1</span>
             <button id="next-page" class="btn btn-secondary" disabled>Next</button>
         </div>
+        </div>
+
+        <div id="platform-dashboard-content-wrap" class="admin-tab-content">
+            <div id="platform-dashboard-mount"></div>
+        </div>
     </div>
-    
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <!-- Load required scripts first -->
     <script src="/js/config.js"></script>
     <script src="/js/api.js"></script>
@@ -280,11 +353,28 @@
             }
         }
         
+        function switchTab(tabId) {
+            document.querySelectorAll('.admin-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.tab === tabId);
+            });
+            document.querySelectorAll('.admin-tab-content').forEach(el => {
+                const id = el.id === 'tenants-content' ? 'tenants' : (el.id === 'platform-dashboard-content-wrap' ? 'platform-dashboard' : null);
+                el.classList.toggle('active', id === tabId);
+            });
+            if (tabId === 'platform-dashboard') {
+                window.initPlatformDashboard?.();
+            }
+        }
+
         async function initAdminPanel() {
             try {
                 // Setup logout button
                 setupLogout();
-                
+
+                document.querySelectorAll('.admin-tab').forEach(btn => {
+                    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+                });
+
                 // Wait for API to be available
                 if (!window.API) {
                     // Wait a bit for api.js to load
@@ -293,9 +383,14 @@
                         throw new Error('API client not loaded. Please refresh the page.');
                     }
                 }
-                
+
                 const { init } = await import('/js/pages/admin_tenants.js');
                 await init();
+
+                const { init: initDashboard } = await import('/js/pages/admin_dashboard.js');
+                window.initPlatformDashboard = async () => {
+                    await initDashboard();
+                };
             } catch (error) {
                 console.error('Error loading admin panel:', error);
                 console.error('Error stack:', error.stack);

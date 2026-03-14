@@ -19,12 +19,35 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.dependencies import get_tenant_db, get_tenant_from_header, get_current_user, get_effective_company_id_for_user, _session_factory_for_url
+from app.utils.auth_internal import verify_password
 from app.services.excel_import_service import ExcelImportService, EXPECTED_EXCEL_FIELDS
 from app.services.clear_for_reimport_service import run_clear as run_clear_for_reimport
 from app.models import ImportJob
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _mark_import_job_failed(job_id: UUID, database_url: Optional[str], err_msg: str) -> None:
+    """Try to set import job status to failed so the UI shows an error instead of hanging. Uses a fresh session."""
+    try:
+        if database_url:
+            db = _session_factory_for_url(database_url)()
+        else:
+            from app.database import SessionLocal
+            db = SessionLocal()
+        try:
+            job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
+            if job:
+                job.status = "failed"
+                job.error_message = err_msg[:1000] if err_msg else "Background import crashed"
+                job.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                logger.error(f"❌ Job {job_id} marked as failed in database (so UI can show error)")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"❌ Could not update import job {job_id} to failed: {e}")
 
 
 def process_import_job(
@@ -42,15 +65,6 @@ def process_import_job(
     Returns final job state dict (status, processed_rows, stats, error_message, etc.)
     so sync callers can respond without re-using a possibly-dead request session.
     """
-    from app.database import SessionLocal
-
-    logger.info(f"🚀 Background task STARTED for job {job_id} - Processing {len(excel_data)} rows (tenant_db={bool(database_url)})")
-
-    if database_url:
-        db = _session_factory_for_url(database_url)()
-    else:
-        db = SessionLocal()
-
     total_rows = len(excel_data)
     out: Dict[str, Any] = {
         "status": "unknown",
@@ -60,11 +74,21 @@ def process_import_job(
         "total_rows": total_rows,
         "completed_at": None,
     }
+    db = None
 
     try:
+        from app.database import SessionLocal
+        # Log and print so it's visible even if logging goes elsewhere; confirms thread is running
+        logger.info(f"🚀 Background task STARTED for job {job_id} - Processing {len(excel_data)} rows (tenant_db={bool(database_url)})")
+        print(f"[Import] Background task started for job {job_id}, {len(excel_data)} rows", flush=True)
+        if database_url:
+            db = _session_factory_for_url(database_url)()
+        else:
+            db = SessionLocal()
+
         job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
         if not job:
-            logger.error(f"❌ Import job {job_id} not found in database")
+            logger.error(f"❌ Import job {job_id} not found in database (wrong DB?). Poll progress with same tenant/headers.")
             return out
 
         logger.info(f"✅ Found job {job_id}, status: {job.status}, total_rows: {job.total_rows}")
@@ -111,19 +135,35 @@ def process_import_job(
         out["error_message"] = err_msg
         out["completed_at"] = datetime.now(timezone.utc).isoformat()
         try:
-            job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
-            if job:
-                job.status = "failed"
-                job.error_message = err_msg
-                job.completed_at = datetime.now(timezone.utc)
-                db.commit()
-                logger.error(f"❌ Job {job_id} marked as failed in database")
+            if db is not None:
+                job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
+                if job:
+                    job.status = "failed"
+                    job.error_message = err_msg
+                    job.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                    logger.error(f"❌ Job {job_id} marked as failed in database")
+            else:
+                _mark_import_job_failed(job_id, database_url, err_msg)
         except Exception as db_error:
             logger.error(f"❌ Failed to update job status in database: {db_error}")
+            _mark_import_job_failed(job_id, database_url, err_msg)
+        return out
+    except BaseException as e:
+        # Catch thread crashes (e.g. before inner try): mark job failed so UI does not hang
+        logger.error(f"❌ Import thread crashed for job {job_id}: {e}", exc_info=True)
+        _mark_import_job_failed(job_id, database_url, str(e))
+        out["status"] = "failed"
+        out["error_message"] = str(e)[:1000]
+        out["completed_at"] = datetime.now(timezone.utc).isoformat()
         return out
     finally:
-        db.close()
-        logger.info(f"🔒 Database session closed for job {job_id}")
+        if db is not None:
+            try:
+                db.close()
+                logger.info(f"🔒 Database session closed for job {job_id}")
+            except Exception:
+                pass
 
 
 @router.get("/expected-fields")
@@ -377,6 +417,36 @@ def get_import_progress(
     }
 
 
+@router.post("/import/{job_id}/cancel", status_code=status.HTTP_200_OK)
+def cancel_import_job(
+    job_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Cancel a stuck or in-progress import job so the same file can be re-imported.
+    Only cancels jobs in 'pending' or 'processing'. Job must belong to the user's company.
+    """
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Could not resolve company.")
+    job = db.query(ImportJob).filter(
+        ImportJob.id == job_id,
+        ImportJob.company_id == effective_company_id,
+    ).first()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import job not found")
+    if job.status not in ("pending", "processing"):
+        return {"cancelled": False, "message": f"Job is already {job.status}; no need to cancel."}
+    job.status = "cancelled"
+    job.error_message = "Cancelled by user so same file can be re-imported."
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    logger.info(f"Import job {job_id} cancelled by user")
+    return {"cancelled": True, "message": "Import cancelled. You can re-import the same file now (use Run import synchronously for reliable result)."}
+
+
 @router.get("/mode/{company_id}")
 def get_import_mode(
     company_id: UUID,
@@ -421,9 +491,10 @@ def get_import_mode(
 
 
 class ClearForReimportBody(BaseModel):
-    """Body for clear-for-reimport: company_id only."""
+    """Body for clear-for-reimport: company_id and password confirmation."""
 
     company_id: UUID = Field(..., description="Company to clear (all data including transactions)")
+    password: str = Field(..., min_length=1, description="Current user password to confirm (verified server-side)")
 
 
 @router.post("/clear-for-reimport")
@@ -435,11 +506,16 @@ def clear_for_reimport(
     """
     Clear all company data (items, inventory, sales, purchases, quotations, ledger, etc.) so you can run a fresh Excel import.
 
+    Requires password in body; verified against current user's password_hash (no re-login).
     Deletes all transactional and master data for the company; table schemas are left intact.
     Companies, branches, and users are NOT deleted.
     company_id is derived from the authenticated user only; request body must match or is ignored for security.
     """
     user, _ = current_user_and_db
+    if not getattr(user, "password_hash", None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Your account does not use password login; cannot confirm clear.")
+    if not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid password")
     effective_company_id = get_effective_company_id_for_user(db, user)
     if not effective_company_id:
         raise HTTPException(

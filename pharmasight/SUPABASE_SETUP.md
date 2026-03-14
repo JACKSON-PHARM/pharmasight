@@ -37,7 +37,7 @@ You'll see a page with several sections. Here's what you need:
 If you need the database password:
 1. Go to **Settings** → **Database**
 2. Look for **"Connection string"** or **"Database password"**
-3. Your password is: `6iP.zRY6QyK8L*Z` (from your project)
+3. Your password is: `YOUR_PASSWORD` (from your project)
 
 ---
 
@@ -70,14 +70,14 @@ SUPABASE_KEY=your-anon-key-from-dashboard
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-from-dashboard
 
 # Database (if not using DATABASE_URL)
-SUPABASE_DB_HOST=db.kwvkkbofubsjiwqlqakt.supabase.co
+SUPABASE_DB_HOST=db.YOUR_PROJECT_REF.supabase.co
 SUPABASE_DB_PORT=5432
 SUPABASE_DB_NAME=postgres
 SUPABASE_DB_USER=postgres
-SUPABASE_DB_PASSWORD=6iP.zRY6QyK8L*Z
+SUPABASE_DB_PASSWORD=YOUR_PASSWORD
 
 # Or use full connection string:
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 
 # App Configuration
 DEBUG=True

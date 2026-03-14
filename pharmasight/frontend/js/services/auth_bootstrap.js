@@ -85,7 +85,11 @@ function getInternalAuthState() {
         const userId = localStorage.getItem('pharmasight_user_id');
         if (!token || !userId) return null;
         return {
-            user: { id: userId, email: localStorage.getItem('pharmasight_user_email') || '' },
+            user: {
+                id: userId,
+                email: localStorage.getItem('pharmasight_user_email') || '',
+                username: localStorage.getItem('pharmasight_username') || ''
+            },
             session: { access_token: token }
         };
     } catch (_) {
@@ -242,11 +246,12 @@ async function signIn(email, password) {
             localStorage.setItem('pharmasight_refresh_token', data.refresh_token);
             localStorage.setItem('pharmasight_user_id', data.user_id);
             localStorage.setItem('pharmasight_user_email', data.email || '');
+            localStorage.setItem('pharmasight_username', data.username || data.email || '');
         }
     } catch (_) {}
     // Update cached state immediately
     await refreshAuthState();
-    return { user: { id: data.user_id, email: data.email || '' }, session: { access_token: data.access_token } };
+    return { user: { id: data.user_id, email: data.email || '', username: data.username || data.email || '' }, session: { access_token: data.access_token } };
 }
 
 /**
@@ -270,6 +275,7 @@ async function signOut() {
             localStorage.removeItem('pharmasight_refresh_token');
             localStorage.removeItem('pharmasight_user_id');
             localStorage.removeItem('pharmasight_user_email');
+            localStorage.removeItem('pharmasight_username');
         }
     } catch (_) {}
     currentUser = null;

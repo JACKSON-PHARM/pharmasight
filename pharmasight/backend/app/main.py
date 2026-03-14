@@ -5,7 +5,7 @@ import logging
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.config import settings
-
+from app.rate_limit import limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
 
 class RequestTimingMiddleware(BaseHTTPMiddleware):
     """Set request.state._req_start_time at entry; if route set request.state.timings, add X-Timing-* and Server-Timing response headers for Network tab."""
@@ -66,6 +68,9 @@ app = FastAPI(
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
 )
+# Attach slowapi limiter to FastAPI (no init_app; use state + exception handler)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS middleware
 app.add_middleware(
@@ -87,7 +92,9 @@ async def health_check():
 
 @app.get("/api/debug/tenants")
 async def debug_tenants_count():
-    """When DEBUG=true: returns count of tenants with database_url (confirms master DB and tenants table)."""
+    """When DEBUG=true and not production: returns count of tenants with database_url. Disabled in production."""
+    if getattr(settings, "ENVIRONMENT", "development") == "production":
+        raise HTTPException(status_code=404, detail="Not found")
     if not settings.DEBUG:
         return {"error": "Enable DEBUG in .env to use this endpoint."}
     try:
@@ -252,6 +259,8 @@ except ImportError:
 from app.api.admin_auth import router as admin_auth_router
 from app.api.auth import router as auth_router
 from app.api.reports import router as reports_router
+from app.api.impersonation import router as impersonation_router
+from app.api.admin_metrics import router as admin_metrics_router
 
 app.include_router(invite_router, prefix="/api", tags=["User Invitation & Setup"])
 app.include_router(startup_router, prefix="/api", tags=["Startup & Initialization"])
@@ -271,6 +280,8 @@ app.include_router(order_book_router, prefix="/api/order-book", tags=["Order Boo
 app.include_router(branch_inventory_router, prefix="/api/branch-inventory", tags=["Branch Inventory"])
 app.include_router(reports_router, prefix="/api", tags=["Reports"])
 app.include_router(tenants_router, prefix="/api/admin", tags=["Tenant Management (Admin)"])
+app.include_router(impersonation_router, prefix="/api/admin", tags=["Admin Impersonation"])
+app.include_router(admin_metrics_router, prefix="/api/admin", tags=["Platform Admin Dashboard"])
 app.include_router(onboarding_router, prefix="/api", tags=["Client Onboarding"])
 if migrations_router:
     app.include_router(migrations_router, prefix="/api", tags=["Migration Management (Admin)"])

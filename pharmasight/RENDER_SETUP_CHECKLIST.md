@@ -19,7 +19,7 @@ For each variable below, click **"Add Environment Variable"**:
 
 #### ✅ Variable 1: DATABASE_URL
 - [ ] Key: `DATABASE_URL`
-- [ ] Value: `postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres`
+- [ ] Value: `postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres`
 - [ ] ✅ Click lock icon to mark as Secret
 - [ ] Click Save
 

@@ -874,8 +874,11 @@ async function clearForReimport() {
     if (!ok) return;
 
     const user = (typeof AuthBootstrap !== 'undefined' && AuthBootstrap.getCurrentUser) ? AuthBootstrap.getCurrentUser() : null;
-    const userEmail = user && user.email ? user.email : (typeof Auth !== 'undefined' && Auth.getCurrentUser ? (await Auth.getCurrentUser())?.email : null);
-    if (!userEmail) {
+    const userEmail = user && user.email ? user.email : (typeof Auth !== 'undefined' && Auth.getCurrentUser ? (Auth.getCurrentUser() || {})?.email : null);
+    const username = (user && user.username) ? user.username : (typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_username') : null) || '';
+    // Re-auth uses same identifier as login: username (e.g. G-GRACE) so backend finds user correctly
+    const loginId = (username && username.trim()) ? username.trim() : (userEmail || '');
+    if (!loginId) {
         showToast('You must be signed in to clear company data.', 'error');
         return;
     }
@@ -894,7 +897,7 @@ async function clearForReimport() {
     `;
     const footer = `
         <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
-        <button type="button" class="btn btn-danger" id="clearDataConfirmBtn" data-clear-user-email="${escapeHtml(userEmail)}" onclick="confirmClearDataWithPassword()">
+        <button type="button" class="btn btn-danger" id="clearDataConfirmBtn" data-clear-login-id="${escapeHtml(loginId)}" onclick="confirmClearDataWithPassword()">
             <i class="fas fa-broom"></i> Clear data
         </button>
     `;
@@ -911,17 +914,12 @@ async function clearForReimport() {
     }
 }
 
-/** Called from password confirmation modal: re-authenticate then call clear API. */
+/** Called from password confirmation modal: send password to backend for verification, then clear. */
 async function confirmClearDataWithPassword() {
     const btn = document.getElementById('clearDataConfirmBtn');
-    const userEmail = (btn && btn.getAttribute('data-clear-user-email')) || '';
     const inputEl = document.getElementById('clearDataPasswordInput');
     const errEl = document.getElementById('clearDataPasswordError');
     const password = inputEl ? inputEl.value : '';
-    if (!userEmail) {
-        if (errEl) { errEl.textContent = 'Session expired. Please close and try again.'; errEl.style.display = 'block'; }
-        return;
-    }
     if (!password) {
         if (errEl) { errEl.textContent = 'Please enter your password.'; errEl.style.display = 'block'; }
         return;
@@ -929,31 +927,19 @@ async function confirmClearDataWithPassword() {
     if (errEl) errEl.style.display = 'none';
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...'; }
     try {
-        const Auth = typeof window !== 'undefined' ? window.Auth : null;
-        if (Auth && Auth.signIn) {
-            await Auth.signIn(userEmail, password);
-        } else {
-            const supabase = (window.getSupabaseClient && window.getSupabaseClient()) || (window.initSupabaseClient && window.initSupabaseClient());
-            if (!supabase) throw new Error('Cannot verify password');
-            const { error } = await supabase.auth.signInWithPassword({ email: userEmail, password });
-            if (error) throw error;
-        }
-    } catch (err) {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-broom"></i> Clear data'; }
-        const msg = (err && err.message) || (err && err.error_description) || 'Incorrect password';
-        if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
-        return;
-    }
-    if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Clearing...';
-    try {
-        const result = await API.excel.clearForReimport(CONFIG.COMPANY_ID);
+        const result = await API.excel.clearForReimport(CONFIG.COMPANY_ID, password);
         closeModal();
         showToast(result.message || 'Company data cleared. You can now run a fresh Excel import.', 'success');
         if (typeof loadItems === 'function') loadItems();
     } catch (err) {
-        const msg = (err.data && (err.data.detail || err.data.message)) || err.message || 'Clear failed';
-        showToast(typeof msg === 'string' ? msg : (msg.detail || msg.message || 'Clear failed'), 'error');
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-broom"></i> Clear data'; }
+        const detail = err.data && (err.data.detail || err.data.message);
+        const msg = (typeof detail === 'string' ? detail : (detail && detail.message)) || err.message || 'Invalid password';
+        if (err.status === 401 || (msg && msg.toLowerCase().indexOf('password') !== -1)) {
+            if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+        } else {
+            showToast(typeof msg === 'string' ? msg : (msg.detail || msg.message || 'Clear failed'), 'error');
+        }
     }
 }
 
@@ -983,10 +969,11 @@ function showImportExcelModal() {
             </div>
             <div id="excelColumnMappingSection" style="display: none; margin-top: 1rem;">
                 <p id="importTargetLine" style="font-size: 0.875rem; margin-bottom: 0.5rem; padding: 0.35rem 0.5rem; background: var(--bg-secondary); border-radius: 4px;"><i class="fas fa-database"></i> <strong>Import target:</strong> <span id="importTargetValue">—</span></p>
-                <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-size: 0.875rem; cursor: pointer;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; font-size: 0.875rem; cursor: pointer;">
                     <input type="checkbox" id="excelImportSyncCheckbox" checked>
-                    <span>Run import synchronously (recommended: see errors immediately; may take several minutes for large files)</span>
+                    <span>Run import synchronously (recommended: see result immediately; may take several minutes for large files)</span>
                 </label>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 0.5rem 1.75rem;">If you uncheck this, the import runs in the background. If it never completes, run again with this box <strong>checked</strong>.</p>
                 <h4><i class="fas fa-columns"></i> Map PharmaSight fields to your Excel columns</h4>
                 <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">For each PharmaSight field, choose which column from your Excel sheet contains that data. <strong id="excelColumnCount">0</strong> columns available from your sheet.</p>
                 <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;"><i class="fas fa-info-circle"></i> For <strong>opening balance</strong>: choose your columns for <strong>Current Stock Quantity</strong>, <strong>Wholesale Unit Price</strong> (or Purchase Price per Supplier Unit), and <strong>Supplier</strong>.</p>
@@ -1237,10 +1224,20 @@ function escapeHtml(s) {
 function getExcelColumnMapping() {
     const selects = document.querySelectorAll('#excelColumnMapping .excel-map-select');
     const mapping = {};
+    const requiredIds = ['item_name'];
+    // First pass: set required fields (e.g. item_name) so they are not overwritten when same column is used for multiple fields
     selects.forEach(sel => {
         const systemId = (sel.getAttribute('data-system-field-id') || '').trim();
         const excelHeader = (sel.value || '').trim();
-        if (excelHeader && systemId) {
+        if (excelHeader && systemId && requiredIds.includes(systemId)) {
+            mapping[excelHeader] = systemId;
+        }
+    });
+    // Second pass: set non-required fields without overwriting existing (required) mappings
+    selects.forEach(sel => {
+        const systemId = (sel.getAttribute('data-system-field-id') || '').trim();
+        const excelHeader = (sel.value || '').trim();
+        if (excelHeader && systemId && !mapping[excelHeader]) {
             mapping[excelHeader] = systemId;
         }
     });
@@ -1298,6 +1295,7 @@ async function importExcelFile() {
             <div id="importProgressText" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.25rem; text-align: center;">
                 0%
             </div>
+            <button id="importCancelBtn" class="btn btn-outline" style="display: none; margin-top: 0.5rem;" type="button"><i class="fas fa-times-circle"></i> Cancel stuck import and try again</button>
         </div>
     `;
     modalBody.insertAdjacentHTML('beforeend', progressHTML);
@@ -1358,7 +1356,26 @@ async function importExcelFile() {
         
         jobId = startResult.job_id;
         if (startResult.success === false && (startResult.message || '').toLowerCase().includes('already in progress')) {
-            showToast('Same file is already importing. Showing its progress. To start fresh, use "Clear for re-import" first (when no live transactions).', 'info');
+            showToast('Same file is already importing. Cancel it below to re-import the same file.', 'info');
+            const cancelBtn = document.getElementById('importCancelBtn');
+            if (cancelBtn) {
+                cancelBtn.style.display = 'block';
+                cancelBtn.onclick = async () => {
+                    if (!jobId) return;
+                    cancelBtn.disabled = true;
+                    cancelBtn.textContent = ' Cancelling...';
+                    try {
+                        await API.excel.cancelJob(jobId);
+                        if (pollInterval) clearInterval(pollInterval);
+                        showToast('Stuck import cancelled. Import again with "Run import synchronously" checked for a reliable result.', 'success');
+                        setTimeout(() => { closeModal(); loadItems(); if (importBtn) { importBtn.disabled = false; importBtn.innerHTML = '<i class="fas fa-upload"></i> Import Items'; } isImporting = false; }, 1500);
+                    } catch (e) {
+                        showToast('Could not cancel: ' + (e.message || e), 'error');
+                        cancelBtn.disabled = false;
+                        cancelBtn.innerHTML = '<i class="fas fa-times-circle"></i> Cancel stuck import and try again';
+                    }
+                };
+            }
         }
         
         // If backend ran import synchronously (sync=1), response has final status/stats — no polling
@@ -1387,6 +1404,7 @@ async function importExcelFile() {
                     message += ` | ${stats.errors.length} errors (check console)`;
                 }
                 showToast(message, 'success');
+                showToast('Open Dashboard to see the updated item count.', 'info');
                 if (created === 0 && updated === 0 && (startResult.total_rows || 0) > 0) {
                     showToast('No items were created. If you use a tenant link, ensure you are viewing the same tenant. Or run with "Run import synchronously" to see any error.', 'warning');
                 }
@@ -1436,10 +1454,30 @@ async function importExcelFile() {
                 const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
                 
                 if (status === 'processing' || status === 'pending') {
-                    updateProgress(
-                        progressPct,
-                        `Processing ${processed}/${total} items... (${timeStr} elapsed)`
-                    );
+                    let msg = `Processing ${processed}/${total} items... (${timeStr} elapsed)`;
+                    if (status === 'pending' && elapsed > 60) {
+                        msg += ' — If this never moves, cancel below and re-import with "Run import synchronously" checked.';
+                        const cancelBtn = document.getElementById('importCancelBtn');
+                        if (cancelBtn && cancelBtn.style.display !== 'block') {
+                            cancelBtn.style.display = 'block';
+                            cancelBtn.onclick = async () => {
+                                if (!jobId) return;
+                                cancelBtn.disabled = true;
+                                cancelBtn.textContent = ' Cancelling...';
+                                try {
+                                    await API.excel.cancelJob(jobId);
+                                    if (pollInterval) clearInterval(pollInterval);
+                                    showToast('Stuck import cancelled. Import again with "Run import synchronously" checked.', 'success');
+                                    setTimeout(() => { closeModal(); loadItems(); const ib = document.getElementById('importExcelBtn'); if (ib) { ib.disabled = false; ib.innerHTML = '<i class="fas fa-upload"></i> Import Items'; } isImporting = false; }, 1500);
+                                } catch (e) {
+                                    showToast('Could not cancel: ' + (e.message || e), 'error');
+                                    cancelBtn.disabled = false;
+                                    cancelBtn.innerHTML = '<i class="fas fa-times-circle"></i> Cancel stuck import and try again';
+                                }
+                            };
+                        }
+                    }
+                    updateProgress(progressPct, msg);
                 } else if (status === 'completed') {
                     clearInterval(pollInterval);
                     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -1466,6 +1504,7 @@ async function importExcelFile() {
                         message += ` | ${stats.errors.length} errors (check console)`;
                     }
                     showToast(message, 'success');
+                    showToast('Open Dashboard to see the updated item count.', 'info');
                     if (created === 0 && updated === 0 && (progress.total_rows || 0) > 0) {
                         showToast('No items were created. If you use a tenant link, ensure you are viewing the same tenant. Run with "Run import synchronously" to see any error.', 'warning');
                     }

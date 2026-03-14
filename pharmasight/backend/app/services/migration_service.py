@@ -12,7 +12,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Any
 
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
@@ -128,6 +128,45 @@ def _baseline_existing_db(conn) -> Optional[str]:
     )
     cur.close()
     return "001_initial"
+
+
+def run_predefined_migration_by_version(database_url: str, version: str) -> Dict:
+    """
+    Run a single predefined migration by version identifier (e.g. 069_items_setup_complete).
+    SQL is read from migration files only; no arbitrary SQL from request. Used by admin API.
+    Returns dict with success, message, applied (bool).
+    """
+    files = _discover_migration_files()
+    version_to_path = {v: p for v, p in files}
+    if version not in version_to_path:
+        return {
+            "success": False,
+            "message": f"Unknown migration version: {version}. Allowed: {[v for v, _ in files]}",
+            "applied": False,
+        }
+    path = version_to_path[version]
+    sql = path.read_text(encoding="utf-8", errors="replace")
+    conn = psycopg2.connect(_psycopg2_dsn(database_url))
+    try:
+        _ensure_schema_migrations(conn)
+        applied = _get_applied_versions(conn)
+        if version in applied:
+            return {"success": True, "message": f"Migration {version} already applied", "applied": False}
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cur = conn.cursor()
+        try:
+            cur.execute(sql)
+            cur.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, NOW()) ON CONFLICT (version) DO NOTHING",
+                (version,),
+            )
+            cur.close()
+            return {"success": True, "message": f"Applied {version}", "applied": True}
+        except Exception as e:
+            cur.close()
+            raise RuntimeError(f"Migration {version} failed: {e}") from e
+    finally:
+        conn.close()
 
 
 def run_migrations_for_url(database_url: str) -> List[str]:

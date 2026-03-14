@@ -45,7 +45,7 @@ git push -u origin main
 In Render dashboard → Your Service → Environment, add:
 
 ```
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 DEBUG=False
 SECRET_KEY=<generate-with-command-below>
 CORS_ORIGINS=*
@@ -86,6 +86,6 @@ Visit: http://localhost:8000/docs
 ## 🔗 Your Connection String
 
 ```
-postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 ```
 

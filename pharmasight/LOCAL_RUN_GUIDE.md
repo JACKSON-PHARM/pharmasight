@@ -33,7 +33,7 @@ This guide will help you run PharmaSight locally using Supabase as your database
 ### Option B: Using psql (Command Line)
 
 ```bash
-psql "postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres" -f database/schema.sql
+psql "postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres" -f database/schema.sql
 ```
 
 ## 🖥️ Step 2 & 3: Start Both Servers (Backend & Frontend)
@@ -110,7 +110,7 @@ You should see:
 
 The backend is configured via `.env` file (already created):
 ```env
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 DEBUG=True
 SECRET_KEY=HAlPg6zyTzeEAcYdmnC9c9MbQHSHiEAUk9qEjefRkDA
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8000,http://127.0.0.1:5500,http://127.0.0.1:3000

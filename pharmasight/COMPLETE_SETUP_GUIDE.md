@@ -5,7 +5,7 @@ This is your complete step-by-step guide to deploy PharmaSight.
 ## 📋 What You Have
 
 ✅ **Supabase Project**: `kwvkkbofubsjiwqlqakt`  
-✅ **Password**: `6iP.zRY6QyK8L*Z`  
+✅ **Password**: `YOUR_PASSWORD`  
 ✅ **Database Connection**: Already configured in `.env.example`
 
 ## 🗄️ PART 1: Supabase Database Setup (5 minutes)
@@ -34,7 +34,7 @@ This is your complete step-by-step guide to deploy PharmaSight.
 
 Your connection string for Render:
 ```
-postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 ```
 
 ## 📦 PART 2: GitHub Setup (5 minutes)
@@ -75,7 +75,7 @@ git status
 Create a `.env` file in the root with:
 
 ```env
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 DEBUG=True
 SECRET_KEY=your-local-secret-key-here
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173
@@ -191,7 +191,7 @@ Fill in these **exact** settings:
 
 | Key | Value | Secret? |
 |-----|-------|---------|
-| `DATABASE_URL` | `postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres` | ✅ Yes |
+| `DATABASE_URL` | `postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres` | ✅ Yes |
 | `DEBUG` | `False` | No |
 | `SECRET_KEY` | Generate with script (see below) | ✅ Yes |
 | `CORS_ORIGINS` | `*` | No |
@@ -304,14 +304,14 @@ After completing all steps:
 ### Your Supabase Details:
 ```
 Project ID: kwvkkbofubsjiwqlqakt
-Password: 6iP.zRY6QyK8L*Z
-Host: db.kwvkkbofubsjiwqlqakt.supabase.co
-Connection: postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+Password: YOUR_PASSWORD
+Host: db.YOUR_PROJECT_REF.supabase.co
+Connection: postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 ```
 
 ### Render Environment Variables:
 ```
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 DEBUG=False
 SECRET_KEY=<generate-random-key>
 CORS_ORIGINS=*

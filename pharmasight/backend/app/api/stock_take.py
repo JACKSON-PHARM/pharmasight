@@ -1078,8 +1078,12 @@ def list_locks(
 # ============================================
 
 @router.get("/sessions/{session_id}/progress", response_model=StockTakeProgressResponse)
-def get_progress(session_id: UUID, db: Session = Depends(get_tenant_db)):
-    """Get progress for a stock take session"""
+def get_progress(
+    session_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Get progress for a stock take session. Requires authentication."""
     session = db.query(StockTakeSession).filter(StockTakeSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")

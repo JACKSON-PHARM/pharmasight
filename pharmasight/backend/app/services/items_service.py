@@ -68,16 +68,10 @@ def _generate_sku(company_id: UUID, db: Session) -> str:
     return generate_sku_for_company(company_id, db, reserved=None)
 
 
-def generate_sku_for_company(
-    company_id: UUID,
-    db: Session,
-    reserved: Optional[set] = None,
-) -> str:
+def get_next_sku_number_for_bulk(company_id: UUID, db: Session) -> int:
     """
-    Generate next unique SKU for company (A00001, A00002, ...).
-    Used by API create_item and Excel import. If reserved is provided (e.g. SKUs
-    assigned in current batch), the returned SKU will not be in reserved; caller
-    should add the result to reserved when using in a batch.
+    Return the next SKU numeric part (e.g. 1 for A00001) for a company. One query only.
+    Used by Excel bulk import to assign A00001, A00002, ... in memory without N queries.
     """
     last = (
         db.query(Item.sku)
@@ -95,16 +89,32 @@ def generate_sku_for_company(
                     max_n = max(max_n, int(m.group(2)))
                 except ValueError:
                     pass
+    return max_n + 1
+
+
+def generate_sku_for_company(
+    company_id: UUID,
+    db: Session,
+    reserved: Optional[set] = None,
+) -> str:
+    """
+    Generate next unique SKU for company (A00001, A00002, ...).
+    Used by API create_item and Excel import (single-row path). If reserved is provided (e.g. SKUs
+    assigned in current batch), the returned SKU will not be in reserved; caller
+    should add the result to reserved when using in a batch.
+    For bulk import use get_next_sku_number_for_bulk + in-memory counter to avoid N queries.
+    """
+    next_n = get_next_sku_number_for_bulk(company_id, db)
     if reserved:
         for s in reserved:
             if s:
                 m = re.match(r"^([A-Z]{1,3})(\d+)$", (s or "").upper())
                 if m:
                     try:
-                        max_n = max(max_n, int(m.group(2)))
+                        next_n = max(next_n, int(m.group(2)) + 1)
                     except ValueError:
                         pass
-    return f"A{(max_n + 1):05d}"
+    return f"A{next_n:05d}"
 
 
 def create_item(db: Session, data: ItemCreate) -> Item:

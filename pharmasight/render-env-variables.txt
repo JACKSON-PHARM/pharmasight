@@ -13,7 +13,7 @@
 # ============================================
 
 KEY: DATABASE_URL
-VALUE: postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+VALUE: postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 SECRET: YES ✅ (Mark as secret)
 
 KEY: DEBUG

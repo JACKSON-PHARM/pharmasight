@@ -3,11 +3,12 @@ User Invitation API (internal-only).
 
 Invites are accepted using a one-time `invitation_token` stored in the tenant DB.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session
 from uuid import UUID
 
 from app.dependencies import get_current_user, get_tenant_from_header, get_tenant_db
+from app.rate_limit import limiter
 from app.schemas.invite import (
     InviteAdminRequest,
     InviteAdminResponse,
@@ -64,12 +65,14 @@ def mark_setup_complete(
 
 
 @router.post("/invite/accept", response_model=AcceptInviteResponse, status_code=status.HTTP_200_OK)
+@limiter.limit("10/minute")
 def accept_invite(
+    request: Request,
     body: AcceptInviteRequest,
     tenant=Depends(get_tenant_from_header),
     db: Session = Depends(get_tenant_db),
 ):
-    """Accept an invite using internal `invitation_token` stored in tenant DB."""
+    """Accept an invite using internal `invitation_token`. Rate limited: 10/minute per IP."""
     if not tenant:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tenant context required (X-Tenant-Subdomain)")
     user = db.query(User).filter(User.invitation_token == body.invitation_token, User.deleted_at.is_(None)).first()

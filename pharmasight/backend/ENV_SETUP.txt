@@ -35,7 +35,7 @@ MASTER_DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.kwvkkbofubsjiwqlqakt.
 # SUPABASE_DB_PORT=5432
 # SUPABASE_DB_NAME=postgres
 # SUPABASE_DB_USER=postgres
-# SUPABASE_DB_PASSWORD=6iP.zRY6QyK8L*Z
+# SUPABASE_DB_PASSWORD=YOUR_PASSWORD
 
 # ============================================
 # App Configuration

@@ -840,9 +840,11 @@ const API = {
             });
         },
         getProgress: (jobId) => api.get(`/api/excel/import/${jobId}/progress`),
+        /** Cancel a stuck import job so the same file can be re-imported. */
+        cancelJob: (jobId) => api.post(`/api/excel/import/${jobId}/cancel`),
         getMode: (companyId) => api.get(`/api/excel/mode/${companyId}`),
-        /** Clear company data for fresh Excel import. Only allowed when no live transactions. */
-        clearForReimport: (companyId) => api.post('/api/excel/clear-for-reimport', { company_id: companyId }),
+        /** Clear company data for fresh Excel import. Requires password; verified server-side. */
+        clearForReimport: (companyId, password) => api.post('/api/excel/clear-for-reimport', { company_id: companyId, password: password || '' }),
     },
     
     // User Management
@@ -1092,6 +1094,17 @@ const API = {
         migrations: {
             run: (data) => api.post('/api/admin/migrations/run', data),
             status: () => api.get('/api/admin/migrations/status'),
+        },
+        metrics: {
+            summary: () => api.get('/api/admin/metrics/summary'),
+            companies: (params = {}) => api.get('/api/admin/metrics/companies', params),
+            branches: (params = {}) => api.get('/api/admin/metrics/branches', params),
+            activeUsers: () => api.get('/api/admin/metrics/active-users'),
+            activeUsersTimeseries: (params = {}) => api.get('/api/admin/metrics/active-users/timeseries', params),
+            usageByCompany: () => api.get('/api/admin/metrics/usage-by-company'),
+            health: () => api.get('/api/admin/metrics/health'),
+            errors: () => api.get('/api/admin/metrics/errors'),
+            requestVolume: () => api.get('/api/admin/metrics/request-volume'),
         },
     },
 };

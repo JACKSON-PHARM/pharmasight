@@ -17,6 +17,7 @@ from app.schemas.tenant import OnboardingSignupRequest, OnboardingSignupResponse
 from datetime import datetime, timezone
 
 from app.services.onboarding_service import OnboardingService
+from app.rate_limit import limiter
 from app.services.invite_service import InviteService
 from app.utils.public_url import get_public_base_url
 from app.utils.username_generator import generate_username_from_name
@@ -111,10 +112,11 @@ class CompleteTenantInviteRequest(BaseModel):
 
 
 @router.post("/onboarding/signup", response_model=OnboardingSignupResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/hour")
 def signup(http_request: Request, request: OnboardingSignupRequest, db: Session = Depends(get_master_db)):
     """
-    Client signup endpoint
-    Only requires email and company name
+    Client signup endpoint. Rate limited: 10 attempts per hour per IP.
+    Only requires email and company name.
     """
     try:
         result = OnboardingService.create_tenant_from_signup(

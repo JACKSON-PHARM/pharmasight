@@ -17,7 +17,7 @@ if not database_url:
     db_port = os.getenv("SUPABASE_DB_PORT", "5432")
     db_name = os.getenv("SUPABASE_DB_NAME", "postgres")
     db_user = os.getenv("SUPABASE_DB_USER", "postgres.kwvkkbofubsjiwqlqakt")
-    db_password = os.getenv("SUPABASE_DB_PASSWORD", "6iP.zRY6QyK8L*Z")
+    db_password = os.getenv("SUPABASE_DB_PASSWORD", "")
     database_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
 print("=" * 60)

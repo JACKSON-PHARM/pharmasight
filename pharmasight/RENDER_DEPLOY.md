@@ -66,7 +66,7 @@ Scroll down to **Environment Variables** section and click **Add Environment Var
 
 1. **DATABASE_URL**
    - Key: `DATABASE_URL`
-   - Value: `postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres`
+   - Value: `postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres`
    - ✅ **Mark as Secret** (click the lock icon)
 
 2. **DEBUG**

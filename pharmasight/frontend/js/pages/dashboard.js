@@ -123,6 +123,14 @@ async function loadDashboard() {
     if (applyBtn) {
         applyBtn.onclick = function () { applyDashboardFilters(); };
     }
+
+    // Load "Items in database" as soon as dashboard is shown (no Apply needed) so it updates after import
+    if (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID && typeof API !== 'undefined' && API.items && typeof API.items.count === 'function') {
+        API.items.count(CONFIG.COMPANY_ID).then(function (d) {
+            const el = document.getElementById('totalItems');
+            if (el) el.textContent = (d && d.count != null) ? d.count : 0;
+        }).catch(function () {});
+    }
 }
 
 async function applyDashboardFilters() {

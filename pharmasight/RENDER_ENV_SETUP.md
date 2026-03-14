@@ -42,7 +42,7 @@ Click **Add Environment Variable** for each one:
 #### Variable 1: DATABASE_URL
 
 - **Key**: `DATABASE_URL`
-- **Value**: `postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres`
+- **Value**: `postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres`
 - **Mark as Secret**: ✅ YES (click the lock icon 🔒)
 
 #### Variable 2: DEBUG
@@ -85,7 +85,7 @@ After deployment, check logs to verify:
 
 | Variable | Value | Secret? | Required? |
 |----------|-------|---------|-----------|
-| `DATABASE_URL` | `postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres` | ✅ Yes | ✅ Yes |
+| `DATABASE_URL` | `postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres` | ✅ Yes | ✅ Yes |
 | `DEBUG` | `False` | ❌ No | ✅ Yes |
 | `SECRET_KEY` | `[Generate with script]` | ✅ Yes | ✅ Yes |
 | `CORS_ORIGINS` | `*` | ❌ No | ✅ Yes |
@@ -112,7 +112,7 @@ After deployment, check logs to verify:
 
 ### DATABASE_URL (Mark as Secret)
 ```
-postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 ```
 
 ### DEBUG

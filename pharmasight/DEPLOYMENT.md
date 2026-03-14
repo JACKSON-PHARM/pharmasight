@@ -24,15 +24,15 @@ This guide walks you through deploying PharmaSight to GitHub, Supabase, and Rend
 ### 1.2 Get Your Connection Details
 
 Your Supabase connection details:
-- **Host**: `db.kwvkkbofubsjiwqlqakt.supabase.co`
+- **Host**: `db.YOUR_PROJECT_REF.supabase.co`
 - **Database**: `postgres`
 - **User**: `postgres`
-- **Password**: `6iP.zRY6QyK8L*Z`
+- **Password**: `YOUR_PASSWORD`
 - **Port**: `5432`
 
 Connection String:
 ```
-postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 ```
 
 ## 🔐 Step 2: Set Up Local Environment
@@ -44,7 +44,7 @@ postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/p
 
 2. Update `.env` with your values:
    ```env
-   DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+   DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
    DEBUG=True
    SECRET_KEY=your-secret-key-here
    ```
@@ -148,7 +148,7 @@ If asked for credentials:
 In the Render service settings, go to **Environment** and add:
 
 ```
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 DEBUG=False
 SECRET_KEY=generate-a-strong-random-key-here
 CORS_ORIGINS=*
@@ -272,12 +272,12 @@ postgresql://postgres:PASSWORD@db.PROJECT_ID.supabase.co:5432/postgres
 
 Your connection string:
 ```
-postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 ```
 
 ### Render Environment Variables
 ```
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 DEBUG=False
 SECRET_KEY=your-generated-secret-key
 CORS_ORIGINS=*

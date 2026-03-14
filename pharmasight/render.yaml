@@ -4,6 +4,7 @@
 #   DATABASE_URL, SUPABASE_* = as in local dev
 #   APP_PUBLIC_URL = optional; if unset, invite links use your Render URL automatically
 #   To send invite emails, set: SMTP_HOST, SMTP_USER, SMTP_PASSWORD (and optionally SMTP_PORT=587, EMAIL_FROM)
+#   In production set ENVIRONMENT=production and CORS_ORIGINS to your frontend domain (e.g. https://app.pharmasight.com)
 services:
   - type: web
     name: pharmasight-backend
@@ -18,10 +19,14 @@ services:
         sync: false
       - key: DEBUG
         value: "False"
+      - key: ENVIRONMENT
+        value: "production"
       - key: SECRET_KEY
         generateValue: true
       - key: CORS_ORIGINS
-        value: "*"
+        sync: false
+      - key: APP_PUBLIC_URL
+        sync: false
       - key: APP_PUBLIC_URL
         sync: false
       - key: ADMIN_PASSWORD

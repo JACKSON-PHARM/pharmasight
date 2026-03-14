@@ -23,7 +23,7 @@ Run the migration SQL file to:
 
 ### Option 2: psql Command Line
 ```bash
-psql "postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres" -f database/fix_stock_take_session_code_length.sql
+psql "postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres" -f database/fix_stock_take_session_code_length.sql
 ```
 
 ## Verify the Fix

@@ -27,6 +27,10 @@ CLAIM_EXP = "exp"
 CLAIM_ISS = "iss"
 CLAIM_JTI = "jti"
 
+# Impersonation (PLATFORM_ADMIN only): frontend can show banner; no privilege escalation
+CLAIM_IMPERSONATION = "impersonation"
+CLAIM_IMPERSONATED_BY = "impersonated_by"
+
 TYPE_ACCESS = "access"
 TYPE_REFRESH = "refresh"
 TYPE_RESET = "reset"
@@ -138,6 +142,37 @@ def create_reset_token(user_id: str, tenant_subdomain: str) -> str:
         delta,
         token_type=TYPE_RESET,
     )
+
+
+# Short expiry for impersonation (no refresh; admin must re-impersonate to extend)
+IMPERSONATION_TOKEN_EXPIRE_MINUTES = 15
+
+
+def create_impersonation_access_token(
+    user_id: str,
+    email: str,
+    tenant_subdomain: Optional[str],
+    company_id: Optional[str],
+    impersonated_by: str,
+    expires_minutes: int = IMPERSONATION_TOKEN_EXPIRE_MINUTES,
+) -> str:
+    """
+    Create a short-lived access token for PLATFORM_ADMIN impersonation.
+    Token has same shape as normal access token (sub, email, company_id, etc.) so get_current_user
+    treats the request as the impersonated user. No privilege escalation: permissions are those of
+    the impersonated user only. Frontend can show admin banner by checking claim "impersonation": true.
+    """
+    payload = {
+        CLAIM_SUB: str(user_id),
+        CLAIM_EMAIL: email,
+        CLAIM_TENANT_SUBDOMAIN: tenant_subdomain,
+        CLAIM_IMPERSONATION: True,
+        CLAIM_IMPERSONATED_BY: str(impersonated_by),
+    }
+    if company_id is not None:
+        payload[CLAIM_COMPANY_ID] = str(company_id)
+    delta = timedelta(minutes=expires_minutes)
+    return _internal_encode(payload, delta, token_type=TYPE_ACCESS)
 
 
 def decode_internal_token(token: str, verify_exp: bool = True) -> Optional[dict]:

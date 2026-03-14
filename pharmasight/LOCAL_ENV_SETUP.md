@@ -18,7 +18,7 @@ The `.env` file is already configured for local development with your Supabase c
 
 ```bash
 # The .env file exists and has these values:
-DATABASE_URL=postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
 DEBUG=True
 SECRET_KEY=local-dev-secret-key-change-in-production-2025
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173

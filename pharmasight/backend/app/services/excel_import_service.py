@@ -19,7 +19,7 @@ from app.models import (
 )
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
-from app.services.items_service import generate_sku_for_company
+from app.services.items_service import generate_sku_for_company, get_next_sku_number_for_bulk
 from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
@@ -751,8 +751,8 @@ class ExcelImportService:
             except Exception as e:
                 logger.warning("Could not load stock validation config: %s", e)
             
-            # Process in batches using OPTIMIZED bulk operations (fewer batches = fewer commits and less overhead)
-            batch_size = 1000  # 10k items = 10 batches; keeps memory and transaction size reasonable
+            # Process in batches; smaller size so first progress update shows within ~30–60s (was 1000 → 0% for minutes)
+            batch_size = 200  # 1036 items = 6 batches; first commit after 200 rows so UI shows progress soon
             total_rows = len(excel_data)
             total_batches = (total_rows + batch_size - 1) // batch_size
             
@@ -1528,7 +1528,8 @@ class ExcelImportService:
         opening_balances = []
         suppliers_to_create = []
         item_name_to_row = {}  # For later reference
-        reserved_skus = set()  # SKUs assigned this batch so we don't duplicate when auto-generating
+        # One query for entire batch instead of one per item (was causing 1000+ queries for 1k items)
+        next_sku_num = get_next_sku_number_for_bulk(company_id, db)
 
         for item_name, row in valid_rows:
             item_name_lower = item_name.lower()
@@ -1543,8 +1544,8 @@ class ExcelImportService:
                     # Full overwrite mapping (includes structural fields)
                     item_dict = ExcelImportService._create_item_dict_for_bulk(company_id, row, item_name)
                     if not (item_dict.get('sku') or '').strip():
-                        item_dict['sku'] = generate_sku_for_company(company_id, db, reserved_skus)
-                        reserved_skus.add(item_dict['sku'])
+                        item_dict['sku'] = f"A{next_sku_num:05d}"
+                        next_sku_num += 1
                     item_dict['id'] = item.id
                     update_mappings_replaceable.append(item_dict)
                 else:
@@ -1581,8 +1582,8 @@ class ExcelImportService:
                 # Prepare new item
                 item_dict = ExcelImportService._create_item_dict_for_bulk(company_id, row, item_name)
                 if not (item_dict.get('sku') or '').strip():
-                    item_dict['sku'] = generate_sku_for_company(company_id, db, reserved_skus)
-                    reserved_skus.add(item_dict['sku'])
+                    item_dict['sku'] = f"A{next_sku_num:05d}"
+                    next_sku_num += 1
                 items_to_insert.append(item_dict)
         
         # Step 4b: Build supplier name -> id (existing + just-created) and add default_supplier_id to item dicts
@@ -1795,19 +1796,24 @@ class ExcelImportService:
             try:
                 db.bulk_insert_mappings(InventoryLedger, opening_balances)
                 db.flush()
-                for ob in opening_balances:
-                    SnapshotService.upsert_inventory_balance(
-                        db, ob['company_id'], ob['branch_id'], ob['item_id'], ob['quantity_delta']
-                    )
-                    SnapshotService.upsert_purchase_snapshot(
-                        db, ob['company_id'], ob['branch_id'], ob['item_id'],
-                        ob.get('unit_cost'), ob.get('created_at'), None
-                    )
-                    SnapshotRefreshService.refresh_item_sync(
-                        db, ob['company_id'], ob['branch_id'], ob['item_id']
-                    )
+                # Bulk update inventory_balances and purchase snapshot (one query each) instead of N per-item sync refreshes
+                balance_rows = [
+                    (ob['company_id'], ob['branch_id'], ob['item_id'], ob['quantity_delta'])
+                    for ob in opening_balances
+                ]
+                purchase_rows = [
+                    (ob['company_id'], ob['branch_id'], ob['item_id'], ob.get('unit_cost'), ob.get('created_at'), None)
+                    for ob in opening_balances
+                ]
+                SnapshotService.upsert_inventory_balance_bulk(db, balance_rows)
+                SnapshotService.upsert_purchase_snapshot_bulk(db, purchase_rows)
+                # Enqueue one branch refresh so item_branch_snapshot is updated in background (avoids N sync refreshes)
+                first_ob = opening_balances[0]
+                SnapshotRefreshService.enqueue_branch_refresh(
+                    db, first_ob['company_id'], first_ob['branch_id'], reason="excel_import_bulk"
+                )
                 result['opening_balances_created'] = len(opening_balances)
-                logger.info(f"Bulk inserted {len(opening_balances)} opening balances")
+                logger.info(f"Bulk inserted {len(opening_balances)} opening balances (snapshot refresh enqueued)")
             except Exception as e:
                 logger.warning(f"Some opening balances failed bulk insert: {e}")
 
@@ -1820,7 +1826,11 @@ class ExcelImportService:
         wholesale_unit = _sanitize_unit_label(_normalize_column_name(row, ['Wholesale_Unit', 'Wholesale Unit']), 'piece')
         retail_unit = _sanitize_unit_label(_normalize_column_name(row, ['Retail_Unit', 'Retail Unit']), 'tablet')
         supplier_unit = _sanitize_unit_label(_normalize_column_name(row, ['Supplier_Unit', 'Supplier Unit']), 'piece')
-        pack_size = max(1, int(ExcelImportService._parse_decimal(_normalize_column_name(row, ['Pack_Size', 'Pack Size', 'Conversion_To_Retail']) or '1')))
+        try:
+            pack_size_raw = _normalize_column_name(row, ['Pack_Size', 'Pack Size', 'Conversion_To_Retail']) or '1'
+            pack_size = max(1, int(ExcelImportService._parse_decimal(pack_size_raw)))
+        except (ValueError, TypeError, Exception):
+            pack_size = 1  # Missing or invalid (e.g. "n/a") → 1 so import does not fail
         wholesale_units_per_supplier = _parse_wholesale_units_per_supplier_from_row(row)
         wholesale_unit, retail_unit, supplier_unit = _normalize_units_for_excel_item(
             wholesale_unit, retail_unit, supplier_unit, pack_size, wholesale_units_per_supplier

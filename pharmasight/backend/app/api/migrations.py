@@ -1,60 +1,79 @@
 """
-Migration Management API - Admin endpoints for managing database migrations
+Migration Management API - Admin endpoints for managing database migrations.
+
+Requires PLATFORM_ADMIN authentication. In production, only predefined migrations
+(referenced by version) may be run; arbitrary SQL from request body is not allowed.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import List
 
+from app.config import settings
 from app.database_master import get_master_db
-from app.dependencies import get_current_user
-from app.services.migration_service import MigrationService
+from app.dependencies import get_current_admin
+from app.services.migration_service import (
+    MigrationService,
+    run_predefined_migration_by_version,
+)
 
 router = APIRouter()
 
 
-class MigrationRequest(BaseModel):
-    """Request to run a migration"""
-    migration_sql: str
+class RunMigrationByVersionRequest(BaseModel):
+    """Request to run a predefined migration by version (e.g. 069_items_setup_complete)."""
     version: str
-    tenant_ids: Optional[List[str]] = None  # If None, migrate all tenants
 
 
-class MigrationResponse(BaseModel):
-    """Migration execution result"""
-    total: int
-    success: int
-    failed: int
-    skipped: int
-    results: List[dict]
+class RunMigrationByVersionResponse(BaseModel):
+    """Result of running a single migration by version."""
+    success: bool
+    message: str
+    applied: bool
 
 
-@router.post("/admin/migrations/run", response_model=MigrationResponse)
+@router.post("/admin/migrations/run", response_model=RunMigrationByVersionResponse)
 def run_migration(
-    request: MigrationRequest,
-    db: Session = Depends(get_master_db)
+    request: RunMigrationByVersionRequest,
+    _admin: None = Depends(get_current_admin),
 ):
     """
-    Run a migration on all tenants (or specified tenants)
-    
-    WARNING: This will modify all tenant databases. Use with caution!
+    Run a predefined migration by version on the application database.
+
+    Requires PLATFORM_ADMIN authentication. Only migrations stored in
+    database/migrations/*.sql (referenced by version identifier) are executed.
+    Arbitrary SQL from the request body is not accepted.
     """
-    service = MigrationService()
-    
-    result = service.run_migration_for_all_tenants(
-        migration_sql=request.migration_sql,
-        version=request.version,
-        tenant_ids=request.tenant_ids
+    version = (request.version or "").strip()
+    if not version:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="version is required",
+        )
+    database_url = settings.database_connection_string
+    if not database_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="DATABASE_URL not configured",
+        )
+    result = run_predefined_migration_by_version(database_url, version)
+    if not result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result["message"],
+        )
+    return RunMigrationByVersionResponse(
+        success=result["success"],
+        message=result["message"],
+        applied=result["applied"],
     )
-    
-    return MigrationResponse(**result)
 
 
 @router.get("/admin/migrations/status")
 def get_migration_status(
-    current_user_and_db: tuple = Depends(get_current_user),
+    _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
-    """Get migration status for all tenants"""
+    """Get migration status. Requires PLATFORM_ADMIN authentication."""
     service = MigrationService()
     return service.get_migration_status()

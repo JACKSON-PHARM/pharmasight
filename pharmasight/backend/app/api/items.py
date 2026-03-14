@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
-from app.dependencies import get_tenant_db, get_current_user, _user_has_permission
+from app.dependencies import get_tenant_db, get_current_user, get_effective_company_id_for_user, _user_has_permission
 from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
@@ -787,8 +787,12 @@ def get_item_activity(
 
 
 @router.get("/{item_id}/pricing/3tier", response_model=dict)
-def get_item_3tier_pricing(item_id: UUID, db: Session = Depends(get_tenant_db)):
-    """Get 3-tier pricing for an item"""
+def get_item_3tier_pricing(
+    item_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Get 3-tier pricing for an item. Requires authentication."""
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -829,7 +833,13 @@ def get_items_count(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get count of items for a company (fast, no data loading)"""
+    """Get count of items for a company. Company isolation: company_id must match user's company."""
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Could not resolve company for this user.")
+    if company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company's data.")
     count = db.query(Item).filter(Item.company_id == company_id).count()
     return {"count": count}
 
@@ -846,13 +856,15 @@ def get_items_overview(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Get items with overview data (stock, supplier, cost) - OPTIMIZED
-    
-    Single query endpoint to avoid N+1 problems.
-    Computes stock from inventory_ledger aggregation.
-    Gets last supplier and cost from purchase transactions.
+    Get items with overview data (stock, supplier, cost). Company isolation: company_id must match user's company.
     Returns at most MAX_ITEMS_OVERVIEW items; response header X-Items-Truncated is set when capped.
     """
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Could not resolve company for this user.")
+    if company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company's data.")
     # Base query for items (units are from item columns; no item_units table)
     items_query = db.query(Item).filter(Item.company_id == company_id)
     total_count = items_query.count()
@@ -1015,19 +1027,23 @@ def get_items_overview(
 
 @router.get("/company/{company_id}", response_model=List[ItemResponse])
 def get_items_by_company(
-    company_id: UUID, 
+    company_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
     limit: Optional[int] = Query(None, ge=1, le=1000, description="Maximum number of items to return"),
     offset: Optional[int] = Query(0, ge=0, description="Number of items to skip"),
-    include_units: bool = Query(True, description="Include item units in response")
+    include_units: bool = Query(True, description="Include item units in response"),
 ):
     """
-    Get all items for a company
-    
-    Optimized with eager loading to avoid N+1 queries.
-    For large datasets, use pagination with limit/offset.
-    Set include_units=false for faster loading when units aren't needed.
+    Get all items for a company. Requires authentication.
+    Company isolation: requested company_id must match the authenticated user's company.
     """
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Could not resolve company for this user.")
+    if company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company's data.")
     query = db.query(Item).filter(Item.company_id == company_id)
     
     # Apply pagination if limit is provided

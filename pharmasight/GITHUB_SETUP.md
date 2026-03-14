@@ -125,8 +125,8 @@ Before pushing, verify:
 
 **Your Supabase Details** (keep these safe):
 - Project ID: `kwvkkbofubsjiwqlqakt`
-- Password: `6iP.zRY6QyK8L*Z`
-- Connection: `postgresql://postgres:6iP.zRY6QyK8L*Z@db.kwvkkbofubsjiwqlqakt.supabase.co:5432/postgres`
+- Password: Set in Supabase Dashboard (use env var `SUPABASE_DB_PASSWORD` or `DATABASE_URL`)
+   - Connection: `postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres`
 
 **Never commit these to GitHub!**
 

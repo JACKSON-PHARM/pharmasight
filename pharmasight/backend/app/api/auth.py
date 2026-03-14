@@ -20,6 +20,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.database import SessionLocal
+from app.rate_limit import limiter
 from app.database_master import get_master_db
 from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_header, tenant_db_session, get_effective_company_id_for_user, invalidate_auth_cache_for_user
 from app.utils.auth_internal import (
@@ -227,27 +228,29 @@ def _find_user_in_all_tenants(
 
 
 @router.post("/auth/username-login", response_model=UsernameLoginResponse)
+@limiter.limit("5/minute")
 def username_login(
-    request: UsernameLoginRequest,
+    request: Request,
+    body: UsernameLoginRequest,
     master_db: Session = Depends(get_master_db),
 ):
     """
-    Lookup user by username and return email.
+    Lookup user by username and return email. Rate limited: 5 attempts per minute per IP.
 
     Always uses legacy + tenant discovery: first search legacy DB, then all tenant DBs
     (from master). Ignores X-Tenant-Subdomain for lookup so master and tenant users
     both resolve correctly regardless of frontend state.
     """
-    normalized_username = request.username.lower().strip()
-    check_email = "@" in request.username
+    normalized_username = body.username.lower().strip()
+    check_email = "@" in body.username
 
     # 1) Legacy DB first
     legacy_db = SessionLocal()
     try:
         user = _find_user_in_db(legacy_db, normalized_username, check_email)
         if user:
-            _require_password_if_internal(user, request.password)
-            resp = _build_login_response(user, None, request.password, db=legacy_db)
+            _require_password_if_internal(user, body.password)
+            resp = _build_login_response(user, None, body.password, db=legacy_db)
             if resp.refresh_token:
                 _persist_refresh_token_on_login(None, str(user.id), resp.refresh_token)
             return resp
@@ -259,7 +262,7 @@ def username_login(
     found_list = _find_user_in_all_tenants(master_db, normalized_username, check_email)
     if len(found_list) == 0:
         # If client sent a tenant hint (e.g. from ?tenant= in URL), check if that org is deleted/deactivated
-        tenant_hint = (request.tenant or "").strip().lower() or None
+        tenant_hint = (body.tenant or "").strip().lower() or None
         if tenant_hint:
             hinted = master_db.query(Tenant).filter(func.lower(Tenant.subdomain) == tenant_hint).first()
             if hinted and (hinted.status or "").lower() in ("cancelled", "suspended"):
@@ -296,23 +299,23 @@ def username_login(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Trial expired. Please contact support to upgrade.",
             )
-        _require_password_if_internal(user, request.password)
+        _require_password_if_internal(user, body.password)
         # User found in legacy/app DB (tenant is None) or in a tenant DB (use app DB if tenant DB unreachable)
         if tenant is None:
             db = SessionLocal()
             try:
-                resp = _build_login_response(user, tenant, request.password, db=db)
+                resp = _build_login_response(user, tenant, body.password, db=db)
             finally:
                 db.close()
         else:
             try:
                 with tenant_db_session(tenant) as tenant_db:
-                    resp = _build_login_response(user, tenant, request.password, db=tenant_db)
+                    resp = _build_login_response(user, tenant, body.password, db=tenant_db)
             except OperationalError as e:
                 if "Tenant or user not found" in str(e) or "FATAL:" in str(e).upper():
                     db = SessionLocal()
                     try:
-                        resp = _build_login_response(user, tenant, request.password, db=db)
+                        resp = _build_login_response(user, tenant, body.password, db=db)
                     finally:
                         db.close()
                 else:
@@ -395,9 +398,14 @@ class RefreshResponse(BaseModel):
 
 
 @router.post("/auth/refresh", response_model=RefreshResponse)
-def auth_refresh(body: RefreshRequest, master_db: Session = Depends(get_master_db)):
+@limiter.limit("10/minute")
+def auth_refresh(
+    request: Request,
+    body: RefreshRequest,
+    master_db: Session = Depends(get_master_db),
+):
     """
-    Exchange a valid refresh token for a new access token and a new refresh token (rotation).
+    Exchange a valid refresh token for a new access token and a new refresh token (rotation). Rate limited: 10/minute per IP.
     Incoming refresh token must exist in refresh_tokens, be active and not expired; then it is
     marked inactive and a new token is issued and stored.
     """
@@ -538,6 +546,7 @@ class RequestResetRequest(BaseModel):
 
 
 @router.post("/auth/request-reset", status_code=status.HTTP_200_OK)
+@limiter.limit("5/minute")
 def auth_request_reset(
     request: Request,
     body: RequestResetRequest,
@@ -545,7 +554,7 @@ def auth_request_reset(
     master_db: Session = Depends(get_master_db),
 ):
     """
-    Send password reset email if user exists. Always returns 200 to avoid leaking existence.
+    Send password reset email if user exists. Rate limited: 5/minute per IP. Always returns 200 to avoid leaking existence.
     Email is sent in the background so the API returns quickly (avoids long waits and repeated clicks).
     Requires SMTP configured. Reset link uses internal JWT.
     Reset link base URL: APP_PUBLIC_URL when set (non-localhost); else request Origin (so Render works).
@@ -634,11 +643,13 @@ def auth_change_password(
 
 
 @router.post("/auth/reset-password", status_code=status.HTTP_200_OK)
+@limiter.limit("5/minute")
 def auth_reset_password(
+    request: Request,
     body: ResetPasswordRequest,
     master_db: Session = Depends(get_master_db),
 ):
-    """Reset password using one-time token from email link. Sets password_hash (internal auth)."""
+    """Reset password using one-time token from email link. Rate limited: 5/minute per IP."""
     payload = decode_internal_token(body.token)
     if not payload or payload.get("type") != TYPE_RESET:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset link")
