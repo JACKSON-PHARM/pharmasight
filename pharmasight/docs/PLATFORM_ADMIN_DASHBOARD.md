@@ -15,7 +15,7 @@ The Platform Admin Dashboard gives the platform operator (you) insight into **us
 |----------|-------------|-------------|
 | `GET /summary` | Companies count, branches count, users count, active sessions now | `companies`, `branches`, `users`, `refresh_tokens` |
 | `GET /companies` | List companies with branch_count, user_count. Optional: `company_id`, `date_from`, `date_to`, `limit`, `offset` | `companies`, `branches`, `user_branch_roles`, `users` |
-| `GET /branches` | List branches with company name. Optional: `company_id`, `limit`, `offset`. `last_activity` is null until an activity log is added | `branches`, `companies` |
+| `GET /branches` | List branches with company name. Optional: `company_id`, `limit`, `offset`. `last_activity` = latest refresh token issued for any user with that branch (proxy for last login/session); fallback: branch `updated_at` | `branches`, `companies`, `user_branch_roles`, `refresh_tokens` |
 | `GET /active-users` | active_now, active_last_24h, active_last_7d (from refresh tokens) | `refresh_tokens` |
 | `GET /active-users/timeseries?days=14` | Daily active users for charts | `refresh_tokens` (issued_at) |
 | `GET /usage-by-company` | Active sessions and token count per company | `refresh_tokens` + `user_branch_roles` + `branches` + `companies` |

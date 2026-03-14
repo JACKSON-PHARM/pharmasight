@@ -113,7 +113,8 @@ def get_branches_list(
 ) -> Dict[str, Any]:
     """
     List branches with company name. Optional company_id filter.
-    last_activity: not stored in schema; returned as null (extend with activity_log table later).
+    last_activity: latest refresh_tokens.issued_at for any user with access to this branch
+    (proxy for "last login/session from this branch"). Falls back to branch.updated_at if no tokens.
     """
     q = (
         db.query(Branch)
@@ -130,8 +131,25 @@ def get_branches_list(
         .limit(limit)
         .all()
     )
+    # Per-branch last activity: max(refresh_tokens.issued_at) for users who have access to that branch
+    try:
+        last_activity_rows = db.execute(
+            text("""
+                SELECT ubr.branch_id, MAX(rt.issued_at) AS last_activity
+                FROM user_branch_roles ubr
+                JOIN refresh_tokens rt ON rt.user_id = ubr.user_id
+                WHERE rt.issued_at IS NOT NULL
+                GROUP BY ubr.branch_id
+            """)
+        ).fetchall()
+        last_activity_by_branch = {str(r[0]): r[1] for r in last_activity_rows}
+    except Exception:
+        last_activity_by_branch = {}
     rows = []
     for b in branches:
+        last_ts = last_activity_by_branch.get(str(b.id))
+        if last_ts is None and b.updated_at:
+            last_ts = b.updated_at
         rows.append({
             "id": str(b.id),
             "company_id": str(b.company_id),
@@ -139,7 +157,7 @@ def get_branches_list(
             "name": b.name,
             "code": b.code,
             "is_active": b.is_active,
-            "last_activity": None,  # No activity log in schema; add migration + logging to populate
+            "last_activity": last_ts.isoformat() if last_ts else None,
             "updated_at": b.updated_at.isoformat() if b.updated_at else None,
         })
     return {
