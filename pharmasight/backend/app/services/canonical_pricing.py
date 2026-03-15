@@ -281,14 +281,14 @@ class CanonicalPricingService:
         company_id: UUID,
     ) -> Dict[UUID, Decimal]:
         """
-        Get cost per RETAIL unit for stock valuation. Respects three-tier units.
-        - PURCHASE ledger: unit_cost is already per retail → use as-is
-        - OPENING_BALANCE / default: unit_cost is per wholesale → cost_per_retail = cost / pack_size
-        Formula: value = quantity_retail * cost_per_retail (e.g. 98 tablets * 0.54 = 52.92 when cost is 54/packet of 100)
+        Get cost per RETAIL unit for stock valuation.
+
+        Ledger and fallback sources store cost per retail/base unit (see migration 072 and
+        architecture: inventory_ledger.unit_cost MUST be per retail). No pack_size conversion.
+        Formula: value = quantity_retail * cost_per_retail.
         """
         if not item_ids:
             return {}
-        items = {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
         result = {}
 
         # 1) Last PURCHASE cost (already per retail)
@@ -318,16 +318,13 @@ class CanonicalPricingService:
         ):
             result[row.item_id] = Decimal(str(row.unit_cost)) if row.unit_cost else Decimal("0")
 
-        # 2) OPENING_BALANCE / weighted avg / default: cost is per WHOLESALE → divide by pack_size
+        # 2) OPENING_BALANCE / weighted avg / default: already per retail (no pack_size conversion)
         missing = [iid for iid in item_ids if iid not in result]
         if missing:
             cost_raw = CanonicalPricingService.get_best_available_cost_batch(
                 db, missing, branch_id, company_id
             )
             for iid in missing:
-                cost = cost_raw.get(iid) or Decimal("0")
-                item = items.get(iid)
-                pack_size = max(1, int(getattr(item, "pack_size", None) or 1))
-                result[iid] = cost / Decimal(str(pack_size))
+                result[iid] = cost_raw.get(iid) or Decimal("0")
 
         return result

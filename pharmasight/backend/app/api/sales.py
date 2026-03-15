@@ -243,8 +243,7 @@ def create_sales_invoice(
                 db, item_data.item_id, invoice.branch_id
             )
             if cost_info:
-                # unit_cost_used is stored as cost per wholesale unit (packet) - DO NOT CONVERT
-                # This is the architecture: cost per wholesale unit remains as-is
+                # unit_cost_used = cost per retail/base unit (from CanonicalPricingService)
                 unit_cost_used = cost_info
             # Price validation (floor + margin + promo)
             if unit_cost_used and float(unit_cost_used) > 0:
@@ -742,10 +741,10 @@ def add_sales_invoice_item(
                 # Carry cost/margin from client when provided (item search + user price); margin validated at batch
                 if getattr(item_data, "unit_cost_base", None) is not None:
                     inv_item.unit_cost_base = Decimal(str(item_data.unit_cost_base))
+                    # unit_cost_used stored as cost per retail (same as unit_cost_base) for COGS consistency
                     if it:
+                        inv_item.unit_cost_used = inv_item.unit_cost_base
                         mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
-                        if mult is not None and mult > 0:
-                            inv_item.unit_cost_used = inv_item.unit_cost_base * mult
                     if getattr(item_data, "margin_percent", None) is not None:
                         inv_item.margin_percent = Decimal(str(item_data.margin_percent))
                     elif it:
@@ -1070,25 +1069,15 @@ def _compute_cogs_from_invoice_lines(
             if not item:
                 continue
             
-            # ARCHITECTURE: unit_cost_used is ALWAYS stored as cost per wholesale unit (packet)
-            # We need to convert it to cost per retail unit (tablet) for COGS calculation
-            
-            # Get multiplier from sale unit to retail (codebase convention: base = retail)
+            # ARCHITECTURE: unit_cost_used is ALWAYS stored as cost per retail/base unit (ledger/snapshot).
+            # COGS = quantity sold (in retail units) × cost per retail unit.
+            # pack_size is not used for cost; it only affects quantity conversion (sale unit → retail).
             mult_to_retail = get_unit_multiplier_from_item(item, line.unit_name or "")
             if mult_to_retail is None or mult_to_retail <= 0:
                 continue
-            
-            # Convert sale quantity to retail units
-            # Example: 10 tablets × 1 = 10 retail units, or 1 packet × 30 = 30 retail units
+
             qty_retail = Decimal(str(line.quantity)) * mult_to_retail
-            
-            # unit_cost_used is cost per wholesale unit (packet)
-            # Convert to cost per retail unit (tablet) by dividing by pack_size
-            pack_size = max(1, int(item.pack_size or 1))
-            cost_per_wholesale = Decimal(str(line.unit_cost_used))
-            cost_per_retail = cost_per_wholesale / Decimal(str(pack_size))
-            
-            # COGS = quantity sold (in retail units) × cost per retail unit
+            cost_per_retail = Decimal(str(line.unit_cost_used))
             line_cogs = qty_retail * cost_per_retail
             inv_line_cogs += line_cogs
         
@@ -1116,9 +1105,8 @@ def get_branch_gross_profit(
     Gross profit summary for a branch and date range.
 
     Gross profit = Sales (exclusive) - COGS.
-    COGS is computed from SalesInvoiceItem: quantity (in sale unit) × multiplier → base units,
-    then × unit_cost_used (cost per base). This ensures correct unit conversion (e.g. selling
-    tablets charges cost of tablets sold, not whole packets).
+    COGS = sum over lines of (quantity in retail units × unit_cost_used). unit_cost_used is
+    stored as cost per retail/base unit (from ledger/snapshot); no pack_size conversion.
     """
     sd, ed = _resolve_date_range(preset, start_date, end_date)
 
