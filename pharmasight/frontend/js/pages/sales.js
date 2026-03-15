@@ -93,6 +93,9 @@ async function loadSalesSubPage(subPage) {
         case 'create-quotation':
             await renderCreateSalesQuotationPage();
             break;
+        case 'returns':
+            await renderSalesReturnsPage();
+            break;
         default:
             await renderSalesInvoicesPage();
     }
@@ -681,8 +684,13 @@ async function fetchAndRenderSalesInvoicesData() {
         if (!CONFIG.BRANCH_ID) {
             throw new Error('Branch ID not configured');
         }
-        
-        salesInvoices = await API.sales.getBranchInvoices(CONFIG.BRANCH_ID);
+        // Scoped load: default last 30 days, limit 100 (no full-history)
+        const to = new Date();
+        const from = new Date(to);
+        from.setDate(from.getDate() - 30);
+        const date_from = from.toISOString().slice(0, 10);
+        const date_to = to.toISOString().slice(0, 10);
+        salesInvoices = await API.sales.getBranchInvoices(CONFIG.BRANCH_ID, { date_from, date_to, limit: 100 });
         console.log('✅ Loaded sales invoices:', salesInvoices.length);
         // Ensure newest shows first (tie-break by created_at then invoice_no)
         try {
@@ -851,6 +859,407 @@ function getPaymentStatusBadge(paymentStatus) {
         'PAID': '<span style="padding: 0.25rem 0.75rem; border-radius: 1rem; background: #dcfce7; color: #166534; font-size: 0.875rem; font-weight: 500;">PAID</span>'
     };
     return badges[paymentStatus] || badges['UNPAID'];
+}
+
+// =====================================================
+// SALES RETURNS (CREDIT NOTES) PAGE
+// =====================================================
+
+let salesReturnsList = [];
+let salesReturnsDateFilter = 'this_month';
+
+async function renderSalesReturnsPage() {
+    const page = document.getElementById('sales');
+    if (!page) return;
+    if (!CONFIG.BRANCH_ID || !window.API || !API.sales) {
+        page.innerHTML = '<div class="card"><p>Branch not configured or API not available.</p></div>';
+        return;
+    }
+    const today = new Date().toISOString().split('T')[0];
+    const range = getDocumentListDateRange(salesReturnsDateFilter);
+    const dateFrom = range ? range.dateFrom : today;
+    const dateTo = range ? range.dateTo : today;
+
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color);">
+                <h3 class="card-title" style="margin: 0; font-size: 1.1rem;">
+                    <i class="fas fa-undo"></i> Customer Returns (Credit Notes)
+                </h3>
+                <button type="button" class="btn btn-primary btn-sm" onclick="if(window.openCreateReturnModal) window.openCreateReturnModal()">
+                    <i class="fas fa-plus"></i> New Return
+                </button>
+            </div>
+            <div class="card-body" style="padding: 0.5rem 0.75rem;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
+                    <select id="returnsDateFilter" class="form-input" style="width: 120px; padding: 0.35rem 0.5rem;" onchange="if(window.toggleReturnsCustomDates) window.toggleReturnsCustomDates(); if(window.applyReturnsDateFilter) window.applyReturnsDateFilter()">
+                        <option value="today" ${salesReturnsDateFilter === 'today' ? 'selected' : ''}>Today</option>
+                        <option value="yesterday" ${salesReturnsDateFilter === 'yesterday' ? 'selected' : ''}>Yesterday</option>
+                        <option value="this_week" ${salesReturnsDateFilter === 'this_week' ? 'selected' : ''}>This Week</option>
+                        <option value="last_week" ${salesReturnsDateFilter === 'last_week' ? 'selected' : ''}>Last Week</option>
+                        <option value="this_month" ${salesReturnsDateFilter === 'this_month' ? 'selected' : ''}>This Month</option>
+                        <option value="last_month" ${salesReturnsDateFilter === 'last_month' ? 'selected' : ''}>Last Month</option>
+                        <option value="this_year" ${salesReturnsDateFilter === 'this_year' ? 'selected' : ''}>This Year</option>
+                        <option value="custom" ${salesReturnsDateFilter === 'custom' ? 'selected' : ''}>Custom</option>
+                    </select>
+                    <div id="returnsCustomDateRange" style="display: ${salesReturnsDateFilter === 'custom' ? 'flex' : 'none'}; gap: 0.35rem; align-items: center;">
+                        <input type="date" class="form-input" id="returnsDateFrom" value="${dateFrom}" style="width: 120px; padding: 0.35rem 0.5rem;">
+                        <span>-</span>
+                        <input type="date" class="form-input" id="returnsDateTo" value="${dateTo}" style="width: 120px; padding: 0.35rem 0.5rem;">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="if(window.applyReturnsDateFilter) window.applyReturnsDateFilter()">Apply</button>
+                    </div>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table class="data-table" style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="border-bottom: 2px solid var(--border-color);">
+                                <th style="padding: 0.4rem 0.5rem; font-weight: 600; text-align: left;">Credit Note #</th>
+                                <th style="padding: 0.4rem 0.5rem; font-weight: 600; text-align: left;">Date</th>
+                                <th style="padding: 0.4rem 0.5rem; font-weight: 600; text-align: left;">Original Invoice</th>
+                                <th style="padding: 0.4rem 0.5rem; font-weight: 600; text-align: right;">Amount</th>
+                                <th style="padding: 0.4rem 0.5rem; font-weight: 600; text-align: left;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="salesReturnsTableBody">
+                            <tr><td colspan="5" style="padding: 1rem; text-align: center;"><div class="spinner" style="margin: 0 auto 0.5rem;"></div><p style="color: var(--text-secondary); font-size: 0.8rem;">Loading returns...</p></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+    if (salesReturnsDateFilter === 'custom') {
+        const fromEl = document.getElementById('returnsDateFrom');
+        const toEl = document.getElementById('returnsDateTo');
+        if (fromEl) fromEl.value = dateFrom;
+        if (toEl) toEl.value = dateTo;
+    }
+    await fetchAndRenderSalesReturnsData();
+}
+
+function toggleReturnsCustomDates() {
+    const sel = document.getElementById('returnsDateFilter');
+    const customRange = document.getElementById('returnsCustomDateRange');
+    if (!sel || !customRange) return;
+    salesReturnsDateFilter = sel.value || 'this_month';
+    customRange.style.display = salesReturnsDateFilter === 'custom' ? 'flex' : 'none';
+    if (window.applyReturnsDateFilter) applyReturnsDateFilter();
+}
+
+function applyReturnsDateFilter() {
+    const sel = document.getElementById('returnsDateFilter');
+    const fromEl = document.getElementById('returnsDateFrom');
+    const toEl = document.getElementById('returnsDateTo');
+    if (sel) salesReturnsDateFilter = sel.value || 'this_month';
+    if (salesReturnsDateFilter === 'custom' && fromEl && toEl) {
+        const from = fromEl.value || new Date().toISOString().split('T')[0];
+        const to = toEl.value || from;
+        if (window.fetchAndRenderSalesReturnsData) fetchAndRenderSalesReturnsData(from, to);
+    } else {
+        if (window.fetchAndRenderSalesReturnsData) fetchAndRenderSalesReturnsData();
+    }
+}
+
+async function fetchAndRenderSalesReturnsData(dateFrom, dateTo) {
+    const tbody = document.getElementById('salesReturnsTableBody');
+    if (!tbody || !CONFIG.BRANCH_ID) return;
+    const range = getDocumentListDateRange(salesReturnsDateFilter);
+    const from = dateFrom != null ? dateFrom : (range ? range.dateFrom : new Date().toISOString().split('T')[0]);
+    const to = dateTo != null ? dateTo : (range ? range.dateTo : from);
+    try {
+        const list = await API.sales.getBranchCreditNotes(CONFIG.BRANCH_ID, { date_from: from, date_to: to, limit: 500 });
+        salesReturnsList = Array.isArray(list) ? list : [];
+        if (salesReturnsList.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="padding: 1.5rem; text-align: center; color: var(--text-secondary);">No credit notes in this period.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = salesReturnsList.map(cn => {
+            const cnDate = cn.credit_note_date ? new Date(cn.credit_note_date).toLocaleDateString() : '—';
+            const origId = (cn.original_invoice_id || '').toString();
+            const shortId = origId ? (origId.length > 8 ? origId.substring(0, 8) + '…' : origId) : '—';
+            const amount = typeof formatCurrency === 'function' ? formatCurrency(cn.total_inclusive || 0) : (cn.total_inclusive != null ? String(cn.total_inclusive) : '—');
+            const reason = (cn.reason || '—').toString().replace(/</g, '&lt;').replace(/>/g, '&gt;').substring(0, 60);
+            return `<tr style="border-bottom: 1px solid var(--border-color);">
+                <td style="padding: 0.4rem 0.5rem;"><strong style="color: var(--primary-color); font-size: 0.8rem;">${(cn.credit_note_no || '').replace(/</g, '&lt;')}</strong></td>
+                <td style="padding: 0.4rem 0.5rem;">${cnDate}</td>
+                <td style="padding: 0.4rem 0.5rem; font-size: 0.85rem;">${shortId}</td>
+                <td style="padding: 0.4rem 0.5rem; text-align: right;">${amount}</td>
+                <td style="padding: 0.4rem 0.5rem; font-size: 0.85rem;">${reason}</td>
+            </tr>`;
+        }).join('');
+    } catch (err) {
+        console.error('Error fetching credit notes:', err);
+        tbody.innerHTML = '<tr><td colspan="5" style="padding: 1rem; text-align: center; color: var(--danger-color);">Error loading returns.</td></tr>';
+    }
+}
+
+/** Open create-return modal. Pass invoiceId to pre-select that invoice (e.g. from invoice view Return button). */
+async function openCreateReturnModal(preSelectedInvoiceId) {
+    if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID || !CONFIG.USER_ID) {
+        showToast('Company, branch or user not set.', 'error');
+        return;
+    }
+    if (preSelectedInvoiceId) {
+        try {
+            const invoice = await API.sales.getInvoice(preSelectedInvoiceId);
+            if (!invoice || (invoice.status !== 'BATCHED' && invoice.status !== 'PAID')) {
+                showToast('Only batched or paid invoices can have returns.', 'error');
+                return;
+            }
+            showCreateReturnStep2(invoice);
+        } catch (e) {
+            showToast(e.message || 'Failed to load invoice', 'error');
+        }
+        return;
+    }
+    // Show modal immediately; load only today's invoices (fast, limited query)
+    const listId = 'createReturnInvoiceList';
+    const filterId = 'createReturnFilterInput';
+    const invoiceNoId = 'createReturnInvoiceNo';
+    const dateFromId = 'createReturnDateFrom';
+    const dateToId = 'createReturnDateTo';
+    const loadingContent = '<div style="max-width: 560px; padding: 2rem; text-align: center;"><div class="spinner" style="margin: 0 auto 1rem;"></div><p style="color: var(--text-secondary);">Loading today\'s invoices…</p></div>';
+    if (typeof showModal === 'function') showModal('New Return — Select Invoice', loadingContent);
+    try {
+        // Default: today's documents only (limit 50) — no full-history load
+        const invoices = await API.sales.getBranchInvoices(CONFIG.BRANCH_ID, { limit: 50 });
+        const eligible = (invoices || []).filter(inv => inv && (inv.status === 'BATCHED' || inv.status === 'PAID'));
+        window._createReturnEligibleInvoices = eligible;
+        function renderFilteredList() {
+            const filterEl = document.getElementById(filterId);
+            const listEl = document.getElementById(listId);
+            if (!listEl || !window._createReturnEligibleInvoices) return;
+            const q = (filterEl && filterEl.value) ? String(filterEl.value).trim().toLowerCase() : '';
+            const list = q
+                ? window._createReturnEligibleInvoices.filter(function (inv) {
+                    const no = (inv.invoice_no || inv.id || '').toString().toLowerCase();
+                    const cust = (inv.customer_name || 'Walk-in').toString().toLowerCase();
+                    return no.indexOf(q) !== -1 || cust.indexOf(q) !== -1;
+                })
+                : window._createReturnEligibleInvoices;
+            listEl.innerHTML = list.length === 0
+                ? '<div style="padding: 1rem; text-align: center; color: var(--text-secondary);">No invoices match.</div>'
+                : list.map(function (inv) {
+                    const no = (inv.invoice_no || inv.id || '').toString().replace(/</g, '&lt;');
+                    const cust = (inv.customer_name || 'Walk-in').toString().replace(/</g, '&lt;');
+                    const amt = typeof formatCurrency === 'function' ? formatCurrency(inv.total_inclusive || 0) : (inv.total_inclusive || 0);
+                    const dt = inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString() : '—';
+                    return '<div class="create-return-invoice-row" data-invoice-id="' + inv.id + '" style="padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border-color); cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onmouseover="this.style.background=\'#f0f4f8\'" onmouseout="this.style.background=\'\'"><div><strong>' + no + '</strong> — ' + cust + '<br><small style="color: var(--text-secondary);">' + dt + ' · ' + amt + '</small></div><i class="fas fa-chevron-right" style="color: var(--text-secondary);"></i></div>';
+                }).join('');
+            listEl.querySelectorAll('.create-return-invoice-row').forEach(function (row) {
+                row.addEventListener('click', function () {
+                    document.querySelectorAll('.create-return-invoice-row').forEach(function (r) { r.style.background = ''; });
+                    this.style.background = 'var(--primary-color, #0ea5e9); color: white;';
+                    if (this.querySelector('small')) this.querySelector('small').style.color = 'rgba(255,255,255,0.9)';
+                    const id = this.getAttribute('data-invoice-id');
+                    window._createReturnSelectedId = id;
+                    var inv = window._createReturnEligibleInvoices.find(function (i) { return String(i.id) === String(id); });
+                    if (inv) {
+                        var selNo = (inv.invoice_no || inv.id || '').toString();
+                        var selCust = (inv.customer_name || 'Walk-in').toString();
+                        var filterEl = document.getElementById(filterId);
+                        if (filterEl) filterEl.value = selNo + ' — ' + selCust;
+                    }
+                });
+            });
+        }
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const content = `
+            <div style="max-width: 560px;">
+                <p style="margin-bottom: 0.75rem; color: var(--text-secondary);">Select from today's invoices, or search by invoice number / date range.</p>
+                <label class="form-label">Today's invoices</label>
+                <input type="text" id="${filterId}" class="form-input" placeholder="Filter list by number or customer" style="width: 100%; margin-bottom: 0.5rem;" oninput="if(window._createReturnFilterInvoices) window._createReturnFilterInvoices()">
+                <div id="${listId}" style="max-height: 220px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 0.35rem; margin-bottom: 1rem;">
+                </div>
+                <div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-secondary, #f8fafc); border-radius: 0.35rem;">
+                    <p style="margin: 0 0 0.5rem 0; font-size: 0.9rem; font-weight: 600;">Not from today? Search</p>
+                    <p style="margin: 0 0 0.5rem 0; font-size: 0.8rem; color: var(--text-secondary);">Provide at least one: invoice number, or date range.</p>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.5rem; align-items: end;">
+                        <div><label class="form-label" style="font-size: 0.8rem;">Invoice number</label><input type="text" id="${invoiceNoId}" class="form-input" placeholder="e.g. INV-01-00245" style="width: 100%;"></div>
+                        <div><label class="form-label" style="font-size: 0.8rem;">Date from</label><input type="date" id="${dateFromId}" class="form-input" value="" style="width: 100%;"></div>
+                        <div><label class="form-label" style="font-size: 0.8rem;">Date to</label><input type="date" id="${dateToId}" class="form-input" value="" style="width: 100%;"></div>
+                        <button type="button" class="btn btn-outline" id="createReturnSearchBtn">Search</button>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                    <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="createReturnNextBtn">Next</button>
+                </div>
+            </div>`;
+        var modal = document.getElementById('modal');
+        var body = modal && modal.querySelector && modal.querySelector('.modal-body');
+        if (body) body.innerHTML = content;
+        window._createReturnFilterInvoices = function () {
+            window._createReturnSelectedId = null;
+            renderFilteredList();
+        };
+        renderFilteredList();
+        if (eligible.length === 0) {
+            document.getElementById(listId).innerHTML = '<div style="padding: 1rem; text-align: center; color: var(--text-secondary);">No invoices from today. Use the search below to find an older invoice.</div>';
+        }
+        document.getElementById('createReturnSearchBtn').onclick = async function () {
+            var no = (document.getElementById(invoiceNoId) && document.getElementById(invoiceNoId).value) ? String(document.getElementById(invoiceNoId).value).trim() : '';
+            var fromVal = (document.getElementById(dateFromId) && document.getElementById(dateFromId).value) ? document.getElementById(dateFromId).value : '';
+            var toVal = (document.getElementById(dateToId) && document.getElementById(dateToId).value) ? document.getElementById(dateToId).value : '';
+            if (!no && (!fromVal || !toVal)) {
+                showToast('Enter invoice number, or both date from and date to.', 'warning');
+                return;
+            }
+            this.disabled = true;
+            this.textContent = 'Searching…';
+            try {
+                var params = { limit: 50 };
+                if (no) params.invoice_no = no;
+                if (fromVal) params.date_from = fromVal;
+                if (toVal) params.date_to = toVal;
+                var res = await API.sales.getBranchInvoices(CONFIG.BRANCH_ID, params);
+                window._createReturnEligibleInvoices = (res || []).filter(function (inv) { return inv && (inv.status === 'BATCHED' || inv.status === 'PAID'); });
+                renderFilteredList();
+                if (window._createReturnEligibleInvoices.length === 0) showToast('No matching invoices found.', 'info');
+            } catch (e) {
+                showToast(e.message || 'Search failed', 'error');
+            } finally {
+                this.disabled = false;
+                this.textContent = 'Search';
+            }
+        };
+        const nextBtn = document.getElementById('createReturnNextBtn');
+        if (nextBtn) {
+            nextBtn.onclick = async function () {
+                const id = window._createReturnSelectedId;
+                if (!id) { showToast('Please select an invoice from the list.', 'warning'); return; }
+                nextBtn.disabled = true;
+                nextBtn.textContent = 'Loading…';
+                try {
+                    const invoice = await API.sales.getInvoice(id);
+                    if (typeof closeModal === 'function') closeModal();
+                    window._createReturnSelectedId = null;
+                    window._createReturnEligibleInvoices = null;
+                    window._createReturnFilterInvoices = null;
+                    showCreateReturnStep2(invoice);
+                } catch (e) {
+                    showToast(e.message || 'Failed to load invoice', 'error');
+                } finally {
+                    nextBtn.disabled = false;
+                    nextBtn.textContent = 'Next';
+                }
+            };
+        }
+    } catch (e) {
+        if (typeof closeModal === 'function') closeModal();
+        showToast(e.message || 'Failed to load invoices', 'error');
+    }
+}
+
+function showCreateReturnStep2(invoice) {
+    if (!invoice || !invoice.items || invoice.items.length === 0) {
+        showToast('Invoice has no lines to return.', 'error');
+        return;
+    }
+    const today = new Date().toISOString().split('T')[0];
+    const rows = invoice.items.map((line, idx) => {
+        const name = (line.item_name || line.item?.name || 'Item').toString().replace(/</g, '&lt;');
+        const unit = (line.unit_name || '').toString().replace(/</g, '&lt;');
+        const sold = parseFloat(line.quantity) || 0;
+        const price = parseFloat(line.unit_price_exclusive) || 0;
+        const lineId = (line.id || '').toString().replace(/"/g, '&quot;');
+        return `<tr style="border-bottom: 1px solid var(--border-color);">
+            <td style="padding: 0.5rem;">${name}<br><small style="color: var(--text-secondary);">${unit}</small></td>
+            <td style="padding: 0.5rem; text-align: right;">${sold}</td>
+            <td style="padding: 0.5rem; text-align: right;">${typeof formatCurrency === 'function' ? formatCurrency(price) : price}</td>
+            <td style="padding: 0.5rem;"><input type="number" class="form-input create-return-qty" data-original-sale-item-id="${lineId}" data-item-id="${(line.item_id || '').toString()}" data-unit-name="${unit.replace(/"/g, '&quot;')}" data-unit-price="${price}" step="any" min="0" max="${sold}" value="0" style="width: 5rem;"></td>
+        </tr>`;
+    }).join('');
+    const content = `
+        <div style="max-width: 700px;">
+            <p style="margin-bottom: 0.75rem; font-weight: 600;">Invoice: ${(invoice.invoice_no || invoice.id).toString().replace(/</g, '&lt;')}</p>
+            <div style="max-height: 280px; overflow-y: auto; margin-bottom: 1rem;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead><tr style="border-bottom: 2px solid var(--border-color);">
+                        <th style="padding: 0.5rem; text-align: left;">Item</th>
+                        <th style="padding: 0.5rem; text-align: right;">Sold</th>
+                        <th style="padding: 0.5rem; text-align: right;">Unit price</th>
+                        <th style="padding: 0.5rem;">Return qty</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <div style="margin-bottom: 0.75rem;">
+                <label class="form-label">Reason (optional)</label>
+                <input type="text" class="form-input" id="createReturnReason" placeholder="e.g. Faulty, customer declined">
+            </div>
+            <div style="margin-bottom: 0.75rem;">
+                <label class="form-label">Credit note date *</label>
+                <input type="date" class="form-input" id="createReturnDate" value="${today}" required>
+            </div>
+            <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+                <button type="button" class="btn btn-primary" id="createReturnSubmitBtn">Create Return</button>
+            </div>
+        </div>`;
+    if (typeof showModal === 'function') showModal('New Return — Quantities', content);
+    const submitBtn = document.getElementById('createReturnSubmitBtn');
+    if (submitBtn) {
+        submitBtn.onclick = () => submitCreateReturn(invoice);
+    }
+}
+
+async function submitCreateReturn(invoice) {
+    const dateEl = document.getElementById('createReturnDate');
+    const reasonEl = document.getElementById('createReturnReason');
+    const dateVal = dateEl ? dateEl.value : new Date().toISOString().split('T')[0];
+    if (!dateVal) {
+        showToast('Please enter credit note date.', 'error');
+        return;
+    }
+    const qtyInputs = document.querySelectorAll('.create-return-qty');
+    const items = [];
+    qtyInputs.forEach(input => {
+        const qty = parseFloat(input.value);
+        if (qty > 0) {
+            items.push({
+                item_id: input.dataset.itemId,
+                original_sale_item_id: input.dataset.originalSaleItemId,
+                unit_name: input.dataset.unitName || '',
+                quantity_returned: qty,
+                unit_price_exclusive: parseFloat(input.dataset.unitPrice) || 0
+            });
+        }
+    });
+    if (items.length === 0) {
+        showToast('Enter at least one return quantity.', 'warning');
+        return;
+    }
+    const payload = {
+        original_invoice_id: invoice.id,
+        credit_note_date: dateVal,
+        reason: reasonEl ? reasonEl.value.trim() || null : null,
+        company_id: CONFIG.COMPANY_ID,
+        branch_id: CONFIG.BRANCH_ID,
+        items: items,
+        created_by: CONFIG.USER_ID
+    };
+    const submitBtn = document.getElementById('createReturnSubmitBtn');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Creating…';
+    }
+    try {
+        await API.sales.createCreditNote(payload);
+        if (typeof closeModal === 'function') closeModal();
+        showToast('Credit note created successfully.', 'success');
+        if (currentSalesSubPage === 'returns' && typeof fetchAndRenderSalesReturnsData === 'function') {
+            fetchAndRenderSalesReturnsData();
+        }
+    } catch (e) {
+        const msg = (e && (e.message || e.data?.detail || e.response?.data?.detail)) ? (typeof e.message === 'string' ? e.message : JSON.stringify(e.data?.detail || e.response?.detail)) : 'Failed to create return';
+        showToast(msg, 'error');
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Create Return';
+        }
+    }
 }
 
 // Create new Sales Invoice
@@ -2494,6 +2903,11 @@ async function viewSalesInvoice(invoiceId) {
                                 <i class="fas fa-print"></i> Print
                             </button>
                         ` : ''}
+                        ${showPrint ? `
+                            <button type="button" class="btn btn-outline" onclick="if(window.openCreateReturnModal) window.openCreateReturnModal('${invoiceId}')" title="Create return (credit note)">
+                                <i class="fas fa-undo"></i> Return
+                            </button>
+                        ` : ''}
                         <button type="button" class="btn btn-secondary" onclick="loadSalesSubPage('invoices')">
                             <i class="fas fa-arrow-left"></i> Back
                         </button>
@@ -4052,6 +4466,11 @@ if (typeof window !== 'undefined') {
     window.addItemToOrderBookFromSale = addItemToOrderBookFromSale;
     window.addQuotationItemsToOrderBook = addQuotationItemsToOrderBook;
     window.fetchAndRenderSalesInvoicesData = fetchAndRenderSalesInvoicesData;
+    window.renderSalesReturnsPage = renderSalesReturnsPage;
+    window.openCreateReturnModal = openCreateReturnModal;
+    window.toggleReturnsCustomDates = toggleReturnsCustomDates;
+    window.applyReturnsDateFilter = applyReturnsDateFilter;
+    window.fetchAndRenderSalesReturnsData = fetchAndRenderSalesReturnsData;
     window.viewQuotation = viewQuotation;
     window.editQuotation = editQuotation;
     window.deleteQuotation = deleteQuotation;

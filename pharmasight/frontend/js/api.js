@@ -468,8 +468,15 @@ const API = {
     sales: {
         createInvoice: (data) => api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice`, data),
         getInvoice: (invoiceId) => api.get(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`),
-        getBranchInvoices: (branchId) => 
-            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/invoices`),
+        /** Get branch invoices. Params: date_from, date_to (YYYY-MM-DD), invoice_no, limit. No params = today only (limit 50). */
+        getBranchInvoices: (branchId, params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.date_from) qs.append('date_from', params.date_from);
+            if (params.date_to) qs.append('date_to', params.date_to);
+            if (params.invoice_no) qs.append('invoice_no', params.invoice_no);
+            if (params.limit != null) qs.append('limit', params.limit);
+            return api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/invoices${qs.toString() ? '?' + qs : ''}`);
+        },
         getTodaySummary: (branchId, userId) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/today-summary`, userId != null ? { user_id: userId } : {}),
         getGrossProfit: (branchId, params = {}) =>
@@ -495,6 +502,13 @@ const API = {
             api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/payments/${paymentId}`),
         convertToQuotation: (invoiceId) => 
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/convert-to-quotation`, null),
+        /** List credit notes for a branch. Optional: date_from, date_to, limit, offset */
+        getBranchCreditNotes: (branchId, params = {}) => {
+            const qs = new URLSearchParams(params).toString();
+            return api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/credit-notes${qs ? '?' + qs : ''}`);
+        },
+        /** Create customer return (credit note). Body: original_invoice_id, credit_note_date, reason, company_id, branch_id, items[], created_by */
+        createCreditNote: (data) => api.post(`${CONFIG.API_ENDPOINTS.sales}/credit-notes`, data),
         /** Download sales invoice as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadPdf: async (invoiceId, invoiceNo = null) => {
             const base = (typeof CONFIG !== 'undefined' && CONFIG.API_ENDPOINTS && CONFIG.API_ENDPOINTS.sales) ? CONFIG.API_ENDPOINTS.sales : '/api/sales';

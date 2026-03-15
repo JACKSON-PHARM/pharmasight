@@ -24,6 +24,8 @@ from app.models import (
     BranchTransfer,
     BranchReceipt,
     StockTakeSession,
+    CreditNote,
+    SupplierReturn,
 )
 from app.schemas.reports import (
     ItemMovementDisplayOptions,
@@ -129,6 +131,23 @@ def _resolve_references_batch(
         result[("STOCK_TAKE", rid)] = {
             "document_type": "Stock Take",
             "reference": s.session_code if s else str(rid),
+        }
+
+    # credit_note -> Credit Note, credit_note_no
+    for rid in refs_by_type.get("credit_note") or []:
+        cn = db.query(CreditNote).filter(CreditNote.id == rid).first()
+        result[("credit_note", rid)] = {
+            "document_type": "Credit Note",
+            "reference": cn.credit_note_no if cn else "",
+        }
+
+    # supplier_return -> Supplier Return (no doc number column; use id prefix for legacy)
+    for rid in refs_by_type.get("supplier_return") or []:
+        sr = db.query(SupplierReturn).filter(SupplierReturn.id == rid).first()
+        ref = f"PR-{str(rid).replace('-', '')[:8].upper()}" if sr else str(rid)
+        result[("supplier_return", rid)] = {
+            "document_type": "Supplier Return",
+            "reference": ref,
         }
 
     return result
@@ -256,12 +275,19 @@ def build_item_movement_report(
         else:
             info = ref_map.get((rt, row.reference_id)) if row.reference_id else None
             doc_type = (info or {}).get("document_type", rt or "—")
-            ref = (info or {}).get("reference", "")
+            # Prefer ledger.document_number when present (faster, no join); fall back to resolved reference
+            ref = (getattr(row, "document_number", None) or "").strip() or (info or {}).get("reference", "")
             if doc_type == "Sale":
                 party_name = (info or {}).get("customer_name") or ""
                 unit_price_or_cost = sales_price_map.get(row.reference_id) if row.reference_id else None
             elif doc_type == "Supplier Invoice":
                 party_name = (info or {}).get("supplier_name") or ""
+                unit_price_or_cost = Decimal(str(row.unit_cost)) if row.unit_cost is not None else None
+            elif doc_type == "Credit Note":
+                party_name = "Customer return"
+                unit_price_or_cost = Decimal(str(row.unit_cost)) if row.unit_cost is not None else None
+            elif doc_type == "Supplier Return":
+                party_name = "Supplier return"
                 unit_price_or_cost = Decimal(str(row.unit_cost)) if row.unit_cost is not None else None
             elif doc_type == "Stock Take":
                 party_name = "Stock take"
@@ -404,7 +430,7 @@ def build_batch_movement_report(
         else:
             info = ref_map.get((rt, row.reference_id)) if row.reference_id else None
             doc_type = (info or {}).get("document_type", rt or "—")
-            ref = (info or {}).get("reference", "")
+            ref = (getattr(row, "document_number", None) or "").strip() or (info or {}).get("reference", "")
 
         expiry = row.expiry_date
         if expiry is not None and hasattr(expiry, "date") and callable(getattr(expiry, "date", None)):

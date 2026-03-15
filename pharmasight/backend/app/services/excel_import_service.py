@@ -1405,7 +1405,10 @@ class ExcelImportService:
                 existing.batch_number = batch_number.strip() if batch_number else None
             if expiry_date is not None:
                 existing.expiry_date = expiry_date if isinstance(expiry_date, date) else expiry_date
-            SnapshotService.upsert_inventory_balance_delta(db, company_id, branch_id, item_id, old_qty, quantity)
+            SnapshotService.upsert_inventory_balance_delta(
+                db, company_id, branch_id, item_id, old_qty, quantity,
+                document_number="OPENING",
+            )
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
             SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
         else:
@@ -1415,6 +1418,7 @@ class ExcelImportService:
                 item_id=item_id,
                 transaction_type='OPENING_BALANCE',
                 reference_type='OPENING_BALANCE',
+                document_number='OPENING',
                 quantity_delta=quantity,
                 unit_cost=unit_cost,
                 total_cost=quantity * unit_cost,
@@ -1424,7 +1428,10 @@ class ExcelImportService:
             )
             db.add(ledger_entry)
             db.flush()
-            SnapshotService.upsert_inventory_balance(db, company_id, branch_id, item_id, quantity)
+            SnapshotService.upsert_inventory_balance(
+                db, company_id, branch_id, item_id, quantity,
+                document_number="OPENING",
+            )
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
             SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
     

@@ -456,15 +456,17 @@ def approve_supplier_return(
     try:
         for line in ret.lines:
             # Negative ledger entry (reduction)
+            doc_num = f"PR-{str(ret.id).replace('-', '')[:8].upper()}"
             entry = InventoryLedger(
                 company_id=company_id,
                 branch_id=ret.branch_id,
                 item_id=line.item_id,
                 batch_number=line.batch_number,
                 expiry_date=line.expiry_date,
-                transaction_type="PURCHASE",  # reversal
+                transaction_type="PURCHASE_RETURN",
                 reference_type="supplier_return",
                 reference_id=ret.id,
+                document_number=doc_num,
                 quantity_delta=-float(line.quantity),
                 unit_cost=line.unit_cost,
                 total_cost=line.unit_cost * line.quantity,
@@ -473,6 +475,7 @@ def approve_supplier_return(
             db.add(entry)
             SnapshotService.upsert_inventory_balance(
                 db, company_id, ret.branch_id, line.item_id, Decimal(str(-float(line.quantity))),
+                document_number=doc_num,
             )
             SnapshotRefreshService.schedule_snapshot_refresh(db, company_id, ret.branch_id, item_id=line.item_id)
 

@@ -26,9 +26,10 @@ class InventoryLedger(Base):
     item_id = Column(UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
     batch_number = Column(String(200))
     expiry_date = Column(Date)
-    transaction_type = Column(String(50), nullable=False)  # PURCHASE, SALE, ADJUSTMENT, TRANSFER, OPENING_BALANCE
+    transaction_type = Column(String(50), nullable=False)  # SALE, SALE_RETURN, PURCHASE, PURCHASE_RETURN, ADJUSTMENT, TRANSFER_IN, TRANSFER_OUT, OPENING_BALANCE
     reference_type = Column(String(50))  # supplier_invoice (was purchase_invoice), sales_invoice, adjustment, grn
     reference_id = Column(UUID(as_uuid=True))
+    document_number = Column(String(100), nullable=True)  # Human-readable doc number at write time (e.g. INV-01-000245); self-describing ledger
     quantity_delta = Column(Numeric(20, 4), nullable=False)  # Positive = add, Negative = remove (base units; fractional for retail e.g. -0.2)
     unit_cost = Column(Numeric(20, 4), nullable=False)  # Cost per base unit
     total_cost = Column(Numeric(20, 4), nullable=False)  # quantity_delta * unit_cost

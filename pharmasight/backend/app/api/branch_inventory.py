@@ -595,9 +595,10 @@ def complete_branch_transfer(
                     item_id=item_id,
                     batch_number=alloc.get("batch_number"),
                     expiry_date=alloc.get("expiry_date"),
-                    transaction_type="TRANSFER",
+                    transaction_type="TRANSFER_OUT",
                     reference_type="branch_transfer",
                     reference_id=transfer.id,
+                    document_number=transfer.transfer_number,
                     quantity_delta=-qty,
                     unit_cost=uc,
                     total_cost=uc * qty,
@@ -619,7 +620,8 @@ def complete_branch_transfer(
         db.flush()
         for entry in ledger_entries:
             SnapshotService.upsert_inventory_balance(
-                db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta
+                db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
+                document_number=getattr(entry, "document_number", None) or transfer.transfer_number,
             )
             SnapshotRefreshService.schedule_snapshot_refresh(
                 db, entry.company_id, entry.branch_id, item_id=entry.item_id
@@ -749,9 +751,10 @@ def confirm_branch_receipt(
                 item_id=line.item_id,
                 batch_number=line.batch_number,
                 expiry_date=line.expiry_date,
-                transaction_type="TRANSFER",
+                transaction_type="TRANSFER_IN",
                 reference_type="branch_receipt",
                 reference_id=receipt.id,
+                document_number=receipt.receipt_number,
                 quantity_delta=qty,
                 unit_cost=uc,
                 total_cost=uc * qty,
@@ -763,9 +766,10 @@ def confirm_branch_receipt(
         db.flush()
         for entry in ledger_entries:
             SnapshotService.upsert_inventory_balance(
-                db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta
+                db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
+                document_number=getattr(entry, "document_number", None) or receipt.receipt_number,
             )
-            SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
+        SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
         # Order book lifecycle: mark ORDERED entries as received and archive to history (CLOSED)
         receipt_item_ids = list({e.item_id for e in ledger_entries})
         received_at = datetime.utcnow()

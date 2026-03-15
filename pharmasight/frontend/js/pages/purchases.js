@@ -739,7 +739,7 @@ function renderCreditNotesShell() {
                 
                 <div style="margin-bottom: 1.5rem;">
                     <input type="text" class="form-input" id="purchaseSearchInput" 
-                           placeholder="Search by credit note number, supplier..." 
+                           placeholder="Search by credit note number, invoice number, supplier..." 
                            onkeyup="if(window.filterPurchaseDocuments) window.filterPurchaseDocuments()"
                            style="width: 100%; max-width: 500px; padding: 0.75rem;">
                 </div>
@@ -799,15 +799,24 @@ function renderCreditNotesTableBody() {
     const tbody = document.getElementById('creditNotesTableBody');
     if (!tbody) return;
     
-    if (purchaseDocuments.length === 0) {
+    var searchTerm = (document.getElementById('purchaseSearchInput')?.value || '').trim().toLowerCase();
+    var list = purchaseDocuments.slice();
+    if (searchTerm) {
+        list = list.filter(function (doc) {
+            var num = String(doc.credit_note_number || '').toLowerCase();
+            var sup = String(doc.supplier_name || '').toLowerCase();
+            return num.indexOf(searchTerm) !== -1 || sup.indexOf(searchTerm) !== -1;
+        });
+    }
+    if (list.length === 0) {
         var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
             ? window.EmptyStateWatermark.render({ title: 'No credit notes yet', description: 'Create your first credit note when needed' })
-            : '<p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">No credit notes found</p>';
-        tbody.innerHTML = '<tr><td colspan="6" style="padding: 3rem; text-align: center;">' + emptyHtml + '<button class="btn btn-primary" onclick="if(window.createNewCreditNote) window.createNewCreditNote()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Credit Note</button></td></tr>';
+            : '<p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 500;">' + (searchTerm ? 'No credit notes match your search.' : 'No credit notes found') + '</p>';
+        tbody.innerHTML = '<tr><td colspan="6" style="padding: 3rem; text-align: center;">' + emptyHtml + (searchTerm ? '' : '<button class="btn btn-primary" onclick="if(window.createNewCreditNote) window.createNewCreditNote()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Credit Note</button>') + '</td></tr>';
         return;
     }
     
-    tbody.innerHTML = purchaseDocuments.map(doc => {
+    tbody.innerHTML = list.map(doc => {
         return `
             <tr style="cursor: pointer;" onclick="if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'credit-note')">
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong style="color: var(--primary-color);">${doc.credit_note_number || '—'}</strong></td>
@@ -888,8 +897,22 @@ async function loadPurchaseDocuments(documentType = 'order') {
             
             purchaseDocuments = await API.purchases.listInvoices(params);
         } else if (documentType === 'credit-note') {
-            // Load credit notes
-            purchaseDocuments = []; // TODO: Implement credit notes
+            // Load supplier returns (credit notes)
+            const params = { branch_id: CONFIG.BRANCH_ID, limit: 500 };
+            const returns = await API.suppliers.listReturns(params);
+            purchaseDocuments = (returns || []).map(function (r) {
+                var idStr = (r.id || '').toString().replace(/-/g, '').substring(0, 8).toUpperCase();
+                return {
+                    id: r.id,
+                    credit_note_number: 'PR-' + idStr,
+                    date: r.return_date,
+                    created_at: r.created_at,
+                    total_amount: r.total_value,
+                    supplier_name: r.supplier_name,
+                    status: r.status || 'PENDING',
+                    linked_invoice_id: r.linked_invoice_id
+                };
+            });
         }
         
     } catch (error) {
@@ -1149,14 +1172,235 @@ function createNewSupplierInvoice() {
     loadPurchaseSubPage('create-invoice');
 }
 
-// Create new Credit Note
-function createNewCreditNote() {
-    currentDocument = { type: 'credit-note', items: [] };
-    documentItems = [];
-    // TODO: Implement credit note creation page
-    showToast('Credit note creation coming soon', 'info');
-    // For now, redirect to create page (will show order form - to be updated)
-    loadPurchaseSubPage('create');
+// Create new Credit Note (supplier return) — select from existing supplier invoice
+async function createNewCreditNote() {
+    if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
+        showToast('Company or branch not set.', 'error');
+        return;
+    }
+    // Show modal immediately; load only today's supplier invoices (fast, limited query)
+    var loadingContent = '<div style="max-width: 560px; padding: 2rem; text-align: center;"><div class="spinner" style="margin: 0 auto 1rem;"></div><p style="color: var(--text-secondary);">Loading today\'s supplier invoices…</p></div>';
+    if (typeof showModal === 'function') showModal('New Credit Note — Select Supplier Invoice', loadingContent);
+    try {
+        var todayStr = typeof getLocalDateString === 'function' ? getLocalDateString() : new Date().toISOString().slice(0, 10);
+        var params = { company_id: CONFIG.COMPANY_ID, branch_id: CONFIG.BRANCH_ID, date_from: todayStr, date_to: todayStr, limit: 50 };
+        var invoices = await API.purchases.listInvoices(params);
+        var eligible = (invoices || []).filter(function (inv) { return inv && inv.status === 'BATCHED'; });
+        window._purchaseReturnEligibleInvoices = eligible;
+        var listId = 'purchaseReturnInvoiceList';
+        var filterId = 'purchaseReturnFilterInput';
+        var invoiceNoId = 'purchaseReturnInvoiceNo';
+        var dateFromId = 'purchaseReturnDateFrom';
+        var dateToId = 'purchaseReturnDateTo';
+        function renderFiltered() {
+            var listEl = document.getElementById(listId);
+            var filterEl = document.getElementById(filterId);
+            if (!listEl || !window._purchaseReturnEligibleInvoices) return;
+            var q = (filterEl && filterEl.value) ? String(filterEl.value).trim().toLowerCase() : '';
+            var list = q
+                ? window._purchaseReturnEligibleInvoices.filter(function (inv) {
+                    var no = (inv.invoice_number || inv.id || '').toString().toLowerCase();
+                    var ref = (inv.supplier_invoice_number || inv.reference || '').toString().toLowerCase();
+                    var sup = (inv.supplier_name || '').toString().toLowerCase();
+                    return no.indexOf(q) !== -1 || ref.indexOf(q) !== -1 || sup.indexOf(q) !== -1;
+                })
+                : window._purchaseReturnEligibleInvoices;
+            listEl.innerHTML = list.length === 0
+                ? '<div style="padding: 1rem; text-align: center; color: var(--text-secondary);">No invoices match.</div>'
+                : list.map(function (inv) {
+                    var no = (inv.invoice_number || inv.id || '').toString().replace(/</g, '&lt;');
+                    var sup = (inv.supplier_name || '—').toString().replace(/</g, '&lt;');
+                    var amt = typeof formatCurrency === 'function' ? formatCurrency(inv.total_inclusive || 0) : (inv.total_inclusive || 0);
+                    var dt = inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString() : '—';
+                    return '<div class="purchase-return-invoice-row" data-invoice-id="' + inv.id + '" style="padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border-color); cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onmouseover="this.style.background=\'#f0f4f8\'" onmouseout="this.style.background=\'\'"><div><strong>' + no + '</strong> — ' + sup + '<br><small style="color: var(--text-secondary);">' + dt + ' · ' + amt + '</small></div><i class="fas fa-chevron-right" style="color: var(--text-secondary);"></i></div>';
+                }).join('');
+            listEl.querySelectorAll('.purchase-return-invoice-row').forEach(function (row) {
+                row.addEventListener('click', function () {
+                    listEl.querySelectorAll('.purchase-return-invoice-row').forEach(function (r) { r.style.background = ''; });
+                    this.style.background = 'var(--primary-color, #0ea5e9); color: white;';
+                    if (this.querySelector('small')) this.querySelector('small').style.color = 'rgba(255,255,255,0.9)';
+                    var id = this.getAttribute('data-invoice-id');
+                    window._purchaseReturnSelectedId = id;
+                    var inv = window._purchaseReturnEligibleInvoices.find(function (i) { return String(i.id) === String(id); });
+                    if (inv) {
+                        var selNo = (inv.invoice_number || inv.id || '').toString();
+                        var selSup = (inv.supplier_name || '—').toString();
+                        var filterEl = document.getElementById(filterId);
+                        if (filterEl) filterEl.value = selNo + ' — ' + selSup;
+                    }
+                });
+            });
+        }
+        var content = '<div style="max-width: 560px;">' +
+            '<p style="margin-bottom: 0.75rem; color: var(--text-secondary);">Select from today\'s supplier invoices, or search by invoice number / date range.</p>' +
+            '<label class="form-label">Today\'s invoices</label>' +
+            '<input type="text" id="' + filterId + '" class="form-input" placeholder="Filter list by number or supplier" style="width: 100%; margin-bottom: 0.5rem;" oninput="if(window._purchaseReturnFilterInvoices) window._purchaseReturnFilterInvoices()">' +
+            '<div id="' + listId + '" style="max-height: 220px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 0.35rem; margin-bottom: 1rem;"></div>' +
+            '<div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-secondary, #f8fafc); border-radius: 0.35rem;">' +
+            '<p style="margin: 0 0 0.5rem 0; font-size: 0.9rem; font-weight: 600;">Not from today? Search</p>' +
+            '<p style="margin: 0 0 0.5rem 0; font-size: 0.8rem; color: var(--text-secondary);">Provide at least one: invoice number, or date range.</p>' +
+            '<div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.5rem; align-items: end;">' +
+            '<div><label class="form-label" style="font-size: 0.8rem;">Invoice number</label><input type="text" id="' + invoiceNoId + '" class="form-input" placeholder="e.g. SPV-01-00012" style="width: 100%;"></div>' +
+            '<div><label class="form-label" style="font-size: 0.8rem;">Date from</label><input type="date" id="' + dateFromId + '" class="form-input" value="" style="width: 100%;"></div>' +
+            '<div><label class="form-label" style="font-size: 0.8rem;">Date to</label><input type="date" id="' + dateToId + '" class="form-input" value="" style="width: 100%;"></div>' +
+            '<button type="button" class="btn btn-outline" id="purchaseReturnSearchBtn">Search</button></div></div>' +
+            '<div style="display: flex; gap: 0.5rem; justify-content: flex-end;">' +
+            '<button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
+            '<button type="button" class="btn btn-primary" id="purchaseReturnNextBtn">Next</button></div></div>';
+        var modal = document.getElementById('modal');
+        var body = modal && modal.querySelector && modal.querySelector('.modal-body');
+        if (body) body.innerHTML = content;
+        window._purchaseReturnFilterInvoices = function () {
+            window._purchaseReturnSelectedId = null;
+            renderFiltered();
+        };
+        renderFiltered();
+        if (eligible.length === 0) {
+            document.getElementById(listId).innerHTML = '<div style="padding: 1rem; text-align: center; color: var(--text-secondary);">No invoices from today. Use the search below to find an older invoice.</div>';
+        }
+        document.getElementById('purchaseReturnSearchBtn').onclick = async function () {
+            var no = (document.getElementById(invoiceNoId) && document.getElementById(invoiceNoId).value) ? String(document.getElementById(invoiceNoId).value).trim() : '';
+            var fromVal = (document.getElementById(dateFromId) && document.getElementById(dateFromId).value) ? document.getElementById(dateFromId).value : '';
+            var toVal = (document.getElementById(dateToId) && document.getElementById(dateToId).value) ? document.getElementById(dateToId).value : '';
+            if (!no && (!fromVal || !toVal)) {
+                showToast('Enter invoice number, or both date from and date to.', 'warning');
+                return;
+            }
+            var btn = this;
+            btn.disabled = true;
+            btn.textContent = 'Searching…';
+            try {
+                var searchParams = { company_id: CONFIG.COMPANY_ID, branch_id: CONFIG.BRANCH_ID, limit: 50 };
+                if (no) searchParams.invoice_number = no;
+                if (fromVal) searchParams.date_from = fromVal;
+                if (toVal) searchParams.date_to = toVal;
+                var res = await API.purchases.listInvoices(searchParams);
+                window._purchaseReturnEligibleInvoices = (res || []).filter(function (inv) { return inv && inv.status === 'BATCHED'; });
+                renderFiltered();
+                if (window._purchaseReturnEligibleInvoices.length === 0) showToast('No matching invoices found.', 'info');
+            } catch (e) {
+                showToast(e.message || 'Search failed', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Search';
+            }
+        };
+        var nextBtn = document.getElementById('purchaseReturnNextBtn');
+        if (nextBtn) {
+            nextBtn.onclick = async function () {
+                var id = window._purchaseReturnSelectedId;
+                if (!id) { showToast('Please select an invoice from the list.', 'warning'); return; }
+                nextBtn.disabled = true;
+                nextBtn.textContent = 'Loading…';
+                try {
+                    var invoice = await API.purchases.getInvoice(id);
+                    if (typeof closeModal === 'function') closeModal();
+                    window._purchaseReturnSelectedId = null;
+                    window._purchaseReturnEligibleInvoices = null;
+                    window._purchaseReturnFilterInvoices = null;
+                    showPurchaseReturnStep2(invoice);
+                } catch (e) {
+                    showToast(e.message || 'Failed to load invoice', 'error');
+                } finally {
+                    nextBtn.disabled = false;
+                    nextBtn.textContent = 'Next';
+                }
+            };
+        }
+    } catch (e) {
+        if (typeof closeModal === 'function') closeModal();
+        showToast(e.message || 'Failed to load supplier invoices', 'error');
+    }
+}
+
+function showPurchaseReturnStep2(invoice) {
+    if (!invoice || !invoice.items || invoice.items.length === 0) {
+        showToast('Invoice has no lines to return.', 'error');
+        return;
+    }
+    var today = getLocalDateString();
+    function parseFirstBatch(item) {
+        try {
+            var bd = item.batch_data || item.batchData;
+            if (bd && typeof bd === 'string') bd = JSON.parse(bd);
+            if (bd && Array.isArray(bd) && bd.length > 0) return bd[0];
+            if (bd && bd.batch_number) return bd;
+        } catch (_) {}
+        return { batch_number: null, expiry_date: null };
+    }
+    var rows = invoice.items.map(function (line) {
+        var batch = parseFirstBatch(line);
+        var batchNum = (batch.batch_number || '').toString().replace(/"/g, '&quot;');
+        var exp = batch.expiry_date || '';
+        var name = (line.item_name || line.item?.name || 'Item').toString().replace(/</g, '&lt;');
+        var qty = parseFloat(line.quantity) || 0;
+        var cost = parseFloat(line.unit_cost_exclusive) || parseFloat(line.unit_cost) || 0;
+        var lineId = (line.id || '').toString();
+        return '<tr style="border-bottom: 1px solid var(--border-color);">' +
+            '<td style="padding: 0.5rem;">' + name + '</td>' +
+            '<td style="padding: 0.5rem; text-align: right;">' + qty + '</td>' +
+            '<td style="padding: 0.5rem; text-align: right;">' + (typeof formatCurrency === 'function' ? formatCurrency(cost) : cost) + '</td>' +
+            '<td style="padding: 0.5rem;"><input type="number" class="form-input purchase-return-qty" data-item-id="' + line.item_id + '" data-unit-cost="' + cost + '" data-batch="' + batchNum + '" data-expiry="' + exp + '" step="any" min="0" max="' + qty + '" value="0" style="width: 5rem;"></td>' +
+            '</tr>';
+    }).join('');
+    var content = '<div style="max-width: 700px;">' +
+        '<p style="margin-bottom: 0.75rem; font-weight: 600;">Invoice: ' + (invoice.invoice_number || invoice.id || '').toString().replace(/</g, '&lt;') + ' — ' + (invoice.supplier_name || '').toString().replace(/</g, '&lt;') + '</p>' +
+        '<div style="max-height: 280px; overflow-y: auto; margin-bottom: 1rem;">' +
+        '<table style="width: 100%; border-collapse: collapse;"><thead><tr style="border-bottom: 2px solid var(--border-color);">' +
+        '<th style="padding: 0.5rem; text-align: left;">Item</th><th style="padding: 0.5rem; text-align: right;">Received</th><th style="padding: 0.5rem; text-align: right;">Unit cost</th><th style="padding: 0.5rem;">Return qty</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '<div style="margin-bottom: 0.75rem;"><label class="form-label">Reason (optional)</label><input type="text" class="form-input" id="purchaseReturnReason" placeholder="e.g. Damaged, wrong item"></div>' +
+        '<div style="margin-bottom: 0.75rem;"><label class="form-label">Return date *</label><input type="date" class="form-input" id="purchaseReturnDate" value="' + today + '" required></div>' +
+        '<div style="display: flex; gap: 0.5rem; justify-content: flex-end;">' +
+        '<button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>' +
+        '<button type="button" class="btn btn-primary" id="purchaseReturnSubmitBtn">Create Credit Note</button></div></div>';
+    if (typeof showModal === 'function') showModal('New Credit Note — Quantities', content);
+    var submitBtn = document.getElementById('purchaseReturnSubmitBtn');
+    if (submitBtn) submitBtn.onclick = function () { submitPurchaseReturn(invoice); };
+}
+
+function submitPurchaseReturn(invoice) {
+    var dateEl = document.getElementById('purchaseReturnDate');
+    var reasonEl = document.getElementById('purchaseReturnReason');
+    var dateVal = dateEl ? dateEl.value : getLocalDateString();
+    if (!dateVal) { showToast('Please enter return date.', 'error'); return; }
+    var qtyInputs = document.querySelectorAll('.purchase-return-qty');
+    var lines = [];
+    qtyInputs.forEach(function (input) {
+        var qty = parseFloat(input.value);
+        if (qty > 0) {
+            var unitCost = parseFloat(input.dataset.unitCost) || 0;
+            var exp = (input.dataset.expiry || '').toString().trim();
+            lines.push({
+                item_id: input.dataset.itemId,
+                batch_number: (input.dataset.batch || '').trim() || null,
+                expiry_date: exp ? exp.substring(0, 10) : null,
+                quantity: qty,
+                unit_cost: unitCost,
+                line_total: qty * unitCost
+            });
+        }
+    });
+    if (lines.length === 0) { showToast('Enter at least one return quantity.', 'warning'); return; }
+    var payload = {
+        branch_id: CONFIG.BRANCH_ID,
+        supplier_id: invoice.supplier_id,
+        linked_invoice_id: invoice.id,
+        return_date: dateVal,
+        reason: reasonEl ? reasonEl.value.trim() || null : null,
+        lines: lines
+    };
+    var submitBtn = document.getElementById('purchaseReturnSubmitBtn');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating…'; }
+    API.suppliers.createReturn(payload).then(function () {
+        if (typeof closeModal === 'function') closeModal();
+        showToast('Credit note (supplier return) created. Approve it to reduce stock.', 'success');
+        if (currentPurchaseSubPage === 'credit-notes' && typeof fetchAndRenderCreditNotesData === 'function') fetchAndRenderCreditNotesData();
+    }).catch(function (e) {
+        var msg = (e && (e.message || e.data?.detail || e.response?.data?.detail)) ? (typeof e.message === 'string' ? e.message : JSON.stringify(e.data?.detail || e.response?.detail)) : 'Failed to create return';
+        showToast(msg, 'error');
+    }).finally(function () {
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Create Credit Note'; }
+    });
 }
 
 // Render Create Purchase Order Page (NOT a modal)

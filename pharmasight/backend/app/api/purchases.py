@@ -287,6 +287,7 @@ def create_grn(
                     expiry_date=batch.expiry_date,
                     transaction_type="PURCHASE",
                     reference_type="grn",
+                    document_number=grn_no,
                     quantity_delta=quantity_base,
                     unit_cost=unit_cost_base,
                     total_cost=unit_cost_base * quantity_base,
@@ -330,6 +331,7 @@ def create_grn(
                 expiry_date=item_data.expiry_date,
                 transaction_type="PURCHASE",
                 reference_type="grn",
+                document_number=grn_no,
                 quantity_delta=quantity_base,
                 unit_cost=unit_cost_base,
                 total_cost=unit_cost_base * quantity_base,
@@ -387,7 +389,10 @@ def create_grn(
 
     # Update snapshots in same transaction
     for entry in ledger_entries:
-        SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+        SnapshotService.upsert_inventory_balance(
+            db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
+            document_number=getattr(entry, "document_number", None) or grn_no,
+        )
         SnapshotService.upsert_purchase_snapshot(
             db, entry.company_id, entry.branch_id, entry.item_id,
             entry.unit_cost, getattr(entry, "created_at", None) or datetime.now(timezone.utc),
@@ -727,34 +732,41 @@ def list_supplier_invoices(
     supplier_id: Optional[UUID] = Query(None, description="Supplier ID"),
     date_from: Optional[date] = Query(None, description="Filter invoices from this date"),
     date_to: Optional[date] = Query(None, description="Filter invoices to this date"),
+    invoice_number: Optional[str] = Query(None, description="Exact invoice number lookup (targeted search for returns)"),
+    limit: Optional[int] = Query(100, ge=1, le=500, description="Max results (default 100; use 50 for return flow)"),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
-    List supplier invoices with filtering
-    
-    Supplier Invoices are receiving documents that ADD STOCK to inventory.
-    Can only be reversed by supplier credit notes.
+    List supplier invoices with filtering. Always applies limit to avoid full-history load.
+    For return/credit-note flow: pass date_from=date_to=today and limit=50, or invoice_number for targeted lookup.
     """
     query = db.query(SupplierInvoice).filter(SupplierInvoice.company_id == company_id)
-    
+
     if branch_id:
         query = query.filter(SupplierInvoice.branch_id == branch_id)
-    
+
     if supplier_id:
         query = query.filter(SupplierInvoice.supplier_id == supplier_id)
-    
-    if date_from:
-        query = query.filter(SupplierInvoice.invoice_date >= date_from)
-    
-    if date_to:
-        query = query.filter(SupplierInvoice.invoice_date <= date_to)
-    
-    # Order by date descending (newest first)
+
+    if invoice_number is not None and str(invoice_number).strip():
+        query = query.filter(SupplierInvoice.invoice_number == str(invoice_number).strip())
+        if date_from:
+            query = query.filter(SupplierInvoice.invoice_date >= date_from)
+        if date_to:
+            query = query.filter(SupplierInvoice.invoice_date <= date_to)
+        query = query.order_by(SupplierInvoice.invoice_date.desc(), SupplierInvoice.created_at.desc()).limit(1)
+    else:
+        if date_from:
+            query = query.filter(SupplierInvoice.invoice_date >= date_from)
+        if date_to:
+            query = query.filter(SupplierInvoice.invoice_date <= date_to)
+        query = query.order_by(SupplierInvoice.invoice_date.desc(), SupplierInvoice.created_at.desc()).limit(limit or 100)
+
     # Eagerly load items relationship to avoid lazy loading issues
     invoices = query.options(
         selectinload(SupplierInvoice.items)
-    ).order_by(SupplierInvoice.invoice_date.desc(), SupplierInvoice.created_at.desc()).all()
+    ).all()
     
     # Load supplier and branch names, and ensure all invoices have document numbers
     for invoice in invoices:
@@ -1621,13 +1633,14 @@ def batch_supplier_invoice(
                         expiry_date=None,
                         transaction_type="PURCHASE",
                         reference_type="purchase_invoice",
+                        reference_id=invoice.id,
+                        document_number=invoice.invoice_number,
                         quantity_delta=quantity_base,
                         unit_cost=unit_cost_base,
                         total_cost=unit_cost_base * quantity_base,
                         batch_cost=unit_cost_base,
                         remaining_quantity=quantity_base,
                         is_batch_tracked=False,
-                        reference_id=invoice.id,
                         created_by=invoice.created_by
                     )
                     ledger_entries.append(ledger_entry)
@@ -1657,6 +1670,8 @@ def batch_supplier_invoice(
                         expiry_date=expiry_date,
                         transaction_type="PURCHASE",
                         reference_type="purchase_invoice",
+                        reference_id=invoice.id,
+                        document_number=invoice.invoice_number,
                         quantity_delta=quantity_base,  # Positive = add stock
                         unit_cost=unit_cost_base,
                         total_cost=unit_cost_base * quantity_base,
@@ -1664,7 +1679,6 @@ def batch_supplier_invoice(
                         remaining_quantity=quantity_base,
                         is_batch_tracked=bool(batch.get("batch_number")),
                         split_sequence=batch_idx,
-                        reference_id=invoice.id,
                         created_by=invoice.created_by
                     )
                     ledger_entries.append(ledger_entry)
@@ -1683,13 +1697,14 @@ def batch_supplier_invoice(
                     expiry_date=None,
                     transaction_type="PURCHASE",
                     reference_type="purchase_invoice",
+                    reference_id=invoice.id,
+                    document_number=invoice.invoice_number,
                     quantity_delta=quantity_base,
                     unit_cost=unit_cost_base,
                     total_cost=unit_cost_base * quantity_base,
                     batch_cost=unit_cost_base,
                     remaining_quantity=quantity_base,
                     is_batch_tracked=False,
-                    reference_id=invoice.id,
                     created_by=invoice.created_by
                 )
                 ledger_entries.append(ledger_entry)
@@ -1708,17 +1723,18 @@ def batch_supplier_invoice(
                 expiry_date=None,
                 transaction_type="PURCHASE",
                 reference_type="purchase_invoice",
+                reference_id=invoice.id,
+                document_number=invoice.invoice_number,
                 quantity_delta=quantity_base,
                 unit_cost=unit_cost_base,
                 total_cost=unit_cost_base * quantity_base,
                 batch_cost=unit_cost_base,
                 remaining_quantity=quantity_base,
                 is_batch_tracked=False,
-                reference_id=invoice.id,
                 created_by=invoice.created_by
             )
             ledger_entries.append(ledger_entry)
-    
+
     try:
         # Add all ledger entries
         for entry in ledger_entries:
@@ -1728,7 +1744,10 @@ def batch_supplier_invoice(
 
         # Update snapshots in same transaction
         for entry in ledger_entries:
-            SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+            SnapshotService.upsert_inventory_balance(
+                db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
+                document_number=getattr(entry, "document_number", None) or invoice.invoice_number,
+            )
         # Update last unit cost per item from invoice (cost per base unit; purchase snapshot for reporting)
         items_updated_for_cost = set()
         for inv_item in invoice.items:

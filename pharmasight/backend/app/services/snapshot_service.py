@@ -1,18 +1,26 @@
 """
 Snapshot service: maintains inventory_balances and item_branch_purchase_snapshot
 in sync with inventory_ledger. Called from every write point in the same transaction.
+
+Stock math: current_stock = current_stock + quantity_delta only. Movement type is not used;
+SALE (negative), SALE_RETURN (positive), PURCHASE (positive), PURCHASE_RETURN (negative),
+TRANSFER_OUT (negative), TRANSFER_IN (positive), ADJUSTMENT (+/-), OPENING_BALANCE (positive)
+all apply the same way. Ledger is immutable history; snapshot is current balance per (item_id, branch_id).
 """
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+logger = logging.getLogger(__name__)
+
 
 class SnapshotService:
-    """Update snapshot tables in same transaction as ledger writes."""
+    """Update snapshot tables in same transaction as ledger writes. Never commits."""
 
     @staticmethod
     def upsert_inventory_balance(
@@ -21,9 +29,35 @@ class SnapshotService:
         branch_id: UUID,
         item_id: UUID,
         quantity_delta: Decimal,
+        document_number: Optional[str] = None,
     ) -> None:
-        """Increment/decrement current_stock. Call after every ledger INSERT."""
+        """
+        Apply quantity_delta to current_stock for (item_id, branch_id).
+        Call after every ledger INSERT, in the same transaction.
+        Movement type is irrelevant; only quantity_delta sign matters (positive = add, negative = remove).
+        Raises if applying delta would make stock negative (insufficient stock for movement).
+        Pass document_number for traceability and debug logging; if None/empty, raises to ensure every movement is traceable.
+        """
+        if document_number is None or (isinstance(document_number, str) and str(document_number).strip() == ""):
+            raise ValueError("Ledger entry missing document_number: every stock movement must be traceable.")
         qty = float(quantity_delta)
+        # Lock the snapshot row if it exists so concurrent updates cannot race (read-modify-write).
+        # FOR UPDATE ensures we see consistent state and block other transactions until we commit/rollback.
+        row = db.execute(
+            text("""
+                SELECT current_stock FROM inventory_balances
+                WHERE item_id = :item_id AND branch_id = :branch_id
+                FOR UPDATE
+            """),
+            {"item_id": str(item_id), "branch_id": str(branch_id)},
+        ).first()
+        current = float(row[0]) if row and row[0] is not None else 0.0
+        new_balance = current + qty
+        if new_balance < 0:
+            raise ValueError(
+                f"Insufficient stock for movement: item_id={item_id} branch_id={branch_id} "
+                f"current_stock={current} quantity_delta={qty} would give new_stock={new_balance}"
+            )
         db.execute(
             text("""
                 INSERT INTO inventory_balances (company_id, branch_id, item_id, current_stock, updated_at)
@@ -34,6 +68,10 @@ class SnapshotService:
             """),
             {"company_id": str(company_id), "branch_id": str(branch_id), "item_id": str(item_id), "qty": qty},
         )
+        logger.debug(
+            "Snapshot update: item_id=%s branch_id=%s delta=%s new_balance=%s document_number=%s",
+            item_id, branch_id, qty, new_balance, document_number,
+        )
 
     @staticmethod
     def upsert_inventory_balance_bulk(
@@ -42,7 +80,8 @@ class SnapshotService:
     ) -> None:
         """
         Bulk upsert inventory_balances. rows = [(company_id, branch_id, item_id, quantity_delta), ...].
-        Single round-trip for Excel import / bulk opening balance.
+        Single round-trip for Excel import / bulk opening balance. Uses same transaction as caller.
+        Does not perform per-row negative-stock check (used for opening balance where deltas are positive).
         """
         if not rows:
             return
@@ -74,10 +113,14 @@ class SnapshotService:
         item_id: UUID,
         old_qty: Decimal,
         new_qty: Decimal,
+        document_number: Optional[str] = "OPENING",
     ) -> None:
         """For opening balance UPDATE: apply delta = new - old."""
         delta = Decimal(str(new_qty)) - Decimal(str(old_qty))
-        SnapshotService.upsert_inventory_balance(db, company_id, branch_id, item_id, delta)
+        SnapshotService.upsert_inventory_balance(
+            db, company_id, branch_id, item_id, delta,
+            document_number=document_number or "OPENING",
+        )
 
     @staticmethod
     def upsert_purchase_snapshot(

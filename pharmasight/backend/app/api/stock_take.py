@@ -1832,6 +1832,7 @@ def complete_branch_stock_take(
                         transaction_type='ADJUSTMENT',
                         reference_type='STOCK_TAKE',
                         reference_id=session.id,
+                        document_number=session.session_code,
                         quantity_delta=variance,
                         unit_cost=unit_cost,
                         total_cost=total_cost,
@@ -1841,7 +1842,10 @@ def complete_branch_stock_take(
                         expiry_date=count.expiry_date,
                     )
                     db.add(ledger_entry)
-                    SnapshotService.upsert_inventory_balance(db, branch.company_id, branch_id, count.item_id, variance)
+                    SnapshotService.upsert_inventory_balance(
+                        db, branch.company_id, branch_id, count.item_id, variance,
+                        document_number=session.session_code,
+                    )
                     SnapshotRefreshService.schedule_snapshot_refresh(db, branch.company_id, branch_id, item_id=count.item_id)
                     items_updated += 1
             except Exception as e:
@@ -1865,6 +1869,7 @@ def complete_branch_stock_take(
                     transaction_type='ADJUSTMENT',
                     reference_type='STOCK_TAKE',
                     reference_id=session.id,
+                    document_number=session.session_code,
                     quantity_delta=qty_delta,
                     unit_cost=unit_cost,
                     total_cost=total_cost,
@@ -1872,7 +1877,10 @@ def complete_branch_stock_take(
                     notes='Stock take: uncounted item zeroed out'
                 )
                 db.add(ledger_entry)
-                SnapshotService.upsert_inventory_balance(db, branch.company_id, branch_id, item_id, qty_delta)
+                SnapshotService.upsert_inventory_balance(
+                    db, branch.company_id, branch_id, item_id, qty_delta,
+                    document_number=session.session_code,
+                )
                 SnapshotRefreshService.schedule_snapshot_refresh(db, branch.company_id, branch_id, item_id=item_id)
                 items_zeroed += 1
             except Exception as e:

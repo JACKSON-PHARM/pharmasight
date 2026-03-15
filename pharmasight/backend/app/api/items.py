@@ -1263,6 +1263,7 @@ def adjust_stock(
         transaction_type="ADJUSTMENT",
         reference_type="MANUAL_ADJUSTMENT",
         reference_id=None,
+        document_number="ADJ",
         quantity_delta=quantity_delta,
         unit_cost=unit_cost,
         total_cost=total_cost,
@@ -1273,7 +1274,10 @@ def adjust_stock(
     )
     db.add(ledger_entry)
     db.flush()
-    SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, quantity_delta)
+    SnapshotService.upsert_inventory_balance(
+        db, item.company_id, body.branch_id, item_id, quantity_delta,
+        document_number="ADJ",
+    )
     # Update purchase snapshot with this cost so search and item_branch_snapshot show the same cost (same transaction).
     if quantity_delta > 0 and unit_cost is not None and unit_cost > 0:
         SnapshotService.upsert_purchase_snapshot(
@@ -1994,6 +1998,7 @@ def post_batch_quantity_correction(
             transaction_type="ADJUSTMENT",
             reference_type="BATCH_QUANTITY_CORRECTION",
             reference_id=None,
+            document_number="ADJ",
             quantity_delta=quantity_delta,
             unit_cost=unit_cost,
             total_cost=total_cost,
@@ -2013,7 +2018,10 @@ def post_batch_quantity_correction(
             performed_by=user.id,
         )
         db.add(movement)
-        SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, float(quantity_delta))
+        SnapshotService.upsert_inventory_balance(
+            db, item.company_id, body.branch_id, item_id, float(quantity_delta),
+            document_number="ADJ",
+        )
         SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
         db.commit()
         db.refresh(movement)
@@ -2133,6 +2141,7 @@ def post_batch_metadata_correction(
             transaction_type="ADJUSTMENT",
             reference_type="BATCH_METADATA_CORRECTION",
             reference_id=None,
+            document_number="ADJ",
             quantity_delta=-quantity,
             unit_cost=unit_cost,
             total_cost=-total_cost,
@@ -2150,6 +2159,7 @@ def post_batch_metadata_correction(
             transaction_type="ADJUSTMENT",
             reference_type="BATCH_METADATA_CORRECTION",
             reference_id=None,
+            document_number="ADJ",
             quantity_delta=quantity,
             unit_cost=unit_cost,
             total_cost=total_cost,
@@ -2171,7 +2181,10 @@ def post_batch_metadata_correction(
             performed_by=user.id,
         )
         db.add(movement)
-        SnapshotService.upsert_inventory_balance(db, item.company_id, body.branch_id, item_id, Decimal("0"))
+        SnapshotService.upsert_inventory_balance(
+            db, item.company_id, body.branch_id, item_id, Decimal("0"),
+            document_number="ADJ",
+        )
         SnapshotRefreshService.schedule_snapshot_refresh(
             db, item.company_id, body.branch_id, item_id=item_id
         )

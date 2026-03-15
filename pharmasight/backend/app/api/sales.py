@@ -17,7 +17,8 @@ from app.services.document_pdf_generator import build_sales_invoice_pdf
 from app.services.tenant_storage_service import download_file, get_signed_url
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
-    Item, InvoicePayment, UserBranchRole, UserRole
+    Item, InvoicePayment, UserBranchRole, UserRole,
+    CreditNote, CreditNoteItem,
 )
 from app.models.company import Company, Branch
 from app.models.tenant import Tenant
@@ -27,7 +28,8 @@ from app.schemas.sale import (
     SalesInvoiceCreate, SalesInvoiceResponse,
     SalesInvoiceItemCreate, SalesInvoiceItemUpdate, SalesInvoiceUpdate,
     BatchSalesInvoiceRequest,
-    InvoicePaymentCreate, InvoicePaymentResponse
+    InvoicePaymentCreate, InvoicePaymentResponse,
+    CreditNoteCreate, CreditNoteResponse,
 )
 from app.services.inventory_service import InventoryService
 from app.services.pricing_service import PricingService
@@ -1104,9 +1106,9 @@ def get_branch_gross_profit(
     """
     Gross profit summary for a branch and date range.
 
-    Gross profit = Sales (exclusive) - COGS.
-    COGS = sum over lines of (quantity in retail units × unit_cost_used). unit_cost_used is
-    stored as cost per retail/base unit (from ledger/snapshot); no pack_size conversion.
+    Net sales = Sales (exclusive) − Credit notes (customer returns) in date range.
+    COGS = cost from invoice lines − SALE_RETURN ledger total_cost (return cost reversal).
+    Gross profit = Net sales − COGS.
     """
     sd, ed = _resolve_date_range(preset, start_date, end_date)
 
@@ -1126,18 +1128,75 @@ def get_branch_gross_profit(
     sales_exclusive = (base_sales.sales_exclusive if base_sales else Decimal("0")) or Decimal("0")
     invoice_count = int(getattr(base_sales, "invoice_count", 0) or 0)
 
-    # COGS from invoice lines (correct unit conversion: cost of quantity SOLD)
+    # Net sales: subtract credit notes (customer returns) in date range
+    credit_notes_sum = (
+        db.query(func.coalesce(func.sum(CreditNote.total_exclusive), 0).label("cn_total"))
+        .filter(
+            CreditNote.branch_id == branch_id,
+            CreditNote.credit_note_date >= sd,
+            CreditNote.credit_note_date <= ed,
+        )
+        .scalar()
+    )
+    credit_notes_total = Decimal(str(credit_notes_sum or 0))
+    net_sales_exclusive = sales_exclusive - credit_notes_total
+
+    # COGS from invoice lines (cost of quantity SOLD)
     cogs, cogs_by_day = _compute_cogs_from_invoice_lines(
         db, branch_id, sd, ed, by_date=include_breakdown
     )
 
-    gross_profit = sales_exclusive - cogs
-    margin_percent = (gross_profit / sales_exclusive * Decimal("100")) if sales_exclusive and sales_exclusive > 0 else Decimal("0")
+    # Subtract SALE_RETURN cost (customer returns reduce COGS)
+    cn_ids_subq = (
+        db.query(CreditNote.id)
+        .filter(
+            CreditNote.branch_id == branch_id,
+            CreditNote.credit_note_date >= sd,
+            CreditNote.credit_note_date <= ed,
+        )
+    )
+    return_cogs_result = (
+        db.query(func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("return_cogs"))
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.transaction_type == "SALE_RETURN",
+            InventoryLedger.reference_type == "credit_note",
+            InventoryLedger.reference_id.in_(cn_ids_subq),
+        )
+        .scalar()
+    )
+    return_cogs = Decimal(str(return_cogs_result or 0))
+    cogs = cogs - return_cogs
+
+    if include_breakdown and return_cogs > 0:
+        return_cogs_rows = (
+            db.query(
+                func.date(InventoryLedger.created_at).label("d"),
+                func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("rc"),
+            )
+            .filter(
+                InventoryLedger.branch_id == branch_id,
+                InventoryLedger.transaction_type == "SALE_RETURN",
+                InventoryLedger.reference_type == "credit_note",
+                InventoryLedger.reference_id.in_(cn_ids_subq),
+            )
+            .group_by(func.date(InventoryLedger.created_at))
+            .all()
+        )
+        return_cogs_by_day = {r.d: (r.rc or Decimal("0")) for r in (return_cogs_rows or [])}
+        if cogs_by_day:
+            for d in list(cogs_by_day.keys()):
+                cogs_by_day[d] = cogs_by_day[d] - return_cogs_by_day.get(d, Decimal("0"))
+
+    gross_profit = net_sales_exclusive - cogs
+    margin_percent = (gross_profit / net_sales_exclusive * Decimal("100")) if net_sales_exclusive and net_sales_exclusive > 0 else Decimal("0")
 
     out = {
         "start_date": sd.isoformat(),
         "end_date": ed.isoformat(),
         "sales_exclusive": str(sales_exclusive),
+        "credit_notes_exclusive": str(credit_notes_total),
+        "net_sales_exclusive": str(net_sales_exclusive),
         "cogs": str(cogs),
         "gross_profit": str(gross_profit),
         "margin_percent": str(margin_percent),
@@ -1147,7 +1206,7 @@ def get_branch_gross_profit(
     if not include_breakdown:
         return out
 
-    # Per-day breakdown
+    # Per-day breakdown: sales, credit notes, net sales, cogs, gross profit
     sales_rows = (
         db.query(
             sales_date_key.label("d"),
@@ -1163,19 +1222,38 @@ def get_branch_gross_profit(
         .all()
     )
     sales_by_day = {r.d: (r.sales_exclusive or Decimal("0")) for r in (sales_rows or [])}
+
+    cn_rows = (
+        db.query(
+            CreditNote.credit_note_date.label("d"),
+            func.coalesce(func.sum(CreditNote.total_exclusive), 0).label("cn_total"),
+        )
+        .filter(
+            CreditNote.branch_id == branch_id,
+            CreditNote.credit_note_date >= sd,
+            CreditNote.credit_note_date <= ed,
+        )
+        .group_by(CreditNote.credit_note_date)
+        .all()
+    )
+    credit_notes_by_day = {r.d: (r.cn_total or Decimal("0")) for r in (cn_rows or [])}
     cogs_by_day = cogs_by_day or {}
 
     breakdown = []
     dcur = sd
     while dcur <= ed:
         s = sales_by_day.get(dcur, Decimal("0"))
+        cn = credit_notes_by_day.get(dcur, Decimal("0"))
+        net_s = s - cn
         c = cogs_by_day.get(dcur, Decimal("0"))
-        gp = s - c
-        mp = (gp / s * Decimal("100")) if s and s > 0 else Decimal("0")
+        gp = net_s - c
+        mp = (gp / net_s * Decimal("100")) if net_s and net_s > 0 else Decimal("0")
         breakdown.append(
             {
                 "date": dcur.isoformat(),
                 "sales_exclusive": str(s),
+                "credit_notes_exclusive": str(cn),
+                "net_sales_exclusive": str(net_s),
                 "cogs": str(c),
                 "gross_profit": str(gp),
                 "margin_percent": str(mp),
@@ -1192,19 +1270,51 @@ def get_branch_invoices(
     branch_id: UUID,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
+    date_from: Optional[date] = Query(None, description="Filter from this date (for returns: use with date_to)"),
+    date_to: Optional[date] = Query(None, description="Filter to this date"),
+    invoice_no: Optional[str] = Query(None, description="Exact invoice number lookup (targeted search)"),
+    limit: int = Query(50, ge=1, le=100, description="Max results (default 50 for return flow)"),
 ):
-    """Get all invoices for a branch"""
+    """
+    Get invoices for a branch with scoped queries only (no full-history load).
+    - No params: returns today's invoices only (limit 50).
+    - invoice_no: targeted lookup by number (optional date_from/date_to); limit 1.
+    - date_from/date_to: filter by invoice_date; limit applied.
+    """
     from sqlalchemy.orm import selectinload
-    try:
-        invoices = db.query(SalesInvoice).options(
-            selectinload(SalesInvoice.items)
-        ).filter(
-            SalesInvoice.branch_id == branch_id
-        ).order_by(
+
+    query = db.query(SalesInvoice).options(
+        selectinload(SalesInvoice.items)
+    ).filter(SalesInvoice.branch_id == branch_id)
+
+    if invoice_no is not None and str(invoice_no).strip():
+        # Targeted search by document number
+        query = query.filter(SalesInvoice.invoice_no == str(invoice_no).strip())
+        if date_from is not None:
+            query = query.filter(SalesInvoice.invoice_date >= date_from)
+        if date_to is not None:
+            query = query.filter(SalesInvoice.invoice_date <= date_to)
+        query = query.order_by(SalesInvoice.created_at.desc()).limit(1)
+    else:
+        # Date-scoped list (default: today only)
+        if date_from is not None:
+            query = query.filter(SalesInvoice.invoice_date >= date_from)
+        if date_to is not None:
+            query = query.filter(SalesInvoice.invoice_date <= date_to)
+        if date_from is None and date_to is None:
+            # Default: today's documents only
+            today = date.today()
+            query = query.filter(
+                func.date(SalesInvoice.created_at) == today
+            )
+        query = query.order_by(
             SalesInvoice.invoice_date.desc(),
             SalesInvoice.created_at.desc(),
             SalesInvoice.invoice_no.desc(),
-        ).all()
+        ).limit(limit)
+
+    try:
+        invoices = query.all()
     except Exception as e:
         error_str = str(e)
         # Check if it's a missing column error
@@ -1252,6 +1362,225 @@ def get_branch_invoices(
             invoice.cashier_approved = invoice.status == 'PAID'
     
     return invoices
+
+
+# ---------- Credit Notes (Customer Returns) ----------
+
+@router.post("/credit-notes", response_model=CreditNoteResponse, status_code=status.HTTP_201_CREATED)
+def create_credit_note(
+    body: CreditNoteCreate,
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Create a credit note (customer return) against a batched/paid invoice.
+    Validates return_qty <= sold_qty - already_returned_qty per line.
+    Creates SALE_RETURN ledger entries with original batch and cost; updates snapshot in one transaction.
+    """
+    from sqlalchemy.orm import selectinload
+
+    user = current_user_and_db[0]
+
+    # Lock invoice and load relations
+    invoice = (
+        db.query(SalesInvoice)
+        .options(
+            selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item),
+            selectinload(SalesInvoice.credit_notes).selectinload(CreditNote.items),
+        )
+        .filter(SalesInvoice.id == body.original_invoice_id)
+        .with_for_update()
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Original invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    if invoice.company_id != body.company_id or invoice.branch_id != body.branch_id:
+        raise HTTPException(status_code=400, detail="Invoice must belong to the same company and branch")
+    if invoice.status not in ("BATCHED", "PAID"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot create return for invoice with status {invoice.status}. Invoice must be BATCHED or PAID.",
+        )
+
+    # Build map: original_sale_item_id -> (sale line, sold_qty_base, already_returned_base)
+    sale_line_by_id = {str(line.id): line for line in invoice.items}
+    already_returned_base = {}
+    for cn in invoice.credit_notes or []:
+        for cn_item in cn.items or []:
+            if cn_item.original_sale_item_id:
+                key = str(cn_item.original_sale_item_id)
+                if key not in already_returned_base:
+                    already_returned_base[key] = Decimal("0")
+                orig_line = sale_line_by_id.get(key)
+                mult = get_unit_multiplier_from_item(orig_line.item, cn_item.unit_name or "") if orig_line and orig_line.item else Decimal("1")
+                if mult is None:
+                    mult = Decimal("1")
+                already_returned_base[key] += (Decimal(str(cn_item.quantity_returned)) * Decimal(str(mult)))
+
+    for line in invoice.items:
+        key = str(line.id)
+        if key not in already_returned_base:
+            already_returned_base[key] = Decimal("0")
+        mult = get_unit_multiplier_from_item(line.item, line.unit_name or "")
+        if mult is None:
+            mult = Decimal("1")
+        sale_qty_base = Decimal(str(line.quantity)) * Decimal(str(mult))
+        line._sale_qty_base = sale_qty_base
+        line._already_returned_base = already_returned_base[key]
+
+    # Validate each request line and resolve original line
+    invoice_item_by_id = {str(it.id): it for it in invoice.items}
+    for req_item in body.items:
+        if not req_item.original_sale_item_id:
+            raise HTTPException(status_code=400, detail="Each credit note line must have original_sale_item_id")
+        orig = invoice_item_by_id.get(str(req_item.original_sale_item_id))
+        if not orig:
+            raise HTTPException(status_code=400, detail=f"Original sale item {req_item.original_sale_item_id} not found on invoice")
+        if orig.item_id != req_item.item_id:
+            raise HTTPException(status_code=400, detail="item_id must match the original invoice line")
+        mult = get_unit_multiplier_from_item(orig.item, req_item.unit_name or orig.unit_name or "")
+        if mult is None:
+            mult = Decimal("1")
+        return_qty_base = Decimal(str(req_item.quantity_returned)) * Decimal(str(mult))
+        allowed = getattr(orig, "_sale_qty_base", Decimal("0")) - getattr(orig, "_already_returned_base", Decimal("0"))
+        if return_qty_base <= 0:
+            raise HTTPException(status_code=400, detail=f"quantity_returned must be positive for item {req_item.item_id}")
+        if return_qty_base > allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Return quantity exceeds remaining quantity for item (sold minus already returned). Item id: {req_item.item_id}",
+            )
+
+    credit_note_no = DocumentService.get_credit_note_number(db, body.company_id, body.branch_id)
+    vat_rate_pct = Decimal("16")
+    total_exclusive = Decimal("0")
+    total_vat = Decimal("0")
+
+    credit_note = CreditNote(
+        company_id=body.company_id,
+        branch_id=body.branch_id,
+        credit_note_no=credit_note_no,
+        original_invoice_id=body.original_invoice_id,
+        credit_note_date=body.credit_note_date,
+        reason=body.reason,
+        created_by=body.created_by,
+    )
+    db.add(credit_note)
+    db.flush()
+
+    ledger_entries = []
+    for req_item in body.items:
+        orig = invoice_item_by_id[str(req_item.original_sale_item_id)]
+        mult = get_unit_multiplier_from_item(orig.item, req_item.unit_name or orig.unit_name or "")
+        if mult is None:
+            mult = Decimal("1")
+        return_qty_base = Decimal(str(req_item.quantity_returned)) * Decimal(str(mult))
+        unit_cost = orig.unit_cost_used if orig.unit_cost_used is not None else Decimal("0")
+        line_excl = req_item.unit_price_exclusive * Decimal(str(req_item.quantity_returned))
+        line_vat = line_excl * vat_rate_pct / Decimal("100")
+        line_inc = line_excl + line_vat
+        total_exclusive += line_excl
+        total_vat += line_vat
+
+        batch_number = None
+        expiry_date = None
+        if orig.batch_id:
+            led = db.query(InventoryLedger).filter(InventoryLedger.id == orig.batch_id).first()
+            if led:
+                batch_number = led.batch_number
+                expiry_date = led.expiry_date
+
+        cn_item = CreditNoteItem(
+            credit_note_id=credit_note.id,
+            item_id=req_item.item_id,
+            original_sale_item_id=orig.id,
+            batch_id=orig.batch_id,
+            unit_name=req_item.unit_name,
+            quantity_returned=req_item.quantity_returned,
+            unit_price_exclusive=req_item.unit_price_exclusive,
+            vat_rate=vat_rate_pct,
+            vat_amount=line_vat,
+            line_total_exclusive=line_excl,
+            line_total_inclusive=line_inc,
+        )
+        db.add(cn_item)
+        db.flush()
+
+        ledger_entry = InventoryLedger(
+            company_id=credit_note.company_id,
+            branch_id=credit_note.branch_id,
+            item_id=req_item.item_id,
+            batch_number=batch_number,
+            expiry_date=expiry_date,
+            transaction_type="SALE_RETURN",
+            reference_type="credit_note",
+            reference_id=credit_note.id,
+            document_number=credit_note_no,
+            quantity_delta=return_qty_base,
+            unit_cost=unit_cost,
+            total_cost=unit_cost * return_qty_base,
+            created_by=body.created_by,
+        )
+        ledger_entries.append(ledger_entry)
+
+    credit_note.total_exclusive = total_exclusive
+    credit_note.vat_rate = vat_rate_pct
+    credit_note.vat_amount = total_vat
+    credit_note.total_inclusive = total_exclusive + total_vat
+    db.flush()
+
+    for entry in ledger_entries:
+        db.add(entry)
+    db.flush()
+    for entry in ledger_entries:
+        SnapshotService.upsert_inventory_balance(
+            db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
+            document_number=getattr(entry, "document_number", None) or credit_note_no,
+        )
+    for entry in ledger_entries:
+        SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
+
+    try:
+        db.commit()
+        db.refresh(credit_note)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Credit note creation failed: {str(e)}")
+
+    return credit_note
+
+
+@router.get("/branch/{branch_id}/credit-notes", response_model=List[CreditNoteResponse])
+def get_branch_credit_notes(
+    branch_id: UUID,
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """List credit notes for a branch with optional date filter."""
+    from sqlalchemy.orm import selectinload
+
+    user = current_user_and_db[0]
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    require_document_belongs_to_user_company(db, user, branch, "Branch", request)
+    q = (
+        db.query(CreditNote)
+        .options(selectinload(CreditNote.items))
+        .filter(CreditNote.branch_id == branch_id)
+    )
+    if date_from is not None:
+        q = q.filter(CreditNote.credit_note_date >= date_from)
+    if date_to is not None:
+        q = q.filter(CreditNote.credit_note_date <= date_to)
+    q = q.order_by(CreditNote.credit_note_date.desc(), CreditNote.created_at.desc())
+    notes = q.offset(offset).limit(limit).all()
+    return notes
 
 
 @router.put("/invoice/{invoice_id}", response_model=SalesInvoiceResponse)
@@ -1488,6 +1817,7 @@ def batch_sales_invoice(
                     transaction_type="SALE",
                     reference_type="sales_invoice",
                     reference_id=invoice.id,
+                    document_number=invoice.invoice_no,
                     quantity_delta=-qty,
                     unit_cost=uc,
                     total_cost=uc * qty,
@@ -1514,7 +1844,10 @@ def batch_sales_invoice(
 
         db.flush()
         for entry in ledger_entries:
-            SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+            SnapshotService.upsert_inventory_balance(
+                db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
+                document_number=getattr(entry, "document_number", None) or invoice.invoice_no,
+            )
         for inv_item in invoice.items:
             SnapshotService.upsert_search_snapshot_last_sale(
                 db, invoice.company_id, invoice.branch_id, inv_item.item_id, invoice.invoice_date

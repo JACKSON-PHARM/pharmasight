@@ -784,6 +784,7 @@ def convert_quotation_to_invoice(
                 expiry_date=allocation["expiry_date"],
                 transaction_type="SALE",
                 reference_type="sales_invoice",
+                document_number=invoice_no,
                 quantity_delta=-allocation["quantity"],
                 unit_cost=Decimal(str(allocation["unit_cost"])),
                 total_cost=Decimal(str(allocation["unit_cost"])) * allocation["quantity"],
@@ -833,7 +834,10 @@ def convert_quotation_to_invoice(
 
     db.flush()
     for entry in ledger_entries:
-        SnapshotService.upsert_inventory_balance(db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta)
+        SnapshotService.upsert_inventory_balance(
+            db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
+            document_number=invoice_no,
+        )
     for inv_item in invoice_items:
         SnapshotService.upsert_search_snapshot_last_sale(
             db, quotation.company_id, quotation.branch_id, inv_item.item_id, invoice_date

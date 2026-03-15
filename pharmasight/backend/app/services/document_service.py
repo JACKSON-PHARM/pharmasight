@@ -1,5 +1,6 @@
 """
 Document Numbering Service - KRA Compliant Sequential Numbering
+Unified format (INV-01-000245) via DocumentNumberService for key document types.
 """
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -8,6 +9,13 @@ from datetime import date
 from uuid import UUID
 from app.models import Company, Branch, DocumentSequence, SupplierInvoice
 from app.database import SessionLocal
+from app.services.document_number_service import (
+    DocumentNumberService,
+    DOC_TYPE_INV,
+    DOC_TYPE_CN,
+    DOC_TYPE_GRN,
+    DOC_TYPE_TRF,
+)
 
 
 class DocumentService:
@@ -76,14 +84,10 @@ class DocumentService:
         branch_id: UUID
     ) -> str:
         """
-        Get next sales invoice number
-        
-        Format: SD-{BRANCH_CODE}-{NUMBER} (e.g. SD-MAIN-000001), same style as PO.
-        Branch-specific sequence.
+        Get next sales invoice number.
+        Format: INV-{BRANCH_CODE}-{SEQUENCE} (e.g. INV-01-000245).
         """
-        return DocumentService.get_next_document_number(
-            db, company_id, branch_id, "SALES_INVOICE", None
-        )
+        return DocumentNumberService.get_next(db, company_id, branch_id, DOC_TYPE_INV)
 
     @staticmethod
     def get_grn_number(
@@ -92,14 +96,10 @@ class DocumentService:
         branch_id: UUID
     ) -> str:
         """
-        Get next GRN number
-        
-        Format: GRN001, GRN002, etc.
-        Branch-specific sequence.
+        Get next GRN number.
+        Format: GRN-{BRANCH_CODE}-{SEQUENCE} (e.g. GRN-01-000099).
         """
-        return DocumentService.get_next_document_number(
-            db, company_id, branch_id, "GRN", None
-        )
+        return DocumentNumberService.get_next(db, company_id, branch_id, DOC_TYPE_GRN)
     
     @staticmethod
     def get_purchase_order_number(
@@ -210,14 +210,10 @@ class DocumentService:
         branch_id: UUID
     ) -> str:
         """
-        Get next credit note number
-        
-        Format: CN001 (Credit Note), CN002, etc.
-        Branch-specific sequence.
+        Get next credit note number.
+        Format: CN-{BRANCH_CODE}-{SEQUENCE} (e.g. CN-01-000014).
         """
-        return DocumentService.get_next_document_number(
-            db, company_id, branch_id, "CREDIT_NOTE", None
-        )
+        return DocumentNumberService.get_next(db, company_id, branch_id, DOC_TYPE_CN)
 
     @staticmethod
     def get_payment_number(
@@ -296,10 +292,8 @@ class DocumentService:
         company_id: UUID,
         supplying_branch_id: UUID,
     ) -> str:
-        """Next branch transfer number. Format: BT-{BRANCH_CODE}-000001."""
-        return DocumentService.get_next_document_number(
-            db, company_id, supplying_branch_id, "BRANCH_TRANSFER", "BT"
-        )
+        """Next branch transfer number. Format: TRF-{BRANCH_CODE}-{SEQUENCE}."""
+        return DocumentNumberService.get_next(db, company_id, supplying_branch_id, DOC_TYPE_TRF)
 
     @staticmethod
     def get_branch_receipt_number(
@@ -307,8 +301,6 @@ class DocumentService:
         company_id: UUID,
         receiving_branch_id: UUID,
     ) -> str:
-        """Next branch receipt number. Format: BR-{BRANCH_CODE}-000001."""
-        return DocumentService.get_next_document_number(
-            db, company_id, receiving_branch_id, "BRANCH_RECEIPT", "BR"
-        )
+        """Next branch receipt number. Uses TRF sequence at receiving branch for consistency."""
+        return DocumentNumberService.get_next(db, company_id, receiving_branch_id, DOC_TYPE_TRF)
 

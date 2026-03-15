@@ -15,9 +15,10 @@ class InventoryLedgerBase(BaseModel):
     item_id: UUID
     batch_number: Optional[str] = None
     expiry_date: Optional[date] = None
-    transaction_type: str = Field(..., description="PURCHASE, SALE, ADJUSTMENT, TRANSFER, OPENING_BALANCE")
+    transaction_type: str = Field(..., description="SALE, SALE_RETURN, PURCHASE, PURCHASE_RETURN, ADJUSTMENT, TRANSFER_IN, TRANSFER_OUT, OPENING_BALANCE")
     reference_type: Optional[str] = None
     reference_id: Optional[UUID] = None
+    document_number: Optional[str] = Field(None, description="Human-readable document number at write time (e.g. INV-01-000245)")
     quantity_delta: int = Field(..., description="Positive = add stock, Negative = remove stock (BASE UNITS)")
     unit_cost: Decimal = Field(..., ge=0, description="Cost per base unit")
     total_cost: Decimal = Field(..., ge=0)

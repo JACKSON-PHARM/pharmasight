@@ -906,7 +906,7 @@ window.subNavItems = {
         { page: 'sales', subPage: 'invoices', label: 'Sales Invoices', icon: 'fa-file-invoice-dollar' },
         { page: 'sales', subPage: 'quotations', label: 'Quotations', icon: 'fa-file-invoice' },
         { page: 'sales-history', label: 'Sales History', icon: 'fa-history' },
-        { page: 'sales-returns', label: 'Returns', icon: 'fa-undo' }
+        { page: 'sales', subPage: 'returns', label: 'Returns', icon: 'fa-undo' }
     ],
     purchases: [
         { page: 'purchases', subPage: 'orders', label: 'Purchase Orders', icon: 'fa-file-invoice' },
