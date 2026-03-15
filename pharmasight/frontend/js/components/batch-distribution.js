@@ -7,6 +7,22 @@
 
 (function() {
     'use strict';
+
+    /** Given month-year "YYYY-MM", return last day of that month as "YYYY-MM-DD". Pass-through if already "YYYY-MM-DD". */
+    function expiryMonthYearToLastDay(ym) {
+        if (!ym || typeof ym !== 'string') return ym || '';
+        const s = ym.trim();
+        if (s.length === 10 && s.match(/^\d{4}-\d{2}-\d{2}$/)) return s;
+        if (s.length < 7) return s;
+        const parts = s.split('-');
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        if (isNaN(y) || isNaN(m) || m < 1 || m > 12) return s;
+        const last = new Date(y, m, 0);
+        const dd = String(last.getDate()).padStart(2, '0');
+        const mm = String(last.getMonth() + 1).padStart(2, '0');
+        return last.getFullYear() + '-' + mm + '-' + dd;
+    }
     
     let currentBatchData = {
         itemIndex: null,
@@ -174,12 +190,13 @@
                                style="width: 100%;">
                     </td>
                     <td style="padding: 0.75rem;">
-                        <input type="date" 
+                        <input type="month" 
                                class="form-input batch-expiry-date" 
-                               value="${batch.expiry_date || ''}"
+                               value="${(batch.expiry_date || '').substring(0, 7)}"
                                ${currentBatchData.requiresExpiry ? 'required' : ''}
                                onchange="updateBatchField(${index}, 'expiry_date', this.value)"
-                               style="width: 100%;">
+                               style="width: 100%;"
+                               title="Month & year (last day of month is used)">
                     </td>
                     <td style="padding: 0.75rem;">
                         <input type="number" 
@@ -228,7 +245,9 @@
      */
     window.updateBatchField = function(index, field, value) {
         if (!currentBatchData.batches[index]) return;
-        
+        if (field === 'expiry_date' && value && String(value).length === 7 && String(value).match(/^\d{4}-\d{2}$/)) {
+            value = expiryMonthYearToLastDay(value);
+        }
         currentBatchData.batches[index][field] = value;
         
         // Update total cost display

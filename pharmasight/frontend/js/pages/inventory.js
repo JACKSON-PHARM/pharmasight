@@ -5,6 +5,22 @@ let currentInventorySubPage = 'items'; // items, batch, expiry, movement, stock
 /** Last valuation result for Current Stock export (CSV/Excel/Print). */
 let lastCurrentStockValuation = null;
 
+/** Given month-year "YYYY-MM", return last day of that month as "YYYY-MM-DD". Pass-through if already "YYYY-MM-DD". */
+function expiryMonthYearToLastDay(ym) {
+    if (!ym || typeof ym !== 'string') return ym || null;
+    const s = ym.trim();
+    if (s.length === 10 && s.match(/^\d{4}-\d{2}-\d{2}$/)) return s;
+    if (s.length < 7) return s;
+    const parts = s.split('-');
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(y) || isNaN(m) || m < 1 || m > 12) return s;
+    const last = new Date(y, m, 0);
+    const dd = String(last.getDate()).padStart(2, '0');
+    const mm = String(last.getMonth() + 1).padStart(2, '0');
+    return last.getFullYear() + '-' + mm + '-' + dd;
+}
+
 /** Branch for stock/last supplier: session branch (same as header), then CONFIG, then localStorage. */
 function getBranchIdForStock() {
     const branch = typeof BranchContext !== 'undefined' && BranchContext.getBranch ? BranchContext.getBranch() : null;
@@ -1416,8 +1432,9 @@ async function showAdjustStockModal(itemId) {
                 <input type="text" id="adjustStockBatch" class="form-input" maxlength="200" placeholder="e.g. BATCH-2024-001">
             </div>
             <div class="form-group" id="adjustExpiryGroup">
-                <label>Expiry date <span id="adjustExpiryRequired" style="color: var(--danger-color, #dc3545);">*</span></label>
-                <input type="date" id="adjustStockExpiry" class="form-input" value="" placeholder="YYYY-MM-DD">
+                <label>Expiry (month &amp; year) <span id="adjustExpiryRequired" style="color: var(--danger-color, #dc3545);">*</span></label>
+                <input type="month" id="adjustStockExpiry" class="form-input" value="">
+                <small style="display: block; color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Last day of the selected month is used.</small>
             </div>
             <div class="form-group">
                 <label>Comments / Details (source, reason — for tracking)</label>
@@ -1618,7 +1635,7 @@ async function submitAdjustStock(itemId) {
         direction: dir,
         unit_cost: (unit_cost != null && !isNaN(unit_cost) && unit_cost > 0) ? unit_cost : null,
         batch_number: batchEl && batchEl.value.trim() ? batchEl.value.trim() : null,
-        expiry_date: expiryEl && expiryEl.value ? expiryEl.value : null,
+        expiry_date: expiryEl && expiryEl.value ? expiryMonthYearToLastDay(expiryEl.value) : null,
         notes: notesEl && notesEl.value.trim() ? notesEl.value.trim() : null
     };
     if (needsConfirmation && confirmUnitCost != null && !isNaN(confirmUnitCost)) {
@@ -1924,8 +1941,9 @@ function renderManualAdjustmentsSubPage() {
                         <input type="text" id="metaNewBatchNumber" class="form-input" placeholder="Leave blank to keep">
                     </div>
                     <div class="form-group">
-                        <label>New expiry date (optional)</label>
-                        <input type="date" id="metaNewExpiryDate" class="form-input">
+                        <label>New expiry (month &amp; year, optional)</label>
+                        <input type="month" id="metaNewExpiryDate" class="form-input">
+                        <small style="display: block; color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Last day of the selected month is used.</small>
                     </div>
                     <div class="form-group">
                         <label>Reason <span style="color: var(--danger-color);">*</span></label>
@@ -2288,7 +2306,8 @@ function setupManualAdjustmentsHandlers() {
             const qtyEl = document.getElementById('metaQuantity');
             const quantity = qtyEl ? parseFloat(qtyEl.value) : NaN;
             const newBatchNumber = (document.getElementById('metaNewBatchNumber') && document.getElementById('metaNewBatchNumber').value || '').trim() || null;
-            const newExpiryDate = document.getElementById('metaNewExpiryDate') && document.getElementById('metaNewExpiryDate').value || null;
+            const metaExpiryEl = document.getElementById('metaNewExpiryDate');
+            const newExpiryDate = (metaExpiryEl && metaExpiryEl.value) ? (typeof expiryMonthYearToLastDay === 'function' ? expiryMonthYearToLastDay(metaExpiryEl.value) : metaExpiryEl.value) : null;
             const reason = (document.getElementById('metaReason') && document.getElementById('metaReason').value || '').trim();
             if (!itemId) {
                 if (typeof showToast === 'function') showToast('Select an item (search above) first.', 'warning');
