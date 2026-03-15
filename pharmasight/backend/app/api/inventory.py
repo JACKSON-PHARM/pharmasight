@@ -9,7 +9,7 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 
-from app.dependencies import get_tenant_db, get_current_user
+from app.dependencies import get_tenant_db, get_current_user, get_effective_company_id_for_user
 from app.models import Item, Branch, InventoryLedger
 from app.schemas.inventory import StockBalance, StockAvailability, BatchStock
 from app.services.inventory_service import InventoryService, _unit_for_display
@@ -18,6 +18,15 @@ from app.services.canonical_pricing import CanonicalPricingService
 from app.services.pricing_service import PricingService
 
 router = APIRouter()
+
+
+def _require_branch_belongs_to_user_company(db: Session, branch, user) -> None:
+    """Raise 403 if branch does not belong to the authenticated user's company."""
+    if not branch:
+        return
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is not None and str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
 
 
 @router.get("/stock/{item_id}/{branch_id}", response_model=dict)
@@ -129,9 +138,11 @@ def get_all_stock(
     db: Session = Depends(get_tenant_db),
 ):
     """Get stock for all items in a branch. OPTIMIZED: only loads items that have stock > 0 (no 10k item load)."""
+    current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
+    _require_branch_belongs_to_user_company(db, branch, current_user)
 
     # 1) Get item_ids with stock > 0 in ONE query (avoids loading all company items)
     stock_aggregates = (
@@ -180,9 +191,11 @@ def get_expiring_count(
     Get count of distinct batches expiring within the given number of days.
     Uses inventory_ledger; counts (item_id, batch_number, expiry_date) with remaining stock > 0.
     """
+    current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
+    _require_branch_belongs_to_user_company(db, branch, current_user)
 
     cutoff = date.today() + timedelta(days=days)
 
@@ -223,9 +236,11 @@ def get_expiring_list(
     Get list of batches expiring within the given number of days.
     Returns item_name, batch_number, expiry_date, quantity, base_unit for each batch.
     """
+    current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
+    _require_branch_belongs_to_user_company(db, branch, current_user)
 
     cutoff = date.today() + timedelta(days=days)
 
@@ -288,47 +303,59 @@ def get_total_stock_value(
     """
     Get total stock value (KES) for the branch.
 
-    Formula: SUM(available_units * last_unit_cost) per item.
-    - available_units = current stock in base/retail units (tablets, pieces, etc.)
-    - last_unit_cost = unit_cost from most recent PURCHASE (cost per base unit)
-    - Both must use the same unit (ledger stores quantity and cost per base/retail unit).
+    Valuation rule: stock_value = SUM(remaining_qty * base_unit_cost) over remaining batch layers.
+    - Layer identity: (company_id, branch_id, item_id, batch_number, expiry_date, unit_cost).
+    - Remaining per layer = SUM(quantity_delta) grouped by that identity; only layers with remaining > 0 are valued.
+    - Tenant and branch are enforced in the query filter and in the grouping key for safe reuse (e.g. all-branches analytics).
+    - Cost adjustments update ledger_row.unit_cost in place, so the layer's unit_cost reflects the current batch cost.
     """
+    current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
+    _require_branch_belongs_to_user_company(db, branch, current_user)
 
-    from app.services.canonical_pricing import CanonicalPricingService
+    company_item_ids = list(
+        db.query(Item.id).filter(Item.company_id == branch.company_id).all()
+    )
+    company_item_ids = [r.id for r in company_item_ids]
+    if not company_item_ids:
+        return {"total_value": 0, "currency": "KES"}
 
-    company_item_ids = db.query(Item.id).filter(Item.company_id == branch.company_id)
-
-    # 1) Current stock per item: SUM(quantity_delta) — use subquery to avoid 10k+ bind params
-    stock_aggregates = (
+    company_id = branch.company_id
+    rows = (
         db.query(
             InventoryLedger.item_id,
-            func.sum(InventoryLedger.quantity_delta).label("stock"),
+            InventoryLedger.batch_number,
+            InventoryLedger.expiry_date,
+            InventoryLedger.unit_cost,
+            InventoryLedger.quantity_delta,
         )
         .filter(
             InventoryLedger.item_id.in_(company_item_ids),
             InventoryLedger.branch_id == branch_id,
+            InventoryLedger.company_id == company_id,
         )
-        .group_by(InventoryLedger.item_id)
         .all()
     )
-    stock_map = {row.item_id: float(row.stock or 0) for row in stock_aggregates}
-    items_with_stock = [iid for iid, qty in stock_map.items() if qty > 0]
-    if not items_with_stock:
-        return {"total_value": 0, "currency": "KES"}
 
-    # 2) Cost per RETAIL unit (three-tier: purchase=per retail, opening/default=per wholesale → /pack_size)
-    cost_per_retail = CanonicalPricingService.get_cost_per_retail_for_valuation_batch(
-        db, items_with_stock, branch_id, branch.company_id
-    )
+    # Group by full layer identity (company_id, branch_id, item_id, batch_number, expiry_date, unit_cost) → remaining = SUM(quantity_delta)
+    from collections import defaultdict
+    layers = defaultdict(lambda: {"remaining": 0.0, "unit_cost": None})
+    for r in rows:
+        batch_key = (r.batch_number or "").strip() or None
+        expiry_key = r.expiry_date
+        cost_key = float(r.unit_cost or 0)
+        key = (company_id, branch_id, r.item_id, batch_key, expiry_key, cost_key)
+        layers[key]["remaining"] += float(r.quantity_delta or 0)
+        layers[key]["unit_cost"] = cost_key
 
-    # 3) Value = quantity_retail * cost_per_retail (e.g. 98 tablets * 0.54 = 52.92)
-    total_value = sum(
-        stock_map[iid] * float(cost_per_retail.get(iid, 0) or 0)
-        for iid in items_with_stock
-    )
+    total_value = 0.0
+    for key, data in layers.items():
+        remaining = data["remaining"]
+        if remaining > 0:
+            total_value += remaining * (data["unit_cost"] or 0)
+
     return {"total_value": round(total_value, 2), "currency": "KES"}
 
 
@@ -342,9 +369,11 @@ def get_items_in_stock_count(
     from sqlalchemy import func
     from app.models import InventoryLedger
 
+    current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
+    _require_branch_belongs_to_user_company(db, branch, current_user)
 
     company_item_ids = db.query(Item.id).filter(Item.company_id == branch.company_id)
     subq = (
@@ -370,10 +399,12 @@ def get_all_stock_overview(
     Get stock overview for all items with availability details (OPTIMIZED - single query)
     Returns stock with unit breakdown for efficient display
     """
+    current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
-    
+    _require_branch_belongs_to_user_company(db, branch, current_user)
+
     items = db.query(Item).filter(Item.company_id == branch.company_id).all()
     
     if not items:
@@ -432,9 +463,11 @@ def get_stock_valuation(
     - valuation: last_cost (unit cost from ledger) or selling_price (cost × markup).
     - stock_only: items with stock only (faster) or all items.
     """
+    current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
+    _require_branch_belongs_to_user_company(db, branch, current_user)
 
     # Parse as_of_date; default to today (use end of day for ledger filter)
     if as_of_date and as_of_date.strip():

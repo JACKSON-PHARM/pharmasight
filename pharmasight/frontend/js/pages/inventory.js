@@ -1408,8 +1408,8 @@ async function showAdjustStockModal(itemId) {
                 </div>
             </div>
             <div class="form-group">
-                <label>Unit cost (per base unit) — optional; defaults to last purchase cost</label>
-                <input type="number" id="adjustStockCost" class="form-input" min="0" step="0.01" value="${lastCost}" placeholder="0 = use last price">
+                <label id="adjustStockCostLabel">Unit cost (per ${escapeHtml(baseUnitName)}) — optional; defaults to last purchase cost</label>
+                <input type="number" id="adjustStockCost" class="form-input" min="0" step="0.01" value="${lastCost}" placeholder="0 = use last price" data-unit-multiplier="1">
             </div>
             <div class="form-group" id="adjustBatchGroup">
                 <label>Batch / Lot number <span id="adjustBatchRequired" style="color: var(--danger-color, #dc3545);">*</span></label>
@@ -1462,6 +1462,25 @@ async function showAdjustStockModal(itemId) {
             if (!u || !u.unit_name) return;
             unitMultiplierMap[String(u.unit_name)] = (u.multiplier_to_base != null ? Number(u.multiplier_to_base) : 1);
         });
+        const costEl = document.getElementById('adjustStockCost');
+        const costLabelEl = document.getElementById('adjustStockCostLabel');
+        const baseUnitCost = typeof lastCost === 'number' && !isNaN(lastCost) ? lastCost : (parseFloat(lastCost) || 0);
+        function updateAdjustStockCostForUnit() {
+            if (!unitEl || !costEl || !costLabelEl) return;
+            const unitName = (unitEl.value || '').trim();
+            const mult = unitName ? (unitMultiplierMap[unitName] != null ? unitMultiplierMap[unitName] : 1) : 1;
+            const displayCost = baseUnitCost * mult;
+            costEl.value = (displayCost === 0 ? 0 : (Math.round(displayCost * 100) / 100));
+            costEl.dataset.unitMultiplier = String(mult);
+            costLabelEl.textContent = unitName
+                ? ('Unit cost (per ' + unitName + ') — optional; defaults to last purchase cost')
+                : ('Unit cost (per ' + baseUnitName + ') — optional; defaults to last purchase cost');
+        }
+        if (unitEl) unitEl.addEventListener('change', function () {
+            updateImpactPreview();
+            updateAdjustStockCostForUnit();
+        });
+        updateAdjustStockCostForUnit();
         function updateImpactPreview() {
             if (!previewEl || !unitEl || !qtyEl) return;
             const unitName = unitEl.value;
@@ -1476,7 +1495,6 @@ async function showAdjustStockModal(itemId) {
             previewEl.innerHTML = 'Will adjust approximately: <strong>' + escapeHtml(String(q)) + '</strong> ' + escapeHtml(String(unitName)) +
                 ' = <strong>' + escapeHtml(baseQtyText) + '</strong> ' + escapeHtml(baseUnitName) + ' (base units).';
         }
-        if (unitEl) unitEl.addEventListener('change', updateImpactPreview);
         if (qtyEl) qtyEl.addEventListener('input', updateImpactPreview);
         updateImpactPreview();
 
@@ -1568,7 +1586,11 @@ async function submitAdjustStock(itemId) {
             return;
         }
     }
-    const unit_cost = costEl ? parseFloat(costEl.value) : null;
+    const costDisplay = costEl ? parseFloat(costEl.value) : null;
+    const mult = costEl && costEl.dataset && costEl.dataset.unitMultiplier != null ? parseFloat(costEl.dataset.unitMultiplier) : 1;
+    const unit_cost = (costDisplay != null && !isNaN(costDisplay) && costDisplay > 0)
+        ? (costDisplay / (mult > 0 ? mult : 1))
+        : null;
     const notesEl = document.getElementById('adjustStockNotes');
     const branchId = getBranchIdForStock();
     const branchIdRaw = branchId != null ? (typeof branchId === 'string' ? branchId : (branchId && (branchId.id || branchId))) : null;
@@ -1576,7 +1598,11 @@ async function submitAdjustStock(itemId) {
     const confirmSection = document.getElementById('adjustStockConfirmSection');
     const confirmCostEl = document.getElementById('adjustStockConfirmCost');
     const needsConfirmation = confirmSection && confirmSection.style.display !== 'none';
-    const confirmUnitCost = confirmCostEl && confirmCostEl.value.trim() !== '' ? parseFloat(confirmCostEl.value) : null;
+    const confirmDisplay = confirmCostEl && confirmCostEl.value.trim() !== '' ? parseFloat(confirmCostEl.value) : null;
+    const confirmMult = costEl && costEl.dataset && costEl.dataset.unitMultiplier != null ? parseFloat(costEl.dataset.unitMultiplier) : 1;
+    const confirmUnitCost = (confirmDisplay != null && !isNaN(confirmDisplay) && confirmDisplay >= 0)
+        ? (confirmDisplay / (confirmMult > 0 ? confirmMult : 1))
+        : null;
     if (needsConfirmation && (confirmUnitCost == null || isNaN(confirmUnitCost) || confirmUnitCost < 0)) {
         if (typeof showToast === 'function') showToast('Please re-enter the unit cost to confirm.', 'warning');
         else alert('Please re-enter the unit cost to confirm.');
@@ -1649,7 +1675,10 @@ async function submitAdjustStock(itemId) {
                     msg += ' (Floor price: ' + String(detail.floor_price) + ')';
                 }
                 confirmMsg.textContent = msg;
-                confirmCostEl.placeholder = 'Re-enter: ' + (detail.expected_unit_cost != null ? String(detail.expected_unit_cost) : '');
+                var expectedBase = detail.expected_unit_cost != null ? parseFloat(detail.expected_unit_cost) : null;
+                var confirmMultForPlaceholder = costEl && costEl.dataset && costEl.dataset.unitMultiplier != null ? parseFloat(costEl.dataset.unitMultiplier) : 1;
+                var expectedInSelectedUnit = (expectedBase != null && !isNaN(expectedBase) && confirmMultForPlaceholder > 0) ? (expectedBase * confirmMultForPlaceholder) : expectedBase;
+                confirmCostEl.placeholder = 'Re-enter: ' + (expectedInSelectedUnit != null && !isNaN(expectedInSelectedUnit) ? String(expectedInSelectedUnit) : (expectedBase != null ? String(expectedBase) : ''));
                 confirmCostEl.value = '';
                 confirmCostEl.required = true;
                 confirmSection.style.display = 'block';
@@ -2037,6 +2066,7 @@ function setupManualAdjustmentsHandlers() {
     const costNewCostLabel = document.getElementById('costNewCostLabel');
     var adjustmentSearchTimeout = null;
     var adjustmentItemUnits = null; // { wholesale_unit, retail_unit, pack_size } when item selected
+    var costAdjustmentLedgerEntries = []; // stored entries for batch dropdown (base unit_cost); re-rendered when unit selector changes
 
     function getAdjustmentItemId() {
         return (itemIdHidden && itemIdHidden.value) ? itemIdHidden.value : null;
@@ -2062,8 +2092,34 @@ function setupManualAdjustmentsHandlers() {
         costUnitKindGroup.style.display = 'block';
     }
 
+    function renderCostAdjustmentBatchOptions(entries, unitKind, units) {
+        if (!costBatchSelect) return;
+        costAdjustmentLedgerEntries = Array.isArray(entries) ? entries : [];
+        var mult = 1;
+        var unitName = 'unit';
+        if (units && (units.wholesale_unit || units.retail_unit)) {
+            if (unitKind === 'wholesale' && units.pack_size > 0) {
+                mult = units.pack_size;
+                unitName = (units.wholesale_unit || 'packet').trim();
+            } else {
+                unitName = (units.retail_unit || 'tablet').trim();
+            }
+        }
+        costBatchSelect.innerHTML = costAdjustmentLedgerEntries.length ? '' : '<option value="">No batches with stock</option>';
+        costAdjustmentLedgerEntries.forEach(function (e) {
+            var opt = document.createElement('option');
+            opt.value = e.ledger_id;
+            var baseCost = e.unit_cost != null ? parseFloat(e.unit_cost) : 0;
+            var displayCost = baseCost * mult;
+            var costStr = (displayCost === 0 ? '0.00' : (Math.round(displayCost * 100) / 100).toFixed(2));
+            opt.textContent = (e.batch_number || '—') + ' | Exp: ' + (e.expiry_date || '—') + ' | Cost: ' + costStr + ' per ' + unitName;
+            costBatchSelect.appendChild(opt);
+        });
+    }
+
     function loadBatchesForAdjustmentItem(itemId, unitsFromSearch) {
         if (!costBatchSelect || !itemId) {
+            costAdjustmentLedgerEntries = [];
             if (costBatchSelect) costBatchSelect.innerHTML = '<option value="">Select item above first</option>';
             updateCostAdjustmentUnitUI(null, null, null);
             return;
@@ -2083,15 +2139,18 @@ function setupManualAdjustmentsHandlers() {
         costBatchSelect.innerHTML = '<option value="">Loading...</option>';
         API.items.getLedgerBatches(itemId, branchIdRaw).then(function (r) {
             const entries = (r && r.entries) || [];
-            costBatchSelect.innerHTML = entries.length ? '' : '<option value="">No batches with stock</option>';
-            entries.forEach(function (e) {
-                const opt = document.createElement('option');
-                opt.value = e.ledger_id;
-                opt.textContent = (e.batch_number || '—') + ' | Exp: ' + (e.expiry_date || '—') + ' | Cost: ' + (e.unit_cost || 0);
-                costBatchSelect.appendChild(opt);
-            });
+            var unitKind = (costUnitKindSelect && costUnitKindSelect.value) ? costUnitKindSelect.value : 'wholesale';
+            renderCostAdjustmentBatchOptions(entries, unitKind, adjustmentItemUnits);
         }).catch(function () { costBatchSelect.innerHTML = '<option value="">Error loading batches</option>'; });
     }
+
+    if (costUnitKindSelect) {
+        costUnitKindSelect.addEventListener('change', function () {
+            var unitKind = (costUnitKindSelect.value || 'wholesale');
+            renderCostAdjustmentBatchOptions(costAdjustmentLedgerEntries, unitKind, adjustmentItemUnits);
+        });
+    }
+
     if (searchInput && itemIdHidden && dropdownEl) {
         searchInput.addEventListener('input', function () {
             var q = (searchInput.value || '').trim();
@@ -2197,12 +2256,13 @@ function setupManualAdjustmentsHandlers() {
                 if (typeof showToast === 'function') showToast('Select an item (search above), then batch, new cost, and reason.', 'warning');
                 return;
             }
-            // If user chose "Retail", convert to cost per wholesale (base): cost per packet = cost per tablet × pack_size
+            // Backend expects cost per base (retail) unit. Retail = per tablet (send as-is). Wholesale = per packet → convert to per tablet.
             var newCost = newCostRaw;
             var unitKind = (costUnitKindSelect && costUnitKindSelect.value) ? costUnitKindSelect.value : 'wholesale';
-            if (unitKind === 'retail' && adjustmentItemUnits && adjustmentItemUnits.pack_size > 0) {
-                newCost = newCostRaw * adjustmentItemUnits.pack_size;
+            if (unitKind === 'wholesale' && adjustmentItemUnits && adjustmentItemUnits.pack_size > 0) {
+                newCost = newCostRaw / adjustmentItemUnits.pack_size;
             }
+            // If unitKind === 'retail', user entered cost per tablet → send as-is (newCost = newCostRaw).
             submitCost.disabled = true;
             API.items.corrections.costAdjustment(itemId, { branch_id: branchIdRaw, batch_id: batchId, new_unit_cost: newCost, reason }).then(function (res) {
                 if (typeof showToast === 'function') showToast(res.message || 'Cost adjusted.', 'success');
