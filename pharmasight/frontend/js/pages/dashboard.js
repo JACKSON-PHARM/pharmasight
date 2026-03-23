@@ -282,11 +282,11 @@ async function showOrderBookPendingTodayModal() {
 
         const rows = list.map(function (r) {
             const name = (typeof escapeHtml === 'function' ? escapeHtml(r.item_name || '') : (r.item_name || '')).replace(/"/g, '&quot;');
-            const sku = (typeof escapeHtml === 'function' ? escapeHtml(r.item_sku || '') : (r.item_sku || '')).replace(/"/g, '&quot;');
+            const cost = (r.last_wholesale_unit_cost != null ? Number(r.last_wholesale_unit_cost) : 0);
             const supplier = (typeof escapeHtml === 'function' ? escapeHtml(r.supplier_name || '') : (r.supplier_name || '')).replace(/"/g, '&quot;');
             const qty = (typeof formatNumber === 'function' ? formatNumber(r.quantity_needed) : (r.quantity_needed != null ? r.quantity_needed : 0));
             const unit = (typeof escapeHtml === 'function' ? escapeHtml(r.unit_name || '') : (r.unit_name || '')).replace(/"/g, '&quot;');
-            return '<tr><td>' + name + '</td><td><code>' + (sku || '—') + '</code></td><td>' + (supplier || '—') + '</td><td style="text-align: right;">' + qty + ' ' + (unit || '') + '</td></tr>';
+            return '<tr><td>' + name + '</td><td style="text-align: right;">' + (typeof formatCurrency === 'function' ? formatCurrency(cost) : String(cost)) + '</td><td>' + (supplier || '—') + '</td><td style="text-align: right;">' + qty + ' ' + (unit || '') + '</td></tr>';
         }).join('');
 
         const tableContent = `
@@ -295,7 +295,7 @@ async function showOrderBookPendingTodayModal() {
                     <thead style="position: sticky; top: 0; background: white;">
                         <tr>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>
-                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">SKU</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: right;">Last wholesale cost</th>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Supplier</th>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: right;">Qty Needed</th>
                         </tr>

@@ -87,7 +87,83 @@ def _reason_display(entry) -> str:
     return reason or "Unknown"
 
 
-def _serialize_order_book_entry(entry, _get_stock, days_in_book_90: Optional[int] = None):
+def _get_last_wholesale_unit_cost_map(
+    db: Session,
+    branch_id: UUID,
+    company_id: UUID,
+    item_ids: List[UUID],
+) -> dict[UUID, Decimal]:
+    """
+    Return latest purchase unit cost converted to *wholesale* unit.
+
+    Assumptions:
+    - `inventory_ledger.unit_cost` is stored per retail/base unit (see inventory/base-unit migrations).
+    - wholesale unit cost = retail/base unit cost * pack_size.
+    - If there is no purchase history, fall back to `items.default_cost_per_base * pack_size`.
+    """
+    if not item_ids:
+        return {}
+
+    items = {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
+
+    # Latest PURCHASE cost (per retail/base unit) for each item at this branch.
+    last_purchase_subq = (
+        db.query(
+            InventoryLedger.item_id.label("item_id"),
+            InventoryLedger.unit_cost.label("unit_cost"),
+            func.row_number()
+            .over(
+                partition_by=InventoryLedger.item_id,
+                order_by=InventoryLedger.created_at.desc(),
+            )
+            .label("rn"),
+        )
+        .filter(
+            InventoryLedger.item_id.in_(item_ids),
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.company_id == company_id,
+            InventoryLedger.transaction_type == "PURCHASE",
+            InventoryLedger.quantity_delta > 0,
+        )
+        .subquery()
+    )
+
+    rows = (
+        db.query(last_purchase_subq.c.item_id, last_purchase_subq.c.unit_cost)
+        .filter(last_purchase_subq.c.rn == 1)
+        .all()
+    )
+
+    out: dict[UUID, Decimal] = {}
+    for r in rows:
+        item = items.get(r.item_id)
+        if not item:
+            continue
+        pack_size = max(1, int(item.pack_size or 1))
+        unit_cost_retail = Decimal(str(r.unit_cost or 0))
+        out[r.item_id] = unit_cost_retail * Decimal(str(pack_size))
+
+    # Fill missing with default_cost_per_base * pack_size
+    for iid in item_ids:
+        if iid in out:
+            continue
+        item = items.get(iid)
+        if not item:
+            out[iid] = Decimal("0")
+            continue
+        pack_size = max(1, int(item.pack_size or 1))
+        default_cost = getattr(item, "default_cost_per_base", None)
+        out[iid] = Decimal(str(default_cost or 0)) * Decimal(str(pack_size))
+
+    return out
+
+
+def _serialize_order_book_entry(
+    entry,
+    _get_stock,
+    days_in_book_90: Optional[int] = None,
+    last_wholesale_unit_cost_map: Optional[dict[UUID, Decimal]] = None,
+):
     """Build a JSON-serializable dict for one order book entry."""
     def _dt(d):
         return d.isoformat() if d and hasattr(d, "isoformat") else str(d) if d else None
@@ -119,6 +195,9 @@ def _serialize_order_book_entry(entry, _get_stock, days_in_book_90: Optional[int
         "updated_at": _dt(entry.updated_at),
         "item_name": entry.item.name if entry.item else "Unknown",
         "item_sku": entry.item.sku if entry.item else None,
+        "last_wholesale_unit_cost": (
+            (last_wholesale_unit_cost_map.get(entry.item_id) if last_wholesale_unit_cost_map else None)
+        ),
         "supplier_name": entry.supplier.name if entry.supplier else None,
         "current_stock": _get_stock(entry.item_id),
     }
@@ -190,6 +269,7 @@ def list_order_book_entries(
 
         item_ids = [e.item_id for e in entries]
         days_map = _get_days_in_order_book_90(db, branch_id, item_ids)
+        last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(db, branch_id, company_id, item_ids)
         stock_map = {}
         if item_ids:
             try:
@@ -219,7 +299,14 @@ def list_order_book_entries(
         for entry in entries:
             try:
                 days_in_book = days_map.get(entry.item_id, 0)
-                result.append(_serialize_order_book_entry(entry, _get_stock, days_in_book_90=days_in_book))
+                result.append(
+                    _serialize_order_book_entry(
+                        entry,
+                        _get_stock,
+                        days_in_book_90=days_in_book,
+                        last_wholesale_unit_cost_map=last_wholesale_cost_map,
+                    )
+                )
             except Exception as e:
                 logging.getLogger(__name__).warning("Skipping order book entry %s: %s", entry.id, e)
         return JSONResponse(content=result, media_type="application/json")
@@ -272,6 +359,7 @@ def get_order_book_today_summary(
         )
         item_ids = [e.item_id for e in rows]
         days_map = _get_days_in_order_book_90(db, branch_id, item_ids)
+        last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(db, branch_id, company_id, item_ids)
         for e in rows:
             entries_out.append(
                 {
@@ -281,6 +369,7 @@ def get_order_book_today_summary(
                     "item_sku": e.item.sku if e.item else None,
                     "quantity_needed": float(e.quantity_needed) if e.quantity_needed is not None else 1,
                     "unit_name": e.unit_name or "unit",
+                    "last_wholesale_unit_cost": float(last_wholesale_cost_map.get(e.item_id) or 0),
                     "supplier_id": str(e.supplier_id) if e.supplier_id else None,
                     "supplier_name": e.supplier.name if e.supplier else None,
                     "reason": _reason_display(e),
@@ -869,6 +958,12 @@ def get_order_book_history(
             pass
     entries = query.order_by(OrderBookHistory.archived_at.desc()).limit(limit).all()
     
+    last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(
+        db,
+        branch_id,
+        company_id,
+        [e.item_id for e in entries],
+    )
     result = []
     for entry in entries:
         entry_dict = {
@@ -896,6 +991,7 @@ def get_order_book_history(
             "archived_at": entry.archived_at,
             "item_name": entry.item.name if entry.item else None,
             "item_sku": entry.item.sku if entry.item else None,
+            "last_wholesale_unit_cost": last_wholesale_cost_map.get(entry.item_id),
             "supplier_name": entry.supplier.name if entry.supplier else None
         }
         result.append(OrderBookHistoryResponse(**entry_dict))

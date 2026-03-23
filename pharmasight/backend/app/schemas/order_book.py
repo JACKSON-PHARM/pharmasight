@@ -44,6 +44,7 @@ class OrderBookEntryResponse(OrderBookEntryBase):
     # Related data
     item_name: Optional[str] = None
     item_sku: Optional[str] = None
+    last_wholesale_unit_cost: Optional[Decimal] = None
     supplier_name: Optional[str] = None
     current_stock: Optional[int] = None  # Current stock at branch
     days_in_order_book_90: Optional[int] = None  # Distinct days item appeared in order book in past 90 days (for display)
@@ -119,6 +120,7 @@ class OrderBookHistoryResponse(BaseModel):
     # Related data
     item_name: Optional[str] = None
     item_sku: Optional[str] = None
+    last_wholesale_unit_cost: Optional[Decimal] = None
     supplier_name: Optional[str] = None
     
     class Config:

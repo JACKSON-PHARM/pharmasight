@@ -5842,7 +5842,7 @@ function renderOrderBookShell(suppliers = []) {
                                     <input type="checkbox" id="selectAllCheckbox" onchange="if(window.toggleSelectAllOrderBook) window.toggleSelectAllOrderBook(this.checked)">
                                 </th>
                                 <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>
-                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">SKU</th>
+                                <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Last wholesale cost</th>
                                 <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Current Stock</th>
                                 <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Qty Needed</th>
                                 <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Unit</th>
@@ -5893,7 +5893,7 @@ function renderOrderBookShell(suppliers = []) {
                         <thead style="position: sticky; top: 0; background: white; z-index: 10;">
                             <tr>
                                 <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>
-                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">SKU</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: right;">Last wholesale cost</th>
                                 <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: right;">Qty</th>
                                 <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Unit</th>
                                 <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Supplier</th>
@@ -6021,7 +6021,7 @@ function renderOrderBookHistoryTable() {
     tbody.innerHTML = orderBookHistoryEntries.map(entry => `
         <tr style="border-bottom: 1px solid var(--border-color);">
             <td style="padding: 0.5rem;">${escapeHtml(entry.item_name || '—')}</td>
-            <td style="padding: 0.5rem;"><code>${escapeHtml(entry.item_sku || '—')}</code></td>
+            <td style="padding: 0.5rem; text-align: right;">${formatCurrency(entry.last_wholesale_unit_cost || 0)}</td>
             <td style="padding: 0.5rem; text-align: right;">${parseFloat(entry.quantity_needed) || 0}</td>
             <td style="padding: 0.5rem;">${escapeHtml(entry.unit_name || '—')}</td>
             <td style="padding: 0.5rem;">${escapeHtml(entry.supplier_name || '—')}</td>
@@ -6091,8 +6091,8 @@ function renderOrderBookTable() {
             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                 <strong>${escapeHtml(entry.item_name || 'Unknown')}</strong>
             </td>
-            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                <code>${escapeHtml(entry.item_sku || '—')}</code>
+            <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: right;">
+                <strong>${formatCurrency(entry.last_wholesale_unit_cost || 0)}</strong>
             </td>
             <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); text-align: right;">
                 <span style="color: ${entry.current_stock <= 0 ? 'var(--danger-color)' : 'var(--text-color)'};">
