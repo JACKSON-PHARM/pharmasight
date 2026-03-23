@@ -22,7 +22,14 @@ class Colors:
 
 def print_colored(message, color=Colors.WHITE):
     """Print colored message"""
-    print(f"{color}{message}{Colors.RESET}")
+    # Some environments (Windows cmd/PowerShell) may default to cp1252, which
+    # can't encode emoji/special symbols used in the startup banner.
+    # Strip non-ASCII characters to avoid UnicodeEncodeError.
+    try:
+        safe_message = message.encode("ascii", errors="ignore").decode("ascii")
+    except Exception:
+        safe_message = str(message)
+    print(f"{color}{safe_message}{Colors.RESET}")
 
 def check_requirements():
     """Check if all requirements are met"""

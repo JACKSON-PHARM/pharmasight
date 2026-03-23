@@ -269,7 +269,13 @@ def list_order_book_entries(
 
         item_ids = [e.item_id for e in entries]
         days_map = _get_days_in_order_book_90(db, branch_id, item_ids)
-        last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(db, branch_id, company_id, item_ids)
+        try:
+            last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(db, branch_id, company_id, item_ids)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "last wholesale cost map failed; falling back to 0. err=%s", e
+            )
+            last_wholesale_cost_map = {}
         stock_map = {}
         if item_ids:
             try:
@@ -359,7 +365,13 @@ def get_order_book_today_summary(
         )
         item_ids = [e.item_id for e in rows]
         days_map = _get_days_in_order_book_90(db, branch_id, item_ids)
-        last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(db, branch_id, company_id, item_ids)
+        try:
+            last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(db, branch_id, company_id, item_ids)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "today-summary last wholesale cost map failed; falling back to 0. err=%s", e
+            )
+            last_wholesale_cost_map = {}
         for e in rows:
             entries_out.append(
                 {
