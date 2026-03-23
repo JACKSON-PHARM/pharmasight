@@ -977,66 +977,60 @@ def _compute_cogs_from_invoice_lines(
     by_date: bool = False,
 ) -> tuple:
     """
-    Compute COGS from SalesInvoiceItem with correct unit conversion.
-    
-    Strategy: Use the actual cost from InventoryLedger entries created during batching.
-    These entries have the correct unit conversion and FEFO cost allocation.
-    
-    However, if ledger entries are missing or incorrect, fall back to computing from
-    invoice items with proper unit conversion:
-    - quantity (sale unit) × multiplier → quantity in retail units
-    - unit_cost_used should be cost per retail unit
-    - COGS = quantity_retail × cost_per_retail
-    
+    Compute COGS for gross profit.
+
+    Primary: sum of InventoryLedger.total_cost for SALE rows created when invoices were
+    batched (reference_type=sales_invoice). This is the *actual* cost removed from stock
+    across all FEFO layers — not stock valuation / last-cost-for-display, and not the
+    snapshot on sales_invoice_items.unit_cost_used (which is only the first batch's cost).
+
+    Fallback (legacy / missing ledger): sum per line
+        quantity (sale unit) × multiplier_to_retail × unit_cost_used (per retail/base)
+    when unit_cost_used is set on the line.
+
     Returns (total_cogs, cogs_by_day_dict or None).
     """
     from sqlalchemy.orm import selectinload
 
     sales_date_key = func.date(func.coalesce(SalesInvoice.batched_at, SalesInvoice.created_at))
-    
-    # First, try to get COGS from ledger entries (most accurate - reflects actual FEFO allocation)
-    invoice_ids_subq = (
-        db.query(SalesInvoice.id)
+
+    # --- Ledger COGS: actual batching cost (multi-batch correct) ---
+    ledger_total_raw = (
+        db.query(func.coalesce(func.sum(InventoryLedger.total_cost), 0))
+        .join(SalesInvoice, SalesInvoice.id == InventoryLedger.reference_id)
         .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.transaction_type == "SALE",
+            InventoryLedger.reference_type == "sales_invoice",
             SalesInvoice.branch_id == branch_id,
             SalesInvoice.status.in_(["BATCHED", "PAID"]),
             sales_date_key.between(sd, ed),
         )
+        .scalar()
     )
-    
+    ledger_total = Decimal(str(ledger_total_raw or 0))
+
+    ledger_cogs_by_day = None
     if by_date:
-        ledger_cogs_rows = (
+        ledger_rows = (
             db.query(
-                func.date(InventoryLedger.created_at).label("d"),
+                sales_date_key.label("d"),
                 func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"),
             )
+            .join(SalesInvoice, SalesInvoice.id == InventoryLedger.reference_id)
             .filter(
                 InventoryLedger.branch_id == branch_id,
                 InventoryLedger.transaction_type == "SALE",
                 InventoryLedger.reference_type == "sales_invoice",
-                InventoryLedger.reference_id.in_(invoice_ids_subq),
+                SalesInvoice.branch_id == branch_id,
+                SalesInvoice.status.in_(["BATCHED", "PAID"]),
+                sales_date_key.between(sd, ed),
             )
-            .group_by(func.date(InventoryLedger.created_at))
+            .group_by(sales_date_key)
             .all()
         )
-        ledger_cogs_by_day = {r.d: (r.cogs or Decimal("0")) for r in (ledger_cogs_rows or [])}
-        ledger_total = sum(ledger_cogs_by_day.values())
-    else:
-        ledger_result = (
-            db.query(func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"))
-            .filter(
-                InventoryLedger.branch_id == branch_id,
-                InventoryLedger.transaction_type == "SALE",
-                InventoryLedger.reference_type == "sales_invoice",
-                InventoryLedger.reference_id.in_(invoice_ids_subq),
-            )
-            .scalar()
-        )
-        ledger_total = Decimal(str(ledger_result)) if ledger_result else Decimal("0")
-        ledger_cogs_by_day = None
-    
-    # If ledger has data, use it (it's the single source of truth from batching)
-    # But also compute from invoice items as validation/fallback
+        ledger_cogs_by_day = {r.d: (r.cogs or Decimal("0")) for r in (ledger_rows or [])}
+
     invoices = (
         db.query(SalesInvoice)
         .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
@@ -1086,10 +1080,11 @@ def _compute_cogs_from_invoice_lines(
         invoice_cogs += inv_line_cogs
         if by_date and inv_line_cogs > 0:
             invoice_cogs_by_day[d] = invoice_cogs_by_day.get(d, Decimal("0")) + inv_line_cogs
-    
-    # Use invoice-item-based COGS as primary (single source of truth from sales_invoice_items table)
-    # This ensures correct unit conversion based on what was actually sold
-    # Ledger entries may have legacy unit conversion issues, so we compute from invoice items
+
+    # Prefer batched SALE ledger totals (multi-batch FEFO accurate). Invoice-line math uses
+    # unit_cost_used from the first batch only and can over- or under-state COGS vs actual layers.
+    if ledger_total > 0:
+        return ledger_total, ledger_cogs_by_day if by_date else None
     return invoice_cogs, invoice_cogs_by_day
 
 
@@ -1107,7 +1102,9 @@ def get_branch_gross_profit(
     Gross profit summary for a branch and date range.
 
     Net sales = Sales (exclusive) − Credit notes (customer returns) in date range.
-    COGS = cost from invoice lines − SALE_RETURN ledger total_cost (return cost reversal).
+    COGS = sum of SALE ledger total_cost for batched invoices in range (actual FEFO cost);
+           if no ledger rows (legacy), falls back to invoice-line qty × unit_cost_used.
+           Then subtract SALE_RETURN ledger total_cost linked to credit notes in range.
     Gross profit = Net sales − COGS.
     """
     sd, ed = _resolve_date_range(preset, start_date, end_date)
