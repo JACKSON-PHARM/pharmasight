@@ -165,6 +165,13 @@ def _serialize_order_book_entry(
     last_wholesale_unit_cost_map: Optional[dict[UUID, Decimal]] = None,
 ):
     """Build a JSON-serializable dict for one order book entry."""
+    def _num(v):
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except Exception:
+            return 0.0
     def _dt(d):
         return d.isoformat() if d and hasattr(d, "isoformat") else str(d) if d else None
     def _uuid(u):
@@ -195,8 +202,8 @@ def _serialize_order_book_entry(
         "updated_at": _dt(entry.updated_at),
         "item_name": entry.item.name if entry.item else "Unknown",
         "item_sku": entry.item.sku if entry.item else None,
-        "last_wholesale_unit_cost": (
-            (last_wholesale_unit_cost_map.get(entry.item_id) if last_wholesale_unit_cost_map else None)
+        "last_wholesale_unit_cost": _num(
+            last_wholesale_unit_cost_map.get(entry.item_id) if last_wholesale_unit_cost_map else None
         ),
         "supplier_name": entry.supplier.name if entry.supplier else None,
         "current_stock": _get_stock(entry.item_id),
