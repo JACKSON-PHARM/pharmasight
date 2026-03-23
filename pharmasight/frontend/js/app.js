@@ -770,9 +770,9 @@ async function startAppFlow() {
             const nextScreen = shouldDefault ? 'dashboard' : requestedBase;
             if (currentScreen !== nextScreen) {
                 console.log('✅ Company, branches, and branch selection OK – loading route:', targetRoute);
-                currentScreen = nextScreen;
                 await updateStatusBar(user);
-                loadPage(targetRoute);
+                await loadPage(targetRoute);
+                // currentScreen / lastLoadedPage updated in loadPage finally from window.location.hash
             }
         }
         
@@ -1106,29 +1106,22 @@ function showSubNav(pageKey, title) {
                 if (page === 'inventory') {
                     loadPage(`${page}-${subPage}`);
                 } else if (page === 'purchases') {
-                    // For purchases, load the page first, then switch to sub-page if specified
-                    loadPage(page);
-                    if (subPage && window.switchPurchaseSubPage) {
-                        setTimeout(() => {
-                            window.switchPurchaseSubPage(subPage);
-                        }, 100);
-                    } else if (!subPage && window.loadPurchases) {
-                        // If no sub-page specified, ensure default sub-page loads
-                        setTimeout(() => {
-                            window.loadPurchases();
-                        }, 100);
+                    // Single loadPage so hash reflects sub-view (#purchases for PO list, #purchases-order-book, etc.)
+                    if (subPage === 'orders') {
+                        loadPage('purchases');
+                    } else if (subPage) {
+                        loadPage(`purchases-${subPage}`);
+                    } else {
+                        loadPage('purchases');
                     }
                 } else if (page === 'sales') {
-                    // For sales, load the page first, then switch to sub-page if specified
-                    loadPage(page);
-                    if (subPage && window.switchSalesSubPage) {
-                        setTimeout(() => {
-                            window.switchSalesSubPage(subPage);
-                        }, 100);
-                    } else if (!subPage && window.loadSales) {
-                        setTimeout(() => {
-                            window.loadSales();
-                        }, 100);
+                    // Single loadPage so hash reflects sub-view (#sales = invoices, #sales-quotations, etc.)
+                    if (subPage === 'invoices') {
+                        loadPage('sales');
+                    } else if (subPage) {
+                        loadPage(`sales-${subPage}`);
+                    } else {
+                        loadPage('sales');
                     }
                 } else if (page === 'settings') {
                     // For settings, load the page with sub-page
@@ -1356,6 +1349,8 @@ async function loadPage(pageName) {
     
     // Check navigation blocking
     if (!(await canNavigateTo(pageName))) {
+        loadPageInProgress = false;
+        window.__suppressToasts = false;
         return; // Navigation blocked
     }
     
@@ -1614,9 +1609,6 @@ async function loadPage(pageName) {
         }
     }
     
-    // Update currentScreen tracking
-    currentScreen = mainPage;
-    
     // Smooth transition: show loading overlay until target page is ready (in scope for finally)
     const pageLoadOverlay = document.getElementById('pageLoadOverlay');
     if (pageLoadOverlay) pageLoadOverlay.style.display = 'flex';
@@ -1707,19 +1699,20 @@ async function loadPage(pageName) {
             break;
         case 'sales':
             if (window.loadSales) {
-                window.loadSales();
-                // Load sub-page if specified
                 if (subPage && window.loadSalesSubPage) {
-                    setTimeout(() => window.loadSalesSubPage(subPage), 100);
+                    void window.loadSalesSubPage(subPage);
+                } else {
+                    window.loadSales();
                 }
             }
             break;
         case 'purchases':
             if (window.loadPurchases) {
-                window.loadPurchases();
-                // Load sub-page if specified
+                // Sub-route: load only the sub handler (hash already e.g. #purchases-order-book)
                 if (subPage && window.loadPurchaseSubPage) {
-                    setTimeout(() => window.loadPurchaseSubPage(subPage), 100);
+                    void window.loadPurchaseSubPage(subPage);
+                } else {
+                    window.loadPurchases();
                 }
             } else {
                 console.error('❌ window.loadPurchases is not defined! purchases.js may not have loaded.');
@@ -1843,7 +1836,6 @@ async function loadPage(pageName) {
             }
             break;
     }
-    lastLoadedPage = (typeof mainPage !== 'undefined' ? mainPage : currentPage);
     } catch (moduleError) {
         console.error('[LOAD PAGE] Module load error:', mainPage, moduleError);
         const pageEl = document.getElementById(mainPage);
@@ -1852,11 +1844,18 @@ async function loadPage(pageName) {
             pageEl.style.display = 'block';
             pageEl.style.visibility = 'visible';
         }
-        lastLoadedPage = (typeof mainPage !== 'undefined' ? mainPage : currentPage);
     } finally {
         if (pageLoadOverlay) pageLoadOverlay.style.display = 'none';
         loadPageInProgress = false;
         window.__suppressToasts = false;
+        // Full hash route (e.g. purchases-invoices) so refresh + hashchange dedupe match sub-views
+        try {
+            const rb = (window.location.hash || '').replace('#', '').split('?')[0];
+            if (rb) {
+                currentScreen = rb;
+                lastLoadedPage = rb;
+            }
+        } catch (_) {}
     }
 }
 

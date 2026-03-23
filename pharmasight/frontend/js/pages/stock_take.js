@@ -349,7 +349,7 @@ function showDraftDocumentsModal(draftInfo) {
     
     if (details.sales > 0) {
         linksHtml += `
-            <a href="#sales" onclick="closeDraftModal(); if(window.loadPage) window.loadPage('sales'); if(window.loadSalesSubPage) setTimeout(() => window.loadSalesSubPage('invoices'), 200);" 
+            <a href="#sales" onclick="closeDraftModal(); if(window.loadPage) window.loadPage('sales');" 
                class="btn btn-outline" style="margin-right: 0.5rem; margin-bottom: 0.5rem;">
                 <i class="fas fa-file-invoice"></i> View ${details.sales} Sales Invoice(s)
             </a>
@@ -358,7 +358,7 @@ function showDraftDocumentsModal(draftInfo) {
     
     if (details.purchases > 0) {
         linksHtml += `
-            <a href="#purchases" onclick="closeDraftModal(); if(window.loadPage) window.loadPage('purchases'); if(window.loadPurchaseSubPage) setTimeout(() => { window.loadPurchaseSubPage('invoices'); clearPurchaseDateFilters(); }, 200);" 
+            <a href="#purchases-invoices" onclick="closeDraftModal(); if(window.loadPage) window.loadPage('purchases-invoices'); if(window.clearPurchaseDateFilters) setTimeout(() => window.clearPurchaseDateFilters(), 200);" 
                class="btn btn-outline" style="margin-right: 0.5rem; margin-bottom: 0.5rem;">
                 <i class="fas fa-shopping-bag"></i> View ${details.purchases} Purchase Invoice(s)
             </a>

@@ -166,10 +166,10 @@
                         <div id="globalItemSearchDropdown" class="global-item-search-dropdown" style="display: none;" aria-hidden="true"></div>
                     </div>
                     <div class="top-bar-quick-actions" id="topBarQuickActions">
-                        <button type="button" class="btn btn-quick-sale btn-sm" id="globalAddSaleBtn" title="New sales invoice" onclick="if(window.loadPage) window.loadPage('sales'); if(window.loadSalesSubPage) setTimeout(function(){ window.loadSalesSubPage('create-invoice'); }, 150);">
+                        <button type="button" class="btn btn-quick-sale btn-sm" id="globalAddSaleBtn" title="New sales invoice" onclick="if(window.loadPage) window.loadPage('sales-create-invoice');">
                             <i class="fas fa-plus"></i> Sale
                         </button>
-                        <button type="button" class="btn btn-quick-purchase btn-sm" id="globalAddSupplierInvoiceBtn" title="New supplier invoice (receive stock)" onclick="if(window.loadPage) window.loadPage('purchases'); if(window.loadPurchaseSubPage) setTimeout(function(){ window.loadPurchaseSubPage('create-invoice'); }, 150);">
+                        <button type="button" class="btn btn-quick-purchase btn-sm" id="globalAddSupplierInvoiceBtn" title="New supplier invoice (receive stock)" onclick="if(window.loadPage) window.loadPage('purchases-create-invoice');">
                             <i class="fas fa-plus"></i> Purchase
                         </button>
                     </div>
@@ -427,7 +427,7 @@
     <script src="js/services/branch_context.js?v=1"></script>
     <script src="js/services/app_state.js?v=1"></script>
     <script src="js/services/optimistic_locking.js?v=1"></script>
-    <script src="js/utils.js?v=7"></script>
+    <script src="js/utils.js?v=8"></script>
     <!-- QZ Tray for thermal ESC/POS printing (optional; thermal prints fall back to browser if not loaded) -->
     <script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2/qz-tray.js"></script>
     <script src="js/services/thermalPrinter.js?v=1"></script>
@@ -441,9 +441,9 @@
     <!-- Permissions utilities -->
     <script src="js/utils/permissions.js?v=1"></script>
     <!-- Stock Take (before app.js so loadStockTake exists when router runs) -->
-    <script src="js/pages/stock_take.js?v=10"></script>
+    <script src="js/pages/stock_take.js?v=11"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
-    <script src="js/app.js?v=19"></script>
+    <script src="js/app.js?v=21"></script>
     <script src="js/pages/login.js?v=1"></script>
     <script src="js/pages/password_reset.js?v=3"></script>
     <script src="js/pages/tenant_invite_setup.js?v=1"></script>
@@ -461,12 +461,12 @@
     <script src="js/pages/landing.js?v=1"></script>
     <script src="js/pages/dashboard.js?v=6"></script>
     <script src="js/pages/items.js?v=6"></script>
-    <script src="js/pages/sales.js?v=5"></script>
+    <script src="js/pages/sales.js?v=7"></script>
     <script src="js/utils/searchCache.js"></script>
-    <script src="js/components/TransactionItemsTable.js"></script>
+    <script src="js/components/TransactionItemsTable.js?v=1"></script>
     <script src="js/components/global_item_search.js"></script>
     <script src="js/components/batch-distribution.js"></script>
-    <script src="js/pages/purchases.js?v=21"></script>
+    <script src="js/pages/purchases.js?v=22"></script>
     <script src="js/pages/inventory.js?v=9"></script>
     <script src="js/pages/reports.js?v=1"></script>
     <script src="js/pages/settings.js?v=8"></script>

@@ -26,6 +26,34 @@ let purchaseOrdersUserFilter = 'self';
 let supplierInvoiceViewInProgress = false;
 let supplierInvoiceViewCurrentId = null;
 
+/** Map URL hash to purchases sub-page (keeps refresh on Order Book, Supplier Invoices, etc.). */
+function getPurchaseSubPageFromHash() {
+    const raw = (window.location.hash || '').replace('#', '').split('?')[0];
+    if (!raw || raw.indexOf('purchases') !== 0) return null;
+    if (raw === 'purchases' || raw === 'purchases-orders') return 'orders';
+    if (raw.indexOf('purchases-') === 0) {
+        const rest = raw.slice('purchases-'.length);
+        return rest || 'orders';
+    }
+    return null;
+}
+
+/** Keep hash in sync when sub-page changes programmatically (e.g. deep links). */
+function syncPurchasesHashToSubPage(subPage) {
+    try {
+        const sp = subPage == null ? 'orders' : String(subPage);
+        if (sp.indexOf('record-payment') === 0) {
+            window.location.hash = '#purchases-' + sp;
+            return;
+        }
+        if (sp === 'orders') {
+            window.location.hash = '#purchases';
+            return;
+        }
+        window.location.hash = '#purchases-' + sp;
+    } catch (_) {}
+}
+
 /** Return today's date as YYYY-MM-DD in the user's local timezone (so "Today" filter and form default match). */
 function getLocalDateString() {
     const n = new Date();
@@ -91,6 +119,8 @@ async function loadPurchases() {
             }
         }
     } catch (_) {}
+    const fromHash = getPurchaseSubPageFromHash();
+    if (fromHash) currentPurchaseSubPage = fromHash;
     console.log('Loading purchase sub-page:', currentPurchaseSubPage);
     const subPageToLoad = currentPurchaseSubPage || 'orders';
     await loadPurchaseSubPage(subPageToLoad);
@@ -130,6 +160,7 @@ async function loadPurchaseSubPage(subPage) {
             } catch (_) {}
         }
         await renderRecordPaymentPage(supplierId);
+        syncPurchasesHashToSubPage(currentPurchaseSubPage);
         updatePurchaseSubNavActiveState();
         return;
     }
@@ -178,6 +209,8 @@ async function loadPurchaseSubPage(subPage) {
                 await renderPurchaseOrdersPage();
             }
     }
+
+    syncPurchasesHashToSubPage(currentPurchaseSubPage);
     
     // Update sub-nav active state
     updatePurchaseSubNavActiveState();

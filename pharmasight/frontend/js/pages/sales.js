@@ -1,5 +1,30 @@
 // Sales Page - Sales Invoices and Quotations
 
+/** Map hash to sales sub-view so refresh stays on invoices / quotations / returns / create flows. */
+function getSalesSubPageFromHash() {
+    const raw = (window.location.hash || '').replace('#', '').split('?')[0];
+    if (!raw) return null;
+    if (raw === 'sales-history') return null;
+    if (raw.indexOf('sales') !== 0) return null;
+    if (raw === 'sales' || raw === 'sales-invoices') return 'invoices';
+    if (raw.indexOf('sales-') === 0) {
+        const rest = raw.slice('sales-'.length);
+        return rest || 'invoices';
+    }
+    return null;
+}
+
+function syncSalesHashToSubPage(subPage) {
+    try {
+        const sp = subPage == null ? 'invoices' : String(subPage);
+        if (sp === 'invoices') {
+            window.location.hash = '#sales';
+            return;
+        }
+        window.location.hash = '#sales-' + sp;
+    } catch (_) {}
+}
+
 let currentSalesSubPage = 'invoices'; // 'invoices', 'quotations'
 let cart = [];
 let currentInvoice = null;
@@ -51,6 +76,9 @@ async function loadSales() {
         }
     } catch (_) {}
 
+    const fromHash = getSalesSubPageFromHash();
+    if (fromHash) currentSalesSubPage = fromHash;
+
     console.log('Loading sales sub-page:', currentSalesSubPage);
     await loadSalesSubPage(currentSalesSubPage);
 }
@@ -99,6 +127,8 @@ async function loadSalesSubPage(subPage) {
         default:
             await renderSalesInvoicesPage();
     }
+
+    syncSalesHashToSubPage(currentSalesSubPage);
     
     // Update sub-nav active state
     updateSalesSubNavActiveState();
@@ -3824,6 +3854,14 @@ function buildBatchExpiryLine(item, showBatch, showExp) {
     return line ? '<div class="item-sub batch-faint">' + line + '</div>' : '';
 }
 
+/** 2dp money helper (uses utils roundMoney2 when loaded). */
+function money2(n) {
+    if (typeof window !== 'undefined' && typeof window.roundMoney2 === 'function') return window.roundMoney2(n);
+    const x = parseFloat(n);
+    if (isNaN(x)) return 0;
+    return Math.round(x * 100) / 100;
+}
+
 function generateInvoicePrintHTML(invoice, printType) {
     const isThermal = (printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal') === 'thermal';
     const noMargin = getPrintOpt('PRINT_REMOVE_MARGIN', false);
@@ -3870,12 +3908,12 @@ function generateInvoicePrintHTML(invoice, printType) {
             const nameCell = batchExpiryLine ? `<td>${nameContent}${batchExpiryLine}</td>` : `<td>${nameContent}</td>`;
             const qtyUnit = (item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : (item.unit_name || '');
             const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
-            const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
-            const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
+            const subtotal = money2(parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0));
+            const discountAmt = (parseFloat(item.discount_percent) || 0) ? money2(subtotal * (parseFloat(item.discount_percent) / 100)) : money2(parseFloat(item.discount_amount) || 0);
             const discountCell = showDiscount ? `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>` : '';
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
-            const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
+            const lineTotal = money2(isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0));
             printTotalInv += lineTotal;
             const vatCell = showVat ? `<td style="text-align: right;">${vatDisplay}</td>` : '';
             return `
@@ -3941,6 +3979,9 @@ function generateInvoicePrintHTML(invoice, printType) {
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
+    const invoiceFooterTotal = (invoice.total_inclusive != null && invoice.total_inclusive !== '')
+        ? money2(invoice.total_inclusive)
+        : money2(printTotalInv);
     const layoutLabel = isThermal ? `Thermal (${pageWidthMm}mm)` : 'Regular (A4)';
     const logoUrl = (invoice.logo_url && typeof invoice.logo_url === 'string' && (invoice.logo_url.startsWith('http://') || invoice.logo_url.startsWith('https://'))) ? invoice.logo_url : '';
     // Cache-bust so Normal (A4) print always loads the current logo after company updates it
@@ -4015,7 +4056,7 @@ function generateInvoicePrintHTML(invoice, printType) {
         <tfoot>
             <tr>
                 <td colspan="${colSpanTotal}" class="total">Total:</td>
-                <td class="total" style="text-align: right;">${formatCurrency(printTotalInv)}</td>
+                <td class="total" style="text-align: right;">${formatCurrency(invoiceFooterTotal)}</td>
             </tr>
         </tfoot>
     </table>
@@ -4175,12 +4216,12 @@ function generateQuotationPrintHTML(quotation, printType) {
             const nameCell = batchExpiryLine ? `<td>${nameContent}${batchExpiryLine}</td>` : `<td>${nameContent}</td>`;
             const qtyUnit = (item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : (item.unit_name || '');
             const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
-            const subtotal = parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0);
-            const discountAmt = (parseFloat(item.discount_percent) || 0) ? (subtotal * (parseFloat(item.discount_percent) / 100)) : (parseFloat(item.discount_amount) || 0);
+            const subtotal = money2(parseFloat(item.quantity || 0) * parseFloat(item.unit_price_exclusive || 0));
+            const discountAmt = (parseFloat(item.discount_percent) || 0) ? money2(subtotal * (parseFloat(item.discount_percent) / 100)) : money2(parseFloat(item.discount_amount) || 0);
             const discountCell = showDiscount ? `<td style="text-align: right;">${discountAmt > 0 ? formatCurrency(discountAmt) : '—'}</td>` : '';
             const isZeroRated = (parseFloat(item.tax_percent) || 0) === 0 || (parseFloat(item.vat_amount) || 0) === 0;
             const vatDisplay = isZeroRated ? '—' : formatCurrency(item.vat_amount || 0);
-            const lineTotal = isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0);
+            const lineTotal = money2(isZeroRated ? (subtotal - discountAmt) : (item.line_total_inclusive || 0));
             printTotal += lineTotal;
             const vatCell = showVat ? `<td style="text-align: right;">${vatDisplay}</td>` : '';
             return `
@@ -4195,6 +4236,10 @@ function generateQuotationPrintHTML(quotation, printType) {
             `;
         }).join('')
         : '<tr><td colspan="' + colCount + '" style="text-align: center;">No items</td></tr>';
+
+    const quotationFooterTotal = (quotation.total_inclusive != null && quotation.total_inclusive !== '')
+        ? money2(quotation.total_inclusive)
+        : money2(printTotal);
 
     const discountHeader = showDiscount ? '<th style="text-align: right;">Discount</th>' : '';
     const vatHeader = showVat ? '<th style="text-align: right;">VAT</th>' : '';
@@ -4293,7 +4338,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         <tfoot>
             <tr>
                 <td colspan="${colSpanTotal}" class="total">Total:</td>
-                <td class="total" style="text-align: right;">${formatCurrency(printTotal)}</td>
+                <td class="total" style="text-align: right;">${formatCurrency(quotationFooterTotal)}</td>
             </tr>
         </tfoot>
     </table>

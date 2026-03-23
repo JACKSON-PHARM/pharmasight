@@ -124,13 +124,37 @@ function showNotification(message, type = 'info') {
     }, 3000);
 }
 
+/**
+ * Round monetary amounts to 2 decimal places (KES). Use for all money math display and API payloads.
+ * Avoids float drift (e.g. 999.9998) and keeps user-entered values like 800 stable.
+ */
+function roundMoney2(amount) {
+    if (amount == null || amount === '') return 0;
+    if (typeof amount === 'number' && !isFinite(amount)) return 0;
+    const s = typeof amount === 'string' ? amount.replace(/,/g, '').trim() : amount;
+    const n = typeof s === 'number' ? s : parseFloat(s);
+    if (isNaN(n)) return 0;
+    return Math.round(n * 100) / 100;
+}
+
+/** Parse user input (price/qty field) to a number, then round money where appropriate. */
+function parseMoneyInput(value) {
+    return roundMoney2(value);
+}
+
 // Format currency
 function formatCurrency(amount) {
+    const n = roundMoney2(amount);
     return new Intl.NumberFormat('en-KE', {
         style: 'currency',
         currency: 'KES',
         minimumFractionDigits: 2,
-    }).format(amount);
+    }).format(n);
+}
+
+if (typeof window !== 'undefined') {
+    window.roundMoney2 = roundMoney2;
+    window.parseMoneyInput = parseMoneyInput;
 }
 
 // Format date

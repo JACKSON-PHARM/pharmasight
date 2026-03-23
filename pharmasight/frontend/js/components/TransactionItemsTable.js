@@ -144,8 +144,26 @@
      * Returns number for calculations; use .toFixed(2) for display strings.
      */
     TransactionItemsTable.prototype.roundMoney = function(value) {
+        if (typeof window !== 'undefined' && typeof window.roundMoney2 === 'function') {
+            return window.roundMoney2(value);
+        }
         if (value == null || value === '' || isNaN(parseFloat(value))) return 0;
         return Math.round(parseFloat(value) * 100) / 100;
+    };
+
+    /**
+     * Single source of truth for line nett/VAT/total (2 dp) — matches printed documents and API.
+     */
+    TransactionItemsTable.prototype._lineMoneyParts = function(item) {
+        const round = (n) => this.roundMoney(n);
+        const qty = parseFloat(item.quantity) || 0;
+        const unit = parseFloat(item.unit_price) || 0;
+        const subtotal = round(qty * unit);
+        const discount = round(subtotal * ((parseFloat(item.discount_percent) || 0) / 100));
+        const afterDiscount = round(subtotal - discount);
+        const tax = round(afterDiscount * ((parseFloat(item.tax_percent) || 0) / 100));
+        const total = round(afterDiscount + tax);
+        return { subtotal, discount, afterDiscount, tax, total, nett: afterDiscount, vat: tax };
     };
 
     /**
@@ -1862,7 +1880,7 @@
         if (isNaN(marginPct)) return;
         const costPerSelectedUnit = this.getCostPerSelectedUnit(item);
         if (costPerSelectedUnit <= 0) return;
-        item.unit_price = Math.round(costPerSelectedUnit * (1 + marginPct / 100) * 10000) / 10000;
+        item.unit_price = this.roundMoney(costPerSelectedUnit * (1 + marginPct / 100));
         this.recalculateRow(rowIndex);
         this.updateRowDisplay(rowIndex);
         this.notifyChange();
@@ -1958,33 +1976,30 @@
     TransactionItemsTable.prototype.recalculateRow = function(rowIndex) {
         const item = this.items[rowIndex];
         if (!item) return;
-        const round = (n) => Math.round(parseFloat(n) * 100) / 100;
-        const subtotal = (item.quantity || 0) * (item.unit_price || 0);
-        const discount = round(subtotal * ((item.discount_percent || 0) / 100));
-        const afterDiscount = round(subtotal - discount);
-        const tax = round(afterDiscount * ((item.tax_percent || 0) / 100));
-        item.total = round(afterDiscount + tax);
-        item.nett = afterDiscount;
-        item.vat_amount = tax;
+        const p = this._lineMoneyParts(item);
+        item.total = p.total;
+        item.nett = p.nett;
+        item.vat_amount = p.vat;
     };
     
     /**
      * Calculate VAT amount for an item
      */
     TransactionItemsTable.prototype.calculateVATAmount = function(item) {
-        const subtotal = (item.quantity || 0) * (item.unit_price || 0);
-        const discount = subtotal * ((item.discount_percent || 0) / 100);
-        const afterDiscount = subtotal - discount;
-        return afterDiscount * ((item.tax_percent || 0) / 100);
+        if (item && item.vat_amount != null && !isNaN(parseFloat(item.vat_amount))) {
+            return this.roundMoney(item.vat_amount);
+        }
+        return this._lineMoneyParts(item).vat;
     };
     
     /**
      * Calculate Nett (after discount, before VAT) for an item
      */
     TransactionItemsTable.prototype.calculateNett = function(item) {
-        const subtotal = (item.quantity || 0) * (item.unit_price || 0);
-        const discount = subtotal * ((item.discount_percent || 0) / 100);
-        return subtotal - discount;
+        if (item && item.nett != null && !isNaN(parseFloat(item.nett))) {
+            return this.roundMoney(item.nett);
+        }
+        return this._lineMoneyParts(item).nett;
     };
     
     /**
@@ -2019,15 +2034,18 @@
         
         this.items.forEach(item => {
             if (item.item_id && !item.is_empty) {
-                const itemNett = this.calculateNett(item);
-                const itemVat = this.calculateVATAmount(item);
-                nett += itemNett;
-                vat += itemVat;
-                total += itemNett + itemVat;
+                const p = this._lineMoneyParts(item);
+                nett += p.nett;
+                vat += p.vat;
+                total += p.total;
             }
         });
         
-        return { nett, vat, total };
+        return {
+            nett: this.roundMoney(nett),
+            vat: this.roundMoney(vat),
+            total: this.roundMoney(total)
+        };
     };
     
     /**
