@@ -314,7 +314,8 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+    <!-- Local QR generator (no external CDN dependency). -->
+    <script src="/js/qrcode.vendor.iife.js"></script>
     <!-- Load required scripts first -->
     <script src="/js/config.js"></script>
     <script src="/js/api.js"></script>
@@ -373,7 +374,7 @@
 
                 let ok = await tryGenerate(window.QRCode);
                 if (!ok) {
-                    // Small retry loop for script-loader timing issues.
+                    // Small retry loop for script-loader timing issues (local script tag should exist).
                     const deadline = Date.now() + 3500;
                     while (!ok && Date.now() < deadline) {
                         await new Promise(r => setTimeout(r, 150));
@@ -382,17 +383,7 @@
                 }
 
                 if (!ok) {
-                    try {
-                        const mod = await import('https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.esm.min.js');
-                        const qrLib = mod?.default || mod;
-                        ok = await tryGenerate(qrLib);
-                    } catch (_) {
-                        // Ignore; we'll show a friendly error below.
-                    }
-                }
-
-                if (!ok) {
-                    qrContainer.innerHTML = '<span style="color:#94a3b8; font-size:0.9rem;">QR generation failed (CDN blocked or offline)</span>';
+                    qrContainer.innerHTML = '<span style="color:#94a3b8; font-size:0.9rem;">QR generation failed (local QR script not ready)</span>';
                 }
             } catch (e) {
                 console.warn('Public demo QR setup failed:', e);
