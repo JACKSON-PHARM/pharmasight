@@ -1,17 +1,22 @@
 """
 Order Book API routes
 """
+import json
 import logging
+import math
+import numbers
+import traceback
+from collections.abc import Mapping
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
-from fastapi.responses import JSONResponse
-from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import func, and_, or_
+from starlette.responses import Response
+from sqlalchemy.orm import Session, selectinload, aliased
+from sqlalchemy import func, and_, or_, select, exists
 from sqlalchemy.exc import IntegrityError
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timedelta
-from app.dependencies import get_tenant_db, get_current_user
+from app.dependencies import get_current_user
 from app.models import (
     DailyOrderBook, OrderBookHistory,
     Item, Supplier, PurchaseOrder, PurchaseOrderItem,
@@ -27,8 +32,96 @@ from app.services.document_service import DocumentService
 from app.services.snapshot_service import SnapshotService
 from app.services.order_book_service import OrderBookService
 from app.api.users import _user_has_owner_or_admin_role
+from app.config import settings
 
 router = APIRouter()
+
+
+def _to_int_stock(val) -> int:
+    """Convert ledger/balance numeric to int without raising on edge Decimal/None values."""
+    try:
+        if val is None:
+            return 0
+        return int(Decimal(str(val)))
+    except Exception:
+        return 0
+
+
+def _everything_json_safe(obj):
+    """
+    Deep-convert any structure to JSON-serializable primitives only.
+    - Coerces dict keys to str (UUID keys break json.dumps).
+    - Converts Decimal and all numbers.Number (incl. SQLAlchemy/numpy scalars) to float.
+    - Never leaves a value that stdlib json.dumps cannot encode (no default= hook needed).
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, int):
+        return obj
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else 0.0
+    if isinstance(obj, Decimal):
+        try:
+            f = float(obj)
+            return f if math.isfinite(f) else 0.0
+        except Exception:
+            return 0.0
+    if isinstance(obj, UUID):
+        return str(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, date):
+        return obj.isoformat()
+    # dict and mapping-like rows (e.g. SQLAlchemy Row) — not just dict
+    if isinstance(obj, Mapping):
+        out = {}
+        for k, v in obj.items():
+            sk = str(k) if not isinstance(k, str) else k
+            out[sk] = _everything_json_safe(v)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [_everything_json_safe(v) for v in obj]
+    if isinstance(obj, set):
+        return [_everything_json_safe(v) for v in obj]
+    if isinstance(obj, numbers.Number) and not isinstance(obj, bool):
+        try:
+            f = float(obj)
+            return f if math.isfinite(f) else 0.0
+        except Exception:
+            return 0.0
+    if isinstance(obj, (bytes, bytearray)):
+        try:
+            return obj.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+    try:
+        return str(obj)
+    except Exception:
+        return None
+
+
+def _json_response_list(payload: list) -> Response:
+    """Encode list to JSON bytes using only primitive-safe data (no Decimal left for stdlib json)."""
+    log = logging.getLogger(__name__)
+    try:
+        safe = _everything_json_safe(payload)
+    except Exception as e:
+        log.exception("Order book: _everything_json_safe failed (unexpected)")
+        if settings.DEBUG:
+            traceback.print_exc()
+        raise
+    try:
+        body = json.dumps(safe, ensure_ascii=False).encode("utf-8")
+    except Exception as e:
+        log.exception("Order book: json.dumps failed after sanitize (unexpected)")
+        if settings.DEBUG:
+            traceback.print_exc()
+        raise
+    return Response(content=body, media_type="application/json")
 
 
 def _get_days_in_order_book_90(db: Session, branch_id: UUID, item_ids: List[UUID]) -> dict:
@@ -38,31 +131,35 @@ def _get_days_in_order_book_90(db: Session, branch_id: UUID, item_ids: List[UUID
     since = date.today() - timedelta(days=90)
     since_dt = datetime.combine(since, datetime.min.time())
 
-    # Distinct (item_id, date) from current order book
-    daily_rows = (
-        db.query(DailyOrderBook.item_id, DailyOrderBook.entry_date)
-        .filter(
-            DailyOrderBook.branch_id == branch_id,
-            DailyOrderBook.item_id.in_(item_ids),
-            DailyOrderBook.entry_date >= since,
+    try:
+        # Distinct (item_id, date) from current order book
+        daily_rows = (
+            db.query(DailyOrderBook.item_id, DailyOrderBook.entry_date)
+            .filter(
+                DailyOrderBook.branch_id == branch_id,
+                DailyOrderBook.item_id.in_(item_ids),
+                DailyOrderBook.entry_date >= since,
+            )
+            .distinct()
+            .all()
         )
-        .distinct()
-        .all()
-    )
-    # Distinct (item_id, date) from history
-    history_rows = (
-        db.query(
-            OrderBookHistory.item_id,
-            func.date(OrderBookHistory.created_at).label("d"),
+        # Distinct (item_id, date) from history
+        history_rows = (
+            db.query(
+                OrderBookHistory.item_id,
+                func.date(OrderBookHistory.created_at).label("d"),
+            )
+            .filter(
+                OrderBookHistory.branch_id == branch_id,
+                OrderBookHistory.item_id.in_(item_ids),
+                OrderBookHistory.created_at >= since_dt,
+            )
+            .distinct()
+            .all()
         )
-        .filter(
-            OrderBookHistory.branch_id == branch_id,
-            OrderBookHistory.item_id.in_(item_ids),
-            OrderBookHistory.created_at >= since_dt,
-        )
-        .distinct()
-        .all()
-    )
+    except Exception as e:
+        logging.getLogger(__name__).warning("days_in_order_book_90 query failed: %s", e)
+        return {}
 
     # Merge and count distinct dates per item_id
     from collections import defaultdict
@@ -78,13 +175,25 @@ def _get_days_in_order_book_90(db: Session, branch_id: UUID, item_ids: List[UUID
 
 def _reason_display(entry) -> str:
     """Display reason: AUTO_* as-is, otherwise show creator name."""
-    reason = (entry.reason or "").strip()
-    if reason.upper().startswith("AUTO_"):
-        return reason
-    creator = getattr(entry, "creator", None)
-    if creator:
-        return (creator.full_name or creator.username or "Unknown").strip() or "Unknown"
-    return reason or "Unknown"
+    try:
+        reason = (entry.reason or "").strip()
+        if reason.upper().startswith("AUTO_"):
+            return reason
+        creator = getattr(entry, "creator", None)
+        if creator:
+            return (creator.full_name or creator.username or "Unknown").strip() or "Unknown"
+        return reason or "Unknown"
+    except Exception:
+        return (getattr(entry, "reason", None) or "").strip() or "Unknown"
+
+
+def _safe_int(v, default: int = 5) -> int:
+    try:
+        if v is None:
+            return default
+        return int(v)
+    except Exception:
+        return default
 
 
 def _get_last_wholesale_unit_cost_map(
@@ -106,17 +215,11 @@ def _get_last_wholesale_unit_cost_map(
 
     items = {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
 
-    # Latest PURCHASE cost (per retail/base unit) for each item at this branch.
-    last_purchase_subq = (
+    # Latest PURCHASE cost per item (avoid window functions — portable & fewer edge-case DB errors).
+    agg = (
         db.query(
-            InventoryLedger.item_id.label("item_id"),
-            InventoryLedger.unit_cost.label("unit_cost"),
-            func.row_number()
-            .over(
-                partition_by=InventoryLedger.item_id,
-                order_by=InventoryLedger.created_at.desc(),
-            )
-            .label("rn"),
+            InventoryLedger.item_id.label("iid"),
+            func.max(InventoryLedger.created_at).label("mx"),
         )
         .filter(
             InventoryLedger.item_id.in_(item_ids),
@@ -125,17 +228,32 @@ def _get_last_wholesale_unit_cost_map(
             InventoryLedger.transaction_type == "PURCHASE",
             InventoryLedger.quantity_delta > 0,
         )
+        .group_by(InventoryLedger.item_id)
         .subquery()
     )
-
     rows = (
-        db.query(last_purchase_subq.c.item_id, last_purchase_subq.c.unit_cost)
-        .filter(last_purchase_subq.c.rn == 1)
+        db.query(InventoryLedger.item_id, InventoryLedger.unit_cost)
+        .join(
+            agg,
+            and_(
+                InventoryLedger.item_id == agg.c.iid,
+                InventoryLedger.created_at == agg.c.mx,
+            ),
+        )
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.company_id == company_id,
+            InventoryLedger.transaction_type == "PURCHASE",
+            InventoryLedger.quantity_delta > 0,
+        )
         .all()
     )
-
+    seen: set[UUID] = set()
     out: dict[UUID, Decimal] = {}
     for r in rows:
+        if r.item_id in seen:
+            continue
+        seen.add(r.item_id)
         item = items.get(r.item_id)
         if not item:
             continue
@@ -158,6 +276,14 @@ def _get_last_wholesale_unit_cost_map(
     return out
 
 
+def _safe_float(v, default=0.0):
+    try:
+        x = float(v) if v is not None else default
+        return default if not math.isfinite(x) else x
+    except Exception:
+        return default
+
+
 def _serialize_order_book_entry(
     entry,
     _get_stock,
@@ -169,7 +295,10 @@ def _serialize_order_book_entry(
         if v is None:
             return None
         try:
-            return float(v)
+            x = float(v)
+            if not math.isfinite(x):
+                return 0.0
+            return x
         except Exception:
             return 0.0
     def _dt(d):
@@ -184,13 +313,15 @@ def _serialize_order_book_entry(
         "item_id": _uuid(entry.item_id),
         "entry_date": _dt(entry_date) if entry_date else None,
         "supplier_id": _uuid(entry.supplier_id),
-        "quantity_needed": float(entry.quantity_needed) if entry.quantity_needed is not None else 1,
+        "quantity_needed": _safe_float(entry.quantity_needed, 1.0),
         "unit_name": entry.unit_name or "unit",
         "reason": _reason_display(entry),
-        "source_reference_type": entry.source_reference_type,
+        "source_reference_type": (
+            str(entry.source_reference_type) if entry.source_reference_type is not None else None
+        ),
         "source_reference_id": _uuid(entry.source_reference_id),
         "notes": entry.notes,
-        "priority": int(entry.priority) if entry.priority is not None else 5,
+        "priority": _safe_int(entry.priority, 5),
         "days_in_order_book_90": days_in_book_90,
         "status": entry.status or "PENDING",
         "purchase_order_id": _uuid(entry.purchase_order_id),
@@ -210,6 +341,217 @@ def _serialize_order_book_entry(
     }
 
 
+@router.get("/no-replenishment")
+def get_order_book_no_replenishment(
+    branch_id: UUID = Query(..., description="Branch ID"),
+    company_id: UUID = Query(..., description="Company ID"),
+    date_from: Optional[str] = Query(None, description="Filter by entry_date >= (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Filter by entry_date <= (YYYY-MM-DD)"),
+    limit: int = Query(500, ge=1, le=2000),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
+):
+    """
+    Items that appeared on the order book but have **not** been replenished (no CLOSED / received row).
+
+    Combines **daily** PENDING/ORDERED lines in the date range with **history** ORDERED or CANCELLED
+    (excluding ORDERED rows superseded by a CLOSED receipt for the same PO+item). **Never** returns CLOSED.
+    """
+    user, db = user_and_db
+    # --- Daily: still open (not received / not cleared) ---
+    dq = db.query(DailyOrderBook).filter(
+        DailyOrderBook.branch_id == branch_id,
+        DailyOrderBook.company_id == company_id,
+        DailyOrderBook.status.in_(["PENDING", "ORDERED"]),
+    )
+    if date_from:
+        try:
+            start = date.fromisoformat(date_from.strip())
+            if hasattr(DailyOrderBook, "entry_date"):
+                dq = dq.filter(DailyOrderBook.entry_date >= start)
+            else:
+                dq = dq.filter(func.date(DailyOrderBook.created_at) >= start)
+        except (ValueError, TypeError):
+            pass
+    if date_to:
+        try:
+            end = date.fromisoformat(date_to.strip())
+            if hasattr(DailyOrderBook, "entry_date"):
+                dq = dq.filter(DailyOrderBook.entry_date <= end)
+            else:
+                dq = dq.filter(func.date(DailyOrderBook.created_at) <= end)
+        except (ValueError, TypeError):
+            pass
+
+    daily_entries = (
+        dq.options(
+            selectinload(DailyOrderBook.item),
+            selectinload(DailyOrderBook.supplier),
+            selectinload(DailyOrderBook.creator),
+        )
+        .order_by(DailyOrderBook.priority.desc(), DailyOrderBook.created_at.desc())
+        .all()
+    )
+
+    # --- History: ORDERED + CANCELLED only (never CLOSED) ---
+    hq = (
+        db.query(OrderBookHistory)
+        .options(
+            selectinload(OrderBookHistory.item),
+            selectinload(OrderBookHistory.supplier),
+        )
+        .filter(
+            OrderBookHistory.branch_id == branch_id,
+            OrderBookHistory.company_id == company_id,
+            OrderBookHistory.status.in_(["ORDERED", "CANCELLED"]),
+        )
+    )
+    if date_from:
+        try:
+            start = date.fromisoformat(date_from.strip())
+            if hasattr(OrderBookHistory, "entry_date"):
+                hq = hq.filter(OrderBookHistory.entry_date >= start)
+            else:
+                hq = hq.filter(func.date(OrderBookHistory.created_at) >= start)
+        except (ValueError, TypeError):
+            pass
+    if date_to:
+        try:
+            end = date.fromisoformat(date_to.strip())
+            if hasattr(OrderBookHistory, "entry_date"):
+                hq = hq.filter(OrderBookHistory.entry_date <= end)
+            else:
+                hq = hq.filter(func.date(OrderBookHistory.created_at) <= end)
+        except (ValueError, TypeError):
+            pass
+
+    _ObClosed = aliased(OrderBookHistory)
+    _superseded_ordered = exists(
+        select(1).where(
+            and_(
+                _ObClosed.company_id == OrderBookHistory.company_id,
+                _ObClosed.branch_id == OrderBookHistory.branch_id,
+                _ObClosed.item_id == OrderBookHistory.item_id,
+                _ObClosed.status == "CLOSED",
+                _ObClosed.purchase_order_id == OrderBookHistory.purchase_order_id,
+                OrderBookHistory.purchase_order_id.isnot(None),
+            )
+        )
+    )
+    hq = hq.filter(or_(OrderBookHistory.status != "ORDERED", ~_superseded_ordered))
+    hist_entries = (
+        hq.order_by(
+            func.coalesce(
+                OrderBookHistory.archived_at,
+                OrderBookHistory.ordered_at,
+                OrderBookHistory.updated_at,
+                OrderBookHistory.created_at,
+            ).desc()
+        )
+        .limit(limit * 2)
+        .all()
+    )
+
+    daily_item_ids = {e.item_id for e in daily_entries}
+    hist_only = [h for h in hist_entries if h.item_id not in daily_item_ids]
+
+    all_item_ids = list({e.item_id for e in daily_entries} | {h.item_id for h in hist_only})
+    days_map = _get_days_in_order_book_90(db, branch_id, all_item_ids)
+    try:
+        last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(db, branch_id, company_id, all_item_ids)
+    except Exception as e:
+        logging.getLogger(__name__).warning("no-replenishment cost map failed: %s", e)
+        last_wholesale_cost_map = {}
+
+    stock_map = {}
+    if all_item_ids:
+        try:
+            balances = (
+                db.query(InventoryBalance.item_id, InventoryBalance.current_stock)
+                .filter(
+                    InventoryBalance.item_id.in_(all_item_ids),
+                    InventoryBalance.company_id == company_id,
+                    InventoryBalance.branch_id == branch_id,
+                )
+                .all()
+            )
+            stock_map = {row.item_id: _to_int_stock(row.current_stock) for row in balances}
+        except Exception:
+            stock_map = {}
+
+    def _get_stock(item_id):
+        if item_id in stock_map:
+            return stock_map[item_id]
+        val = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.company_id == company_id,
+        ).scalar()
+        return _to_int_stock(val)
+
+    out: List[dict] = []
+
+    for entry in daily_entries:
+        try:
+            row = _serialize_order_book_entry(
+                entry,
+                _get_stock,
+                days_in_book_90=days_map.get(entry.item_id, 0),
+                last_wholesale_unit_cost_map=last_wholesale_cost_map,
+            )
+            row["row_source"] = "daily"
+            row["replenishment_label"] = (
+                "No PO yet" if (entry.status or "") == "PENDING" else "PO placed — no receipt recorded yet"
+            )
+            ed = getattr(entry, "entry_date", None) or (
+                entry.created_at.date() if entry.created_at else date.today()
+            )
+            row["_sort_d"] = ed
+            out.append(row)
+        except Exception as e:
+            logging.getLogger(__name__).warning("no-replenishment daily row skip %s: %s", entry.id, e)
+
+    for h in hist_only:
+        try:
+            cost = last_wholesale_cost_map.get(h.item_id)
+            entry_dict = {
+                "id": str(h.id),
+                "company_id": str(h.company_id),
+                "branch_id": str(h.branch_id),
+                "item_id": str(h.item_id),
+                "item_name": h.item.name if h.item else None,
+                "item_sku": h.item.sku if h.item else None,
+                "supplier_name": h.supplier.name if h.supplier else None,
+                "quantity_needed": _safe_float(h.quantity_needed, 0.0),
+                "unit_name": h.unit_name or "unit",
+                "last_wholesale_unit_cost": _safe_float(cost, 0.0),
+                "status": h.status,
+                "replenishment_label": (
+                    "PO placed — no receipt recorded yet"
+                    if h.status == "ORDERED"
+                    else "Removed from order book (no replenishment recorded)"
+                ),
+                "row_source": "history",
+                "entry_date": h.entry_date.isoformat() if h.entry_date else None,
+                "ordered_at": h.ordered_at.isoformat() if h.ordered_at else None,
+                "created_at": h.created_at.isoformat() if h.created_at else None,
+                "received_at": None,
+                "reason": (h.reason or "")[:200],
+                "purchase_order_id": str(h.purchase_order_id) if h.purchase_order_id else None,
+                "current_stock": _get_stock(h.item_id),
+                "days_in_order_book_90": days_map.get(h.item_id, 0),
+            }
+            ed = h.entry_date or (h.created_at.date() if h.created_at else date.today())
+            entry_dict["_sort_d"] = ed
+            out.append(entry_dict)
+        except Exception as e:
+            logging.getLogger(__name__).warning("no-replenishment history row skip %s: %s", h.id, e)
+
+    out.sort(key=lambda r: r.get("_sort_d", date.min), reverse=True)
+    for r in out:
+        r.pop("_sort_d", None)
+    return _json_response_list(out[:limit])
+
+
 @router.get("")
 @router.get("/")
 def list_order_book_entries(
@@ -220,13 +562,13 @@ def list_order_book_entries(
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for entry_date filter"),
     include_ordered: Optional[bool] = Query(False, description="If true, include ORDERED entries (for showing converted)"),
     supplier_id: Optional[UUID] = Query(None, description="Filter by supplier: show only items from this supplier"),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     List order book entries for a branch, optionally filtered by date and supplier.
     Returns JSON array with item details and current stock levels.
     """
+    user, db = user_and_db
     try:
         query = db.query(DailyOrderBook).filter(
             DailyOrderBook.branch_id == branch_id,
@@ -261,11 +603,12 @@ def list_order_book_entries(
             except (ValueError, TypeError):
                 pass
 
+        # Do not selectinload(creator): batch-loading User can fail under RLS or if FK is stale;
+        # _reason_display() lazy-loads creator per row inside a try/except.
         entries = (
             query.options(
                 selectinload(DailyOrderBook.item),
                 selectinload(DailyOrderBook.supplier),
-                selectinload(DailyOrderBook.creator),
             )
             .order_by(
                 DailyOrderBook.priority.desc(),
@@ -295,18 +638,22 @@ def list_order_book_entries(
                     )
                     .all()
                 )
-                stock_map = {row.item_id: int(row.current_stock or 0) for row in balances}
+                stock_map = {row.item_id: _to_int_stock(row.current_stock) for row in balances}
             except Exception:
                 stock_map = {}
 
         def _get_stock(item_id):
-            if item_id in stock_map:
-                return stock_map[item_id]
-            val = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
-                InventoryLedger.item_id == item_id,
-                InventoryLedger.branch_id == branch_id
-            ).scalar()
-            return int(val or 0)
+            try:
+                if item_id in stock_map:
+                    return stock_map[item_id]
+                val = db.query(func.sum(InventoryLedger.quantity_delta)).filter(
+                    InventoryLedger.item_id == item_id,
+                    InventoryLedger.branch_id == branch_id,
+                    InventoryLedger.company_id == company_id,
+                ).scalar()
+                return _to_int_stock(val)
+            except Exception:
+                return 0
 
         result = []
         for entry in entries:
@@ -322,14 +669,24 @@ def list_order_book_entries(
                 )
             except Exception as e:
                 logging.getLogger(__name__).warning("Skipping order book entry %s: %s", entry.id, e)
-        return JSONResponse(content=result, media_type="application/json")
+        try:
+            return _json_response_list(result)
+        except Exception as enc_err:
+            # _json_response_list logs the traceback on sanitize/json.dumps failure
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to serialize order book: {enc_err!s}",
+            ) from enc_err
+    except HTTPException:
+        raise
     except Exception as e:
         logging.getLogger(__name__).exception("Order book list failed")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Failed to load order book", "error": str(e)},
-            media_type="application/json",
-        )
+        if settings.DEBUG:
+            traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load order book: {e!s}",
+        ) from e
 
 
 @router.get("/today-summary", response_model=dict)
@@ -337,13 +694,13 @@ def get_order_book_today_summary(
     branch_id: UUID = Query(..., description="Branch ID"),
     company_id: UUID = Query(..., description="Company ID"),
     limit: int = Query(10, ge=0, le=200, description="Max entries to include (0 = none)"),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Lightweight dashboard endpoint: number of PENDING order book entries for *today*,
     plus an optional small list of entries for quick preview.
     """
+    user, db = user_and_db
     today = date.today()
 
     q = db.query(DailyOrderBook).filter(
@@ -411,13 +768,13 @@ def create_order_book_entry(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the entry"),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Create a new order book entry.
     Returns 409 if the item is already in today's order book.
     """
+    user, db = user_and_db
     # Check if item exists
     item = db.query(Item).filter(Item.id == entry.item_id).first()
     if not item:
@@ -543,13 +900,13 @@ def bulk_create_order_book_entries(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the entries"),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Bulk create order book entries from selected items.
     Items already in the order book (PENDING or ORDERED) for the given date are skipped and returned.
     """
+    user, db = user_and_db
     created_entries = []
     skipped_item_ids: List[UUID] = []
     skipped_item_names: List[str] = []
@@ -664,14 +1021,14 @@ def bulk_create_order_book_entries(
 def update_order_book_entry(
     entry_id: UUID,
     entry_update: OrderBookEntryUpdate,
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Update an order book entry
     
     Only PENDING entries can be updated.
     """
+    user, db = user_and_db
     entry = db.query(DailyOrderBook).filter(DailyOrderBook.id == entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Order book entry not found")
@@ -738,14 +1095,14 @@ def update_order_book_entry(
 @router.delete("/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_order_book_entry(
     entry_id: UUID,
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Delete (cancel) an order book entry
     
     Moves entry to history with CANCELLED status.
     """
+    user, db = user_and_db
     entry = db.query(DailyOrderBook).filter(DailyOrderBook.id == entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Order book entry not found")
@@ -795,14 +1152,14 @@ def create_purchase_order_from_book(
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: UUID = Query(..., description="Branch ID"),
     created_by: UUID = Query(..., description="User ID creating the purchase order"),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Create a purchase order from selected order book entries
     
     Converts selected order book entries to a purchase order and marks them as ORDERED.
     """
+    user, db = user_and_db
     # Get all entries
     entries = db.query(DailyOrderBook).filter(
         DailyOrderBook.id.in_(request.entry_ids),
@@ -946,17 +1303,61 @@ def get_order_book_history(
     limit: int = Query(100, ge=1, le=1000),
     date_from: Optional[str] = Query(None, description="Filter by entry_date >= (YYYY-MM-DD) for day/week/month review"),
     date_to: Optional[str] = Query(None, description="Filter by entry_date <= (YYYY-MM-DD)"),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    history_status: str = Query(
+        "ordered",
+        description=(
+            "Which rows: 'ordered' (PO placed, awaiting receipt — sourcing), "
+            "'closed' (replenished/received), 'cancelled', 'all', or comma-separated e.g. closed,ordered"
+        ),
+    ),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
-    Get order book history (ORDERED, CANCELLED, CLOSED). Filter by entry_date for day/week/month review.
+    Order book history: archived rows (ORDERED = on order awaiting receipt; CLOSED = replenished;
+    CANCELLED = deleted from daily book). Default is ORDERED so sourcing candidates are visible.
     """
-    query = db.query(OrderBookHistory).filter(
-        OrderBookHistory.branch_id == branch_id,
-        OrderBookHistory.company_id == company_id,
-        OrderBookHistory.status == "CLOSED",
+    user, db = user_and_db
+    query = (
+        db.query(OrderBookHistory)
+        .options(
+            selectinload(OrderBookHistory.item),
+            selectinload(OrderBookHistory.supplier),
+        )
+        .filter(
+            OrderBookHistory.branch_id == branch_id,
+            OrderBookHistory.company_id == company_id,
+        )
     )
+    _hist = (history_status or "ordered").strip().lower()
+    allowed = {"ORDERED", "CLOSED", "CANCELLED"}
+    if _hist == "all":
+        query = query.filter(OrderBookHistory.status.in_(["ORDERED", "CLOSED", "CANCELLED"]))
+    elif "," in _hist:
+        statuses = []
+        for part in _hist.split(","):
+            p = part.strip().upper()
+            if p == "ORDERED":
+                statuses.append("ORDERED")
+            elif p == "CLOSED":
+                statuses.append("CLOSED")
+            elif p == "CANCELLED":
+                statuses.append("CANCELLED")
+        statuses = [s for s in statuses if s in allowed]
+        if not statuses:
+            statuses = ["ORDERED"]
+        query = query.filter(OrderBookHistory.status.in_(statuses))
+    else:
+        if _hist in ("ordered", "open", "unclosed"):
+            query = query.filter(OrderBookHistory.status == "ORDERED")
+        elif _hist in ("closed", "replenished", "received"):
+            query = query.filter(OrderBookHistory.status == "CLOSED")
+        elif _hist in ("cancelled", "never_fulfilled"):
+            query = query.filter(OrderBookHistory.status == "CANCELLED")
+        elif _hist in ("no_replenishment", "unserviced", "not_replenished"):
+            # ORDERED (awaiting receipt) + CANCELLED (removed); never CLOSED
+            query = query.filter(OrderBookHistory.status.in_(["ORDERED", "CANCELLED"]))
+        else:
+            query = query.filter(OrderBookHistory.status == "ORDERED")
     if date_from:
         try:
             start = date.fromisoformat(date_from.strip())
@@ -975,7 +1376,30 @@ def get_order_book_history(
                 query = query.filter(func.date(OrderBookHistory.created_at) <= end)
         except (ValueError, TypeError):
             pass
-    entries = query.order_by(OrderBookHistory.archived_at.desc()).limit(limit).all()
+    # ORDERED audit rows are created when a PO is placed; CLOSED rows are added when stock is
+    # received. Hide ORDERED rows that already have a matching CLOSED row (same PO + item).
+    _ObClosed = aliased(OrderBookHistory)
+    _superseded_ordered = exists(
+        select(1).where(
+            and_(
+                _ObClosed.company_id == OrderBookHistory.company_id,
+                _ObClosed.branch_id == OrderBookHistory.branch_id,
+                _ObClosed.item_id == OrderBookHistory.item_id,
+                _ObClosed.status == "CLOSED",
+                _ObClosed.purchase_order_id == OrderBookHistory.purchase_order_id,
+                OrderBookHistory.purchase_order_id.isnot(None),
+            )
+        )
+    )
+    query = query.filter(or_(OrderBookHistory.status != "ORDERED", ~_superseded_ordered))
+    # ORDERED rows may not have archived_at; CLOSED uses archived_at.
+    order_col = func.coalesce(
+        OrderBookHistory.archived_at,
+        OrderBookHistory.ordered_at,
+        OrderBookHistory.updated_at,
+        OrderBookHistory.created_at,
+    )
+    entries = query.order_by(order_col.desc()).limit(limit).all()
     
     last_wholesale_cost_map = _get_last_wholesale_unit_cost_map(
         db,
@@ -1025,14 +1449,14 @@ def get_aging_order_book_entries(
     threshold_days: int = Query(7, ge=1, le=365, description="Minimum age in days for an entry to be considered aging"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Intelligence: aging order book entries.
 
     Returns open PENDING entries whose entry_date is older than threshold_days.
     """
+    user, db = user_and_db
     today = date.today()
     cutoff_date = today - timedelta(days=threshold_days)
 
@@ -1076,8 +1500,7 @@ def get_repeated_shortages(
     min_count: int = Query(3, ge=1, le=365, description="Minimum shortage occurrences to include"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Intelligence: repeated shortages.
@@ -1085,6 +1508,7 @@ def get_repeated_shortages(
     Uses order_book_history to find items that have appeared frequently in the
     order book within the time window (any status).
     """
+    user, db = user_and_db
     today = date.today()
     since = today - timedelta(days=days_window)
 
@@ -1149,14 +1573,14 @@ def get_multiple_open_entries(
     company_id: UUID = Query(..., description="Company ID"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Intelligence: multiple open entries.
 
     Finds items with more than one open PENDING entry in the order book.
     """
+    user, db = user_and_db
     subq = (
         db.query(
             DailyOrderBook.item_id.label("item_id"),
@@ -1212,8 +1636,7 @@ def get_multiple_open_entries(
 def manual_close_order_book_entry(
     entry_id: UUID,
     reason: Optional[str] = Body(None, embed=True, description="Optional manual close reason or note"),
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_and_db: Tuple[User, Session] = Depends(get_current_user),
 ):
     """
     Manually close an order book entry.
@@ -1222,7 +1645,7 @@ def manual_close_order_book_entry(
     - Does NOT change inventory or procurement flows.
     - Moves the entry to order_book_history with status=CLOSED and a manual note.
     """
-    user, _ = current_user_and_db
+    user, db = user_and_db
     if not _user_has_owner_or_admin_role(db, user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

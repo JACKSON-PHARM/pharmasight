@@ -4,6 +4,7 @@ PharmaSight - Single Entry Point to Start Both Backend and Frontend
 Run: python start.py
 """
 
+import json
 import subprocess
 import sys
 import os
@@ -116,6 +117,20 @@ def start_backend(project_root, venv_python, port=8000):
     return proc, port
 
 
+def write_frontend_runtime_config(project_root: Path, backend_port: int) -> None:
+    """
+    Write active backend URL so the SPA (frontend/js/config.js) uses the same port as uvicorn
+    (e.g. 8001 when 8000 is still occupied after taskkill attempts).
+    """
+    path = project_root / "frontend" / "js" / "runtime_config.json"
+    data = {"apiBaseUrl": f"http://localhost:{backend_port}"}
+    try:
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        print_colored(f"   Wrote {path.name} -> {data['apiBaseUrl']}", Colors.CYAN)
+    except Exception as e:
+        print_colored(f"   Could not write runtime_config.json: {e}", Colors.YELLOW)
+
+
 def start_frontend(project_root, port=3000):
     """Start the frontend HTTP server with SPA routing"""
     print_colored("🎨 Starting Frontend Server (SPA routing enabled)...", Colors.YELLOW)
@@ -195,6 +210,7 @@ def main():
         # Start backend
         backend_process, backend_port = start_backend(project_root, venv_python)
         processes.append(("Backend", backend_process))
+        write_frontend_runtime_config(project_root, backend_port)
         time.sleep(2)  # Give backend time to start
         
         # Start frontend

@@ -20,6 +20,17 @@ from app.services.item_units_helper import get_unit_multiplier_from_item
 
 logger = logging.getLogger(__name__)
 
+# Large wholesale packs (e.g. 100 tablets): sales are often small retail quantities.
+# Treating "one wholesale unit" as stock <= full pack_size causes noisy order-book rows
+# when plenty of retail stock remains (e.g. 50 tabs left on a 100-pack).
+# When pack_size is high and break-bulk is allowed, "at or below one wholesale" only fires
+# when retail stock falls below a fraction of the pack (and a minimum floor).
+LARGE_PACK_ORDER_BOOK_MIN_PACK_SIZE = 48
+LARGE_PACK_MIN_RETAIL_BEFORE_REORDER = 20
+LARGE_PACK_TRIGGER_FRACTION_OF_PACK = 0.25
+# For the same items, require stock below monthly_sales/4 instead of /2 (less aggressive).
+LARGE_PACK_MONTHLY_SALES_DIVISOR = 4.0
+
 
 class OrderBookService:
     """Service for managing automatic order book entries"""
@@ -36,10 +47,12 @@ class OrderBookService:
         """
         Check if item should be added to order book after a sale.
         
-        Criteria:
-        1. Item must have had at least one sale before
-        2. Current stock (in retail units) < pack_size (supplier unit size)
-        3. Quantity to order ≤ monthly sales (in supplier units, rounded up)
+        Criteria (any):
+        1. Stock at or below one wholesale unit: retail <= pack_size (small packs), or for large
+           break-bulk packs (pack_size >= threshold) retail below a fraction of the pack / floor.
+        2. Stock below monthly sales / divisor (2 for normal packs, 4 for large break-bulk packs).
+        3. Stock <= 0 after sale (even with no monthly history).
+        Quantity to order is capped by monthly sales when history exists.
         
         Args:
             is_auto: True if auto-generated from sale, False if manual
@@ -108,16 +121,40 @@ class OrderBookService:
         
         monthly_sales_float = float(monthly_sales_retail_units)
 
-        # Rule 1: stock at or below one wholesale unit (<= pack_size) so "one bottle left" triggers
-        # Rule 2: stock < monthly_sales/2 when monthly_sales > 0 (accumulated sales over month)
+        # Rule 1: stock at or below one wholesale unit (<= pack_size) so "one bottle left" triggers.
+        #        For large break-bulk packs, use a stricter retail threshold (see module constants).
+        # Rule 2: stock < monthly_sales/divisor when monthly_sales > 0 (large packs use /4, else /2).
         # Rule 3: stock fell to zero after sale - add even without monthly sales data
-        at_or_below_one_wholesale = current_stock_retail_units <= pack_size
-        below_half_monthly = monthly_sales_float > 0 and current_stock_retail_units < (monthly_sales_float / 2)
+        use_large_pack_rules = (
+            pack_size >= LARGE_PACK_ORDER_BOOK_MIN_PACK_SIZE
+            and getattr(item, "can_break_bulk", True)
+        )
+        if use_large_pack_rules:
+            retail_threshold = max(
+                1,
+                min(
+                    pack_size,
+                    max(
+                        LARGE_PACK_MIN_RETAIL_BEFORE_REORDER,
+                        int(pack_size * LARGE_PACK_TRIGGER_FRACTION_OF_PACK),
+                    ),
+                ),
+            )
+            at_or_below_one_wholesale = current_stock_retail_units <= float(retail_threshold)
+            monthly_divisor = LARGE_PACK_MONTHLY_SALES_DIVISOR
+        else:
+            at_or_below_one_wholesale = current_stock_retail_units <= pack_size
+            monthly_divisor = 2.0
+
+        below_half_monthly = monthly_sales_float > 0 and current_stock_retail_units < (
+            monthly_sales_float / monthly_divisor
+        )
         stock_fell_to_zero = current_stock_retail_units <= 0
         if not at_or_below_one_wholesale and not below_half_monthly and not stock_fell_to_zero:
             logger.debug(
                 f"Item {item.name} ({item_id}) stock ({current_stock_retail_units}) does not meet thresholds "
-                f"(pack_size={pack_size}, monthly_sales/2={monthly_sales_float/2 if monthly_sales_float > 0 else 0}) - skipping order book"
+                f"(pack_size={pack_size}, monthly_sales/{monthly_divisor:g}="
+                f"{monthly_sales_float/monthly_divisor if monthly_sales_float > 0 else 0}) - skipping order book"
             )
             return None
 
@@ -669,6 +706,15 @@ class OrderBookService:
                 archived_at=now,
             )
             db.add(history_row)
+            # Remove duplicate ORDERED audit row now that CLOSED exists (same PO + item)
+            if entry.purchase_order_id:
+                db.query(OrderBookHistory).filter(
+                    OrderBookHistory.company_id == entry.company_id,
+                    OrderBookHistory.branch_id == entry.branch_id,
+                    OrderBookHistory.item_id == entry.item_id,
+                    OrderBookHistory.status == "ORDERED",
+                    OrderBookHistory.purchase_order_id == entry.purchase_order_id,
+                ).delete(synchronize_session=False)
             logger.info(
                 "Order book entry archived as CLOSED for item %s (branch %s): received_at=%s",
                 entry.item_id, entry.branch_id, now,

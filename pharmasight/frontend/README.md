@@ -22,7 +22,8 @@ frontend/
 ├── css/
 │   └── style.css       # Main stylesheet
 ├── js/
-│   ├── config.js       # Configuration
+│   ├── config.js       # Configuration (reads runtime_config.json from start.py)
+│   ├── runtime_config.json.example  # Copy to runtime_config.json or run `python start.py`
 │   ├── api.js          # API client
 │   ├── utils.js        # Utility functions
 │   ├── app.js          # Main app logic

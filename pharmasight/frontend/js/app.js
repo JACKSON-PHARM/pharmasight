@@ -13,6 +13,26 @@ let loadPageInProgress = false;
 let lastLoadedPage = null; // Last page that completed loading (used to skip duplicate hashchange loads)
 
 /**
+ * Read tenant_subdomain from the internal JWT (no extra API call; avoids fake password login).
+ */
+function readTenantSubdomainFromAccessToken() {
+    try {
+        if (typeof localStorage === 'undefined') return null;
+        const t = localStorage.getItem('pharmasight_access_token');
+        if (!t) return null;
+        const parts = t.split('.');
+        if (parts.length < 2) return null;
+        const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+        const json = atob(b64 + pad);
+        const payload = JSON.parse(json);
+        const sub = (payload.tenant_subdomain || '').trim();
+        if (sub && sub !== '__default__') return sub;
+    } catch (_) {}
+    return null;
+}
+
+/**
  * Check if user is authenticated
  * Single source of truth for auth state
  */
@@ -554,27 +574,18 @@ async function startAppFlow() {
             window.Permissions.clearPermissionsCache();
         }
 
-        // Ensure tenant context is set even for recovery/password-reset sessions.
-        // Recovery links don't contain tenant info; we can discover tenant by email via backend.
+        // Ensure tenant context is set (X-Tenant-* headers for API). Prefer JWT claim — never use fake password login.
         try {
             let sub = null;
             try { sub = sessionStorage.getItem('pharmasight_tenant_subdomain'); } catch (_) {}
             if (!sub) {
                 try { sub = localStorage.getItem('pharmasight_tenant_subdomain'); } catch (_) {}
             }
-            if (!sub && user && user.email) {
-                const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null) ? CONFIG.API_BASE_URL : '';
-                const resp = await fetch(`${base}/api/auth/username-login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: user.email, password: 'bootstrap' })
-                });
-                if (resp.ok) {
-                    const data = await resp.json().catch(() => ({}));
-                    if (data && data.tenant_subdomain) {
-                        try { sessionStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain); } catch (_) {}
-                        try { localStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain); } catch (_) {}
-                    }
+            if (!sub) {
+                sub = readTenantSubdomainFromAccessToken();
+                if (sub) {
+                    try { sessionStorage.setItem('pharmasight_tenant_subdomain', sub); } catch (_) {}
+                    try { localStorage.setItem('pharmasight_tenant_subdomain', sub); } catch (_) {}
                 }
             }
         } catch (e) {

@@ -115,8 +115,8 @@ class OrderBookHistoryResponse(BaseModel):
     created_by: UUID
     created_at: datetime
     updated_at: datetime
-    archived_at: datetime
-    
+    archived_at: Optional[datetime] = None  # ORDERED audit rows may omit until closed
+
     # Related data
     item_name: Optional[str] = None
     item_sku: Optional[str] = None

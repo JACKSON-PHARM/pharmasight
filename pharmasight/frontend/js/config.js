@@ -1,9 +1,40 @@
 // PharmaSight Configuration
 // Use relative URL when served from same origin (e.g. Render); localhost => explicit API URL for local dev.
+//
+// Bootstrap: start.py writes frontend/js/runtime_config.json with the active backend port (8000 vs 8001).
+// We load it synchronously here so api.js can construct APIClient immediately (no top-level await).
+(function loadRuntimeConfigSync() {
+    if (typeof window === 'undefined') return;
+    window.RUNTIME_CONFIG = {};
+    try {
+        const h = window.location.hostname;
+        if (h !== 'localhost' && h !== '127.0.0.1') return;
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', '/js/runtime_config.json', false);
+        xhr.send(null);
+        if (xhr.status === 200 && xhr.responseText) {
+            window.RUNTIME_CONFIG = JSON.parse(xhr.responseText);
+        }
+    } catch (e) {
+        console.warn('[CONFIG] Could not load /js/runtime_config.json (run start.py to create it).', e && e.message);
+    }
+})();
+
+/** Default API base on localhost when not using same-origin hosting (matches start.py / runtime_config.json). */
+function getDefaultLocalApiBase() {
+    try {
+        const rc = typeof window !== 'undefined' && window.RUNTIME_CONFIG && window.RUNTIME_CONFIG.apiBaseUrl;
+        if (rc && typeof rc === 'string' && rc.trim()) {
+            return rc.trim().replace(/\/+$/, '');
+        }
+    } catch (_) {}
+    return 'http://localhost:8000';
+}
+
 const CONFIG = {
     API_BASE_URL: (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
         ? ''
-        : 'http://localhost:8000',
+        : getDefaultLocalApiBase(),
     // Public URL of the frontend (used for Supabase email redirects).
     // Defaults to current origin; can be overridden via localStorage key `pharmasight_app_public_url`.
     APP_PUBLIC_URL: (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '',
@@ -255,6 +286,7 @@ loadConfig();
 // Expose CONFIG to window for global access
 if (typeof window !== 'undefined') {
     window.CONFIG = CONFIG;
+    window.getDefaultLocalApiBase = getDefaultLocalApiBase;
     window.saveConfig = saveConfig;
     window.loadConfig = loadConfig;
     window.loadCompanyPrintSettings = loadCompanyPrintSettings;

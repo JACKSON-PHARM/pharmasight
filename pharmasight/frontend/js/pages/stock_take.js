@@ -2026,6 +2026,14 @@ async function saveEditedCount() {
     });
 }
 
+/** Backward-compatible aliases: inline HTML may call these; they delegate to editCount/deleteCount. */
+function editShelfItem(countId) {
+    return editCount(countId);
+}
+function removeShelfItem(countId) {
+    return deleteCount(countId);
+}
+
 // Export to Window
 if (typeof window !== 'undefined') {
     window.loadStockTake = loadStockTake;

@@ -1023,7 +1023,15 @@ const API = {
             if (options.dateTo) params.date_to = options.dateTo;
             if (options.includeOrdered === true) params.include_ordered = 'true';
             if (options.supplierId) params.supplier_id = options.supplierId;
-            return api.get('/api/order-book', params);
+            return api.get('/api/order-book', params, { _skipDedupe: true });
+        },
+
+        /** Combined daily + history lines with no replenishment (excludes CLOSED). */
+        getNoReplenishment: (branchId, companyId, limit = 500, options = {}) => {
+            const params = { branch_id: branchId, company_id: companyId, limit };
+            if (options.dateFrom) params.date_from = options.dateFrom;
+            if (options.dateTo) params.date_to = options.dateTo;
+            return api.get('/api/order-book/no-replenishment', params, { _skipDedupe: true });
         },
         
         // Create entry
@@ -1068,12 +1076,13 @@ const API = {
             return api.get('/api/order-book/today-summary', params);
         },
         
-        // Get history (replenished/archived entries). Optional: dateFrom, dateTo for period.
+        // Order book history. Optional: dateFrom, dateTo; historyStatus: ordered | closed | cancelled | all
         getHistory: (branchId, companyId, limit = 500, options = {}) => {
             const params = { branch_id: branchId, company_id: companyId, limit };
             if (options.dateFrom) params.date_from = options.dateFrom;
             if (options.dateTo) params.date_to = options.dateTo;
-            return api.get('/api/order-book/history', params);
+            if (options.historyStatus) params.history_status = options.historyStatus;
+            return api.get('/api/order-book/history', params, { _skipDedupe: true });
         },
     },
     // Authentication

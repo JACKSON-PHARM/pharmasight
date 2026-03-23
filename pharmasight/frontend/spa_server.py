@@ -19,6 +19,7 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         '.mjs': 'application/javascript',
         '.css': 'text/css',
         '.html': 'text/html',
+        '.json': 'application/json',
     }
     
     def guess_type(self, path):

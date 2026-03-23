@@ -5749,6 +5749,74 @@ let orderBookDateFilter = 'today'; // today | yesterday | this_week | last_week 
 let orderBookSupplierFilter = null; // UUID or null = all suppliers
 let orderBookHistoryEntries = [];
 let orderBookHistoryDateFilter = 'this_month';
+/** History view: closed = replenished; ordered_not_replenished; not_ordered_nor_replenished; combined_shortage; all */
+let orderBookHistoryStatusFilter = 'closed';
+
+/**
+ * If the browser served a cached old purchases.js, the history card may still be the legacy
+ * "replenished only" layout (no Show dropdown). Patch DOM so filters always appear.
+ */
+function patchOrderBookHistoryLegacyUI() {
+    try {
+        if (document.getElementById('orderBookHistoryStatusFilter')) return;
+        const tbody = document.getElementById('orderBookHistoryTableBody');
+        if (!tbody) return;
+        const card = tbody.closest('.card');
+        if (!card) return;
+        const header = card.querySelector('.card-header');
+        if (!header) return;
+
+        const title = header.querySelector('h3.card-title');
+        if (title && /replenished|order book history/i.test(title.textContent)) {
+            title.innerHTML = '<i class="fas fa-history"></i> Order book history';
+        }
+        const desc = header.querySelector('p');
+        if (desc && (/ordered and stock received|entries that were ordered|replenished/i.test(desc.textContent))) {
+            desc.textContent =
+                'Filter by outcome: items replenished (received), ordered but not replenished yet, or not ordered nor replenished. Use Date for the period.';
+        }
+
+        const dateSel = document.getElementById('orderBookHistoryDateFilter');
+        const filterRow = dateSel ? dateSel.closest('div') : header.querySelector('div[style*="margin-top"]');
+        if (!filterRow) return;
+
+        const m = orderBookHistoryStatusFilter || 'closed';
+        const sel = (value, ...aliases) =>
+            m === value || aliases.includes(m) ? ' selected' : '';
+
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin-right:0.5rem;flex-wrap:wrap;';
+        wrap.innerHTML = `
+            <label style="font-weight: 500;">Show:</label>
+            <select id="orderBookHistoryStatusFilter" class="form-input" style="min-width: 280px; max-width: 100%;">
+                <option value="closed"${sel('closed')}>Items replenished (stock received)</option>
+                <option value="ordered_not_replenished"${sel('ordered_not_replenished', 'ordered')}>Ordered, not replenished yet</option>
+                <option value="not_ordered_nor_replenished"${sel('not_ordered_nor_replenished')}>Not ordered nor replenished</option>
+                <option value="combined_shortage"${sel('combined_shortage', 'no_replenishment', 'unserviced')}>Combined: all shortage (no receipt / removed)</option>
+                <option value="all"${sel('all')}>All archived</option>
+            </select>
+        `;
+        filterRow.insertBefore(wrap, filterRow.firstChild);
+
+        const st = document.getElementById('orderBookHistoryStatusFilter');
+        if (st) {
+            st.addEventListener('change', function () {
+                if (window.applyOrderBookHistoryStatusFilter) window.applyOrderBookHistoryStatusFilter(this.value);
+            });
+        }
+
+        card.setAttribute('data-order-book-history-ui', 'patched-v2');
+
+        const thead = card.querySelector('thead tr');
+        if (thead) {
+            thead.querySelectorAll('th').forEach((th) => {
+                if ((th.textContent || '').trim() === 'Received') th.textContent = 'Ordered / Received';
+            });
+        }
+    } catch (e) {
+        console.warn('patchOrderBookHistoryLegacyUI:', e);
+    }
+}
 
 // Render Order Book Page (Page-Shell-First Pattern)
 async function renderOrderBookPage() {
@@ -5766,10 +5834,19 @@ async function renderOrderBookPage() {
 
     // Render shell first (with supplier dropdown)
     renderOrderBookShell(suppliers);
+    patchOrderBookHistoryLegacyUI();
 
-    // Then fetch and render data (open items + history)
-    await fetchAndRenderOrderBookData();
-    await fetchAndRenderOrderBookHistory();
+    // Load main table + history independently so a list API failure still shows history (and vice versa).
+    try {
+        await fetchAndRenderOrderBookData();
+    } catch (e) {
+        console.error('Order book list failed:', e);
+    }
+    try {
+        await fetchAndRenderOrderBookHistory();
+    } catch (e) {
+        console.error('Order book history failed:', e);
+    }
 }
 
 function renderOrderBookShell(suppliers = []) {
@@ -5867,10 +5944,21 @@ function renderOrderBookShell(suppliers = []) {
         <div class="card" style="margin-top: 1.5rem;">
             <div class="card-header" style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color);">
                 <h3 class="card-title" style="margin: 0; font-size: 1.2rem;">
-                    <i class="fas fa-history"></i> Order book history (replenished)
+                    <i class="fas fa-history"></i> Order book history
                 </h3>
-                <p style="font-size: 0.875rem; color: var(--text-secondary); margin: 0.5rem 0 0 0;">Entries that were ordered and stock received. Use Date to review by period.</p>
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin: 0.5rem 0 0 0;">
+                    Filter by outcome: <strong>items replenished</strong> (received), <strong>ordered but not replenished</strong> (PO / awaiting receipt),
+                    or <strong>not ordered nor replenished</strong> (still pending or removed from book). Use <strong>Date</strong> for the period.
+                </p>
                 <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                    <label style="font-weight: 500;">Show:</label>
+                    <select id="orderBookHistoryStatusFilter" class="form-input" style="min-width: 320px; max-width: 100%;" onchange="if(window.applyOrderBookHistoryStatusFilter) window.applyOrderBookHistoryStatusFilter(this.value)">
+                        <option value="closed" ${['closed'].includes(orderBookHistoryStatusFilter) ? 'selected' : ''}>Items replenished (stock received)</option>
+                        <option value="ordered_not_replenished" ${['ordered_not_replenished', 'ordered'].includes(orderBookHistoryStatusFilter) ? 'selected' : ''}>Ordered, not replenished yet</option>
+                        <option value="not_ordered_nor_replenished" ${orderBookHistoryStatusFilter === 'not_ordered_nor_replenished' ? 'selected' : ''}>Not ordered nor replenished</option>
+                        <option value="combined_shortage" ${['combined_shortage', 'no_replenishment', 'unserviced'].includes(orderBookHistoryStatusFilter) ? 'selected' : ''}>Combined: all shortage (no receipt / removed)</option>
+                        <option value="all" ${orderBookHistoryStatusFilter === 'all' ? 'selected' : ''}>All archived</option>
+                    </select>
                     <label style="font-weight: 500;">Date:</label>
                     <select id="orderBookHistoryDateFilter" class="form-input" style="width: 160px;" onchange="if(window.applyOrderBookHistoryDateFilter) window.applyOrderBookHistoryDateFilter(this.value)">
                         <option value="today" ${orderBookHistoryDateFilter === 'today' ? 'selected' : ''}>Today</option>
@@ -5898,7 +5986,7 @@ function renderOrderBookShell(suppliers = []) {
                                 <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Unit</th>
                                 <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Supplier</th>
                                 <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Status</th>
-                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Received</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align: left;">Ordered / Received</th>
                             </tr>
                         </thead>
                         <tbody id="orderBookHistoryTableBody">
@@ -5971,12 +6059,80 @@ function getOrderBookDateRange(filter) {
     return { dateFrom, dateTo };
 }
 
+function _orderBookNormItemId(id) {
+    return id == null ? '' : String(id);
+}
+
+function _orderBookSortHistoryRowsDesc(rows) {
+    const key = (r) => {
+        const d = r.entry_date || r.ordered_at || r.created_at || r.updated_at || '';
+        return String(d);
+    };
+    rows.sort((a, b) => key(b).localeCompare(key(a)));
+    return rows;
+}
+
+/** Merge history ORDERED rows with daily ORDERED lines (same period) for “ordered, not replenished”. */
+function mergeOrderedNotReplenished(historyRows, dailyListRows) {
+    const dailyOrdered = (dailyListRows || []).filter((r) => (r.status || '').toUpperCase() === 'ORDERED');
+    const seen = new Set();
+    const out = [];
+    dailyOrdered.forEach((r) => {
+        const id = _orderBookNormItemId(r.item_id);
+        if (id) seen.add(id);
+        out.push({
+            ...r,
+            row_source: 'daily',
+            replenishment_label: 'PO placed — awaiting receipt (on daily order book)',
+        });
+    });
+    (historyRows || []).forEach((h) => {
+        const id = _orderBookNormItemId(h.item_id);
+        if (id && seen.has(id)) return;
+        if (id) seen.add(id);
+        out.push({
+            ...h,
+            row_source: 'history',
+            replenishment_label: h.replenishment_label || 'PO placed — awaiting receipt (archived line)',
+        });
+    });
+    return _orderBookSortHistoryRowsDesc(out);
+}
+
+/** Merge history CANCELLED with daily PENDING for “not ordered nor replenished”. */
+function mergeNotOrderedNorReplenished(historyCancelledRows, dailyListRows) {
+    const dailyPending = (dailyListRows || []).filter((r) => (r.status || '').toUpperCase() === 'PENDING');
+    const seen = new Set();
+    const out = [];
+    dailyPending.forEach((r) => {
+        const id = _orderBookNormItemId(r.item_id);
+        if (id) seen.add(id);
+        out.push({
+            ...r,
+            row_source: 'daily',
+            replenishment_label: 'On order book — no PO yet',
+        });
+    });
+    (historyCancelledRows || []).forEach((h) => {
+        const id = _orderBookNormItemId(h.item_id);
+        if (id && seen.has(id)) return;
+        if (id) seen.add(id);
+        out.push({
+            ...h,
+            row_source: 'history',
+            replenishment_label: h.replenishment_label || 'Removed from order book (no replenishment recorded)',
+        });
+    });
+    return _orderBookSortHistoryRowsDesc(out);
+}
+
 async function applyOrderBookFilters() {
     const dateEl = document.getElementById('orderBookDateFilter');
     const supplierEl = document.getElementById('orderBookSupplierFilter');
     if (dateEl) orderBookDateFilter = dateEl.value || 'today';
     if (supplierEl) orderBookSupplierFilter = (supplierEl.value && supplierEl.value.trim()) ? supplierEl.value.trim() : null;
     await fetchAndRenderOrderBookData();
+    await fetchAndRenderOrderBookHistory();
 }
 
 async function applyOrderBookDateFilter(value) {
@@ -5992,13 +6148,60 @@ async function applyOrderBookSupplierFilter(value) {
 async function fetchAndRenderOrderBookHistory() {
     const tbody = document.getElementById('orderBookHistoryTableBody');
     if (!tbody) return;
+    patchOrderBookHistoryLegacyUI();
     try {
         if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
             tbody.innerHTML = '<tr><td colspan="7" style="padding: 1.5rem; text-align: center; color: var(--text-secondary);">Please configure Company and Branch</td></tr>';
             return;
         }
+        const stEl = document.getElementById('orderBookHistoryStatusFilter');
+        if (stEl && stEl.value) orderBookHistoryStatusFilter = stEl.value;
+        const dfEl = document.getElementById('orderBookHistoryDateFilter');
+        if (dfEl && dfEl.value) orderBookHistoryDateFilter = dfEl.value;
         const { dateFrom, dateTo } = getOrderBookDateRange(orderBookHistoryDateFilter);
-        orderBookHistoryEntries = await API.orderBook.getHistory(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, 500, { dateFrom, dateTo });
+        let mode = orderBookHistoryStatusFilter;
+        if (mode === 'ordered') mode = 'ordered_not_replenished';
+
+        if (mode === 'combined_shortage' || mode === 'no_replenishment' || mode === 'unserviced') {
+            orderBookHistoryEntries = await API.orderBook.getNoReplenishment(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, 500, {
+                dateFrom,
+                dateTo,
+            });
+        } else if (mode === 'ordered_not_replenished') {
+            const [hist, listRows] = await Promise.all([
+                API.orderBook.getHistory(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, 500, {
+                    dateFrom,
+                    dateTo,
+                    historyStatus: 'ordered',
+                }),
+                API.orderBook.list(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, null, {
+                    dateFrom,
+                    dateTo,
+                    includeOrdered: true,
+                }),
+            ]);
+            orderBookHistoryEntries = mergeOrderedNotReplenished(hist, listRows);
+        } else if (mode === 'not_ordered_nor_replenished') {
+            const [hist, listRows] = await Promise.all([
+                API.orderBook.getHistory(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, 500, {
+                    dateFrom,
+                    dateTo,
+                    historyStatus: 'cancelled',
+                }),
+                API.orderBook.list(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, null, {
+                    dateFrom,
+                    dateTo,
+                    includeOrdered: true,
+                }),
+            ]);
+            orderBookHistoryEntries = mergeNotOrderedNorReplenished(hist, listRows);
+        } else {
+            orderBookHistoryEntries = await API.orderBook.getHistory(CONFIG.BRANCH_ID, CONFIG.COMPANY_ID, 500, {
+                dateFrom,
+                dateTo,
+                historyStatus: mode,
+            });
+        }
         renderOrderBookHistoryTable();
     } catch (error) {
         console.error('Error loading order book history:', error);
@@ -6010,7 +6213,19 @@ function renderOrderBookHistoryTable() {
     const tbody = document.getElementById('orderBookHistoryTableBody');
     if (!tbody) return;
     if (!orderBookHistoryEntries || orderBookHistoryEntries.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" style="padding: 1.5rem; text-align: center; color: var(--text-secondary);">No replenished entries in this period</td></tr>';
+        const hf = orderBookHistoryStatusFilter;
+        const emptyMsg = hf === 'closed'
+            ? 'No replenished (received) lines in this period'
+            : hf === 'all'
+                ? 'No history entries in this period'
+                : (hf === 'ordered_not_replenished' || hf === 'ordered')
+                    ? 'No rows that are ordered but not yet replenished in this period'
+                    : hf === 'not_ordered_nor_replenished'
+                        ? 'No rows that were never ordered or still pending / removed in this period'
+                        : (hf === 'combined_shortage' || hf === 'no_replenishment' || hf === 'unserviced')
+                            ? 'No combined shortage lines in this period'
+                            : 'No matching lines in this period';
+        tbody.innerHTML = `<tr><td colspan="7" style="padding: 1.5rem; text-align: center; color: var(--text-secondary);">${emptyMsg}</td></tr>`;
         return;
     }
     const fmt = (d) => {
@@ -6018,21 +6233,49 @@ function renderOrderBookHistoryTable() {
         const s = typeof d === 'string' ? d : (d && d.toISOString ? d.toISOString() : String(d));
         return s.slice(0, 10);
     };
-    tbody.innerHTML = orderBookHistoryEntries.map(entry => `
+    tbody.innerHTML = orderBookHistoryEntries.map(entry => {
+        const st = (entry.status || '').toUpperCase();
+        let badgeClass = 'badge-secondary';
+        if (st === 'ORDERED') badgeClass = 'badge-warning';
+        else if (st === 'CLOSED') badgeClass = 'badge-success';
+        else if (st === 'CANCELLED') badgeClass = 'badge-danger';
+        else if (st === 'PENDING') badgeClass = 'badge-secondary';
+        const ord = entry.ordered_at ? `Ordered ${fmt(entry.ordered_at)}` : '';
+        const rec = entry.received_at ? `Received ${fmt(entry.received_at)}` : '';
+        let timeline = st === 'ORDERED'
+            ? (ord || '—')
+            : (rec || ord || '—');
+        if (st === 'CANCELLED' && !entry.replenishment_label) {
+            timeline = entry.created_at ? `Recorded ${fmt(entry.created_at)} (removed from book)` : '—';
+        }
+        if (entry.replenishment_label) {
+            const d0 = entry.entry_date || entry.ordered_at || entry.created_at;
+            timeline = (d0 ? `${fmt(d0)} · ` : '') + entry.replenishment_label;
+        }
+        const statusHtml = entry.replenishment_label
+            ? `<span class="badge ${badgeClass}" title="${escapeHtml(entry.replenishment_label)}">${escapeHtml(st || '—')}</span><div style="font-size:0.75rem;color:var(--text-secondary);max-width:14rem;">${escapeHtml(entry.replenishment_label)}</div>`
+            : `<span class="badge ${badgeClass}">${escapeHtml(entry.status || '—')}</span>`;
+        const srcHint = entry.row_source === 'daily' ? ' (daily book)' : (entry.row_source === 'history' ? ' (archived)' : '');
+        return `
         <tr style="border-bottom: 1px solid var(--border-color);">
-            <td style="padding: 0.5rem;">${escapeHtml(entry.item_name || '—')}</td>
+            <td style="padding: 0.5rem;">${escapeHtml(entry.item_name || '—')}${srcHint ? `<span style="font-size:0.7rem;color:var(--text-secondary);">${srcHint}</span>` : ''}</td>
             <td style="padding: 0.5rem; text-align: right;">${formatCurrency(entry.last_wholesale_unit_cost || 0)}</td>
             <td style="padding: 0.5rem; text-align: right;">${parseFloat(entry.quantity_needed) || 0}</td>
             <td style="padding: 0.5rem;">${escapeHtml(entry.unit_name || '—')}</td>
             <td style="padding: 0.5rem;">${escapeHtml(entry.supplier_name || '—')}</td>
-            <td style="padding: 0.5rem;"><span class="badge badge-success">${escapeHtml(entry.status || 'CLOSED')}</span></td>
-            <td style="padding: 0.5rem;">${fmt(entry.received_at)}</td>
-        </tr>
-    `).join('');
+            <td style="padding: 0.5rem;">${statusHtml}</td>
+            <td style="padding: 0.5rem; font-size: 0.875rem;">${escapeHtml(timeline)}</td>
+        </tr>`;
+    }).join('');
 }
 
 async function applyOrderBookHistoryDateFilter(value) {
     orderBookHistoryDateFilter = value || 'this_month';
+    await fetchAndRenderOrderBookHistory();
+}
+
+async function applyOrderBookHistoryStatusFilter(value) {
+    orderBookHistoryStatusFilter = value || 'closed';
     await fetchAndRenderOrderBookHistory();
 }
 
@@ -6052,10 +6295,18 @@ async function fetchAndRenderOrderBookData() {
         orderBookEntries = entries;
         renderOrderBookTable();
     } catch (error) {
-        console.error('Error loading order book entries:', error);
+        const detail =
+            error && error.data && error.data.detail != null
+                ? error.data.detail
+                : error.message;
+        const msg =
+            typeof detail === 'string' ? detail : (() => {
+                try { return JSON.stringify(detail); } catch (_) { return String(detail); }
+            })();
+        console.error('Error loading order book entries:', error, msg);
         const tbody = document.getElementById('orderBookTableBody');
         if (tbody) {
-            tbody.innerHTML = `<tr><td colspan="10" style="padding: 2rem; text-align: center; color: var(--danger-color);">Error loading order book: ${error.message}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="10" style="padding: 2rem; text-align: center; color: var(--danger-color);">Error loading order book: ${escapeHtml(msg)}</td></tr>`;
         }
     }
 }
@@ -6426,6 +6677,8 @@ if (typeof window !== 'undefined') {
     window.showUnservicedOrderBookSummary = showUnservicedOrderBookSummary;
     window.fetchAndRenderOrderBookHistory = fetchAndRenderOrderBookHistory;
     window.applyOrderBookHistoryDateFilter = applyOrderBookHistoryDateFilter;
+    window.applyOrderBookHistoryStatusFilter = applyOrderBookHistoryStatusFilter;
+    window.patchOrderBookHistoryLegacyUI = patchOrderBookHistoryLegacyUI;
     window.createPurchaseOrderFromSelected = createPurchaseOrderFromSelected;
     window.confirmCreatePOFromBook = confirmCreatePOFromBook;
     window.editOrderBookEntry = editOrderBookEntry;

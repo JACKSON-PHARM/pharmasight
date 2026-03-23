@@ -198,7 +198,9 @@ function saveGeneralSettings(event) {
 }
 
 function resetGeneralSettings() {
-    CONFIG.API_BASE_URL = (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') ? '' : 'http://localhost:8000';
+    CONFIG.API_BASE_URL = (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+        ? ''
+        : (typeof window.getDefaultLocalApiBase === 'function' ? window.getDefaultLocalApiBase() : 'http://localhost:8000');
     CONFIG.COMPANY_ID = null;
     CONFIG.BRANCH_ID = null;
     CONFIG.USER_ID = null;

@@ -43,6 +43,20 @@ from app.utils.vat import vat_rate_to_percent
 
 router = APIRouter()
 
+# Log when draft snapshot COGS (qty×mult×unit_cost_used) would differ from batched ledger by
+# more than this fraction of line revenue (before overwriting unit_cost_used at batch).
+SNAPSHOT_VS_LEDGER_WARN_THRESHOLD = Decimal("0.01")  # 1% of line_total_exclusive
+
+
+def _total_cost_from_allocations(allocations: list) -> Decimal:
+    """Sum qty×unit_cost across FEFO allocations (matches posted SALE ledger total_cost)."""
+    total = Decimal("0")
+    for a in allocations or []:
+        qty = Decimal(str(a.get("quantity", 0)))
+        uc = Decimal(str(a.get("unit_cost", 0)))
+        total += qty * uc
+    return total
+
 
 def _resolve_date_range(
     preset: Optional[str],
@@ -472,13 +486,19 @@ def _get_sales_invoice_response(
             invoice_item.unit_display_short = get_unit_display_short(
                 invoice_item.item, invoice_item.unit_name or ''
             )
-            # Provide base-unit cost and margin % for consistent unit-aware margin display in UI
-            try:
-                invoice_item.unit_cost_base = PricingService.get_item_cost(
-                    db, invoice_item.item_id, invoice.branch_id
-                )
-            except Exception:
-                invoice_item.unit_cost_base = None
+            # Base-unit cost for margin: batched/paid lines use ledger-reconciled unit_cost_used
+            # (per retail); drafts use live FEFO cost from pricing service.
+            if getattr(invoice, "status", None) in ("BATCHED", "PAID") and getattr(
+                invoice_item, "unit_cost_used", None
+            ) is not None and float(invoice_item.unit_cost_used or 0) > 0:
+                invoice_item.unit_cost_base = Decimal(str(invoice_item.unit_cost_used))
+            else:
+                try:
+                    invoice_item.unit_cost_base = PricingService.get_item_cost(
+                        db, invoice_item.item_id, invoice.branch_id
+                    )
+                except Exception:
+                    invoice_item.unit_cost_base = None
             if getattr(invoice_item, "unit_cost_base", None) is not None and float(invoice_item.unit_cost_base) > 0:
                 mult = get_unit_multiplier_from_item(invoice_item.item, invoice_item.unit_name or "")
                 if mult is not None and mult > 0:
@@ -1795,12 +1815,15 @@ def batch_sales_invoice(
                 quantity_base, invoice_item.unit_name
             )
 
-            # Model B: post-allocation margin and floor price validation
-            if allocations:
-                batch_cost = Decimal(str(allocations[0]["unit_cost"]))  # per base unit
+            qty_base_dec = Decimal(str(quantity_base))
+            total_line_ledger_cost = _total_cost_from_allocations(allocations)
+
+            # Model B: post-allocation margin and floor price validation (blended cost across FEFO layers)
+            if allocations and qty_base_dec > 0:
+                cost_per_base_unit = total_line_ledger_cost / qty_base_dec
                 mult = get_unit_multiplier_from_item(item, invoice_item.unit_name)
                 if mult is not None and mult > 0:
-                    cost_per_sale_unit = batch_cost * mult
+                    cost_per_sale_unit = cost_per_base_unit * mult
                     unit_price_val = invoice_item.unit_price_exclusive or Decimal("0")
                     if cost_per_sale_unit > 0:
                         user_has_override = _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id)
@@ -1822,8 +1845,24 @@ def batch_sales_invoice(
                                 status_code=400,
                                 detail=validation.get("message", "Price validation failed.")
                             )
-                # Model B: overwrite unit_cost_used with allocated batch cost (per base unit)
-                invoice_item.unit_cost_used = batch_cost
+
+                # Snapshot: per retail/base unit so qty×mult×unit_cost_used == sum(SALE ledger total_cost)
+                old_uc = invoice_item.unit_cost_used
+                if old_uc is not None and float(old_uc) > 0:
+                    snap_cogs = qty_base_dec * Decimal(str(old_uc))
+                    line_rev = invoice_item.line_total_exclusive or Decimal("0")
+                    diff = abs(snap_cogs - total_line_ledger_cost)
+                    if line_rev > 0 and diff > (SNAPSHOT_VS_LEDGER_WARN_THRESHOLD * line_rev):
+                        logging.getLogger(__name__).warning(
+                            "Sales line snapshot COGS vs ledger (pre-reconcile): invoice=%s item=%s "
+                            "snap_cogs=%s ledger_cogs=%s line_total_excl=%s",
+                            invoice.invoice_no,
+                            invoice_item.item_id,
+                            snap_cogs,
+                            total_line_ledger_cost,
+                            line_rev,
+                        )
+                invoice_item.unit_cost_used = cost_per_base_unit
                 invoice_item.batch_id = allocations[0]["ledger_entry_id"]
 
             for allocation in allocations:
