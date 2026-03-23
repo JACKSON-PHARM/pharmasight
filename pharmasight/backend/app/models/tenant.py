@@ -32,11 +32,16 @@ class Tenant(Base):
 
     # Status
     status = Column(String(20), default='trial', nullable=False)
+    plan_type = Column(String(20), default='paid', nullable=False)
     
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     trial_ends_at = Column(DateTime(timezone=True), nullable=True)
+    demo_expires_at = Column(DateTime(timezone=True), nullable=True)
+    product_limit = Column(Integer, nullable=True)
+    branch_limit = Column(Integer, nullable=True)
+    user_limit = Column(Integer, nullable=True)
     
     # Admin user info
     admin_email = Column(String(255), nullable=False)

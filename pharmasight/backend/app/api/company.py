@@ -28,6 +28,7 @@ from app.services.tenant_storage_service import (
     MAX_IMAGE_BYTES,
     SIGNED_URL_EXPIRY_SECONDS,
 )
+from app.services.plan_context import get_tenant_plan_context
 
 router = APIRouter()
 
@@ -443,6 +444,7 @@ async def upload_company_logo(
 def create_branch(
     branch: BranchCreate,
     current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -452,6 +454,23 @@ def create_branch(
     Format for invoice numbers: {BRANCH_CODE}-INV-YYYY-000001
     """
     try:
+        # Enforce demo branch limits (demo tenants cannot exceed branch_limit for a company)
+        plan_ctx = get_tenant_plan_context(tenant)
+        if plan_ctx.get("plan_type") == "demo":
+            branch_limit = plan_ctx.get("branch_limit")
+            # Only enforce when a positive limit is configured; None or <=0 means "no explicit limit".
+            if branch_limit is not None and branch_limit > 0:
+                existing_count = (
+                    db.query(Branch)
+                    .filter(Branch.company_id == branch.company_id)
+                    .count()
+                )
+                if existing_count >= branch_limit:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Demo accounts are limited to a single branch. Upgrade to add more branches.",
+                    )
+
         # Verify company exists
         company = db.query(Company).filter(Company.id == branch.company_id).first()
         if not company:

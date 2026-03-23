@@ -1461,6 +1461,22 @@ async function showAdjustStockModal(itemId) {
             submitBtn.onclick = async () => submitAdjustStock(itemId);
         }
 
+        // UX: when user completes the month field and presses Enter,
+        // move focus to the next field in this modal (notes).
+        const expiryInputEl = document.getElementById('adjustStockExpiry');
+        const notesEl = document.getElementById('adjustStockNotes');
+        if (expiryInputEl) {
+            expiryInputEl.addEventListener('keydown', function (e) {
+                if (e && e.key === 'Enter') {
+                    // Prevent submitting the form / closing native pickers.
+                    e.preventDefault();
+                    if (expiryInputEl.value && String(expiryInputEl.value).length >= 7) {
+                        if (notesEl) notesEl.focus();
+                    }
+                }
+            });
+        }
+
         // Require explicit review of Unit & Quantity before enabling submit (prevents accidental base-unit=1 defaults).
         const reviewedEl = document.getElementById('adjustStockReviewed');
         if (submitBtn && reviewedEl) {
@@ -1981,6 +1997,20 @@ function setupManualAdjustmentsHandlers() {
     var metaPane = document.getElementById('manualAdjustmentsMetadata');
     if (metaPane) metaPane.style.display = 'none';
 
+    // UX: in Metadata tab, pressing Enter in the month/year field advances to Reason textarea.
+    const metaExpiryEl = document.getElementById('metaNewExpiryDate');
+    const metaReasonEl = document.getElementById('metaReason');
+    if (metaExpiryEl && metaReasonEl) {
+        metaExpiryEl.addEventListener('keydown', function (e) {
+            if (e && e.key === 'Enter') {
+                e.preventDefault();
+                if (metaExpiryEl.value && String(metaExpiryEl.value).length >= 7) {
+                    metaReasonEl.focus();
+                }
+            }
+        });
+    }
+
     var metaPools = []; // { batch_number, expiry_date, quantity } aggregated from ledger
     function aggregateLedgerToPools(entries) {
         var map = {};
@@ -2286,6 +2316,8 @@ function setupManualAdjustmentsHandlers() {
                 if (typeof showToast === 'function') showToast(res.message || 'Cost adjusted.', 'success');
                 document.getElementById('costReason').value = '';
                 document.getElementById('costNewCost').value = '';
+                // Reload batch list so the updated unit cost is reflected immediately.
+                loadBatchesForAdjustmentItem(itemId, adjustmentItemUnits);
             }).catch(function (err) {
                 const msg = (err.data && (err.data.detail || (Array.isArray(err.data.detail) ? err.data.detail[0] : null))) || err.message || 'Failed';
                 if (typeof showToast === 'function') showToast(msg, 'error');

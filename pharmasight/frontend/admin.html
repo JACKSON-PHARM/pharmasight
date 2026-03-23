@@ -240,6 +240,30 @@
                     <button id="create-tenant-btn" class="btn btn-primary">Create new organization</button>
                 </div>
             </div>
+            <div class="public-demo-qr" style="margin-bottom: 16px; padding: 14px; border: 1px dashed #cbd5e1; border-radius: 12px; background: #f8fafc;">
+                <h3 style="margin: 0 0 8px 0; font-size: 1rem;">Free Demo Signup (Public)</h3>
+                <p style="margin: 0 0 10px 0; color: #475569; font-size: 0.9rem; line-height: 1.35;">
+                    Copy this link for posters. Scanning the QR code opens the signup form.
+                </p>
+                <div style="display:flex; gap: 14px; align-items: flex-start; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 280px;">
+                        <label style="display:block; font-weight: 600; margin-bottom: 6px;">Signup link</label>
+                        <div style="display:flex; gap: 8px; align-items:center;">
+                            <input id="public-demo-signup-link" type="text" readonly style="flex:1; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; font-family: monospace; font-size: 12px; background: white;">
+                            <button id="copy-public-demo-signup-link-btn" class="btn btn-secondary">Copy</button>
+                        </div>
+                        <div style="color:#64748b; font-size: 0.85rem; margin-top: 8px;">
+                            Example: <code>/</code>?<code>demo=1</code>#<code>login</code>
+                        </div>
+                    </div>
+                    <div style="width: 240px; flex: 0 0 auto;">
+                        <label style="display:block; font-weight: 600; margin-bottom: 6px;">QR code</label>
+                        <div id="public-demo-qr" style="background: white; border-radius: 10px; padding: 10px; border: 1px solid #e2e8f0; display:flex; align-items:center; justify-content:center;">
+                            <span style="color:#94a3b8; font-size: 0.9rem;">Generating…</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
         <div class="filters">
             <input 
                 type="text" 
@@ -290,12 +314,91 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
     <!-- Load required scripts first -->
     <script src="/js/config.js"></script>
     <script src="/js/api.js"></script>
     <script src="/js/utils.js"></script>
     
     <script type="module">
+        async function setupPublicDemoSignupQr() {
+            try {
+                const savedPublic = (() => {
+                    try {
+                        return (localStorage.getItem('pharmasight_app_public_url') || '').trim().replace(/\/+$/, '');
+                    } catch (_) {
+                        return '';
+                    }
+                })();
+                const base = savedPublic || window.location.origin;
+                const link = `${base}/?demo=1#login`;
+                const input = document.getElementById('public-demo-signup-link');
+                const copyBtn = document.getElementById('copy-public-demo-signup-link-btn');
+                const qrContainer = document.getElementById('public-demo-qr');
+
+                if (!input || !copyBtn || !qrContainer) return;
+
+                input.value = link;
+
+                copyBtn.addEventListener('click', async () => {
+                    try {
+                        await navigator.clipboard.writeText(link);
+                        if (window.showNotification) window.showNotification('Demo signup link copied', 'success');
+                        else alert('Demo signup link copied');
+                    } catch (e) {
+                        if (window.showNotification) window.showNotification('Could not copy link', 'error');
+                        else alert('Could not copy link');
+                    }
+                });
+
+                const canvas = document.createElement('canvas');
+                canvas.width = 220;
+                canvas.height = 220;
+                qrContainer.innerHTML = '';
+                qrContainer.appendChild(canvas);
+
+                const qrOpts = { width: 220, margin: 1, errorCorrectionLevel: 'M' };
+
+                // Prefer global QR library if already loaded; otherwise try an ESM CDN import.
+                const tryGenerate = async (qrLib) => {
+                    const toCanvas = qrLib?.toCanvas;
+                    if (typeof toCanvas !== 'function') return false;
+                    try {
+                        await toCanvas(canvas, link, qrOpts);
+                        return true;
+                    } catch (_) {
+                        return false;
+                    }
+                };
+
+                let ok = await tryGenerate(window.QRCode);
+                if (!ok) {
+                    // Small retry loop for script-loader timing issues.
+                    const deadline = Date.now() + 3500;
+                    while (!ok && Date.now() < deadline) {
+                        await new Promise(r => setTimeout(r, 150));
+                        ok = await tryGenerate(window.QRCode);
+                    }
+                }
+
+                if (!ok) {
+                    try {
+                        const mod = await import('https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.esm.min.js');
+                        const qrLib = mod?.default || mod;
+                        ok = await tryGenerate(qrLib);
+                    } catch (_) {
+                        // Ignore; we'll show a friendly error below.
+                    }
+                }
+
+                if (!ok) {
+                    qrContainer.innerHTML = '<span style="color:#94a3b8; font-size:0.9rem;">QR generation failed (CDN blocked or offline)</span>';
+                }
+            } catch (e) {
+                console.warn('Public demo QR setup failed:', e);
+            }
+        }
+
         // Check admin authentication before loading
         async function checkAdminAuth() {
             const adminToken = localStorage.getItem('admin_token');
@@ -317,6 +420,7 @@
                         // Tenant admin accessing admin panel - allow
                         localStorage.setItem('is_admin', 'true');
                         await initAdminPanel();
+                        setupPublicDemoSignupQr();
                         return;
                     }
                 } catch (e) {
@@ -330,6 +434,7 @@
             
             // Admin authenticated - load admin panel
             await initAdminPanel();
+            setupPublicDemoSignupQr();
         }
         
         function setupLogout() {

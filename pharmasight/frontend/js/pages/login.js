@@ -92,7 +92,7 @@ async function loadLogin() {
                 </form>
                 <div id="loginError" class="error-message" style="display: none;"></div>
                 <div class="login-links">
-                    <a href="#password-reset">Forgot password?</a>
+                    <a href="#password-reset" id="loginForgotPasswordLink">Forgot password?</a>
                 </div>
             </div>
         </div>
@@ -263,7 +263,7 @@ async function loadLogin() {
     }
     
     // Setup "Forgot Password?" link handler
-    const forgotPasswordLink = page.querySelector('a[href="#password-reset"]');
+    const forgotPasswordLink = page.querySelector('#loginForgotPasswordLink');
     if (forgotPasswordLink) {
         forgotPasswordLink.addEventListener('click', (e) => {
             e.preventDefault();
@@ -277,6 +277,228 @@ async function loadLogin() {
             }
         });
     }
+    
+    function formatSignupApiError(data) {
+        if (!data || typeof data !== 'object') return 'Something went wrong. Please try again.';
+        const d = data.detail;
+        if (typeof d === 'string') return d;
+        if (Array.isArray(d)) {
+            return d.map(function (item) {
+                if (item && typeof item === 'object') return item.msg || item.message || JSON.stringify(item);
+                return String(item);
+            }).join(' ');
+        }
+        if (d && typeof d === 'object' && d.message) return d.message;
+        return 'Something went wrong. Please try again.';
+    }
+
+    function isValidEmailFormat(email) {
+        const s = (email || '').trim();
+        if (!s) return false;
+        const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return re.test(s);
+    }
+
+    // Setup "Create Account" (self-service signup on shared demo DB)
+    // This modal is opened only when arriving from a public demo link (QR/poster).
+    function openDemoSignupModal() {
+        // If a demo modal already exists, just show it.
+        let demoModal = document.getElementById('demoSignupModal');
+        if (!demoModal) {
+            demoModal = document.createElement('div');
+            demoModal.id = 'demoSignupModal';
+            demoModal.className = 'modal-overlay';
+            demoModal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-header">
+                        <h3>Create Account</h3>
+                        <button type="button" class="modal-close" id="demoModalCloseBtn">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="demoSignupForm">
+                            <div class="form-group">
+                                <label for="demoOrganizationName">Organization name <span class="text-muted">(used for your company)</span></label>
+                                <input type="text" id="demoOrganizationName" required autocomplete="organization" placeholder="e.g. Sunrise Pharmacy">
+                            </div>
+                            <div class="form-group">
+                                <label for="demoFullName">Your full name <span class="text-muted">(required for username)</span></label>
+                                <input type="text" id="demoFullName" required autocomplete="name" placeholder="e.g. Jane Mwangi">
+                            </div>
+                            <div class="form-group">
+                                <label for="demoEmail">Email</label>
+                                <input type="email" id="demoEmail" required autocomplete="email" placeholder="you@example.com">
+                                <small class="form-hint" style="display:block;margin-top:0.35rem;color:var(--text-secondary,#64748b);font-size:0.85rem;">Invites and join links are sent to this address, so use a valid inbox you can access.</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="demoPhone">Phone</label>
+                                <input type="tel" id="demoPhone" autocomplete="tel" placeholder="+254700000000">
+                            </div>
+                            <div class="form-group">
+                                <label for="demoPassword">Password</label>
+                                <input type="password" id="demoPassword" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters">
+                            </div>
+                            <div id="demoSignupError" class="error-message" style="display:none;"></div>
+                            <button type="submit" class="btn btn-primary btn-block" id="demoSignupSubmitBtn">
+                                <i class="fas fa-user-plus"></i> Create Account
+                            </button>
+                        </form>
+                    </div>
+                    <div class="modal-footer">
+                        <small>By creating an account, you agree to use PharmaSight for evaluation only.</small>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(demoModal);
+
+            const closeBtn = document.getElementById('demoModalCloseBtn');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', () => {
+                    demoModal.style.display = 'none';
+                });
+            }
+
+            // Clicking outside modal closes it
+            demoModal.addEventListener('click', (evt) => {
+                if (evt.target === demoModal) {
+                    demoModal.style.display = 'none';
+                }
+            });
+
+            const demoForm = document.getElementById('demoSignupForm');
+            const demoError = document.getElementById('demoSignupError');
+            const demoSubmitBtn = document.getElementById('demoSignupSubmitBtn');
+            let demoSubmitting = false;
+
+            async function handleDemoSubmit(ev) {
+                ev.preventDefault();
+                if (demoSubmitting) return;
+                demoSubmitting = true;
+                if (demoError) {
+                    demoError.style.display = 'none';
+                    demoError.textContent = '';
+                }
+                if (demoSubmitBtn) {
+                    demoSubmitBtn.disabled = true;
+                    demoSubmitBtn.setAttribute('aria-busy', 'true');
+                    demoSubmitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating account...';
+                }
+                try {
+                    const organizationName = document.getElementById('demoOrganizationName').value.trim();
+                    const fullName = document.getElementById('demoFullName').value.trim();
+                    const email = document.getElementById('demoEmail').value.trim();
+                    const phone = document.getElementById('demoPhone').value.trim();
+                    const password = document.getElementById('demoPassword').value;
+
+                    if (!organizationName) {
+                        if (demoError) {
+                            demoError.textContent = 'Please enter your organization name.';
+                            demoError.style.display = 'block';
+                        }
+                        return;
+                    }
+                    if (!fullName) {
+                        if (demoError) {
+                            demoError.textContent = 'Please enter your full name.';
+                            demoError.style.display = 'block';
+                        }
+                        return;
+                    }
+                    if (!isValidEmailFormat(email)) {
+                        if (demoError) {
+                            demoError.textContent = 'Please enter a valid email address (invites and links are sent there).';
+                            demoError.style.display = 'block';
+                        }
+                        return;
+                    }
+
+                    const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
+                        ? CONFIG.API_BASE_URL
+                        : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : window.location.origin);
+
+                    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/start-demo`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            organization_name: organizationName,
+                            full_name: fullName,
+                            email,
+                            phone,
+                            password,
+                        }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                        const msg = formatSignupApiError(data) || 'Could not create your account. Please try again.';
+                        if (demoError) {
+                            demoError.textContent = msg;
+                            demoError.style.display = 'block';
+                        } else if (typeof showToast === 'function') {
+                            showToast(msg, 'error');
+                        }
+                        return;
+                    }
+
+                    // Store tokens and tenant context
+                    try {
+                        if (typeof localStorage !== 'undefined') {
+                            localStorage.setItem('pharmasight_access_token', data.access_token);
+                            localStorage.setItem('pharmasight_refresh_token', data.refresh_token);
+                            localStorage.setItem('pharmasight_username', data.username || email);
+                            localStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain || '');
+                        }
+                        if (typeof sessionStorage !== 'undefined' && data.tenant_subdomain) {
+                            sessionStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain);
+                        }
+                    } catch (_) {}
+
+                    if (typeof showToast === 'function') {
+                        showToast('Account created. Check your email for a setup link to complete your onboarding.', 'success');
+                    }
+
+                    // Close modal
+                    demoModal.style.display = 'none';
+
+                    // Ensure app layout is rendered and branch-select flow starts
+                    if (window.renderAppLayout) window.renderAppLayout();
+                    if (window.SessionTimeout) window.SessionTimeout.init();
+                    if (window.currentScreen !== undefined) window.currentScreen = null;
+                    if (window.loadPage) {
+                        window.loadPage('branch-select');
+                    } else {
+                        window.location.hash = '#branch-select';
+                    }
+                } catch (err) {
+                    const msg = err && err.message ? err.message : 'Could not create your account. Please try again.';
+                    if (demoError) {
+                        demoError.textContent = msg;
+                        demoError.style.display = 'block';
+                    } else if (typeof showToast === 'function') {
+                        showToast(msg, 'error');
+                    }
+                } finally {
+                    demoSubmitting = false;
+                    if (demoSubmitBtn) {
+                        demoSubmitBtn.disabled = false;
+                        demoSubmitBtn.setAttribute('aria-busy', 'false');
+                        demoSubmitBtn.innerHTML = '<i class="fas fa-user-plus"></i> Create Account';
+                    }
+                }
+            }
+
+            if (demoForm) {
+                demoForm.addEventListener('submit', handleDemoSubmit);
+            }
+        }
+
+        demoModal.style.display = 'flex';
+    }
+
+    // Auto-open demo signup modal ONLY for public demo link scans.
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        const demoRequested = params.get('demo') === '1' || params.get('create_demo') === '1';
+        if (demoRequested) openDemoSignupModal();
+    } catch (_) {}
     
     if (form) {
         form.onsubmit = async (e) => {

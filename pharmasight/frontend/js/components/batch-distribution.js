@@ -167,6 +167,9 @@
         
         // Render batch rows
         renderBatchRows();
+        // UX: when user completes the month field and presses Enter,
+        // advance to the next input in the same batch row.
+        attachBatchExpiryEnterHandlers();
         updateBatchSummary();
     }
     
@@ -238,6 +241,32 @@
                 </tr>
             `;
         }).join('');
+    }
+
+    /**
+     * Attach Enter-key handler for expiry month inputs inside this modal.
+     * Only runs after renderBatchRows() so it can safely attach to the current inputs.
+     */
+    function attachBatchExpiryEnterHandlers() {
+        const modal = document.querySelector('.batch-distribution-modal');
+        if (!modal) return;
+        const expiryInputs = modal.querySelectorAll('input[type="month"].batch-expiry-date');
+        expiryInputs.forEach(function (el) {
+            // Avoid stacking listeners on re-render.
+            if (el.dataset.expiryEnterBound === '1') return;
+            el.dataset.expiryEnterBound = '1';
+            el.addEventListener('keydown', function (e) {
+                if (!e || e.key !== 'Enter') return;
+                // Prevent picker close / any accidental form submit.
+                e.preventDefault();
+                // Only advance when month-year is set (YYYY-MM => length 7).
+                if (!el.value || String(el.value).length < 7) return;
+                const row = el.closest('tr');
+                if (!row) return;
+                const next = row.querySelector('input.batch-quantity') || row.querySelector('input.batch-unit-cost');
+                if (next && typeof next.focus === 'function') next.focus();
+            });
+        });
     }
     
     /**

@@ -59,7 +59,7 @@ async function loadDashboard() {
         if (el) el.textContent = '—';
     });
     const salesLabel = document.getElementById('dashboardSalesLabel');
-    if (salesLabel) salesLabel.textContent = 'Sales (select range & Apply)';
+    if (salesLabel) salesLabel.textContent = 'Net Sales (select range & Apply)';
     const gpMeta = document.getElementById('todayGrossProfitMeta');
     if (gpMeta) gpMeta.textContent = 'Gross Profit';
 
@@ -154,7 +154,7 @@ async function applyDashboardFilters() {
     if (grid) grid.querySelectorAll('.stat-card').forEach(function (card) { card.classList.add('stat-card-loading'); });
 
     const salesLabel = document.getElementById('dashboardSalesLabel');
-    if (salesLabel) salesLabel.textContent = 'Sales';
+    if (salesLabel) salesLabel.textContent = 'Net Sales';
 
     try {
         const now = Date.now();
@@ -186,7 +186,8 @@ async function applyDashboardFilters() {
                 : (CONFIG.USER_ID || null);
             const gpRes = await API.sales.getGrossProfit(branchId, gpParams);
             rangeData = {
-                sales_exclusive: parseFloat(gpRes.sales_exclusive || 0),
+                sales_exclusive: parseFloat(gpRes.sales_exclusive || 0), // gross sales (before credit notes)
+                net_sales_exclusive: parseFloat(gpRes.net_sales_exclusive || 0), // sales after credit notes
                 gross_profit: parseFloat(gpRes.gross_profit || 0),
                 margin_percent: parseFloat(gpRes.margin_percent || 0),
                 invoice_count: parseInt(gpRes.invoice_count || 0, 10),
@@ -236,7 +237,8 @@ async function applyDashboardFilters() {
         if (totalItemsEl) totalItemsEl.textContent = (kpisData.itemsCount != null ? kpisData.itemsCount : '—');
         if (totalStockEl) totalStockEl.textContent = (kpisData.stockCount != null ? kpisData.stockCount : '—');
         if (totalStockValueEl) totalStockValueEl.textContent = (kpisData.stockValue != null ? (typeof formatCurrency === 'function' ? formatCurrency(kpisData.stockValue) : kpisData.stockValue) : '—');
-        if (todaySalesEl) todaySalesEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(rangeData.sales_exclusive) : rangeData.sales_exclusive;
+        const netSales = (rangeData.net_sales_exclusive != null) ? rangeData.net_sales_exclusive : rangeData.sales_exclusive;
+        if (todaySalesEl) todaySalesEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(netSales) : netSales;
         if (ordersProcessedEl) ordersProcessedEl.textContent = rangeData.invoice_count != null ? rangeData.invoice_count : '—';
         if (todayGrossProfitEl) todayGrossProfitEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(rangeData.gross_profit) : rangeData.gross_profit;
         if (todayGrossProfitMetaEl) todayGrossProfitMetaEl.textContent = 'Gross Profit • Margin ' + (rangeData.margin_percent != null ? rangeData.margin_percent.toFixed(1) : '0') + '%';

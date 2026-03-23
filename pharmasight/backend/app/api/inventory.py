@@ -323,40 +323,38 @@ def get_total_stock_value(
         return {"total_value": 0, "currency": "KES"}
 
     company_id = branch.company_id
-    rows = (
+    # Compute total stock value using the SAME valuation approach as the
+    # `/api/inventory/valuation` endpoint (last_cost / selling_price display).
+    # This keeps dashboard "totalStockValue" synchronized with the Current Stock table.
+    stock_rows = (
         db.query(
             InventoryLedger.item_id,
-            InventoryLedger.batch_number,
-            InventoryLedger.expiry_date,
-            InventoryLedger.unit_cost,
-            InventoryLedger.quantity_delta,
+            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("total_stock"),
         )
         .filter(
             InventoryLedger.item_id.in_(company_item_ids),
             InventoryLedger.branch_id == branch_id,
             InventoryLedger.company_id == company_id,
         )
+        .group_by(InventoryLedger.item_id)
         .all()
     )
 
-    # Group by full layer identity (company_id, branch_id, item_id, batch_number, expiry_date, unit_cost) → remaining = SUM(quantity_delta)
-    from collections import defaultdict
-    layers = defaultdict(lambda: {"remaining": 0.0, "unit_cost": None})
-    for r in rows:
-        batch_key = (r.batch_number or "").strip() or None
-        expiry_key = r.expiry_date
-        cost_key = float(r.unit_cost or 0)
-        key = (company_id, branch_id, r.item_id, batch_key, expiry_key, cost_key)
-        layers[key]["remaining"] += float(r.quantity_delta or 0)
-        layers[key]["unit_cost"] = cost_key
+    stock_map = {r.item_id: Decimal(str(r.total_stock or 0)) for r in stock_rows}
+    item_ids_with_stock = [iid for iid, qty in stock_map.items() if qty > 0]
+    if not item_ids_with_stock:
+        return {"total_value": 0, "currency": "KES"}
 
-    total_value = 0.0
-    for key, data in layers.items():
-        remaining = data["remaining"]
-        if remaining > 0:
-            total_value += remaining * (data["unit_cost"] or 0)
+    # last_cost is already "per retail/base unit" so: value = qty_retail * unit_cost_retail
+    cost_per_retail = CanonicalPricingService.get_cost_per_retail_for_valuation_batch(
+        db, item_ids_with_stock, branch_id, company_id
+    ) or {}
 
-    return {"total_value": round(total_value, 2), "currency": "KES"}
+    total_value = Decimal("0")
+    for iid in item_ids_with_stock:
+        total_value += stock_map.get(iid, Decimal("0")) * Decimal(str(cost_per_retail.get(iid) or 0))
+
+    return {"total_value": round(float(total_value), 2), "currency": "KES"}
 
 
 @router.get("/branch/{branch_id}/items-in-stock-count", response_model=dict)

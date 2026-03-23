@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
@@ -54,6 +54,8 @@ from app.utils.auth_internal import (
     validate_new_password,
     verify_password,
 )
+from app.services.plan_context import get_tenant_plan_context
+from app.services.demo_signup_service import create_demo_tenant
 
 router = APIRouter()
 
@@ -100,6 +102,24 @@ class UsernameLoginResponse(BaseModel):
     refresh_token: Optional[str] = None
     # When True, client should force user to change password (e.g. after admin-create)
     must_change_password: Optional[bool] = None
+
+
+class StartDemoRequest(BaseModel):
+    """Self-service account creation from the login page (shared demo DB)."""
+    organization_name: str = Field(..., min_length=1, max_length=255, description="Used to create the organization/company")
+    full_name: str = Field(..., min_length=1, max_length=255, description="Used for display and to generate the username")
+    email: EmailStr
+    phone: Optional[str] = None
+    password: str = Field(..., min_length=8)
+
+
+class StartDemoResponse(BaseModel):
+    """Response for self-service demo signup."""
+    access_token: str
+    refresh_token: str
+    tenant_id: str
+    tenant_subdomain: str
+    username: str
 
 
 def _find_user_in_db(db: Session, normalized_username: str, check_email: bool) -> Optional[User]:
@@ -299,6 +319,20 @@ def username_login(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Trial expired. Please contact support to upgrade.",
             )
+        # Demo expiry enforcement: block login for expired demo tenants before issuing tokens
+        if tenant is not None:
+            plan_ctx = get_tenant_plan_context(tenant)
+            if plan_ctx.get("plan_type") == "demo":
+                demo_expires_at = plan_ctx.get("demo_expires_at")
+                if demo_expires_at is not None:
+                    end = demo_expires_at
+                    if end.tzinfo is None:
+                        end = end.replace(tzinfo=timezone.utc)
+                    if end < datetime.now(timezone.utc):
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Your PharmaSight demo has expired. Please upgrade to continue using the system.",
+                        )
         _require_password_if_internal(user, body.password)
         # User found in legacy/app DB (tenant is None) or in a tenant DB (use app DB if tenant DB unreachable)
         if tenant is None:
@@ -335,6 +369,57 @@ def username_login(
             ),
             "tenants": tenants_info,
         },
+    )
+
+
+@router.post("/auth/start-demo", response_model=StartDemoResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/hour")
+def auth_start_demo(request: Request, body: StartDemoRequest):
+    """
+    Self-service demo signup from the login page.
+
+    Creates a demo tenant, provisions the tenant DB (shared app DB in demo mode),
+    creates a Company, HQ Branch, and initial admin User, and returns internal
+    auth tokens so the caller can log the user in immediately.
+    """
+    try:
+        result = create_demo_tenant(
+            organization_name=body.organization_name.strip(),
+            full_name=body.full_name.strip(),
+            email=str(body.email).strip().lower(),
+            phone=body.phone,
+            password=body.password,
+        )
+    except ValueError as e:
+        msg = str(e)
+        msg_lc = msg.lower()
+        code = (
+            status.HTTP_429_TOO_MANY_REQUESTS
+            if "too many demo signups" in msg_lc
+            else (
+                status.HTTP_409_CONFLICT
+                if (
+                    "already registered with this email" in msg_lc
+                    or "already registered for this organization" in msg_lc
+                    or "organization with this name already exists" in msg_lc
+                )
+                else status.HTTP_400_BAD_REQUEST
+            )
+        )
+        raise HTTPException(status_code=code, detail=msg)
+    except Exception as e:
+        logger.exception("Demo signup failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create your account right now. Please try again later.",
+        )
+
+    return StartDemoResponse(
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        tenant_id=result["tenant_id"],
+        tenant_subdomain=result["tenant_subdomain"],
+        username=result["username"],
     )
 
 

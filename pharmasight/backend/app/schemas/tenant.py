@@ -50,6 +50,11 @@ class TenantUpdate(BaseModel):
     trial_ends_at: Optional[datetime] = Field(None, description="When the trial period ends (UTC). Controls trial usage days.")
     supabase_storage_url: Optional[str] = Field(None, description="Optional: Supabase project URL for this tenant's storage. When set with service role key, PDF/logo signed URLs use this project.")
     supabase_storage_service_role_key: Optional[str] = Field(None, description="Optional: Service role key for tenant's Supabase storage. Only set when using per-tenant Supabase project.")
+    plan_type: Optional[str] = Field(None, description="Plan type for the tenant (e.g. 'demo', 'paid').")
+    demo_expires_at: Optional[datetime] = Field(None, description="When the demo period ends (UTC).")
+    product_limit: Optional[int] = Field(None, description="Maximum number of products/items allowed for this tenant.")
+    branch_limit: Optional[int] = Field(None, description="Maximum number of branches allowed for this tenant.")
+    user_limit: Optional[int] = Field(None, description="Maximum number of users allowed for this tenant.")
 
 
 class TenantProvisionRequest(BaseModel):
@@ -80,6 +85,11 @@ class TenantResponse(TenantBase):
     # Per-tenant Supabase storage (master DB only). Key is masked in responses for security.
     supabase_storage_url: Optional[str] = None
     supabase_storage_configured: bool = False  # True when service role key is set (key value never returned)
+    plan_type: str
+    demo_expires_at: Optional[datetime] = None
+    product_limit: Optional[int] = None
+    branch_limit: Optional[int] = None
+    user_limit: Optional[int] = None
 
     class Config:
         from_attributes = True

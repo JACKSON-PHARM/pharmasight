@@ -1814,13 +1814,24 @@ class ExcelImportService:
                 ]
                 SnapshotService.upsert_inventory_balance_bulk(db, balance_rows)
                 SnapshotService.upsert_purchase_snapshot_bulk(db, purchase_rows)
-                # Enqueue one branch refresh so item_branch_snapshot is updated in background (avoids N sync refreshes)
+                # Keep new tenant imports searchable immediately:
+                # Bulk imports can enqueue background refresh (fast but delayed). For typical tenant-sized
+                # imports we refresh the imported items synchronously so the UI search snapshot updates
+                # before the request/job finishes.
                 first_ob = opening_balances[0]
-                SnapshotRefreshService.enqueue_branch_refresh(
-                    db, first_ob['company_id'], first_ob['branch_id'], reason="excel_import_bulk"
-                )
+                imported_item_ids = list({ob.get('item_id') for ob in opening_balances if ob.get('item_id')})
+                snapshot_refresh_mode = 'sync_items'
+                if imported_item_ids and len(imported_item_ids) <= 5000:
+                    for iid in imported_item_ids:
+                        SnapshotRefreshService.refresh_item_sync(db, first_ob['company_id'], first_ob['branch_id'], iid)
+                else:
+                    # Large imports: fall back to background branch refresh to keep latency reasonable.
+                    snapshot_refresh_mode = 'enqueue_branch_refresh'
+                    SnapshotRefreshService.enqueue_branch_refresh(
+                        db, first_ob['company_id'], first_ob['branch_id'], reason="excel_import_bulk"
+                    )
                 result['opening_balances_created'] = len(opening_balances)
-                logger.info(f"Bulk inserted {len(opening_balances)} opening balances (snapshot refresh enqueued)")
+                logger.info(f"Bulk inserted {len(opening_balances)} opening balances (snapshot refresh: {snapshot_refresh_mode})")
             except Exception as e:
                 logger.warning(f"Some opening balances failed bulk insert: {e}")
 

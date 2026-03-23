@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
-from app.dependencies import get_tenant_db, get_current_user, get_effective_company_id_for_user, _user_has_permission
+from app.dependencies import get_tenant_db, get_current_user, get_effective_company_id_for_user, _user_has_permission, get_tenant_or_default
 from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
@@ -66,6 +66,8 @@ from app.utils.vat import vat_rate_to_percent
 from app.schemas.reports import ItemBatchesResponse
 from app.services.item_movement_report_service import get_item_batches
 from pydantic import BaseModel, Field
+from app.models.tenant import Tenant
+from app.services.plan_context import get_tenant_plan_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -286,6 +288,7 @@ def generate_sku(company_id: UUID, db: Session) -> str:
 def create_item(
     item: ItemCreate,
     current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -293,6 +296,25 @@ def create_item(
     Rejects duplicate names and duplicate SKU/code (same company, case-insensitive). No duplicate items allowed.
     Item and item_branch_snapshot are updated in a single transaction: if snapshot refresh fails, the item is not committed.
     """
+    # Enforce demo product limits (demo tenants cannot exceed product_limit)
+    plan_ctx = get_tenant_plan_context(tenant)
+    if plan_ctx.get("plan_type") == "demo":
+        product_limit = plan_ctx.get("product_limit")
+        # Only enforce when a positive limit is configured; None or <=0 means "no explicit limit".
+        if product_limit is not None and product_limit > 0:
+            # Count items for this company (company-scoped product limit)
+            company_id = item.company_id
+            existing_products_count = (
+                db.query(Item)
+                .filter(Item.company_id == company_id)
+                .count()
+            )
+            if existing_products_count >= product_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Demo accounts have a limited number of products. Upgrade to add more.",
+                )
+
     try:
         db_item = svc_create_item(db, item)
     except DuplicateItemNameError as e:
@@ -1424,6 +1446,7 @@ def delete_item(
 def bulk_create_items(
     bulk_data: ItemsBulkCreate,
     current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -1441,6 +1464,24 @@ def bulk_create_items(
     if len(bulk_data.items) > 1000:
         raise HTTPException(status_code=400, detail="Maximum 1000 items per batch")
     
+    # Enforce demo product limits (demo tenants cannot exceed product_limit via bulk import)
+    plan_ctx = get_tenant_plan_context(tenant)
+    if plan_ctx.get("plan_type") == "demo":
+        product_limit = plan_ctx.get("product_limit")
+        if product_limit is not None and product_limit > 0:
+            # Count existing items for this company
+            existing_products = (
+                db.query(Item)
+                .filter(Item.company_id == bulk_data.company_id)
+                .count()
+            )
+            incoming_products = len(bulk_data.items)
+            if existing_products + incoming_products > product_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Demo accounts cannot import more products than the allowed limit.",
+                )
+
     created_count = 0
     skipped_count = 0
     errors = []
@@ -1844,19 +1885,10 @@ def post_cost_adjustment(
             detail="Cannot adjust cost for a batch with no remaining stock (batch fully depleted).",
         )
     previous_cost = Decimal(str(ledger_row.unit_cost))
-    # UI sends new_unit_cost in the batch entry unit (wholesale/base packet).
-    # Ledger stores unit_cost per retail unit, so convert using the wholesale→retail multiplier.
-    wholesale_unit_name = (item.wholesale_unit or item.base_unit or "piece").strip() or "piece"
-    multiplier = get_unit_multiplier_from_item(item, wholesale_unit_name) or 1
-    try:
-        mult_dec = Decimal(str(multiplier))
-    except Exception:
-        mult_dec = Decimal("1")
-    if mult_dec <= 0:
-        mult_dec = Decimal("1")
-    # raw_cost is per wholesale/base; divide by multiplier to get cost per retail unit.
+    # API schema/UI sends new_unit_cost as cost per base/retail unit.
+    # Ledger stores InventoryLedger.unit_cost per retail/base unit, so no pack conversion here.
     raw_cost = Decimal(str(body.new_unit_cost))
-    new_cost = raw_cost / mult_dec
+    new_cost = raw_cost
     if previous_cost == new_cost:
         raise HTTPException(status_code=400, detail="New cost is unchanged.")
     # Cost outlier control: compare against branch weighted average and require override when far off

@@ -1478,7 +1478,31 @@ def create_credit_note(
             mult = Decimal("1")
         return_qty_base = Decimal(str(req_item.quantity_returned)) * Decimal(str(mult))
         unit_cost = orig.unit_cost_used if orig.unit_cost_used is not None else Decimal("0")
-        line_excl = req_item.unit_price_exclusive * Decimal(str(req_item.quantity_returned))
+        # Derive the effective unit price EXCLUSIVE from the original invoice line net amount
+        # (line_total_exclusive already includes item-level discount), then convert to the
+        # requested unit. This prevents "packet returns priced like retail" issues when
+        # the frontend unit_price doesn't match the unit conversion rules.
+        orig_unit_name = orig.unit_name or ""
+        req_unit_name = req_item.unit_name or orig_unit_name
+        orig_mult = get_unit_multiplier_from_item(orig.item, orig_unit_name)
+        req_mult = get_unit_multiplier_from_item(orig.item, req_unit_name)
+
+        effective_unit_price_exclusive = None
+        try:
+            orig_qty = Decimal(str(orig.quantity or 0))
+            orig_line_total_excl = Decimal(str(orig.line_total_exclusive or 0))
+            if orig_qty > 0 and orig_mult is not None and req_mult is not None and orig_mult > 0:
+                # orig_effective_unit_excl is per orig unit; convert -> base (retail) -> req unit
+                orig_effective_unit_excl = orig_line_total_excl / orig_qty
+                base_unit_price_excl = orig_effective_unit_excl / orig_mult
+                effective_unit_price_exclusive = base_unit_price_excl * req_mult
+        except Exception:
+            effective_unit_price_exclusive = None
+
+        if effective_unit_price_exclusive is None:
+            effective_unit_price_exclusive = Decimal(str(req_item.unit_price_exclusive or 0))
+
+        line_excl = effective_unit_price_exclusive * Decimal(str(req_item.quantity_returned))
         line_vat = line_excl * vat_rate_pct / Decimal("100")
         line_inc = line_excl + line_vat
         total_exclusive += line_excl
@@ -1499,7 +1523,7 @@ def create_credit_note(
             batch_id=orig.batch_id,
             unit_name=req_item.unit_name,
             quantity_returned=req_item.quantity_returned,
-            unit_price_exclusive=req_item.unit_price_exclusive,
+            unit_price_exclusive=effective_unit_price_exclusive,
             vat_rate=vat_rate_pct,
             vat_amount=line_vat,
             line_total_exclusive=line_excl,

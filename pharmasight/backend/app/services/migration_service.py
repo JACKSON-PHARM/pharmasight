@@ -223,8 +223,8 @@ def run_migrations_for_url(database_url: str) -> List[str]:
 
 def ensure_master_tenant_storage_columns(database_url: str) -> bool:
     """
-    Ensure the tenants table (master DB only) has supabase_storage_url and supabase_storage_service_role_key.
-    Run this on the default/master DB URL before querying Tenant. Idempotent (ADD COLUMN IF NOT EXISTS).
+    Ensure public.tenants (master DB) has columns expected by the Tenant ORM before any query loads
+    all mapped columns (e.g. MigrationService.get_all_tenants_with_db). Idempotent.
     Returns True if run (and no error), False if skipped (e.g. no tenants table).
     """
     try:
@@ -244,11 +244,16 @@ def ensure_master_tenant_storage_columns(database_url: str) -> bool:
         cur.execute("""
             ALTER TABLE tenants
                 ADD COLUMN IF NOT EXISTS supabase_storage_url TEXT,
-                ADD COLUMN IF NOT EXISTS supabase_storage_service_role_key TEXT
+                ADD COLUMN IF NOT EXISTS supabase_storage_service_role_key TEXT,
+                ADD COLUMN IF NOT EXISTS plan_type VARCHAR(20) NOT NULL DEFAULT 'paid',
+                ADD COLUMN IF NOT EXISTS demo_expires_at TIMESTAMPTZ NULL,
+                ADD COLUMN IF NOT EXISTS product_limit INT NULL,
+                ADD COLUMN IF NOT EXISTS branch_limit INT NULL,
+                ADD COLUMN IF NOT EXISTS user_limit INT NULL
         """)
         cur.close()
         conn.close()
-        logger.info("Master DB: ensured tenants.supabase_storage_* columns exist")
+        logger.info("Master DB: ensured tenants ORM columns (storage, plan_type, limits, demo)")
         return True
     except Exception as e:
         logger.warning("ensure_master_tenant_storage_columns failed: %s", e)

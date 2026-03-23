@@ -176,6 +176,9 @@ def run_tenant_migrations():
             print(f"  [Migrations] Target DB: {db_target}")
             print("  [Migrations] Default/master DB...")
             try:
+                # Master public.tenants must match Tenant ORM before MigrationService queries it (plan_type, limits, etc.)
+                from app.services.migration_service import ensure_master_tenant_storage_columns
+                ensure_master_tenant_storage_columns(default_url)
                 ran_default = run_migrations_for_url(default_url)
                 if ran_default:
                     print(f"  [Migrations] Default DB: applied {len(ran_default)} migration(s) -> {', '.join(ran_default)}")
@@ -184,9 +187,6 @@ def run_tenant_migrations():
                     print("  [Migrations] Default DB: already at latest version.")
                     print("  [Migrations] (If you don't see app tables in Supabase, check you're in the project above: Dashboard -> Table Editor -> public schema)")
                     logger.info("Default/master DB already up to date (no new migrations applied).")
-                # Ensure master-only tenants table has supabase_storage_* columns (before we query Tenant)
-                from app.services.migration_service import ensure_master_tenant_storage_columns
-                ensure_master_tenant_storage_columns(default_url)
             except Exception as e:
                 print(f"  [Migrations] Default DB: FAILED - {e}")
                 logger.error(

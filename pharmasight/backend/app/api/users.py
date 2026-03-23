@@ -35,6 +35,7 @@ from app.schemas.user import (
 from app.utils.auth_internal import hash_password, verify_password, validate_new_password
 from app.services.invite_service import InviteService
 from app.utils.username_generator import generate_username_from_name
+from app.services.plan_context import get_tenant_plan_context
 import logging
 
 logger = logging.getLogger(__name__)
@@ -523,6 +524,7 @@ def get_user_permissions(
 def create_user(
     user_data: UserCreate,
     current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -537,6 +539,24 @@ def create_user(
     Returns invitation token and code for user setup.
     """
     current_user, _ = current_user_and_db
+
+    # Enforce demo user limits (demo tenants cannot exceed user_limit)
+    plan_ctx = get_tenant_plan_context(tenant)
+    if plan_ctx.get("plan_type") == "demo":
+        user_limit = plan_ctx.get("user_limit")
+        # Only enforce when a positive limit is configured; None or <=0 means "no explicit limit".
+        if user_limit is not None and user_limit > 0:
+            # Count active (non-deleted) users in this tenant DB
+            existing_users_count = (
+                db.query(User)
+                .filter(User.deleted_at.is_(None))
+                .count()
+            )
+            if existing_users_count >= user_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Demo accounts have a limited number of users. Upgrade to add more.",
+                )
     # Normalize email (lowercase, trim)
     normalized_email = user_data.email.lower().strip()
     if not normalized_email:
@@ -736,6 +756,21 @@ def admin_create_user(
     Returns a temporary password once; user must log in and change password.
     """
     current_user, _ = current_user_and_db
+    # Enforce demo user limits (demo tenants cannot exceed user_limit) when tenant context is available
+    plan_ctx = get_tenant_plan_context(tenant)
+    if plan_ctx.get("plan_type") == "demo":
+        user_limit = plan_ctx.get("user_limit")
+        if user_limit is not None and user_limit > 0:
+            existing_users_count = (
+                db.query(User)
+                .filter(User.deleted_at.is_(None))
+                .count()
+            )
+            if existing_users_count >= user_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Demo accounts have a limited number of users. Upgrade to add more.",
+                )
     # Role check uses db (tenant DB from auth context); same tenant as current_user
     if not _user_has_owner_or_admin_role(db, current_user.id):
         raise HTTPException(

@@ -214,6 +214,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.location.hash = '#login';
                 window.history.replaceState(null, '', window.location.href.split('#')[0] + '#login');
             }
+            // Never show the authenticated setup wizard for unauthenticated users.
+            // (Setup is only reachable for signed-in users who have no company/branches yet.)
+            if (route === 'setup') {
+                route = 'login';
+                window.location.hash = '#login';
+                window.history.replaceState(null, '', window.location.href.split('#')[0] + '#login');
+            }
             // Tenant invite: ?token= means set-password page, not login
             if (route === 'login' && (window.location.search || '').includes('token=')) {
                 route = 'tenant-invite-setup';
@@ -277,7 +284,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     
                     // Force hash to login immediately (before any async operations)
                     const currentHash = window.location.hash.replace('#', '');
-                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set'];
+                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set', 'setup'];
                     
                     if (appRoutes.includes(currentHash) || !currentHash || currentHash === '') {
                         console.log('[AUTH STATE CHANGE] Redirecting from app route to login (tenant-free URL):', currentHash);
@@ -742,11 +749,20 @@ async function startAppFlow() {
         }
 
         // 5) All checks passed: branch selected and valid → go to dashboard
-        if (currentScreen !== 'dashboard') {
-            console.log('✅ Company, branches, and branch selection OK – showing dashboard...');
-            currentScreen = 'dashboard';
-            await updateStatusBar(user);
-            loadPage('dashboard');
+        {
+            // Preserve current route on refresh.
+            // If the user is on `#branch-select` (or has no hash), default to dashboard.
+            const requested = (window.location.hash || '').replace('#', '');
+            const requestedBase = (requested || '').split('?')[0] || '';
+            const shouldDefault = !requestedBase || requestedBase === 'branch-select';
+            const targetRoute = shouldDefault ? 'dashboard' : (requested || 'dashboard');
+            const nextScreen = shouldDefault ? 'dashboard' : requestedBase;
+            if (currentScreen !== nextScreen) {
+                console.log('✅ Company, branches, and branch selection OK – loading route:', targetRoute);
+                currentScreen = nextScreen;
+                await updateStatusBar(user);
+                loadPage(targetRoute);
+            }
         }
         
     } catch (error) {
@@ -855,12 +871,15 @@ window.handleBranchSelected = async function() {
     if (CONFIG.BRANCH_ID && await checkAndRedirectToStockTake()) {
         return; // Block further navigation - user is now in stock take
     }
-    
-    // Force route to landing (lightweight home) now that a branch is selected
+
+    // Do not force navigation on branch selection; startAppFlow will preserve the current
+    // route on refresh. Only ensure there's *some* hash if the user arrived without one.
     try {
-        window.location.hash = '#landing';
+        if (!(window.location.hash || '').trim()) {
+            window.location.hash = '#landing';
+        }
     } catch (e) {
-        console.warn('[BRANCH SELECTED] Could not update hash to #landing:', e);
+        console.warn('[BRANCH SELECTED] Could not ensure hash:', e);
     }
     
     await startAppFlow();
