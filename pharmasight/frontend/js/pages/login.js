@@ -495,9 +495,28 @@ async function loadLogin() {
 
     // Auto-open demo signup modal ONLY for public demo link scans.
     try {
-        const params = new URLSearchParams(window.location.search || '');
-        const demoRequested = params.get('demo') === '1' || params.get('create_demo') === '1';
-        if (demoRequested) openDemoSignupModal();
+        const searchParams = new URLSearchParams(window.location.search || '');
+        const fromSearch = searchParams.get('demo') === '1' || searchParams.get('create_demo') === '1';
+
+        // Router/hashing logic sometimes preserves query params in the hash better than in the search string.
+        // Support both:
+        //  - /?demo=1#login
+        //  - /#login?demo=1
+        const hash = window.location.hash || '';
+        const hashIdx = hash.indexOf('?');
+        const hashQuery = hashIdx >= 0 ? hash.slice(hashIdx + 1) : '';
+        const hashParams = new URLSearchParams(hashQuery);
+        const fromHash = hashParams.get('demo') === '1' || hashParams.get('create_demo') === '1';
+
+        const demoRequested = fromSearch || fromHash;
+
+        if (demoRequested) {
+            // Keep UI deterministic even if users navigate back/forth.
+            try {
+                localStorage.removeItem('pharmasight_demo_signup_requested');
+            } catch (_) {}
+            openDemoSignupModal();
+        }
     } catch (_) {}
     
     if (form) {

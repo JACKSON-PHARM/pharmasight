@@ -253,7 +253,7 @@
                             <button id="copy-public-demo-signup-link-btn" class="btn btn-secondary">Copy</button>
                         </div>
                         <div style="color:#64748b; font-size: 0.85rem; margin-top: 8px;">
-                            Example: <code>/</code>?<code>demo=1</code>#<code>login</code>
+                            Example: <code>/</code>#<code>login?demo=1</code>
                         </div>
                     </div>
                     <div style="width: 240px; flex: 0 0 auto;">
@@ -332,7 +332,8 @@
                     }
                 })();
                 const base = savedPublic || window.location.origin;
-                const link = `${base}/?demo=1#login`;
+                // Put the demo flag in the HASH query because your router preserves hash query params reliably.
+                const link = `${base}/#login?demo=1`;
                 const input = document.getElementById('public-demo-signup-link');
                 const copyBtn = document.getElementById('copy-public-demo-signup-link-btn');
                 const qrContainer = document.getElementById('public-demo-qr');
