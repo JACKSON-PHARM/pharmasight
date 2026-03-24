@@ -873,7 +873,10 @@ window.handleBranchSelected = async function() {
     // Update status bar
     const user = AuthBootstrap.getCurrentUser();
     if (user) {
-        await updateStatusBar(user);
+        // Non-blocking: status bar can update in background while navigation continues.
+        Promise.resolve(updateStatusBar(user)).catch((e) => {
+            console.warn('[BRANCH SELECTED] Status bar update failed:', e);
+        });
     }
     // Reset currentScreen
     currentScreen = null;
@@ -883,17 +886,19 @@ window.handleBranchSelected = async function() {
         return; // Block further navigation - user is now in stock take
     }
 
-    // Do not force navigation on branch selection; startAppFlow will preserve the current
-    // route on refresh. Only ensure there's *some* hash if the user arrived without one.
+    // Deterministic transition: move user off branch-select immediately.
+    // Then run startAppFlow in background for any additional checks.
     try {
-        if (!(window.location.hash || '').trim()) {
-            window.location.hash = '#landing';
+        window.location.hash = '#dashboard';
+        if (typeof window.loadPage === 'function') {
+            await window.loadPage('dashboard');
         }
     } catch (e) {
-        console.warn('[BRANCH SELECTED] Could not ensure hash:', e);
+        console.warn('[BRANCH SELECTED] Could not navigate to dashboard directly:', e);
     }
-    
-    await startAppFlow();
+
+    // Background reconciliation (permissions/branch validation/setup checks).
+    void startAppFlow();
 };
 
 /**

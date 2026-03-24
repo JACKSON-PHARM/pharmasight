@@ -496,16 +496,45 @@ async function selectBranch(branch) {
         proceedBtn.textContent = 'Proceeding...';
     }
     try {
+        // Clear branch-selection card immediately so users see instant progress feedback.
+        const page = document.getElementById('branch-select');
+        if (page) {
+            page.innerHTML = `
+                <div class="login-container">
+                    <div class="login-card">
+                        <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                        <h2>Opening your workspace...</h2>
+                        <div style="text-align: center; padding: 1.25rem 0 0.75rem;">
+                            <div class="spinner"></div>
+                        </div>
+                    </div>
+                </div>
+                <style>
+                    .spinner {
+                        border: 4px solid #f3f3f3;
+                        border-top: 4px solid var(--primary-color, #3498db);
+                        border-radius: 50%;
+                        width: 46px;
+                        height: 46px;
+                        animation: spin 1s linear infinite;
+                        margin: 0 auto;
+                    }
+                    @keyframes spin {
+                        0% { transform: rotate(0deg); }
+                        100% { transform: rotate(360deg); }
+                    }
+                </style>
+            `;
+        }
+
         // Set branch in context
         BranchContext.setBranch(branch);
         showToast(`Selected branch: ${branch.name}`, 'success');
 
-        // Wait a moment for state to update
-        await new Promise(resolve => setTimeout(resolve, 300));
-
         // Trigger app flow to continue
         if (window.handleBranchSelected) {
-            await window.handleBranchSelected();
+            // Do not block UI on downstream startup checks.
+            void window.handleBranchSelected();
         } else {
             loadPage('landing');
         }
