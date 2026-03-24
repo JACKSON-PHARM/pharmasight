@@ -161,7 +161,7 @@ async function loadTenants(page = 1, search = '', status = '') {
                 <tr>
                     <td colspan="6" class="text-center" style="color: red; padding: 20px;">
                         <strong>${errorMsg}</strong><br>
-                        <small>Check browser console (F12) for details</small>
+                        <small>Please refresh and try again. If it persists, contact support.</small>
                     </td>
                 </tr>
             `;

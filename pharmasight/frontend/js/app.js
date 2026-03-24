@@ -1679,7 +1679,7 @@ async function loadPage(pageName) {
                         // Fallback: show error message
                         const page = document.getElementById('password-reset');
                         if (page) {
-                            page.innerHTML = '<div class="login-container"><div class="login-card"><h1><i class="fas fa-pills"></i> PharmaSight</h1><h2>Password Reset</h2><p>The password reset functionality is not available. Please refresh the page.</p><p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 1rem;">If the problem persists, check the browser console for errors.</p><a href="#login" style="display: inline-block; margin-top: 1rem;">Back to Login</a></div></div>';
+                            page.innerHTML = '<div class="login-container"><div class="login-card"><h1><i class="fas fa-pills"></i> PharmaSight</h1><h2>Password Reset</h2><p>The password reset functionality is not available. Please refresh the page.</p><p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 1rem;">If this keeps happening, contact your administrator or support.</p><a href="#login" style="display: inline-block; margin-top: 1rem;">Back to Login</a></div></div>';
                         }
                     }
                 }, retryInterval);
@@ -1720,7 +1720,7 @@ async function loadPage(pageName) {
                 // Show error message on page
                 const page = document.getElementById('purchases');
                 if (page) {
-                    page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Error Loading Purchases Page</h3><p>The purchases.js script may not have loaded properly. Please check the browser console for errors.</p><p>Expected logs: "✅ purchases.js script loaded" and "✓ Purchases functions exported to window"</p></div>';
+                    page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Error Loading Purchases Page</h3><p>This page could not be loaded right now. Please refresh and try again.</p><p>If the issue continues, contact your administrator or support.</p></div>';
                 }
             }
             break;
@@ -1781,7 +1781,7 @@ async function loadPage(pageName) {
                                 <h3>Stock Take Page Not Available</h3>
                                 <p>The stock take functionality could not be loaded. Please refresh the page.</p>
                                 <p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 1rem;">
-                                    If the problem persists, check the browser console (F12) for errors.
+                                    If the problem persists, contact your administrator or support.
                                 </p>
                             </div>
                         </div>
@@ -1840,7 +1840,7 @@ async function loadPage(pageName) {
         console.error('[LOAD PAGE] Module load error:', mainPage, moduleError);
         const pageEl = document.getElementById(mainPage);
         if (pageEl) {
-            pageEl.innerHTML = '<div class="card" style="padding: 1.5rem;"><p><strong>Error loading this page.</strong> Please refresh or try again.</p><p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.5rem;">If the problem persists, check the browser console (F12).</p></div>';
+            pageEl.innerHTML = '<div class="card" style="padding: 1.5rem;"><p><strong>Error loading this page.</strong> Please refresh or try again.</p><p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.5rem;">If the issue continues, contact your administrator or support.</p></div>';
             pageEl.style.display = 'block';
             pageEl.style.visibility = 'visible';
         }
