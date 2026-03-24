@@ -1499,7 +1499,7 @@ async function renderEditRoleForm(page, roleId, roles) {
         } else {
             otherCell = '<td class="perm-cell perm-other">' + otherPerms.map(perm => {
                 const checked = rolePermissionNames.has(perm.name);
-                const label = (perm.action || '').replace(/_/g, ' ');
+                const label = getPermissionDisplayLabel(perm);
                 return `<label class="perm-checkbox-label perm-other-label" title="${escapeHtml(perm.description || '')}" style="display: block; margin-bottom: 0.35rem;">
                     <input type="checkbox" class="perm-checkbox" data-permission="${escapeHtml(perm.name)}" ${checked ? 'checked' : ''}>
                     <span class="perm-checkmark ${checked ? 'checked' : ''}"><i class="fas fa-check"></i></span>
@@ -1627,7 +1627,7 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
                             <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
                                 ${modulePerms.map(p => `
                                     <span class="badge badge-success" style="font-size: 0.75rem;" title="${escapeHtml(p.description || '')}">
-                                        ${escapeHtml(p.action)}
+                                        ${escapeHtml(getPermissionDisplayLabel(p))}
                                     </span>
                                 `).join('')}
                             </div>
@@ -1786,7 +1786,7 @@ async function updateUserPermissionsDisplay(userId) {
                                     <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
                                         ${modulePerms.map(p => `
                                             <span class="badge badge-success" style="font-size: 0.75rem;" title="${escapeHtml(p.description || '')}">
-                                                ${escapeHtml(p.action)}
+                                                ${escapeHtml(getPermissionDisplayLabel(p))}
                                             </span>
                                         `).join('')}
                                     </div>
@@ -3170,6 +3170,18 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+/**
+ * Human-friendly permission label for UI badges/matrix.
+ * Keep this mapping minimal and explicit to avoid changing existing labels broadly.
+ */
+function getPermissionDisplayLabel(perm) {
+    if (!perm || typeof perm !== 'object') return '';
+    if (perm.name === 'sales.view_cost') {
+        return 'View Cost in Sales/Quotation Search';
+    }
+    return (perm.action || '').replace(/_/g, ' ');
 }
 
 // Switch settings sub-page

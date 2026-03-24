@@ -140,13 +140,33 @@ async function getSalesViewPermissions(branchId = null) {
  * @returns {Promise<boolean>}
  */
 async function canViewUnitCost(branchId = null) {
-    return hasAnyPermission([
+    const permissions = await getUserPermissions(branchId);
+    // Default allow for backward compatibility: if permissions are unavailable/empty,
+    // keep cost visible unless roles are explicitly configured to remove cost-related access.
+    if (!permissions || permissions.size === 0) {
+        return true;
+    }
+    return [
         'items.view_cost',
         'inventory.view_cost',
         'purchases.view',
         'purchases.create',
         'admin.manage_company'
-    ], branchId);
+    ].some(name => permissions.has(name));
+}
+
+/**
+ * Dedicated control for cost visibility in Sales/Quotation item search.
+ * Defaults to visible when permissions are unavailable/empty (backward compatible).
+ * @param {string} branchId - Optional branch ID
+ * @returns {Promise<boolean>}
+ */
+async function canViewSalesCost(branchId = null) {
+    const permissions = await getUserPermissions(branchId);
+    if (!permissions || permissions.size === 0) {
+        return true;
+    }
+    return permissions.has('sales.view_cost');
 }
 
 // Export functions
@@ -160,5 +180,6 @@ if (typeof window !== 'undefined') {
         canViewDashboardCard,
         getSalesViewPermissions,
         canViewUnitCost,
+        canViewSalesCost,
     };
 }

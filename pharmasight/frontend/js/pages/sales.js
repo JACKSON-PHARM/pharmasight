@@ -1494,10 +1494,39 @@ function handlePaymentModeChange() {
 
 // Initialize TransactionItemsTable for Sales Invoice
 let salesInvoiceItemsTable = null;
+let salesCanViewUnitCost = true; // Default visible unless permissions explicitly disable
 // Track which item_ids have been synced to the server (for draft auto-create + add-item flow)
 let salesInvoiceSyncedItemIds = new Set();
 let salesInvoiceCreatingDraft = false;
 let salesInvoiceAddItemInFlight = new Set(); // item_id -> avoid duplicate in-flight add
+
+function applyUnitCostVisibilityPermissionToTable(tableInstance) {
+    if (!tableInstance) return;
+    if (window.Permissions && typeof window.Permissions.canViewSalesCost === 'function') {
+        Promise.resolve(window.Permissions.canViewSalesCost(CONFIG && CONFIG.BRANCH_ID ? CONFIG.BRANCH_ID : null))
+            .then(function (canView) {
+                salesCanViewUnitCost = (canView !== false);
+                tableInstance.showCost = salesCanViewUnitCost;
+            })
+            .catch(function () {
+                salesCanViewUnitCost = true;
+                tableInstance.showCost = true;
+            });
+    } else if (window.Permissions && typeof window.Permissions.canViewUnitCost === 'function') {
+        // Fallback for older deployments before sales.view_cost is available.
+        Promise.resolve(window.Permissions.canViewUnitCost(CONFIG && CONFIG.BRANCH_ID ? CONFIG.BRANCH_ID : null))
+            .then(function (canView) {
+                salesCanViewUnitCost = (canView !== false);
+                tableInstance.showCost = salesCanViewUnitCost;
+            })
+            .catch(function () {
+                salesCanViewUnitCost = true;
+                tableInstance.showCost = true;
+            });
+    } else {
+        tableInstance.showCost = true;
+    }
+}
 
 // Update sales invoice summary (Net, VAT, Total)
 function updateSalesInvoiceSummary() {
@@ -1954,6 +1983,7 @@ function initializeSalesInvoiceItemsTable() {
         mode: 'sale',
         items: items,
         priceType: 'sale_price',
+        showCost: salesCanViewUnitCost,
         useAddRow: true,
         onAddItem: onSalesInvoiceAddItem,
         onItemsChange: onSalesInvoiceItemsChange,
@@ -1983,6 +2013,7 @@ function initializeSalesInvoiceItemsTable() {
             }
         }
     });
+    applyUnitCostVisibilityPermissionToTable(salesInvoiceItemsTable);
     
     // Auto-focus on first item field after table is initialized
     setTimeout(() => {
@@ -2482,6 +2513,7 @@ function initializeSalesQuotationItemsTable() {
         mountEl: container,
         mode: 'quotation',
         items: items,
+        showCost: salesCanViewUnitCost,
         useAddRow: true,
         onAddItem: onQuotationAddItem,
         onUpdateItem: async (idx, itemData) => {
@@ -2570,6 +2602,7 @@ function initializeSalesQuotationItemsTable() {
             }
         }
     });
+    applyUnitCostVisibilityPermissionToTable(salesQuotationItemsTable);
     
     // Auto-focus on first item field after table is initialized
     setTimeout(() => {

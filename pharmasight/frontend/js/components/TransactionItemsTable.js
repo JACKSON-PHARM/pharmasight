@@ -53,6 +53,7 @@
         this.itemsSource = options.items || options.itemsSource || [];
         // purchase_price / sale_price must come from API only (inventory_ledger); never from items table
         this.priceType = options.priceType || (this.mode === 'sale' ? 'sale_price' : 'purchase_price');
+        this.showCost = options.showCost !== false; // Default visible unless explicitly disabled by permissions
         this.onItemsChange = options.onItemsChange || null;
         this.onTotalChange = options.onTotalChange || null;
         this.onItemCreate = options.onItemCreate || null; // Callback for creating new items
@@ -1518,7 +1519,7 @@
                                     ` : ''}
                                 </div>
                                 <div style="text-align: right;">
-                                    ${(this.mode === 'sale' || this.mode === 'quotation') && purchasePrice > 0 ? `
+                                    ${(this.showCost && (this.mode === 'sale' || this.mode === 'quotation') && purchasePrice > 0) ? `
                                         <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-bottom: 0.15rem;">Cost:</div>
                                         <div style="font-size: 0.75rem; color: var(--text-secondary, #666);">
                                             ${formatCurrency(purchasePrice)}
@@ -2607,7 +2608,9 @@
             const costPrice = costPerSelectedUnit != null ? formatCurrency(costPerSelectedUnit) : null;
             const margin = (this.mode === 'quotation') ? this.formatMargin(this.calculateMargin(item)) : null;
             const vat = (item.tax_percent || 0).toFixed(1) + '%';
-            const priceLine = costPrice ? `Selling: ${sellingPrice} &nbsp;|&nbsp; Cost: ${costPrice} &nbsp;|&nbsp; Margin: ${margin} &nbsp;|&nbsp; VAT: ${vat}` : `Price: ${sellingPrice} &nbsp;|&nbsp; VAT: ${vat}`;
+            const priceLine = (this.showCost && costPrice)
+                ? `Selling: ${sellingPrice} &nbsp;|&nbsp; Cost: ${costPrice} &nbsp;|&nbsp; Margin: ${margin} &nbsp;|&nbsp; VAT: ${vat}`
+                : `Price: ${sellingPrice} &nbsp;|&nbsp; VAT: ${vat}`;
             batchPlaceholder.innerHTML = priceLine;
         }
         

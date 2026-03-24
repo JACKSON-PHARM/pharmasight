@@ -1771,7 +1771,7 @@ def get_ledger_batches(
     )
 
     # Aggregate by (batch_number, expiry_date): remaining = sum(quantity_delta),
-    # latest_row = last ledger row in time (used as target for cost adjustment).
+    # latest_positive = most recent positive ledger row (target for cost adjustment).
     from collections import OrderedDict
 
     batches = OrderedDict()
@@ -1779,17 +1779,20 @@ def get_ledger_batches(
         key = (r.batch_number or "", r.expiry_date)
         agg = batches.get(key)
         if not agg:
-            agg = {"remaining": 0.0, "latest": r}
+            agg = {"remaining": 0.0, "latest_positive": None}
             batches[key] = agg
         agg["remaining"] += float(r.quantity_delta or 0)
-        # Keep the latest row for this batch (by created_at, fallback to id ordering)
-        latest = agg["latest"]
-        if getattr(r, "created_at", None) and getattr(latest, "created_at", None):
-            if r.created_at >= latest.created_at:
-                agg["latest"] = r
-        else:
-            # Fallback: later row in iteration wins
-            agg["latest"] = r
+        if float(r.quantity_delta or 0) > 0:
+            # Keep latest positive row for this batch (by created_at).
+            latest_pos = agg["latest_positive"]
+            if latest_pos is None:
+                agg["latest_positive"] = r
+            elif getattr(r, "created_at", None) and getattr(latest_pos, "created_at", None):
+                if r.created_at >= latest_pos.created_at:
+                    agg["latest_positive"] = r
+            else:
+                # Fallback: later row in iteration wins.
+                agg["latest_positive"] = r
 
     entries: list[LedgerBatchEntry] = []
     for (batch_number, expiry_date), agg in batches.items():
@@ -1797,7 +1800,10 @@ def get_ledger_batches(
         if remaining <= 0:
             # Skip fully depleted batches so UI only shows batches with stock.
             continue
-        latest = agg["latest"]
+        latest = agg["latest_positive"]
+        if latest is None:
+            # No positive row exists for this batch key; cannot target for cost correction.
+            continue
         entries.append(
             LedgerBatchEntry(
                 ledger_id=latest.id,
@@ -1878,6 +1884,22 @@ def post_cost_adjustment(
     )
     if not ledger_row:
         raise HTTPException(status_code=404, detail="Batch not found or does not belong to this item/branch.")
+    if (ledger_row.quantity_delta or 0) <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cost adjustment can only be applied to stock-in batch rows "
+                "(positive quantity). Please select an incoming batch entry."
+            ),
+        )
+    if (ledger_row.transaction_type or "").upper() in {"SALE", "SALE_RETURN"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot adjust cost on sales/return ledger rows. "
+                "Select the original incoming batch row instead."
+            ),
+        )
     remaining = _batch_current_quantity(db, item_id, body.branch_id, ledger_row.batch_number or "", ledger_row.expiry_date)
     if remaining <= 0:
         raise HTTPException(
