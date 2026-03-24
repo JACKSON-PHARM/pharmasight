@@ -1889,8 +1889,7 @@ def post_cost_adjustment(
     # Ledger stores InventoryLedger.unit_cost per retail/base unit, so no pack conversion here.
     raw_cost = Decimal(str(body.new_unit_cost))
     new_cost = raw_cost
-    if previous_cost == new_cost:
-        raise HTTPException(status_code=400, detail="New cost is unchanged.")
+    cost_unchanged = (previous_cost == new_cost)
     # Cost outlier control: compare against branch weighted average and require override when far off
     cost_outlier = is_cost_outlier_vs_weighted_average(
         db, item.company_id, body.branch_id, item_id, new_cost
@@ -1927,15 +1926,34 @@ def post_cost_adjustment(
             performed_by=user.id,
         )
         db.add(movement)
-        ledger_row.unit_cost = new_cost
-        ledger_row.total_cost = new_cost * ledger_row.quantity_delta
+        # If cost is unchanged, still allow a no-op correction so users can force an in-transaction
+        # snapshot refresh when the UI is stale.
+        if not cost_unchanged:
+            ledger_row.unit_cost = new_cost
+            ledger_row.total_cost = new_cost * ledger_row.quantity_delta
         db.flush()
+        # Keep branch purchase snapshot aligned with manual valuation corrections
+        # so snapshot consumers read the corrected cost immediately.
+        SnapshotService.upsert_purchase_snapshot(
+            db,
+            item.company_id,
+            body.branch_id,
+            item_id,
+            new_cost,
+            datetime.now(timezone.utc),
+            None,
+        )
         SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
         db.commit()
         db.refresh(movement)
+        msg = (
+            "Batch cost unchanged. Snapshot refreshed and action audited."
+            if cost_unchanged
+            else f"Batch cost updated from {previous_cost} to {new_cost}. Audited."
+        )
         return CorrectionResponse(
             success=True,
-            message=f"Batch cost updated from {previous_cost} to {new_cost}. Audited.",
+            message=msg,
             movement_id=movement.id,
             item_id=item_id,
             branch_id=body.branch_id,
@@ -2217,6 +2235,18 @@ def post_batch_metadata_correction(
             db, item.company_id, body.branch_id, item_id, Decimal("0"),
             document_number="ADJ",
         )
+        # Metadata correction can move stock into a different pool; persist the effective
+        # unit cost so branch snapshots remain consistent in the same transaction.
+        if unit_cost is not None and unit_cost > 0:
+            SnapshotService.upsert_purchase_snapshot(
+                db,
+                item.company_id,
+                body.branch_id,
+                item_id,
+                unit_cost,
+                datetime.now(timezone.utc),
+                None,
+            )
         SnapshotRefreshService.schedule_snapshot_refresh(
             db, item.company_id, body.branch_id, item_id=item_id
         )

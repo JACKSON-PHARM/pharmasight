@@ -156,6 +156,27 @@ def refresh_pos_snapshot_for_item(
 
     # last_purchase_price from ledger (latest costed movement)
     last_purchase_price = _get_last_purchase_price_from_ledger(db, company_id, branch_id, item_id)
+    # Prefer purchase snapshot cost when present: manual cost corrections can update historical
+    # ledger rows in place (same created_at), so ordering by ledger.created_at alone may keep an older cost.
+    purchase_snap_full = (
+        db.query(
+            ItemBranchPurchaseSnapshot.last_purchase_price,
+            ItemBranchPurchaseSnapshot.last_purchase_date,
+            ItemBranchPurchaseSnapshot.last_supplier_id,
+        )
+        .filter(
+            ItemBranchPurchaseSnapshot.item_id == item_id,
+            ItemBranchPurchaseSnapshot.branch_id == branch_id,
+            ItemBranchPurchaseSnapshot.company_id == company_id,
+        )
+        .first()
+    )
+    if (
+        purchase_snap_full
+        and purchase_snap_full.last_purchase_price is not None
+        and float(purchase_snap_full.last_purchase_price) > 0
+    ):
+        last_purchase_price = float(purchase_snap_full.last_purchase_price)
 
     # average_cost: prefer last_purchase_price; else get_best_available_cost (which can fall back
     # to items.default_cost_per_base when there is no ledger history for this branch).
@@ -219,17 +240,8 @@ def refresh_pos_snapshot_for_item(
         price_source = None
 
     # Legacy snapshots: last_purchase_date, last_supplier_id; activity dates
-    purchase_snap = (
-        db.query(ItemBranchPurchaseSnapshot.last_purchase_date, ItemBranchPurchaseSnapshot.last_supplier_id)
-        .filter(
-            ItemBranchPurchaseSnapshot.item_id == item_id,
-            ItemBranchPurchaseSnapshot.branch_id == branch_id,
-            ItemBranchPurchaseSnapshot.company_id == company_id,
-        )
-        .first()
-    )
-    last_purchase_date = purchase_snap.last_purchase_date if purchase_snap else None
-    last_supplier_id = str(purchase_snap.last_supplier_id) if purchase_snap and purchase_snap.last_supplier_id else None
+    last_purchase_date = purchase_snap_full.last_purchase_date if purchase_snap_full else None
+    last_supplier_id = str(purchase_snap_full.last_supplier_id) if purchase_snap_full and purchase_snap_full.last_supplier_id else None
 
     search_snap = (
         db.query(

@@ -5,6 +5,7 @@ On failure or missing branch_id we return []; fix snapshot/backfill instead of f
 """
 import logging
 import time
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
@@ -165,12 +166,23 @@ def _canonical_item_from_snapshot_row(
     from_snapshot_only: bool = False,
 ) -> Dict[str, Any]:
     """Build one canonical item dict from a snapshot row. item_like is from _item_like_from_snapshot_row (no Item join)."""
-    price_val = float(r.average_cost or 0)
     if from_snapshot_only:
         purchase_val = float(purchase_price_override) if purchase_price_override is not None else None
         sale_val = float(sale_price_override) if sale_price_override is not None else None
         margin_val = margin_percent_override
+        # Keep API `price` aligned with user-facing purchase cost in snapshot mode.
+        # This avoids stale average_cost showing as item cost after manual cost corrections.
+        price_val = float(purchase_val) if purchase_val is not None else float(r.average_cost or 0)
+        # When sale price source is margin-based, derive sale from the current purchase cost
+        # so cost/sale stay consistent even if a stale snapshot row is encountered.
+        if (
+            purchase_val is not None
+            and margin_val is not None
+            and price_source in ("company_margin", "default_margin")
+        ):
+            sale_val = float(Decimal(str(purchase_val)) * (Decimal("1") + (Decimal(str(margin_val)) / Decimal("100"))))
     else:
+        price_val = float(r.average_cost or 0)
         purchase_val = float(r.last_purchase_price or r.average_cost or 0)
         sale_val = float(r.selling_price or 0)
         margin_val = float(r.margin_percent) if r.margin_percent is not None else None
