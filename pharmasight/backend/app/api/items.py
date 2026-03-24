@@ -1387,6 +1387,32 @@ def update_item(
                        f"Unit names (e.g. packets, bottles, tins) can still be changed."
             )
 
+    # Keep VAT values canonical server-side, independent of client formatting.
+    vat_category_raw = update_data.get("vat_category")
+    vat_rate_raw = update_data.get("vat_rate")
+    if vat_category_raw is not None:
+        vat_category_norm = str(vat_category_raw).strip().upper().replace("-", "_").replace(" ", "_")
+        if vat_category_norm == "ZERO_RATED":
+            update_data["vat_category"] = "ZERO_RATED"
+            update_data["vat_rate"] = 0
+        elif vat_category_norm == "STANDARD_RATED":
+            update_data["vat_category"] = "STANDARD_RATED"
+            if vat_rate_raw is None or float(vat_rate_raw) <= 0:
+                update_data["vat_rate"] = 16
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid VAT category. Use ZERO_RATED or STANDARD_RATED.",
+            )
+    elif vat_rate_raw is not None:
+        # If only rate is supplied, derive category to avoid stale mixed states.
+        if float(vat_rate_raw) <= 0:
+            update_data["vat_rate"] = 0
+            update_data["vat_category"] = "ZERO_RATED"
+        else:
+            update_data["vat_rate"] = 16
+            update_data["vat_category"] = "STANDARD_RATED"
+
     # 3-tier validation: breakable => pack_size > 1 (only when we're actually updating those fields)
     if 'can_break_bulk' in update_data or 'pack_size' in update_data:
         cb = update_data.get('can_break_bulk') if 'can_break_bulk' in update_data else getattr(item, 'can_break_bulk', False)
