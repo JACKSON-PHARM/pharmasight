@@ -686,8 +686,13 @@ const API = {
             api.delete(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}`),
         batchInvoice: (invoiceId, body = null) => 
             api.post(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/batch`, body || {}),
-        updateInvoicePayment: (invoiceId, amountPaid) => 
-            api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/payment?amount_paid=${amountPaid}`, null),
+        updateInvoicePayment: (invoiceId, amountPaid, paymentReference = null) => {
+            const params = new URLSearchParams();
+            params.set('amount_paid', String(amountPaid));
+            const ref = paymentReference != null ? String(paymentReference).trim() : '';
+            if (ref) params.set('payment_reference', ref);
+            return api.put(`${CONFIG.API_ENDPOINTS.purchases}/invoice/${invoiceId}/payment?${params.toString()}`, null);
+        },
         /** Download supplier invoice as PDF. Opens a window first (user gesture) then assigns blob so download isn't blocked. */
         downloadSupplierInvoicePdf: async (invoiceId, invoiceNumber = null) => {
             const base = (typeof CONFIG !== 'undefined' && CONFIG.API_ENDPOINTS && CONFIG.API_ENDPOINTS.purchases) ? CONFIG.API_ENDPOINTS.purchases : '/api/purchases';

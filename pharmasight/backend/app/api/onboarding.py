@@ -8,7 +8,7 @@ Authority: database-per-tenant. Users live in TENANT DB only.
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
 from app.database_master import get_master_db
 from app.database import SessionLocal
@@ -27,6 +27,10 @@ from app.models.company import Company, Branch
 from app.services.branch_settings_service import ensure_default_branch_settings
 
 router = APIRouter()
+
+# 409 for consumed setup links (master TenantInvite.used_at) and duplicate DB rows on retry.
+# Same message when invite is no longer valid for completion (avoids frontend retry loops surfacing as 5xx).
+_INVITE_ALREADY_COMPLETED_MSG = "Invite already completed. Please log in."
 
 
 def _ensure_company_and_branch_for_tenant(tenant_db: Session, tenant) -> None:
@@ -158,6 +162,11 @@ def validate_token(
     """
     tenant = OnboardingService.validate_invite_token(token, master_db)
     if not tenant:
+        if OnboardingService.invite_token_already_used(token, master_db):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_INVITE_ALREADY_COMPLETED_MSG,
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or expired invite token",
@@ -247,8 +256,25 @@ def complete_tenant_invite(
     """
     import uuid as _uuid
 
-    tenant = OnboardingService.validate_invite_token(body.token, master_db)
+    try:
+        tenant = OnboardingService.validate_invite_token(body.token, master_db)
+    except ProgrammingError as e:
+        err = str(getattr(e, "orig", e))
+        if "plan_type" in err:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Master database is missing required columns (e.g. plan_type). "
+                    "Apply database/master_add_tenant_demo_fields.sql to the master database, then retry."
+                ),
+            ) from e
+        raise
     if not tenant:
+        if OnboardingService.invite_token_already_used(body.token, master_db):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_INVITE_ALREADY_COMPLETED_MSG,
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or expired invite token",
@@ -267,17 +293,31 @@ def complete_tenant_invite(
     user_id = result["user_id"]
     uid = _uuid.UUID(user_id) if isinstance(user_id, str) else user_id
 
-    try:
-        with tenant_or_app_db_session(tenant) as tenant_db:
-            return _complete_invite_with_session(tenant_db, tenant, uid, body, master_db)
-    except OperationalError as e:
-        err_msg = str(e).strip()
-        if "Tenant or user not found" not in err_msg and "FATAL:" not in err_msg.upper():
-            raise
-        # Tenant's database_url points to a deleted/unreachable Supabase project (legacy re-invite).
-        # Use app DB so the user can complete setup in the single-DB multi-company instance.
-        db = SessionLocal()
+    def _run_tenant_invite_completion():
         try:
-            return _complete_invite_with_session(db, tenant, uid, body, master_db)
-        finally:
-            db.close()
+            with tenant_or_app_db_session(tenant) as tenant_db:
+                return _complete_invite_with_session(tenant_db, tenant, uid, body, master_db)
+        except OperationalError as e:
+            err_msg = str(e).strip()
+            if "Tenant or user not found" not in err_msg and "FATAL:" not in err_msg.upper():
+                raise
+            # Tenant's database_url points to a deleted/unreachable Supabase project (legacy re-invite).
+            # Use app DB so the user can complete setup in the single-DB multi-company instance.
+            db = SessionLocal()
+            try:
+                return _complete_invite_with_session(db, tenant, uid, body, master_db)
+            finally:
+                db.close()
+
+    try:
+        return _run_tenant_invite_completion()
+    except IntegrityError as e:
+        orig = getattr(e, "orig", None)
+        pgcode = getattr(orig, "pgcode", None)
+        err_s = str(e).lower()
+        if pgcode == "23505" or "duplicate key" in err_s or "unique constraint" in err_s:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_INVITE_ALREADY_COMPLETED_MSG,
+            ) from e
+        raise

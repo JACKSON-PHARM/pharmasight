@@ -613,12 +613,13 @@ function renderSupplierInvoicesShell() {
                         </thead>
                         <tbody id="supplierInvoicesTableBody">
                             <tr>
-                                <td colspan="9" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
+                                <td colspan="8" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
                                     <div class="spinner" style="margin: 0 auto 0.5rem;"></div>
                                     <p style="color: var(--text-secondary);">Loading supplier invoices...</p>
                                 </td>
                             </tr>
                         </tbody>
+                        <tfoot id="supplierInvoicesTableFoot" style="display: none;"></tfoot>
                     </table>
                 </div>
             </div>
@@ -644,6 +645,8 @@ async function fetchAndRenderSupplierInvoicesData() {
         renderSupplierInvoicesTableBody();
     } catch (error) {
         console.error('Error fetching invoices:', error);
+        const footErr = document.getElementById('supplierInvoicesTableFoot');
+        if (footErr) { footErr.style.display = 'none'; footErr.innerHTML = ''; }
         tbody.innerHTML = `
             <tr>
                 <td colspan="6" style="padding: 3rem; text-align: center;">
@@ -678,14 +681,29 @@ function renderSupplierInvoicesTableBody() {
         });
     }
     
+    const foot = document.getElementById('supplierInvoicesTableFoot');
     if (list.length === 0) {
+        if (foot) { foot.style.display = 'none'; foot.innerHTML = ''; }
         var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
             ? window.EmptyStateWatermark.render({ title: 'No supplier invoices yet', description: 'Create your first supplier invoice to get started' })
             : '<p style="color: var(--text-secondary); margin: 0.5rem 0;">No supplier invoices found</p>';
-        tbody.innerHTML = '<tr><td colspan="9" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">' + emptyHtml + '<button class="btn btn-primary btn-sm" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Supplier Invoice</button></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">' + emptyHtml + '<button class="btn btn-primary btn-sm" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Supplier Invoice</button></td></tr>';
         return;
     }
-    
+
+    var sumTotal = 0;
+    var sumPaid = 0;
+    var sumBalance = 0;
+    for (var si = 0; si < list.length; si++) {
+        var d = list[si];
+        var t = parseFloat(d.total_inclusive || d.total_amount || 0);
+        var p = parseFloat(d.amount_paid || 0);
+        var b = parseFloat(d.balance != null && d.balance !== '' ? d.balance : (t - p));
+        sumTotal += isNaN(t) ? 0 : t;
+        sumPaid += isNaN(p) ? 0 : p;
+        sumBalance += isNaN(b) ? 0 : b;
+    }
+
     tbody.innerHTML = list.map(doc => {
         const docStatus = doc.status || 'DRAFT';
         const paymentStatus = doc.payment_status || 'UNPAID';
@@ -721,6 +739,24 @@ function renderSupplierInvoicesTableBody() {
             </tr>
         `;
     }).join('');
+
+    if (foot) {
+        var searchDisplay = (document.getElementById('purchaseSearchInput') && document.getElementById('purchaseSearchInput').value)
+            ? String(document.getElementById('purchaseSearchInput').value).trim()
+            : '';
+        var filterNote = searchDisplay
+            ? ('Filtered · ' + list.length + ' row(s) matching “' + (typeof escapeHtml === 'function' ? escapeHtml(searchDisplay) : searchDisplay) + '”')
+            : (list.length + ' invoice(s) in view');
+        foot.style.display = '';
+        foot.innerHTML =
+            '<tr style="position: sticky; bottom: 0; background: linear-gradient(to top, #f0f4f8 0%, #f8fafc 100%); border-top: 2px solid var(--border-color); box-shadow: 0 -2px 8px rgba(0,0,0,0.06);">' +
+            '<td colspan="2" style="padding: 0.5rem 0.5rem; font-weight: 700; font-size: 0.8rem; color: var(--text-primary);">Totals</td>' +
+            '<td style="padding: 0.5rem 0.5rem; font-weight: 700; font-size: 0.8rem;">' + formatCurrency(sumTotal) + '</td>' +
+            '<td style="padding: 0.5rem 0.5rem; font-weight: 600; font-size: 0.8rem;">' + formatCurrency(sumPaid) + '</td>' +
+            '<td style="padding: 0.5rem 0.5rem; font-weight: 700; font-size: 0.8rem;"><span style="color: ' + (sumBalance > 0 ? 'var(--danger-color)' : 'var(--success-color)') + '">' + formatCurrency(sumBalance) + '</span></td>' +
+            '<td colspan="3" style="padding: 0.5rem 0.5rem; text-align: right; font-size: 0.72rem; color: var(--text-secondary);">' + filterNote + '</td>' +
+            '</tr>';
+    }
 }
 
 async function renderSupplierInvoicesPage() {
@@ -3996,31 +4032,122 @@ function showShortExpiryOverrideModal(invoiceId, detail, buttonEl, existingConfi
     }
 }
 
-// Update invoice payment
-async function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
-    const amountPaid = prompt(`Enter amount paid:\n\nTotal: ${formatCurrency(totalAmount)}\nCurrent Paid: ${formatCurrency(currentPaid)}\nBalance: ${formatCurrency(totalAmount - currentPaid)}`, currentPaid);
-    
-    if (amountPaid === null) return; // User cancelled
-    
-    const paid = parseFloat(amountPaid);
-    if (isNaN(paid) || paid < 0) {
-        showToast('Invalid amount', 'error');
+// Update invoice payment — modal with balance prefilled and optional transaction reference (e.g. M-Pesa)
+function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
+    const total = parseFloat(totalAmount) || 0;
+    const prevPaid = parseFloat(currentPaid) || 0;
+    const balance = Math.max(0, Math.round((total - prevPaid) * 10000) / 10000);
+    const balanceStr = balance.toFixed(2);
+
+    const content = `
+        <div class="form-group" style="margin-bottom: 0.75rem;">
+            <p style="margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
+                <strong>Invoice total:</strong> ${formatCurrency(total)}<br>
+                <strong>Already paid:</strong> ${formatCurrency(prevPaid)}<br>
+                <strong>Balance due:</strong> ${formatCurrency(balance)}
+            </p>
+        </div>
+        <div class="form-group" style="margin-bottom: 0.75rem;">
+            <label class="form-label" for="sipAmountPayNow">Amount to pay now</label>
+            <input type="number" class="form-input" id="sipAmountPayNow" min="0" step="0.01"
+                value="${balanceStr}" placeholder="0.00"
+                style="max-width: 220px;">
+            <small style="display: block; margin-top: 0.25rem; color: var(--text-secondary); font-size: 0.75rem;">
+                Prefilled with the remaining balance. Change this if you are paying a different amount (partial payment).
+            </small>
+        </div>
+        <div class="form-group" style="margin-bottom: 0.25rem;">
+            <label class="form-label" for="sipPaymentMethod">Payment method</label>
+            <select class="form-input" id="sipPaymentMethod" style="max-width: 280px;">
+                <option value="cash">Cash</option>
+                <option value="mpesa">M-Pesa</option>
+                <option value="bank">Bank transfer</option>
+                <option value="other">Other</option>
+            </select>
+        </div>
+        <div class="form-group" id="sipRefGroup">
+            <label class="form-label" for="sipPaymentRef">Transaction reference <span style="font-weight: normal; color: var(--text-secondary);">(optional)</span></label>
+            <input type="text" class="form-input" id="sipPaymentRef" maxlength="240" autocomplete="off"
+                placeholder="e.g. M-Pesa confirmation code — leave blank for cash">
+            <small id="sipRefHint" style="display: block; margin-top: 0.25rem; color: var(--text-secondary); font-size: 0.75rem;">
+                Optional for cash. Enter the confirmation code for M-Pesa or a bank reference when applicable.
+            </small>
+        </div>`;
+
+    const footer = `
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="supplierInvoicePaySubmitBtn"><i class="fas fa-check"></i> Record payment</button>`;
+
+    if (typeof showModal !== 'function') {
+        showToast('Modal not available', 'error');
         return;
     }
-    
-    if (paid > totalAmount) {
-        showToast('Amount paid cannot exceed total amount', 'error');
-        return;
+    showModal('Record supplier payment', content, footer);
+
+    const methodEl = document.getElementById('sipPaymentMethod');
+    const refInput = document.getElementById('sipPaymentRef');
+    const refHint = document.getElementById('sipRefHint');
+    const syncRefHint = () => {
+        const m = methodEl ? methodEl.value : 'cash';
+        if (!refHint) return;
+        if (m === 'mpesa') {
+            refHint.textContent = 'Enter the M-Pesa confirmation / transaction code.';
+            if (refInput) refInput.placeholder = 'M-Pesa confirmation code';
+        } else if (m === 'bank') {
+            refHint.textContent = 'Enter bank reference or slip number if available.';
+            if (refInput) refInput.placeholder = 'Bank reference (optional)';
+        } else {
+            refHint.textContent = 'Optional for cash. Enter a reference if you still want it on file.';
+            if (refInput) refInput.placeholder = 'e.g. receipt note — optional';
+        }
+    };
+    if (methodEl) {
+        methodEl.onchange = syncRefHint;
+        syncRefHint();
     }
-    
-    try {
-        const result = await API.purchases.updateInvoicePayment(invoiceId, paid);
-        showToast('Payment updated successfully!', 'success');
-        // Reload invoices list
-        await fetchAndRenderSupplierInvoicesData();
-    } catch (error) {
-        console.error('Error updating payment:', error);
-        showToast(error.message || 'Error updating payment', 'error');
+
+    const submitBtn = document.getElementById('supplierInvoicePaySubmitBtn');
+    if (submitBtn) {
+        submitBtn.onclick = async () => {
+            if (balance <= 0) {
+                showToast('No outstanding balance on this invoice', 'error');
+                return;
+            }
+            const payNowRaw = document.getElementById('sipAmountPayNow');
+            const payNow = parseFloat(payNowRaw && payNowRaw.value ? payNowRaw.value : '0');
+            const refVal = refInput && refInput.value ? refInput.value.trim() : '';
+
+            if (isNaN(payNow) || payNow < 0) {
+                showToast('Enter a valid amount to pay', 'error');
+                return;
+            }
+            if (payNow <= 0) {
+                showToast('Enter an amount greater than zero', 'error');
+                return;
+            }
+            if (payNow > balance + 1e-6) {
+                showToast('Amount cannot exceed the outstanding balance (' + formatCurrency(balance) + ')', 'error');
+                return;
+            }
+            const newCumulative = prevPaid + payNow;
+            if (newCumulative > total + 1e-6) {
+                showToast('Total paid cannot exceed invoice total', 'error');
+                return;
+            }
+
+            submitBtn.disabled = true;
+            try {
+                await API.purchases.updateInvoicePayment(invoiceId, newCumulative, refVal || null);
+                showToast('Payment updated successfully!', 'success');
+                if (typeof closeModal === 'function') closeModal();
+                await fetchAndRenderSupplierInvoicesData();
+            } catch (error) {
+                console.error('Error updating payment:', error);
+                showToast(error.message || 'Error updating payment', 'error');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        };
     }
 }
 

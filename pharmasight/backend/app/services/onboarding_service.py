@@ -282,6 +282,15 @@ class OnboardingService:
         
         tenant = db.query(Tenant).filter(Tenant.id == invite.tenant_id).first()
         return tenant
+
+    @staticmethod
+    def invite_token_already_used(token: str, db: Session) -> bool:
+        """
+        True if this tenant setup token exists on master and was already consumed (used_at set).
+        Covers 'invitation' completed: the one-time link was used; retry should not look like a 500.
+        """
+        invite = db.query(TenantInvite).filter(TenantInvite.token == token).first()
+        return invite is not None and invite.used_at is not None
     
     @staticmethod
     def mark_invite_used(token: str, user_id: uuid.UUID, db: Session):

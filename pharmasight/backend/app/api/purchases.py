@@ -1817,13 +1817,19 @@ def batch_supplier_invoice(
 @router.put("/invoice/{invoice_id}/payment", response_model=SupplierInvoiceResponse)
 def update_invoice_payment(
     invoice_id: UUID,
-    amount_paid: Decimal = Query(..., description="Amount paid to supplier"),
+    amount_paid: Decimal = Query(..., description="Cumulative amount paid to supplier on this invoice"),
+    payment_reference: Optional[str] = Query(
+        None,
+        max_length=255,
+        description="Optional transaction reference (e.g. M-Pesa confirmation code)",
+    ),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
     Update payment information for supplier invoice.
     Only BATCHED or DRAFT; amount_paid must not exceed total_inclusive.
+    Optional payment_reference is stored on internal_reference (appended if already set).
     """
     invoice = (
         db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).with_for_update().first()
@@ -1840,6 +1846,17 @@ def update_invoice_payment(
             status_code=400,
             detail=f"Amount paid ({amount_paid}) cannot exceed invoice total ({invoice.total_inclusive})."
         )
+    if payment_reference is not None:
+        pr = (payment_reference or "").strip()
+        if pr:
+            existing = (invoice.internal_reference or "").strip()
+            suffix = f"Pay: {pr}"
+            if existing:
+                if pr not in existing and suffix not in existing:
+                    combined = f"{existing} | {suffix}"
+                    invoice.internal_reference = combined[:255]
+            else:
+                invoice.internal_reference = pr[:255]
     invoice.amount_paid = amount_paid
     invoice.balance = invoice.total_inclusive - amount_paid
     if amount_paid <= 0:
