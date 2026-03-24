@@ -967,7 +967,7 @@ def get_branch_today_summary(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get total sales for today for the branch. If user_id is provided, only sales batched by that user today."""
+    """Get total sales for today for the branch by invoice business date. If user_id is provided, only sales batched by that user."""
     today = date.today()
     q = db.query(
         func.coalesce(func.sum(SalesInvoice.total_inclusive), 0).label("total_inclusive"),
@@ -975,7 +975,7 @@ def get_branch_today_summary(
     ).filter(
         SalesInvoice.branch_id == branch_id,
         SalesInvoice.status.in_(["BATCHED", "PAID"]),
-        func.date(func.coalesce(SalesInvoice.batched_at, SalesInvoice.created_at)) == today,
+        SalesInvoice.invoice_date == today,
     )
     if user_id is not None:
         q = q.filter(SalesInvoice.batched_by == user_id)
@@ -1012,7 +1012,8 @@ def _compute_cogs_from_invoice_lines(
     """
     from sqlalchemy.orm import selectinload
 
-    sales_date_key = func.date(func.coalesce(SalesInvoice.batched_at, SalesInvoice.created_at))
+    # Use invoice business date for all sales-window analytics so dashboards match invoice listings.
+    sales_date_key = SalesInvoice.invoice_date
 
     # --- Ledger COGS: actual batching cost (multi-batch correct) ---
     ledger_total_raw = (
@@ -1065,7 +1066,7 @@ def _compute_cogs_from_invoice_lines(
     invoice_cogs_by_day = {} if by_date else None
 
     for inv in invoices:
-        inv_date = inv.batched_at or inv.created_at
+        inv_date = inv.invoice_date or inv.batched_at or inv.created_at
         if inv_date is None:
             d = sd
         elif hasattr(inv_date, "date") and callable(getattr(inv_date, "date")):
@@ -1129,10 +1130,12 @@ def get_branch_gross_profit(
     """
     sd, ed = _resolve_date_range(preset, start_date, end_date)
 
-    sales_date_key = func.date(func.coalesce(SalesInvoice.batched_at, SalesInvoice.created_at))
+    # Use invoice business date so back-dated invoices stay on their intended day.
+    sales_date_key = SalesInvoice.invoice_date
     base_sales = (
         db.query(
             func.coalesce(func.sum(SalesInvoice.total_exclusive), 0).label("sales_exclusive"),
+            func.coalesce(func.sum(SalesInvoice.total_inclusive), 0).label("sales_inclusive"),
             func.count(SalesInvoice.id).label("invoice_count"),
         )
         .filter(
@@ -1143,6 +1146,7 @@ def get_branch_gross_profit(
         .first()
     )
     sales_exclusive = (base_sales.sales_exclusive if base_sales else Decimal("0")) or Decimal("0")
+    sales_inclusive = (base_sales.sales_inclusive if base_sales else Decimal("0")) or Decimal("0")
     invoice_count = int(getattr(base_sales, "invoice_count", 0) or 0)
 
     # Net sales: subtract credit notes (customer returns) in date range
@@ -1156,7 +1160,18 @@ def get_branch_gross_profit(
         .scalar()
     )
     credit_notes_total = Decimal(str(credit_notes_sum or 0))
+    credit_notes_inclusive_sum = (
+        db.query(func.coalesce(func.sum(CreditNote.total_inclusive), 0).label("cn_total_inclusive"))
+        .filter(
+            CreditNote.branch_id == branch_id,
+            CreditNote.credit_note_date >= sd,
+            CreditNote.credit_note_date <= ed,
+        )
+        .scalar()
+    )
+    credit_notes_total_inclusive = Decimal(str(credit_notes_inclusive_sum or 0))
     net_sales_exclusive = sales_exclusive - credit_notes_total
+    net_sales_inclusive = sales_inclusive - credit_notes_total_inclusive
 
     # COGS from invoice lines (cost of quantity SOLD)
     cogs, cogs_by_day = _compute_cogs_from_invoice_lines(
@@ -1212,8 +1227,11 @@ def get_branch_gross_profit(
         "start_date": sd.isoformat(),
         "end_date": ed.isoformat(),
         "sales_exclusive": str(sales_exclusive),
+        "sales_inclusive": str(sales_inclusive),
         "credit_notes_exclusive": str(credit_notes_total),
+        "credit_notes_inclusive": str(credit_notes_total_inclusive),
         "net_sales_exclusive": str(net_sales_exclusive),
+        "net_sales_inclusive": str(net_sales_inclusive),
         "cogs": str(cogs),
         "gross_profit": str(gross_profit),
         "margin_percent": str(margin_percent),
@@ -1228,6 +1246,7 @@ def get_branch_gross_profit(
         db.query(
             sales_date_key.label("d"),
             func.coalesce(func.sum(SalesInvoice.total_exclusive), 0).label("sales_exclusive"),
+            func.coalesce(func.sum(SalesInvoice.total_inclusive), 0).label("sales_inclusive"),
         )
         .filter(
             SalesInvoice.branch_id == branch_id,
@@ -1239,6 +1258,7 @@ def get_branch_gross_profit(
         .all()
     )
     sales_by_day = {r.d: (r.sales_exclusive or Decimal("0")) for r in (sales_rows or [])}
+    sales_inclusive_by_day = {r.d: (r.sales_inclusive or Decimal("0")) for r in (sales_rows or [])}
 
     cn_rows = (
         db.query(
@@ -1254,14 +1274,31 @@ def get_branch_gross_profit(
         .all()
     )
     credit_notes_by_day = {r.d: (r.cn_total or Decimal("0")) for r in (cn_rows or [])}
+    cn_rows_inclusive = (
+        db.query(
+            CreditNote.credit_note_date.label("d"),
+            func.coalesce(func.sum(CreditNote.total_inclusive), 0).label("cn_total_inclusive"),
+        )
+        .filter(
+            CreditNote.branch_id == branch_id,
+            CreditNote.credit_note_date >= sd,
+            CreditNote.credit_note_date <= ed,
+        )
+        .group_by(CreditNote.credit_note_date)
+        .all()
+    )
+    credit_notes_inclusive_by_day = {r.d: (r.cn_total_inclusive or Decimal("0")) for r in (cn_rows_inclusive or [])}
     cogs_by_day = cogs_by_day or {}
 
     breakdown = []
     dcur = sd
     while dcur <= ed:
         s = sales_by_day.get(dcur, Decimal("0"))
+        s_inc = sales_inclusive_by_day.get(dcur, Decimal("0"))
         cn = credit_notes_by_day.get(dcur, Decimal("0"))
+        cn_inc = credit_notes_inclusive_by_day.get(dcur, Decimal("0"))
         net_s = s - cn
+        net_s_inc = s_inc - cn_inc
         c = cogs_by_day.get(dcur, Decimal("0"))
         gp = net_s - c
         mp = (gp / net_s * Decimal("100")) if net_s and net_s > 0 else Decimal("0")
@@ -1269,8 +1306,11 @@ def get_branch_gross_profit(
             {
                 "date": dcur.isoformat(),
                 "sales_exclusive": str(s),
+                "sales_inclusive": str(s_inc),
                 "credit_notes_exclusive": str(cn),
+                "credit_notes_inclusive": str(cn_inc),
                 "net_sales_exclusive": str(net_s),
+                "net_sales_inclusive": str(net_s_inc),
                 "cogs": str(c),
                 "gross_profit": str(gp),
                 "margin_percent": str(mp),

@@ -153,25 +153,35 @@ body {
 
 .login-password-input-wrap {
     position: relative;
-    display: block;
+    display: flex;
+    align-items: center;
+    width: 100%;
 }
 
 .login-password-input-wrap input {
+    width: 100%;
     padding-right: 2.75rem;
 }
 
 .login-password-toggle {
     position: absolute;
-    right: 0.35rem;
+    right: 0.45rem;
     top: 50%;
     transform: translateY(-50%);
     border: none;
     background: transparent;
     color: var(--text-secondary);
     cursor: pointer;
-    padding: 0.4rem 0.55rem;
+    padding: 0;
+    width: 2rem;
+    height: 2rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border-radius: 0.35rem;
     line-height: 1;
+    appearance: none;
+    -webkit-appearance: none;
 }
 
 .login-password-toggle:hover {
