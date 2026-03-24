@@ -29,6 +29,10 @@ from app.services.inventory_service import InventoryService
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.supplier_ledger_service import SupplierLedgerService
+from app.services.supplier_invoice_payment_service import (
+    prepare_supplier_invoice_for_response,
+    outstanding_after_allocations,
+)
 from app.schemas.supplier_management import (
     SupplierPaymentCreate,
     SupplierPaymentResponse,
@@ -184,13 +188,13 @@ def create_supplier_payment(
                     status_code=400,
                     detail=f"Invoice {inv.invoice_number} is not posted (BATCHED). Cannot allocate payment.",
                 )
-            balance = inv.balance if inv.balance is not None else (inv.total_inclusive or Decimal("0")) - (inv.amount_paid or Decimal("0"))
+            outstanding = outstanding_after_allocations(db, inv)
             existing = allocations_by_invoice.get(inv.id, (inv, Decimal("0")))[1]
             new_total_alloc = existing + alloc.allocated_amount
-            if new_total_alloc > balance:
+            if new_total_alloc > outstanding:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Allocation total ({new_total_alloc}) exceeds invoice balance {balance} for {inv.invoice_number}",
+                    detail=f"Allocation total ({new_total_alloc}) exceeds remaining balance {outstanding} for {inv.invoice_number}",
                 )
             total_allocated += alloc.allocated_amount
             allocations_by_invoice[inv.id] = (inv, new_total_alloc)
@@ -223,13 +227,16 @@ def create_supplier_payment(
                 allocated_amount=total_alloc,
             )
             db.add(alloc_row)
-            inv.amount_paid = (inv.amount_paid or Decimal("0")) + total_alloc
-            inv.balance = (inv.total_inclusive or Decimal("0")) - inv.amount_paid
-            if inv.balance <= 0:
-                inv.payment_status = "PAID"
-                inv.balance = Decimal("0")
-            else:
-                inv.payment_status = "PARTIAL"
+        db.flush()
+        for inv_id in allocations_by_invoice.keys():
+            inv_row = (
+                db.query(SupplierInvoice)
+                .with_for_update()
+                .filter(SupplierInvoice.id == inv_id)
+                .first()
+            )
+            if inv_row:
+                prepare_supplier_invoice_for_response(db, inv_row)
         # Ledger: one credit entry = full payment amount
         SupplierLedgerService.create_entry(
             db,

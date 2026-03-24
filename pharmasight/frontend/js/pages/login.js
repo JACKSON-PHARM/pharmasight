@@ -84,7 +84,12 @@ async function loadLogin() {
                     </div>
                     <div class="form-group">
                         <label for="loginPassword">Password</label>
-                        <input type="password" id="loginPassword" required placeholder="••••••••">
+                        <div class="login-password-input-wrap">
+                            <input type="password" id="loginPassword" required placeholder="••••••••" autocomplete="current-password">
+                            <button type="button" class="login-password-toggle" id="loginPasswordToggle" aria-label="Show password" title="Show password">
+                                <i class="fas fa-eye" aria-hidden="true"></i>
+                            </button>
+                        </div>
                     </div>
                     <button type="submit" class="btn btn-primary btn-block">
                         <i class="fas fa-sign-in-alt"></i> Sign In
@@ -242,6 +247,18 @@ async function loadLogin() {
     const errorDiv = document.getElementById('loginError');
     const usernameInput = document.getElementById('loginUsername');
     const passwordInput = document.getElementById('loginPassword');
+    const passwordToggleBtn = document.getElementById('loginPasswordToggle');
+    if (passwordToggleBtn && passwordInput) {
+        passwordToggleBtn.addEventListener('click', function () {
+            const show = passwordInput.type === 'password';
+            passwordInput.type = show ? 'text' : 'password';
+            passwordToggleBtn.setAttribute('aria-pressed', show ? 'true' : 'false');
+            passwordToggleBtn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+            passwordToggleBtn.title = show ? 'Hide password' : 'Show password';
+            const icon = passwordToggleBtn.querySelector('i');
+            if (icon) icon.className = show ? 'fas fa-eye-slash' : 'fas fa-eye';
+        });
+    }
     const submitBtn = form ? form.querySelector('button[type="submit"]') : null;
     const submitBtnOriginalHtml = submitBtn ? submitBtn.innerHTML : null;
     let isSubmitting = false;
@@ -259,6 +276,12 @@ async function loadLogin() {
             }
             if (usernameInput) usernameInput.disabled = !!submitting;
             if (passwordInput) passwordInput.disabled = !!submitting;
+            const pt = document.getElementById('loginPasswordToggle');
+            if (pt) {
+                pt.disabled = !!submitting;
+                pt.style.opacity = submitting ? '0.5' : '';
+                pt.style.pointerEvents = submitting ? 'none' : '';
+            }
         } catch (_) {}
     }
     
@@ -335,7 +358,12 @@ async function loadLogin() {
                             </div>
                             <div class="form-group">
                                 <label for="demoPassword">Password</label>
-                                <input type="password" id="demoPassword" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters">
+                                <div class="login-password-input-wrap">
+                                    <input type="password" id="demoPassword" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters">
+                                    <button type="button" class="login-password-toggle" id="demoPasswordToggle" aria-label="Show password" title="Show password">
+                                        <i class="fas fa-eye" aria-hidden="true"></i>
+                                    </button>
+                                </div>
                             </div>
                             <div id="demoSignupError" class="error-message" style="display:none;"></div>
                             <button type="submit" class="btn btn-primary btn-block" id="demoSignupSubmitBtn">
@@ -349,6 +377,19 @@ async function loadLogin() {
                 </div>
             `;
             document.body.appendChild(demoModal);
+
+            const demoPwInputInit = document.getElementById('demoPassword');
+            const demoPwToggleInit = document.getElementById('demoPasswordToggle');
+            if (demoPwToggleInit && demoPwInputInit) {
+                demoPwToggleInit.addEventListener('click', function () {
+                    const show = demoPwInputInit.type === 'password';
+                    demoPwInputInit.type = show ? 'text' : 'password';
+                    demoPwToggleInit.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+                    demoPwToggleInit.title = show ? 'Hide password' : 'Show password';
+                    const icon = demoPwToggleInit.querySelector('i');
+                    if (icon) icon.className = show ? 'fas fa-eye-slash' : 'fas fa-eye';
+                });
+            }
 
             const closeBtn = document.getElementById('demoModalCloseBtn');
             if (closeBtn) {
@@ -381,6 +422,12 @@ async function loadLogin() {
                     demoSubmitBtn.disabled = true;
                     demoSubmitBtn.setAttribute('aria-busy', 'true');
                     demoSubmitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating account...';
+                }
+                const demoPwToggleEl = document.getElementById('demoPasswordToggle');
+                if (demoPwToggleEl) {
+                    demoPwToggleEl.disabled = true;
+                    demoPwToggleEl.style.opacity = '0.5';
+                    demoPwToggleEl.style.pointerEvents = 'none';
                 }
                 try {
                     const organizationName = document.getElementById('demoOrganizationName').value.trim();
@@ -452,7 +499,18 @@ async function loadLogin() {
                     } catch (_) {}
 
                     if (typeof showToast === 'function') {
-                        showToast('Account created. Check your email for a setup link to complete your onboarding.', 'success');
+                        const uname = (data.username && String(data.username).trim()) || '';
+                        const sub = (data.tenant_subdomain && String(data.tenant_subdomain).trim()) || '';
+                        const origin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
+                        let toastMsg = 'Account created.';
+                        if (uname) {
+                            toastMsg += ' Your username is ' + uname + '.';
+                        }
+                        if (sub && origin) {
+                            toastMsg += ' To sign in later, use ' + origin + '/?tenant=' + encodeURIComponent(sub) + '#login';
+                        }
+                        toastMsg += ' Check your email for setup details and save your username.';
+                        showToast(toastMsg, 'success');
                     }
 
                     // Close modal
@@ -481,6 +539,12 @@ async function loadLogin() {
                         demoSubmitBtn.disabled = false;
                         demoSubmitBtn.setAttribute('aria-busy', 'false');
                         demoSubmitBtn.innerHTML = '<i class="fas fa-user-plus"></i> Create Account';
+                    }
+                    const dptDone = document.getElementById('demoPasswordToggle');
+                    if (dptDone) {
+                        dptDone.disabled = false;
+                        dptDone.style.opacity = '';
+                        dptDone.style.pointerEvents = '';
                     }
                 }
             }
@@ -784,15 +848,20 @@ async function loadLogin() {
                             return;
                         }
                         if (!userEmail) {
-                            const msg = typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'User not found';
+                            const msg = typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || 'Invalid username or password';
                             if (errorDiv) {
                                 const hasTenant = params.get('tenant') || params.get('subdomain');
                                 const isOrgDeactivated = msg.toLowerCase().includes('no longer active') || msg.toLowerCase().includes('deactivated');
+                                const msgLc = msg.toLowerCase();
+                                const isAuthInvalid = usernameResponse.status === 401 && (msgLc.includes('invalid username') || msgLc.includes('invalid password'));
                                 let hint = '';
                                 if (isOrgDeactivated && hasTenant) {
                                     hint = '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">If you have an account in another organization, <a href="' + (window.location.pathname || '/') + '#login">sign in without the organization link</a>.</p>';
                                 } else if (!hasTenant) {
                                     hint = '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL (e.g. <code>?tenant=your-org-subdomain</code> then #login).</p>';
+                                }
+                                if (isAuthInvalid) {
+                                    hint += '<p class="login-hint" style="margin-top:0.5rem;font-size:0.9rem;color:var(--text-secondary,#666);">Use the <strong>username</strong> from your invite or password-reset email (you can type your email in the username field if that is how you sign in). After a reset, use your <strong>new</strong> password.</p>';
                                 }
                                 errorDiv.innerHTML = '<span>' + String(msg).replace(/</g, '&lt;') + '</span>' + hint;
                                 errorDiv.style.display = 'block';
@@ -815,7 +884,7 @@ async function loadLogin() {
                     }
                     if (errorDiv) {
                         errorDiv.innerHTML = '<span>' + String(errorMsg).replace(/</g, '&lt;') + '</span>' +
-                            (errorMsg.toLowerCase().includes('user not found') ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL then #login.</p>' : '');
+                            ((errorMsg.toLowerCase().includes('user not found') || errorMsg.toLowerCase().includes('invalid username') || errorMsg.toLowerCase().includes('invalid password')) ? '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL then #login.</p>' : '');
                         errorDiv.style.display = 'block';
                     } else {
                         showToast(errorMsg, 'error');

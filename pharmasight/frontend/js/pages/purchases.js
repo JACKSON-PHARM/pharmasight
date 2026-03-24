@@ -596,11 +596,20 @@ function renderSupplierInvoicesShell() {
                     </select>
                     <input type="text" class="form-input" id="purchaseSearchInput" placeholder="Search invoice, supplier..." onkeyup="if(window.filterPurchaseDocuments) window.filterPurchaseDocuments()" style="width: 160px; padding: 0.35rem 0.5rem;">
                 </div>
+                <div id="supplierInvoicesBulkBar" style="display: none; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; padding: 0.45rem 0.6rem; background: var(--surface-secondary, #f0f4f8); border-radius: 0.35rem; border: 1px solid var(--border-color); font-size: 0.8rem;">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="if(window.toggleSelectAllPayableSupplierInvoices) window.toggleSelectAllPayableSupplierInvoices()"><i class="fas fa-check-square"></i> Select all unpaid (visible)</button>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="if(window.openBulkSupplierInvoicePaymentModal) window.openBulkSupplierInvoicePaymentModal()"><i class="fas fa-money-bill-wave"></i> Pay selected (<span id="siBulkCount">0</span>)</button>
+                    <span id="siBulkTotal" style="font-weight: 600;"></span>
+                    <span style="font-size: 0.72rem; color: var(--text-secondary); margin-left: 0.25rem;">Same supplier only — filter by name, tick rows, one payment reference for the run.</span>
+                </div>
                 
                 <div class="table-container" style="max-height: calc(100vh - 180px); overflow: auto;">
                     <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem;">
                         <thead style="position: sticky; top: 0; background: white; z-index: 10; box-shadow: 0 1px 2px rgba(0,0,0,0.06);">
                             <tr>
+                                <th style="padding: 0.35rem 0.35rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: center; width: 36px;" title="Pay together">
+                                    <input type="checkbox" id="supplierInvoicesSelectAll" title="Select all unpaid in this list" onclick="event.preventDefault(); event.stopPropagation(); if(window.toggleSelectAllPayableSupplierInvoices) window.toggleSelectAllPayableSupplierInvoices();" style="cursor: pointer;">
+                                </th>
                                 <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Supplier Invoice #</th>
                                 <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Date</th>
                                 <th style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); font-weight: 600; text-align: left;">Total</th>
@@ -613,7 +622,7 @@ function renderSupplierInvoicesShell() {
                         </thead>
                         <tbody id="supplierInvoicesTableBody">
                             <tr>
-                                <td colspan="8" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
+                                <td colspan="9" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">
                                     <div class="spinner" style="margin: 0 auto 0.5rem;"></div>
                                     <p style="color: var(--text-secondary);">Loading supplier invoices...</p>
                                 </td>
@@ -649,7 +658,7 @@ async function fetchAndRenderSupplierInvoicesData() {
         if (footErr) { footErr.style.display = 'none'; footErr.innerHTML = ''; }
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" style="padding: 3rem; text-align: center;">
+                <td colspan="9" style="padding: 3rem; text-align: center;">
                     <i class="fas fa-exclamation-triangle" style="font-size: 3rem; color: var(--danger-color); margin-bottom: 1rem;"></i>
                     <p style="color: var(--danger-color);">Error loading invoices</p>
                     <button class="btn btn-outline" onclick="if(window.fetchAndRenderSupplierInvoicesData) window.fetchAndRenderSupplierInvoicesData()" style="margin-top: 1rem;">
@@ -687,7 +696,7 @@ function renderSupplierInvoicesTableBody() {
         var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
             ? window.EmptyStateWatermark.render({ title: 'No supplier invoices yet', description: 'Create your first supplier invoice to get started' })
             : '<p style="color: var(--text-secondary); margin: 0.5rem 0;">No supplier invoices found</p>';
-        tbody.innerHTML = '<tr><td colspan="8" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">' + emptyHtml + '<button class="btn btn-primary btn-sm" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Supplier Invoice</button></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="padding: 1.5rem; text-align: center; font-size: 0.8rem;">' + emptyHtml + '<button class="btn btn-primary btn-sm" onclick="if(window.createNewSupplierInvoice) window.createNewSupplierInvoice()" style="margin-top: 1rem;"><i class="fas fa-plus"></i> Create Your First Supplier Invoice</button></td></tr>';
         return;
     }
 
@@ -710,6 +719,9 @@ function renderSupplierInvoicesTableBody() {
         const total = parseFloat(doc.total_inclusive || doc.total_amount || 0);
         const paid = parseFloat(doc.amount_paid || 0);
         const balance = parseFloat(doc.balance || (total - paid));
+        const payable = docStatus === 'BATCHED' && balance > 0.0001;
+        const supId = doc.supplier_id != null ? String(doc.supplier_id) : '';
+        const invNoEnc = encodeURIComponent(String(doc.invoice_number || ''));
         
         // Status badge colors
         const docStatusClass = docStatus === 'BATCHED' ? 'badge-success' : 'badge-warning';
@@ -718,6 +730,9 @@ function renderSupplierInvoicesTableBody() {
         
         return `
             <tr style="cursor: pointer;" onclick="if(window.viewSupplierInvoice) window.viewSupplierInvoice('${doc.id}')">
+                <td onclick="event.stopPropagation();" style="text-align: center; padding: 0.35rem; border-bottom: 1px solid var(--border-color); vertical-align: middle;">
+                    ${payable ? `<input type="checkbox" class="si-pay-checkbox" data-invoice-id="${doc.id}" data-supplier-id="${supId}" data-balance="${balance}" data-invoice-number="${invNoEnc}" onchange="if(window.supplierInvoiceBulkCheckboxChanged) window.supplierInvoiceBulkCheckboxChanged()" title="Include in bulk payment" style="cursor: pointer;">` : '<span style="color: var(--text-secondary); font-size: 0.7rem;">—</span>'}
+                </td>
                 <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">
                     <a href="#" onclick="event.stopPropagation(); if(window.viewSupplierInvoice) window.viewSupplierInvoice('${doc.id}'); return false;" style="color: var(--primary-color); font-weight: 600; text-decoration: none; font-size: 0.8rem;">${doc.invoice_number || '—'}</a>
                 </td>
@@ -740,6 +755,8 @@ function renderSupplierInvoicesTableBody() {
         `;
     }).join('');
 
+    if (typeof updateSupplierInvoiceBulkBar === 'function') updateSupplierInvoiceBulkBar();
+
     if (foot) {
         var searchDisplay = (document.getElementById('purchaseSearchInput') && document.getElementById('purchaseSearchInput').value)
             ? String(document.getElementById('purchaseSearchInput').value).trim()
@@ -750,6 +767,7 @@ function renderSupplierInvoicesTableBody() {
         foot.style.display = '';
         foot.innerHTML =
             '<tr style="position: sticky; bottom: 0; background: linear-gradient(to top, #f0f4f8 0%, #f8fafc 100%); border-top: 2px solid var(--border-color); box-shadow: 0 -2px 8px rgba(0,0,0,0.06);">' +
+            '<td style="padding: 0.5rem 0.35rem; border-bottom: none;"></td>' +
             '<td colspan="2" style="padding: 0.5rem 0.5rem; font-weight: 700; font-size: 0.8rem; color: var(--text-primary);">Totals</td>' +
             '<td style="padding: 0.5rem 0.5rem; font-weight: 700; font-size: 0.8rem;">' + formatCurrency(sumTotal) + '</td>' +
             '<td style="padding: 0.5rem 0.5rem; font-weight: 600; font-size: 0.8rem;">' + formatCurrency(sumPaid) + '</td>' +
@@ -1823,11 +1841,48 @@ async function renderCreateSupplierInvoicePage() {
             <i class="fas fa-trash"></i> Delete
         </button>
     ` : '');
+
+    const totalInv = invoiceData ? parseFloat(invoiceData.total_inclusive || 0) : 0;
+    const paidInv = invoiceData ? parseFloat(invoiceData.amount_paid || 0) : 0;
+    const balInv = invoiceData && invoiceData.balance != null && invoiceData.balance !== ''
+        ? parseFloat(invoiceData.balance)
+        : (totalInv - paidInv);
+    const paAlloc = (invoiceData && invoiceData.payment_allocations) ? invoiceData.payment_allocations : [];
+    let paymentAllocRowsHtml = '';
+    if (paAlloc.length && typeof formatDate === 'function' && typeof formatCurrency === 'function') {
+        const esc = typeof escapeHtml === 'function' ? escapeHtml : function (t) { return String(t || ''); };
+        paymentAllocRowsHtml = paAlloc.map(a =>
+            '<tr><td style="padding: 0.35rem;">' + formatDate(a.payment_date) + '</td><td style="padding: 0.35rem;">' + esc(String(a.method || '')) + '</td><td style="padding: 0.35rem;">' + esc(String(a.reference || '—')) + '</td><td style="padding: 0.35rem; text-align: right;">' + formatCurrency(a.allocated_amount) + '</td><td style="padding: 0.35rem; text-align: right;">' + formatCurrency(a.payment_total_amount) + '</td></tr>'
+        ).join('');
+    }
+    const paymentSummaryHtml = (isReadOnly && invoiceData && invoiceData.status === 'BATCHED') ? `
+        <div class="card" style="margin-bottom: 1rem;">
+            <div class="card-header" style="padding: 0.75rem 1rem;">
+                <h4 style="margin: 0; font-size: 1rem;"><i class="fas fa-receipt"></i> Payment &amp; references</h4>
+            </div>
+            <div class="card-body" style="padding: 0.75rem 1rem; font-size: 0.9rem;">
+                <p style="margin: 0 0 0.5rem;">
+                    <strong>Invoice total:</strong> ${formatCurrency(totalInv)} &nbsp;&nbsp;
+                    <strong>Paid:</strong> ${formatCurrency(paidInv)} &nbsp;&nbsp;
+                    <strong>Balance:</strong> ${formatCurrency(balInv)}
+                </p>
+                ${paymentAllocRowsHtml ? `
+                <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 0.5rem;">
+                    <thead><tr style="background: #f8f9fa;"><th style="text-align: left; padding: 0.4rem;">Date</th><th style="text-align: left; padding: 0.4rem;">Method</th><th style="text-align: left; padding: 0.4rem;">Reference</th><th style="text-align: right; padding: 0.4rem;">Applied to this invoice</th><th style="text-align: right; padding: 0.4rem;">Full payment total</th></tr></thead>
+                    <tbody>${paymentAllocRowsHtml}</tbody>
+                </table>` : '<p style="margin: 0.5rem 0 0 0; font-size: 0.85rem; color: var(--text-secondary);">No structured payment allocations on file yet. Payments recorded using <strong>Pay selected</strong> or Supplier Payments will appear here with the shared reference.</p>'}
+                ${invoiceData.internal_reference ? `<p style="margin: 0.5rem 0 0 0; font-size: 0.85rem;"><strong>Internal reference:</strong> ${typeof escapeHtml === 'function' ? escapeHtml(String(invoiceData.internal_reference)) : invoiceData.internal_reference}</p>` : ''}
+                <p style="margin: 0.75rem 0 0 0; font-size: 0.8rem; color: var(--text-secondary);">
+                    To see all supplier payments: <a href="#" onclick="event.preventDefault(); window.location.hash='#purchases-supplier-payments'; if(window.loadPurchaseSubPage) window.loadPurchaseSubPage('supplier-payments'); return false;">Purchases → Supplier Payments</a>.
+                </p>
+            </div>
+        </div>` : '';
     
     page.innerHTML = `
         <div class="invoice-context-banner invoice-context-supplier" role="status">
             <i class="fas fa-truck-loading"></i> Supplier Invoice — You are receiving stock from a supplier (incoming).
         </div>
+        ${paymentSummaryHtml}
         <div class="card" id="supplierInvoiceDocumentCard" style="transform-origin: top left; transition: transform 0.2s;">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: white; z-index: 10;">
                 <div style="display: flex; align-items: center; gap: 1rem;">
@@ -4032,12 +4087,197 @@ function showShortExpiryOverrideModal(invoiceId, detail, buttonEl, existingConfi
     }
 }
 
-// Update invoice payment — modal with balance prefilled and optional transaction reference (e.g. M-Pesa)
+function roundMoneySupplierPay(n) {
+    if (typeof window !== 'undefined' && typeof window.roundMoney2 === 'function') return window.roundMoney2(n);
+    return Math.round((parseFloat(n) || 0) * 100) / 100;
+}
+
+function supplierInvoiceBulkCheckboxChanged() {
+    if (typeof updateSupplierInvoiceBulkBar === 'function') updateSupplierInvoiceBulkBar();
+}
+
+function toggleSelectAllPayableSupplierInvoices() {
+    const tbody = document.getElementById('supplierInvoicesTableBody');
+    if (!tbody) return;
+    const list = tbody.querySelectorAll('.si-pay-checkbox:not(:disabled)');
+    if (list.length === 0) return;
+    const anyUnchecked = Array.from(list).some(cb => !cb.checked);
+    list.forEach(cb => { cb.checked = anyUnchecked; });
+    const master = document.getElementById('supplierInvoicesSelectAll');
+    if (master) {
+        master.checked = anyUnchecked && list.length > 0;
+        master.indeterminate = false;
+    }
+    updateSupplierInvoiceBulkBar();
+}
+
+function updateSupplierInvoiceBulkBar() {
+    const tbody = document.getElementById('supplierInvoicesTableBody');
+    const bar = document.getElementById('supplierInvoicesBulkBar');
+    if (!tbody || !bar) return;
+    const checked = tbody.querySelectorAll('.si-pay-checkbox:checked');
+    const payables = tbody.querySelectorAll('.si-pay-checkbox:not(:disabled)');
+    let total = 0;
+    checked.forEach(cb => {
+        total += parseFloat(cb.getAttribute('data-balance') || '0') || 0;
+    });
+    total = roundMoneySupplierPay(total);
+    const master = document.getElementById('supplierInvoicesSelectAll');
+    if (master && payables.length) {
+        const allChecked = Array.from(payables).every(cb => cb.checked);
+        const someChecked = checked.length > 0;
+        master.checked = allChecked;
+        master.indeterminate = someChecked && !allChecked;
+    }
+    if (checked.length === 0) {
+        bar.style.display = 'none';
+        return;
+    }
+    bar.style.display = 'flex';
+    const spanCount = document.getElementById('siBulkCount');
+    const spanTotal = document.getElementById('siBulkTotal');
+    if (spanCount) spanCount.textContent = String(checked.length);
+    if (spanTotal) spanTotal.textContent = 'Total: ' + (typeof formatCurrency === 'function' ? formatCurrency(total) : total);
+}
+
+function openBulkSupplierInvoicePaymentModal() {
+    const tbody = document.getElementById('supplierInvoicesTableBody');
+    if (!tbody) return;
+    const checked = Array.from(tbody.querySelectorAll('.si-pay-checkbox:checked'));
+    if (checked.length === 0) {
+        if (typeof showToast === 'function') showToast('Select at least one invoice with a balance', 'warning');
+        return;
+    }
+    const supplierIds = [...new Set(checked.map(cb => (cb.getAttribute('data-supplier-id') || '').trim()).filter(Boolean))];
+    if (supplierIds.length !== 1) {
+        if (typeof showToast === 'function') showToast('Select invoices for the same supplier only. Filter by supplier name, then select rows.', 'error');
+        return;
+    }
+    const supplierId = supplierIds[0];
+    const lines = checked.map(cb => ({
+        id: cb.getAttribute('data-invoice-id'),
+        invoice_number: decodeURIComponent(cb.getAttribute('data-invoice-number') || '') || '—',
+        balance: roundMoneySupplierPay(parseFloat(cb.getAttribute('data-balance') || '0') || 0)
+    })).filter(L => L.id && L.balance > 0);
+    if (lines.length === 0) {
+        if (typeof showToast === 'function') showToast('No payable amount on selected rows', 'error');
+        return;
+    }
+    const totalPay = roundMoneySupplierPay(lines.reduce((s, L) => s + L.balance, 0));
+    const today = typeof getLocalDateString === 'function' ? getLocalDateString() : new Date().toISOString().slice(0, 10);
+    const rowsHtml = lines.map(L => `
+        <tr>
+            <td>${typeof escapeHtml === 'function' ? escapeHtml(L.invoice_number) : L.invoice_number}</td>
+            <td style="text-align: right;">${typeof formatCurrency === 'function' ? formatCurrency(L.balance) : L.balance}</td>
+        </tr>`).join('');
+    const content = `
+        <p style="margin: 0 0 0.75rem; font-size: 0.85rem; color: var(--text-secondary); line-height: 1.45;">
+            One payment will be recorded with the allocations below. All selected invoices share the same <strong>reference</strong> (e.g. one M-Pesa or bank run).
+        </p>
+        <div style="overflow-x: auto; margin-bottom: 0.75rem;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                <thead><tr><th style="text-align: left; padding: 0.35rem;">Invoice</th><th style="text-align: right; padding: 0.35rem;">Pay (balance)</th></tr></thead>
+                <tbody>${rowsHtml}</tbody>
+                <tfoot><tr><td style="padding: 0.35rem; font-weight: 700;">Total</td><td style="padding: 0.35rem; text-align: right; font-weight: 700;">${typeof formatCurrency === 'function' ? formatCurrency(totalPay) : totalPay}</td></tr></tfoot>
+            </table>
+        </div>
+        <div class="form-group" style="margin-bottom: 0.5rem;">
+            <label class="form-label" for="bulkSipPaymentDate">Payment date</label>
+            <input type="date" class="form-input" id="bulkSipPaymentDate" value="${today}" style="max-width: 200px;">
+        </div>
+        <div class="form-group" style="margin-bottom: 0.5rem;">
+            <label class="form-label" for="bulkSipPaymentMethod">Payment method</label>
+            <select class="form-input" id="bulkSipPaymentMethod" style="max-width: 280px;">
+                <option value="cash">Cash</option>
+                <option value="mpesa">M-Pesa</option>
+                <option value="bank">Bank transfer</option>
+                <option value="other">Other</option>
+            </select>
+        </div>
+        <div class="form-group" id="bulkSipRefGroup">
+            <label class="form-label" for="bulkSipPaymentRef">Transaction reference</label>
+            <input type="text" class="form-input" id="bulkSipPaymentRef" maxlength="240" autocomplete="off" placeholder="e.g. M-Pesa confirmation — required for M-Pesa, Bank, Card, Cheque">
+            <small id="bulkSipRefHint" style="display: block; margin-top: 0.25rem; color: var(--text-secondary); font-size: 0.75rem;">Optional for cash.</small>
+        </div>`;
+    const footer = `
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="bulkSipPaySubmitBtn"><i class="fas fa-check"></i> Record payment</button>`;
+    if (typeof showModal !== 'function') {
+        if (typeof showToast === 'function') showToast('Modal not available', 'error');
+        return;
+    }
+    showModal('Pay selected supplier invoices', content, footer);
+    const methodEl = document.getElementById('bulkSipPaymentMethod');
+    const refInput = document.getElementById('bulkSipPaymentRef');
+    const refHint = document.getElementById('bulkSipRefHint');
+    const syncRefHint = () => {
+        const m = methodEl ? methodEl.value : 'cash';
+        if (!refHint) return;
+        if (m === 'mpesa') {
+            refHint.textContent = 'Enter the M-Pesa confirmation / transaction code.';
+            if (refInput) refInput.placeholder = 'M-Pesa confirmation code';
+        } else if (m === 'bank') {
+            refHint.textContent = 'Enter bank reference or slip number.';
+            if (refInput) refInput.placeholder = 'Bank reference';
+        } else {
+            refHint.textContent = 'Optional for cash or other.';
+            if (refInput) refInput.placeholder = 'Optional';
+        }
+    };
+    if (methodEl) {
+        methodEl.onchange = syncRefHint;
+        syncRefHint();
+    }
+    const submitBtn = document.getElementById('bulkSipPaySubmitBtn');
+    if (submitBtn) {
+        submitBtn.onclick = async () => {
+            if (!CONFIG.BRANCH_ID) {
+                if (typeof showToast === 'function') showToast('Branch context required. Select a branch in Settings.', 'error');
+                return;
+            }
+            const payDate = document.getElementById('bulkSipPaymentDate');
+            const method = (methodEl && methodEl.value) ? methodEl.value.toLowerCase() : 'cash';
+            const refVal = refInput && refInput.value ? refInput.value.trim() : '';
+            const cashlessMethods = ['mpesa', 'bank', 'card', 'cheque'];
+            if (cashlessMethods.includes(method) && !refVal) {
+                if (typeof showToast === 'function') showToast('Reference is required for MPesa, Bank, Card, and Cheque payments (e.g. transaction ID, M-Pesa code)', 'error');
+                return;
+            }
+            submitBtn.disabled = true;
+            try {
+                await API.suppliers.createPayment({
+                    branch_id: CONFIG.BRANCH_ID,
+                    supplier_id: supplierId,
+                    payment_date: payDate && payDate.value ? payDate.value : today,
+                    method,
+                    reference: refVal || null,
+                    amount: totalPay,
+                    allocations: lines.map(L => ({
+                        supplier_invoice_id: L.id,
+                        allocated_amount: L.balance
+                    }))
+                });
+                if (typeof showToast === 'function') showToast('Payment recorded for ' + lines.length + ' invoice(s)', 'success');
+                if (typeof closeModal === 'function') closeModal();
+                if (typeof fetchAndRenderSupplierInvoicesData === 'function') await fetchAndRenderSupplierInvoicesData();
+            } catch (error) {
+                console.error('Bulk supplier payment error:', error);
+                const msg = error.message || (error.detail && (typeof error.detail === 'string' ? error.detail : JSON.stringify(error.detail))) || 'Failed to record payment';
+                if (typeof showToast === 'function') showToast(msg, 'error');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        };
+    }
+}
+
+// Update invoice payment — modal; records via Supplier Payments (createPayment + one allocation) for consistency with bulk pay
 function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
     const total = parseFloat(totalAmount) || 0;
     const prevPaid = parseFloat(currentPaid) || 0;
     const balance = Math.max(0, Math.round((total - prevPaid) * 10000) / 10000);
     const balanceStr = balance.toFixed(2);
+    const today = typeof getLocalDateString === 'function' ? getLocalDateString() : new Date().toISOString().slice(0, 10);
 
     const content = `
         <div class="form-group" style="margin-bottom: 0.75rem;">
@@ -4046,6 +4286,7 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
                 <strong>Already paid:</strong> ${formatCurrency(prevPaid)}<br>
                 <strong>Balance due:</strong> ${formatCurrency(balance)}
             </p>
+            <p style="margin: 0; font-size: 0.75rem; color: var(--text-secondary);">Payment is recorded as a supplier payment with an allocation to this invoice (same as bulk pay).</p>
         </div>
         <div class="form-group" style="margin-bottom: 0.75rem;">
             <label class="form-label" for="sipAmountPayNow">Amount to pay now</label>
@@ -4055,6 +4296,10 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
             <small style="display: block; margin-top: 0.25rem; color: var(--text-secondary); font-size: 0.75rem;">
                 Prefilled with the remaining balance. Change this if you are paying a different amount (partial payment).
             </small>
+        </div>
+        <div class="form-group" style="margin-bottom: 0.75rem;">
+            <label class="form-label" for="sipPaymentDate">Payment date</label>
+            <input type="date" class="form-input" id="sipPaymentDate" value="${today}" style="max-width: 200px;">
         </div>
         <div class="form-group" style="margin-bottom: 0.25rem;">
             <label class="form-label" for="sipPaymentMethod">Payment method</label>
@@ -4066,9 +4311,9 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
             </select>
         </div>
         <div class="form-group" id="sipRefGroup">
-            <label class="form-label" for="sipPaymentRef">Transaction reference <span style="font-weight: normal; color: var(--text-secondary);">(optional)</span></label>
+            <label class="form-label" for="sipPaymentRef">Transaction reference</label>
             <input type="text" class="form-input" id="sipPaymentRef" maxlength="240" autocomplete="off"
-                placeholder="e.g. M-Pesa confirmation code — leave blank for cash">
+                placeholder="e.g. M-Pesa confirmation — required for M-Pesa, Bank, Card, Cheque">
             <small id="sipRefHint" style="display: block; margin-top: 0.25rem; color: var(--text-secondary); font-size: 0.75rem;">
                 Optional for cash. Enter the confirmation code for M-Pesa or a bank reference when applicable.
             </small>
@@ -4094,10 +4339,10 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
             refHint.textContent = 'Enter the M-Pesa confirmation / transaction code.';
             if (refInput) refInput.placeholder = 'M-Pesa confirmation code';
         } else if (m === 'bank') {
-            refHint.textContent = 'Enter bank reference or slip number if available.';
-            if (refInput) refInput.placeholder = 'Bank reference (optional)';
+            refHint.textContent = 'Bank reference or slip number is required for bank transfer.';
+            if (refInput) refInput.placeholder = 'Bank reference';
         } else {
-            refHint.textContent = 'Optional for cash. Enter a reference if you still want it on file.';
+            refHint.textContent = 'Optional for cash or other.';
             if (refInput) refInput.placeholder = 'e.g. receipt note — optional';
         }
     };
@@ -4114,8 +4359,15 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
                 return;
             }
             const payNowRaw = document.getElementById('sipAmountPayNow');
-            const payNow = parseFloat(payNowRaw && payNowRaw.value ? payNowRaw.value : '0');
+            let payNow = parseFloat(payNowRaw && payNowRaw.value ? payNowRaw.value : '0');
+            payNow = typeof roundMoneySupplierPay === 'function' ? roundMoneySupplierPay(payNow) : Math.round(payNow * 100) / 100;
             const refVal = refInput && refInput.value ? refInput.value.trim() : '';
+            const method = (methodEl && methodEl.value) ? methodEl.value.toLowerCase() : 'cash';
+            const cashlessMethods = ['mpesa', 'bank', 'card', 'cheque'];
+            if (cashlessMethods.includes(method) && !refVal) {
+                showToast('Reference is required for MPesa, Bank, Card, and Cheque payments (e.g. transaction ID, M-Pesa code)', 'error');
+                return;
+            }
 
             if (isNaN(payNow) || payNow < 0) {
                 showToast('Enter a valid amount to pay', 'error');
@@ -4125,25 +4377,73 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
                 showToast('Enter an amount greater than zero', 'error');
                 return;
             }
-            if (payNow > balance + 1e-6) {
-                showToast('Amount cannot exceed the outstanding balance (' + formatCurrency(balance) + ')', 'error');
-                return;
-            }
-            const newCumulative = prevPaid + payNow;
-            if (newCumulative > total + 1e-6) {
-                showToast('Total paid cannot exceed invoice total', 'error');
+
+            if (!CONFIG.BRANCH_ID) {
+                showToast('Branch context required. Select a branch in Settings.', 'error');
                 return;
             }
 
             submitBtn.disabled = true;
             try {
-                await API.purchases.updateInvoicePayment(invoiceId, newCumulative, refVal || null);
-                showToast('Payment updated successfully!', 'success');
+                const inv = await API.purchases.getInvoice(invoiceId);
+                if (!inv || inv.status !== 'BATCHED') {
+                    showToast('Only BATCHED (posted) invoices can receive payments through Supplier Payments.', 'error');
+                    return;
+                }
+                const supId = inv.supplier_id;
+                if (!supId) {
+                    showToast('Invoice has no supplier.', 'error');
+                    return;
+                }
+                const invTotal = parseFloat(inv.total_inclusive || 0) || 0;
+                const invPaid = parseFloat(inv.amount_paid || 0) || 0;
+                let invBalance = inv.balance != null && inv.balance !== ''
+                    ? parseFloat(inv.balance)
+                    : (invTotal - invPaid);
+                invBalance = typeof roundMoneySupplierPay === 'function' ? roundMoneySupplierPay(invBalance) : Math.max(0, Math.round(invBalance * 100) / 100);
+
+                if (invBalance <= 0) {
+                    showToast('No outstanding balance on this invoice', 'error');
+                    return;
+                }
+                if (payNow > invBalance + 1e-6) {
+                    showToast('Amount cannot exceed the outstanding balance (' + formatCurrency(invBalance) + ')', 'error');
+                    return;
+                }
+
+                const payDateEl = document.getElementById('sipPaymentDate');
+                const payDate = payDateEl && payDateEl.value ? payDateEl.value : today;
+
+                await API.suppliers.createPayment({
+                    branch_id: CONFIG.BRANCH_ID,
+                    supplier_id: supId,
+                    payment_date: payDate,
+                    method,
+                    reference: refVal || null,
+                    amount: payNow,
+                    allocations: [{
+                        supplier_invoice_id: inv.id,
+                        allocated_amount: payNow
+                    }]
+                });
+                showToast('Payment recorded', 'success');
                 if (typeof closeModal === 'function') closeModal();
-                await fetchAndRenderSupplierInvoicesData();
+                if (typeof fetchAndRenderSupplierInvoicesData === 'function') await fetchAndRenderSupplierInvoicesData();
+
+                if (typeof currentDocument !== 'undefined' && currentDocument && currentDocument.invoiceId && String(currentDocument.invoiceId) === String(invoiceId)) {
+                    try {
+                        currentDocument.invoiceData = await API.purchases.getInvoice(invoiceId);
+                        if (typeof currentPurchaseSubPage !== 'undefined' && currentPurchaseSubPage === 'create-invoice' && typeof renderCreateSupplierInvoicePage === 'function') {
+                            await renderCreateSupplierInvoicePage();
+                        }
+                    } catch (e) {
+                        console.warn('Could not refresh invoice view after payment:', e);
+                    }
+                }
             } catch (error) {
-                console.error('Error updating payment:', error);
-                showToast(error.message || 'Error updating payment', 'error');
+                console.error('Error recording supplier payment:', error);
+                const msg = error.message || (error.detail && (typeof error.detail === 'string' ? error.detail : (Array.isArray(error.detail) ? error.detail.map(x => x.msg || x).join(' ') : JSON.stringify(error.detail)))) || 'Error recording payment';
+                showToast(msg, 'error');
             } finally {
                 submitBtn.disabled = false;
             }
@@ -4165,6 +4465,10 @@ if (typeof window !== 'undefined') {
     window.batchSupplierInvoice = batchSupplierInvoice;
     window.showShortExpiryOverrideModal = showShortExpiryOverrideModal;
     window.updateInvoicePayment = updateInvoicePayment;
+    window.toggleSelectAllPayableSupplierInvoices = toggleSelectAllPayableSupplierInvoices;
+    window.updateSupplierInvoiceBulkBar = updateSupplierInvoiceBulkBar;
+    window.supplierInvoiceBulkCheckboxChanged = supplierInvoiceBulkCheckboxChanged;
+    window.openBulkSupplierInvoicePaymentModal = openBulkSupplierInvoicePaymentModal;
     window.viewSupplierInvoice = viewSupplierInvoice;
     window.editSupplierInvoice = editSupplierInvoice;
     window.deleteSupplierInvoice = deleteSupplierInvoice;

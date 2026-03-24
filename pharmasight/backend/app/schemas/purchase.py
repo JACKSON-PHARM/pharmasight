@@ -143,7 +143,11 @@ class SupplierInvoiceBase(BaseModel):
     vat_rate: Decimal = Field(default=16.00, ge=0, le=100)
     status: Optional[str] = Field(default="DRAFT", description="DRAFT (saved), BATCHED (stock added)")
     payment_status: Optional[str] = Field(default="UNPAID", description="UNPAID, PARTIAL, PAID")
-    amount_paid: Optional[Decimal] = Field(default=0, ge=0, description="Amount paid to supplier")
+    amount_paid: Optional[Decimal] = Field(
+        default=0,
+        ge=0,
+        description="Denormalized sum of supplier_payment_allocations; synced by server — do not rely on writes from clients",
+    )
 
 
 class SupplierInvoiceCreate(SupplierInvoiceBase):
@@ -154,6 +158,16 @@ class SupplierInvoiceCreate(SupplierInvoiceBase):
     confirmations: Optional[List[BatchLineConfirmation]] = Field(None, description="Required when line costs trigger floor price or margin confirmation (same as stock adjustment)")
 
 
+class SupplierInvoicePaymentAllocationInfo(BaseModel):
+    """One supplier payment line linked to this invoice (from supplier_payments + allocations)."""
+    supplier_payment_id: UUID
+    payment_date: date
+    method: str
+    reference: Optional[str] = None
+    payment_total_amount: Decimal = Field(..., description="Full amount of the parent supplier payment (may cover multiple invoices)")
+    allocated_amount: Decimal = Field(..., description="Portion of that payment applied to this invoice")
+
+
 class SupplierInvoiceResponse(SupplierInvoiceBase):
     """Supplier invoice response"""
     id: UUID
@@ -162,7 +176,7 @@ class SupplierInvoiceResponse(SupplierInvoiceBase):
     total_exclusive: Decimal
     vat_amount: Decimal
     total_inclusive: Decimal
-    balance: Optional[Decimal] = None  # Calculated: total_inclusive - amount_paid
+    balance: Optional[Decimal] = None  # total_inclusive - sum(allocations); synced with amount_paid
     created_by: UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -170,6 +184,10 @@ class SupplierInvoiceResponse(SupplierInvoiceBase):
     supplier_name: Optional[str] = None  # From relationship
     branch_name: Optional[str] = None  # From relationship
     created_by_name: Optional[str] = None  # From User relationship
+    payment_allocations: Optional[List[SupplierInvoicePaymentAllocationInfo]] = Field(
+        default=None,
+        description="Payments recorded via Supplier Payments (allocations). Empty if only legacy invoice payment was used.",
+    )
 
     class Config:
         from_attributes = True

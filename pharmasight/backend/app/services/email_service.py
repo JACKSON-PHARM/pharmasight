@@ -107,9 +107,18 @@ class EmailService:
             return False
 
     @staticmethod
-    def send_password_reset(to_email: str, reset_url: str, expire_minutes: int = 60) -> bool:
+    def send_password_reset(
+        to_email: str,
+        reset_url: str,
+        expire_minutes: int = 60,
+        *,
+        username: Optional[str] = None,
+        tenant_subdomain: Optional[str] = None,
+        sign_in_url: Optional[str] = None,
+    ) -> bool:
         """
         Send password reset email with link. Returns True if sent successfully.
+        Optionally includes username and a direct sign-in URL so users know what to enter on the login page.
         """
         if not EmailService.is_configured():
             logger.warning(
@@ -121,6 +130,23 @@ class EmailService:
             )
             return False
         safe_url = _escape(reset_url)
+        safe_user = _escape(username) if username else ""
+        safe_tenant = _escape(tenant_subdomain) if tenant_subdomain else ""
+        safe_sign_in = _escape(sign_in_url) if sign_in_url else ""
+
+        username_block = ""
+        if username:
+            username_block = f"""
+            <p><strong>Your username:</strong> <code style="background:#f0f0f0;padding:4px 8px;border-radius:4px;">{safe_user}</code></p>
+            <p>On the sign-in page, enter this username (not only your email) and your new password after you reset.</p>
+            """
+        tenant_block = ""
+        if tenant_subdomain and sign_in_url:
+            tenant_block = f"""
+            <p><strong>Your organization link:</strong> <a href="{safe_sign_in}">{safe_sign_in}</a></p>
+            <p style="font-size:14px;color:#666;">Bookmark this if your account belongs to <code>{safe_tenant}</code> so the app opens the correct workspace.</p>
+            """
+
         html_body = f"""
         <!DOCTYPE html>
         <html>
@@ -129,11 +155,17 @@ class EmailService:
             <p>Click the link below to set a new password:</p>
             <p><a href="{safe_url}" style="background:#2563eb;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;display:inline-block;">Reset password</a></p>
             <p style="word-break:break-all;font-size:12px;color:#666;">Or copy: {safe_url}</p>
+            {username_block}
+            {tenant_block}
             <p style="color:#666;font-size:14px;">This link expires in {expire_minutes} minutes. If you didn't request this, ignore this email.</p>
         </body>
         </html>
         """
         plain = f"Reset your PharmaSight password: {reset_url}\n\nThis link expires in {expire_minutes} minutes.\n"
+        if username:
+            plain += f"\nYour username: {username}\nUse this username when signing in (with your new password).\n"
+        if tenant_subdomain and sign_in_url:
+            plain += f"\nYour organization sign-in link: {sign_in_url}\n"
         msg = MIMEMultipart("alternative")
         msg["Subject"] = "Reset your PharmaSight password"
         msg["From"] = settings.EMAIL_FROM

@@ -303,9 +303,10 @@ def username_login(
             "Ensure tenant DBs are reachable and public.tenants have database_url set.",
             normalized_username[:50],
         )
+        # 401 (not 404): avoids confusion in browser DevTools where 404 looks like a missing API route.
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
         )
     if len(found_list) == 1:
         tenant, user = found_list[0]
@@ -672,7 +673,18 @@ def auth_request_reset(
 
     def send_reset_email():
         try:
-            sent = EmailService.send_password_reset(to_email, reset_url, expire_minutes)
+            uname = (getattr(user, "username", None) or "").strip() or None
+            sign_in_url = None
+            if subdomain_for_token and subdomain_for_token != LEGACY_TENANT_SUBDOMAIN:
+                sign_in_url = f"{base.rstrip('/')}/?tenant={subdomain_for_token}#login"
+            sent = EmailService.send_password_reset(
+                to_email,
+                reset_url,
+                expire_minutes,
+                username=uname,
+                tenant_subdomain=subdomain_for_token if subdomain_for_token != LEGACY_TENANT_SUBDOMAIN else None,
+                sign_in_url=sign_in_url,
+            )
             if sent:
                 logger.info("[request-reset] Password reset email sent to %s", to_email)
                 print(f"  [request-reset] Email sent to {to_email}")

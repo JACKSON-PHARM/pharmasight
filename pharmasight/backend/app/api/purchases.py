@@ -15,12 +15,14 @@ from app.models import (
     GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem,
     PurchaseOrder, PurchaseOrderItem,
     DailyOrderBook,
-    InventoryLedger, Item, Supplier, Branch, User, Company
+    InventoryLedger, Item, Supplier, Branch, User, Company,
+    SupplierPayment, SupplierPaymentAllocation,
 )
 from app.services.item_units_helper import get_unit_multiplier_from_item
 from app.schemas.purchase import (
     GRNCreate, GRNResponse,
     SupplierInvoiceCreate, SupplierInvoiceResponse,
+    SupplierInvoicePaymentAllocationInfo,
     SupplierInvoiceItemCreate, SupplierInvoiceItemUpdate,
     PurchaseOrderCreate, PurchaseOrderResponse,
     PurchaseOrderItemCreate,
@@ -32,6 +34,10 @@ from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.order_book_service import OrderBookService
 from app.services.supplier_ledger_service import SupplierLedgerService
+from app.services.supplier_invoice_payment_service import (
+    sync_supplier_invoice_paid_from_allocations,
+    prepare_supplier_invoice_for_response,
+)
 from app.services.pricing_config_service import (
     check_stock_adjustment_requires_confirmation,
     is_cost_outlier_vs_weighted_average,
@@ -672,8 +678,9 @@ def create_supplier_invoice(
         # NOTE: Stock is NOT added here. It's added when invoice is batched via /invoice/{id}/batch
     
     total_inclusive = total_exclusive + total_vat
-    balance = total_inclusive - (invoice.amount_paid or Decimal("0"))
-    
+    # amount_paid is derived only from supplier_payment_allocations (none on draft create)
+    balance = total_inclusive
+
     # Create supplier invoice (DRAFT status - no stock added yet)
     db_invoice = SupplierInvoice(
         company_id=invoice.company_id,
@@ -691,8 +698,8 @@ def create_supplier_invoice(
         vat_amount=total_vat,
         total_inclusive=total_inclusive,
         status=invoice.status or "DRAFT",  # Save as DRAFT
-        payment_status=invoice.payment_status or "UNPAID",
-        amount_paid=invoice.amount_paid or Decimal("0"),
+        payment_status="UNPAID",
+        amount_paid=Decimal("0"),
         balance=balance,
         created_by=invoice.created_by
     )
@@ -717,11 +724,13 @@ def create_supplier_invoice(
     for item in invoice_items:
         item.purchase_invoice_id = db_invoice.id
         db.add(item)
-    
+
+    sync_supplier_invoice_paid_from_allocations(db, db_invoice)
     # NOTE: NO stock ledger entries here - stock is added when batching
-    
+
     db.commit()
     db.refresh(db_invoice)
+    prepare_supplier_invoice_for_response(db, db_invoice)
     return db_invoice
 
 
@@ -782,7 +791,8 @@ def list_supplier_invoices(
         # Display placeholder for missing/invalid document number (list is read-only; do not commit)
         if not invoice.invoice_number or not str(invoice.invoice_number).strip().startswith("SPV"):
             invoice.invoice_number = "—"
-    
+        prepare_supplier_invoice_for_response(db, invoice)
+
     return invoices
 
 
@@ -801,6 +811,7 @@ def get_supplier_invoice_pdf(
         selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
     ).filter(SupplierInvoice.id == invoice_id).first()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    prepare_supplier_invoice_for_response(db, invoice)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     supplier_name = invoice.supplier.name if invoice.supplier else "—"
@@ -859,6 +870,7 @@ def get_supplier_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    prepare_supplier_invoice_for_response(db, invoice)
     # Load supplier and branch names
     if invoice.supplier:
         invoice.supplier_name = invoice.supplier.name
@@ -888,7 +900,27 @@ def get_supplier_invoice(
             invoice_item.item_category = getattr(invoice_item, "item_category", None) or ""
             invoice_item.base_unit = getattr(invoice_item, "base_unit", None) or "piece"
         # batch_data is already stored in the database and will be included in response
-    
+
+    # Payments recorded via Supplier Payments (multi-invoice payments share one reference on supplier_payment)
+    alloc_rows = (
+        db.query(SupplierPaymentAllocation, SupplierPayment)
+        .join(SupplierPayment, SupplierPaymentAllocation.supplier_payment_id == SupplierPayment.id)
+        .filter(SupplierPaymentAllocation.supplier_invoice_id == invoice_id)
+        .order_by(SupplierPayment.payment_date.desc(), SupplierPayment.created_at.desc())
+        .all()
+    )
+    invoice.payment_allocations = [
+        SupplierInvoicePaymentAllocationInfo(
+            supplier_payment_id=p.id,
+            payment_date=p.payment_date,
+            method=p.method,
+            reference=p.reference,
+            payment_total_amount=p.amount,
+            allocated_amount=a.allocated_amount,
+        )
+        for a, p in alloc_rows
+    ]
+
     return invoice
 
 
@@ -999,7 +1031,7 @@ def add_supplier_invoice_item(
     invoice.total_exclusive += line_excl
     invoice.vat_amount += line_vat
     invoice.total_inclusive = invoice.total_exclusive + invoice.vat_amount
-    invoice.balance = invoice.total_inclusive - (invoice.amount_paid or Decimal("0"))
+    sync_supplier_invoice_paid_from_allocations(db, invoice)
 
     # Build response: use already-loaded invoice_item.item for existing lines; new_item for the new line. O(1).
     for invoice_item in invoice.items:
@@ -1019,6 +1051,7 @@ def add_supplier_invoice_item(
     if invoice.creator:
         invoice.created_by_name = invoice.creator.full_name or invoice.creator.email
 
+    prepare_supplier_invoice_for_response(db, invoice)
     db.commit()
     return invoice
 
@@ -1050,7 +1083,7 @@ def delete_supplier_invoice_item(
     invoice.total_exclusive -= line.line_total_exclusive
     invoice.vat_amount -= line.vat_amount
     invoice.total_inclusive -= line.line_total_inclusive
-    invoice.balance = invoice.total_inclusive - (invoice.amount_paid or Decimal("0"))
+    sync_supplier_invoice_paid_from_allocations(db, invoice)
     db.delete(line)
     db.commit()
     return None
@@ -1061,6 +1094,7 @@ def update_supplier_invoice_item(
     invoice_id: UUID,
     item_id: UUID,
     payload: SupplierInvoiceItemUpdate,
+    request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -1160,10 +1194,10 @@ def update_supplier_invoice_item(
     invoice.total_exclusive = total_exclusive
     invoice.vat_amount = total_vat
     invoice.total_inclusive = total_exclusive + total_vat
-    invoice.balance = invoice.total_inclusive - (invoice.amount_paid or Decimal("0"))
+    sync_supplier_invoice_paid_from_allocations(db, invoice)
     db.commit()
     db.refresh(invoice)
-    return get_supplier_invoice(invoice_id, current_user_and_db, db)
+    return get_supplier_invoice(invoice_id, request, current_user_and_db, db)
 
 
 @router.put("/invoice/{invoice_id}", response_model=SupplierInvoiceResponse)
@@ -1228,9 +1262,8 @@ def update_supplier_invoice(
     db_invoice.internal_reference = invoice_update.internal_reference
     db_invoice.linked_grn_id = invoice_update.linked_grn_id
     db_invoice.vat_rate = invoice_update.vat_rate
-    db_invoice.payment_status = invoice_update.payment_status or "UNPAID"
-    db_invoice.amount_paid = invoice_update.amount_paid or Decimal("0")
-    
+    # amount_paid / payment_status for posted invoices come from supplier_payment_allocations only
+
     # Recalculate totals
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
@@ -1309,23 +1342,13 @@ def update_supplier_invoice(
         total_vat += line_vat
     
     total_inclusive = total_exclusive + total_vat
-    balance = total_inclusive - db_invoice.amount_paid
-    
+
     # Update invoice totals
     db_invoice.total_exclusive = total_exclusive
     db_invoice.vat_amount = total_vat
     db_invoice.total_inclusive = total_inclusive
-    db_invoice.balance = balance
-    
-    # Update payment status based on amount paid
-    if db_invoice.amount_paid <= 0:
-        db_invoice.payment_status = "UNPAID"
-    elif db_invoice.amount_paid >= total_inclusive:
-        db_invoice.payment_status = "PAID"
-        db_invoice.balance = Decimal("0")
-    else:
-        db_invoice.payment_status = "PARTIAL"
-    
+    sync_supplier_invoice_paid_from_allocations(db, db_invoice)
+
     db.commit()
     db.refresh(db_invoice)
     
@@ -1349,7 +1372,8 @@ def update_supplier_invoice(
                 pct = vat_rate_to_percent(invoice_item.item.vat_rate)
                 invoice_item.vat_rate = Decimal(str(pct))
         # batch_data is already stored in the database and will be included in response
-    
+
+    prepare_supplier_invoice_for_response(db, db_invoice)
     return db_invoice
 
 
@@ -1810,80 +1834,34 @@ def batch_supplier_invoice(
         invoice.branch_name = invoice.branch.name
     if invoice.creator:
         invoice.created_by_name = invoice.creator.full_name or invoice.creator.email
-    
+
+    prepare_supplier_invoice_for_response(db, invoice)
     return invoice
 
 
 @router.put("/invoice/{invoice_id}/payment", response_model=SupplierInvoiceResponse)
 def update_invoice_payment(
     invoice_id: UUID,
-    amount_paid: Decimal = Query(..., description="Cumulative amount paid to supplier on this invoice"),
+    amount_paid: Optional[Decimal] = Query(None, description="Deprecated — ignored"),
     payment_reference: Optional[str] = Query(
         None,
         max_length=255,
-        description="Optional transaction reference (e.g. M-Pesa confirmation code)",
+        description="Deprecated — ignored",
     ),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Update payment information for supplier invoice.
-    Only BATCHED or DRAFT; amount_paid must not exceed total_inclusive.
-    Optional payment_reference is stored on internal_reference (appended if already set).
+    Removed: invoice amounts are derived from supplier_payment_allocations only.
+    Use POST /suppliers/payments with allocations (see Supplier Payments in the app).
     """
-    invoice = (
-        db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).with_for_update().first()
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Direct invoice payment updates are no longer supported. "
+            "Record supplier payments via POST /suppliers/payments with allocations (same as Supplier Payments)."
+        ),
     )
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    if invoice.status not in ("DRAFT", "BATCHED"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot update payment for invoice with status {invoice.status}. Only DRAFT or BATCHED."
-        )
-    if amount_paid > invoice.total_inclusive:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Amount paid ({amount_paid}) cannot exceed invoice total ({invoice.total_inclusive})."
-        )
-    if payment_reference is not None:
-        pr = (payment_reference or "").strip()
-        if pr:
-            existing = (invoice.internal_reference or "").strip()
-            suffix = f"Pay: {pr}"
-            if existing:
-                if pr not in existing and suffix not in existing:
-                    combined = f"{existing} | {suffix}"
-                    invoice.internal_reference = combined[:255]
-            else:
-                invoice.internal_reference = pr[:255]
-    invoice.amount_paid = amount_paid
-    invoice.balance = invoice.total_inclusive - amount_paid
-    if amount_paid <= 0:
-        invoice.payment_status = "UNPAID"
-    elif amount_paid >= invoice.total_inclusive:
-        invoice.payment_status = "PAID"
-        invoice.balance = Decimal("0")
-        # Mark as complete when fully paid (if already batched)
-        if invoice.status == "BATCHED":
-            # Could add a "COMPLETE" status or keep as BATCHED with PAID status
-            pass
-    else:
-        invoice.payment_status = "PARTIAL"
-    
-    db.commit()
-    db.refresh(invoice)
-    
-    # Load relationships for response
-    if invoice.supplier:
-        invoice.supplier_name = invoice.supplier.name
-    if invoice.branch:
-        invoice.branch_name = invoice.branch.name
-    created_by_user = db.query(User).filter(User.id == invoice.created_by).first()
-    if created_by_user:
-        invoice.created_by_name = created_by_user.full_name or created_by_user.email
-    
-    return invoice
 
 
 @router.delete("/invoice/{invoice_id}", status_code=status.HTTP_200_OK)

@@ -79,8 +79,8 @@ class SupplierInvoice(Base):
     status = Column(String(50), default="DRAFT")  # DRAFT, BATCHED
     # Payment tracking
     payment_status = Column(String(50), default="UNPAID")  # UNPAID, PARTIAL, PAID
-    amount_paid = Column(Numeric(20, 4), default=0)
-    balance = Column(Numeric(20, 4))  # Calculated: total_inclusive - amount_paid
+    amount_paid = Column(Numeric(20, 4), default=0)  # sum(supplier_payment_allocations); synced, not set ad hoc
+    balance = Column(Numeric(20, 4))  # total_inclusive - amount_paid (after sync)
     created_by = Column(UUID(as_uuid=True), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
