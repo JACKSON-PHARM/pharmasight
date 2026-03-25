@@ -335,6 +335,7 @@ const API = {
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/`, data),
         bulkCreate: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/bulk`, data, { timeout: 300000 }), // 5 minute timeout for bulk
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),
+        markReady: (itemId) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/mark-ready`, null),
         delete: (itemId, permanent = false) => {
             const url = permanent
                 ? `${CONFIG.API_ENDPOINTS.items}/${itemId}?permanent=true`
@@ -871,6 +872,42 @@ const API = {
             qs.append('end_date', params.end_date);
             if (params.include_breakdown === false) qs.append('include_breakdown', 'false');
             return api.get(`${CONFIG.API_ENDPOINTS.expenses}/summary?${qs.toString()}`);
+        },
+    },
+    
+    // Cashbook (money movement tracking)
+    cashbook: {
+        list: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.date_from) qs.append('date_from', params.date_from);
+            if (params.date_to) qs.append('date_to', params.date_to);
+            if (params.payment_mode) qs.append('payment_mode', params.payment_mode);
+            if (params.source_type) qs.append('source_type', params.source_type);
+            if (params.limit != null) qs.append('limit', params.limit);
+            if (params.offset != null) qs.append('offset', params.offset);
+            return api.get(`${CONFIG.API_ENDPOINTS.cashbook}?${qs.toString()}`);
+        },
+        summary: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (!params.start_date) throw new Error('cashbook.summary requires start_date');
+            if (!params.end_date) throw new Error('cashbook.summary requires end_date');
+            qs.append('start_date', params.start_date);
+            qs.append('end_date', params.end_date);
+            if (params.payment_mode) qs.append('payment_mode', params.payment_mode);
+            if (params.source_type) qs.append('source_type', params.source_type);
+            if (params.include_daily === false) qs.append('include_daily', 'false');
+            return api.get(`${CONFIG.API_ENDPOINTS.cashbook}/summary?${qs.toString()}`);
+        },
+        backfill: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (!params.start_date) throw new Error('cashbook.backfill requires start_date');
+            if (!params.end_date) throw new Error('cashbook.backfill requires end_date');
+            qs.append('start_date', params.start_date);
+            qs.append('end_date', params.end_date);
+            return api.post(`${CONFIG.API_ENDPOINTS.cashbook}/backfill?${qs.toString()}`, null);
         },
     },
     

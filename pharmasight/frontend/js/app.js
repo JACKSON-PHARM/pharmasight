@@ -981,6 +981,7 @@ window.subNavItems = {
         { page: 'reports-item-movement', label: 'Item Movement Report', icon: 'fa-exchange-alt' },
         { page: 'reports-batch-tracking', label: 'Stock Batch Tracking Report', icon: 'fa-layer-group' },
         { page: 'reports-financial', label: 'Financial Reports', icon: 'fa-dollar-sign' },
+        { page: 'cashbook', label: 'Cashbook', icon: 'fa-cash-register' },
         { page: 'reports-custom', label: 'Custom Reports', icon: 'fa-file-alt' }
     ],
     settings: [
@@ -1758,6 +1759,17 @@ async function loadPage(pageName) {
                 const page = document.getElementById('expenses');
                 if (page) {
                     page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Expenses</h3><p>Expenses module is not available. Please refresh the page.</p></div>';
+                }
+            }
+            break;
+        case 'cashbook':
+            if (typeof window.loadCashbook === 'function') {
+                window.loadCashbook();
+            } else {
+                console.error('loadCashbook function not found on window object');
+                const page = document.getElementById('cashbook');
+                if (page) {
+                    page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Cashbook</h3><p>Cashbook module is not available. Please refresh the page.</p></div>';
                 }
             }
             break;

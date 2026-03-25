@@ -9,12 +9,27 @@
     try {
         const h = window.location.hostname;
         if (h !== 'localhost' && h !== '127.0.0.1') return;
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', '/js/runtime_config.json', false);
-        xhr.send(null);
-        if (xhr.status === 200 && xhr.responseText) {
-            window.RUNTIME_CONFIG = JSON.parse(xhr.responseText);
-        }
+        const tryLoad = (url) => {
+            try {
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', url, false);
+                xhr.send(null);
+                if (xhr.status === 200 && xhr.responseText) {
+                    return JSON.parse(xhr.responseText);
+                }
+            } catch (_) {}
+            return null;
+        };
+
+        // Try from current origin first, then common backend ports.
+        const rc =
+            tryLoad('/js/runtime_config.json')
+            || tryLoad('http://localhost:8000/js/runtime_config.json')
+            || tryLoad('http://localhost:8001/js/runtime_config.json')
+            || tryLoad('http://127.0.0.1:8000/js/runtime_config.json')
+            || tryLoad('http://127.0.0.1:8001/js/runtime_config.json');
+
+        if (rc) window.RUNTIME_CONFIG = rc;
     } catch (e) {
         console.warn('[CONFIG] Could not load /js/runtime_config.json (run start.py to create it).', e && e.message);
     }
@@ -48,6 +63,7 @@ const CONFIG = {
         sales: '/api/sales',
         purchases: '/api/purchases',
         expenses: '/api/expenses',
+        cashbook: '/api/cashbook',
         companies: '/api/companies',
         branches: '/api/branches',
         suppliers: '/api/suppliers',

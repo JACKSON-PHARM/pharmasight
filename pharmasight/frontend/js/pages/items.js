@@ -425,8 +425,11 @@ function renderItemsTable() {
                             <td>${escapeHtml(item.last_supplier || '—')}</td>
                             <td>${item.last_unit_cost !== null && item.last_unit_cost !== undefined ? formatCurrency(item.last_unit_cost) : '—'}</td>
                             <td>
-                                <span class="badge ${item.is_active ? 'badge-success' : 'badge-danger'}">
+                                <span class="badge ${item.is_active ? 'badge-success' : 'badge-danger'}" style="margin-right: 0.25rem;">
                                     ${item.is_active ? 'Active' : 'Inactive'}
+                                </span>
+                                <span class="badge ${item.setup_complete ? 'badge-success' : 'badge-warning'}" title="${item.setup_complete ? 'Ready for sales/purchases' : 'Needs setup before sales/purchases'}">
+                                    ${item.setup_complete ? 'Ready' : 'Needs setup'}
                                 </span>
                             </td>
                             <td>
@@ -436,6 +439,10 @@ function renderItemsTable() {
                                 <button class="btn btn-outline" onclick="viewItemUnits('${item.id}')" title="View units">
                                     <i class="fas fa-cubes"></i>
                                 </button>
+                                ${!item.setup_complete ? `
+                                <button class="btn btn-primary" onclick="markItemReady('${item.id}')" title="Mark item as ready for transactions">
+                                    <i class="fas fa-check-circle"></i>
+                                </button>` : ''}
                             </td>
                         </tr>
                     `;
@@ -449,6 +456,48 @@ function renderItemsTable() {
             ? `<p style="padding: 1rem; color: var(--text-secondary);">Showing ${itemsList.length} item${itemsList.length !== 1 ? 's' : ''}${itemsList.length >= 500 ? ' (first 500 - use search for more)' : ''}</p>`
             : ''}
     `;
+}
+
+async function markItemReady(itemId) {
+    try {
+        if (!window.API || !API.items || typeof API.items.get !== 'function' || typeof API.items.markReady !== 'function') {
+            showToast('Items API not available', 'error');
+            return;
+        }
+        const item = await API.items.get(itemId, (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) ? CONFIG.BRANCH_ID : null);
+        const missing = [];
+        const has = (v) => v != null && String(v).trim() !== '';
+        if (!has(item.wholesale_unit)) missing.push('Wholesale unit');
+        if (!has(item.retail_unit)) missing.push('Retail unit');
+        if (!has(item.supplier_unit)) missing.push('Supplier unit');
+        const ps = item.pack_size != null ? parseInt(item.pack_size, 10) : null;
+        if (!(ps != null && ps >= 1)) missing.push('Pack size');
+        if (item.can_break_bulk && (ps == null || ps < 2)) missing.push('Pack size must be > 1 (breakable)');
+
+        if (missing.length) {
+            const msg = 'Cannot mark ready. Missing: ' + missing.join(', ') + '. Open Edit and fill these fields.';
+            if (typeof showToast === 'function') showToast(msg, 'warning');
+            // Open edit directly to speed onboarding
+            if (typeof editItem === 'function') editItem(itemId);
+            return;
+        }
+
+        // Confirm
+        const ok = confirm('Mark this item as Ready for transactions (sales/purchases)?');
+        if (!ok) return;
+
+        await API.items.markReady(itemId);
+        showToast('Item marked Ready', 'success');
+
+        // Refresh lists
+        try {
+            if (typeof filterItems === 'function') filterItems();
+            else if (typeof renderItemsTable === 'function') renderItemsTable();
+        } catch (_) {}
+    } catch (e) {
+        console.error('markItemReady error:', e);
+        showToast(e.message || 'Failed to mark item ready', 'error');
+    }
 }
 
 function escapeHtml(text) {

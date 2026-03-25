@@ -34,6 +34,7 @@ from app.services.supplier_invoice_payment_service import (
     prepare_supplier_invoice_for_response,
     outstanding_after_allocations,
 )
+from app.services.cashbook_service import ensure_cashbook_entry_for_supplier_payment
 from app.schemas.supplier_management import (
     SupplierPaymentCreate,
     SupplierPaymentResponse,
@@ -271,6 +272,10 @@ def create_supplier_payment(
             debit=Decimal("0"),
             credit=body.amount,
         )
+
+        # Cashbook is a tracking layer: record the real money outflow for this supplier payment,
+        # without altering supplier balances/ledgers.
+        ensure_cashbook_entry_for_supplier_payment(db, payment=payment)
 
         db.commit()
         db.refresh(payment)

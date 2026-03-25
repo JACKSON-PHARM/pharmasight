@@ -9,7 +9,7 @@ from sqlalchemy import func
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
 from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user, require_document_belongs_to_user_company
@@ -1947,6 +1947,37 @@ def batch_sales_invoice(
             invoice.cashier_approved = True
             invoice.approved_by = batched_by
             invoice.approved_at = datetime.now(timezone.utc)
+            # Batched cash previously had no InvoicePayment row; cashbook inflow keys off invoice_payments.
+            existing_pay = (
+                db.query(func.coalesce(func.sum(InvoicePayment.amount), 0))
+                .filter(InvoicePayment.invoice_id == invoice.id)
+                .scalar()
+            ) or Decimal("0")
+            total_inv = Decimal(str(invoice.total_inclusive or 0))
+            remainder = total_inv - existing_pay
+            if remainder > Decimal("0.01"):
+                from app.services.cashbook_service import ensure_cashbook_entry_for_invoice_payment_if_cash
+
+                mode = (invoice.payment_mode or "cash").strip().lower()
+                ip = InvoicePayment(
+                    invoice_id=invoice.id,
+                    payment_mode=mode,
+                    amount=remainder,
+                    payment_reference=None,
+                    paid_by=batched_by,
+                    paid_at=datetime.combine(invoice.invoice_date, time.min, tzinfo=timezone.utc),
+                )
+                db.add(ip)
+                db.flush()
+                ensure_cashbook_entry_for_invoice_payment_if_cash(
+                    db,
+                    company_id=invoice.company_id,
+                    branch_id=invoice.branch_id,
+                    invoice_payment=ip,
+                    invoice_no=invoice.invoice_no,
+                    created_by=batched_by,
+                    entry_date=invoice.invoice_date,
+                )
         else:
             invoice.status = "BATCHED"
 
@@ -2081,7 +2112,20 @@ def add_invoice_payment(
         paid_by=payment.paid_by
     )
     db.add(db_payment)
+    db.flush()  # ensure db_payment.id exists for cashbook source linkage
     
+    # Cashbook integration (tracking layer):
+    # record real money inflows for non-credit invoice payments.
+    from app.services.cashbook_service import ensure_cashbook_entry_for_invoice_payment_if_cash
+    ensure_cashbook_entry_for_invoice_payment_if_cash(
+        db,
+        company_id=invoice.company_id,
+        branch_id=invoice.branch_id,
+        invoice_payment=db_payment,
+        invoice_no=invoice.invoice_no,
+        created_by=payment.paid_by,
+    )
+
     # Update invoice payment status
     if total_paid >= invoice.total_inclusive:
         invoice.payment_status = "PAID"

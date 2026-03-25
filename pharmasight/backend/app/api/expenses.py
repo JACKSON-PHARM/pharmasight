@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_current_user, get_tenant_db, _user_has_permission, get_effective_company_id_for_user
 from app.models import Expense, ExpenseCategory
 from app.models.settings import CompanySetting
+from app.services.cashbook_service import ensure_cashbook_entry_for_expense_if_approved
 from app.schemas.expense import (
     ExpenseCategoryCreate,
     ExpenseCategoryUpdate,
@@ -273,6 +274,10 @@ def create_expense(
         approved_at=(now if status_val == "approved" else None),
     )
     db.add(exp)
+    db.flush()  # needed so cashbook entry can reference expense.id in the same transaction
+    # Cashbook is a tracking layer: only reflect real money movement for approved expenses.
+    if exp.status == "approved":
+        ensure_cashbook_entry_for_expense_if_approved(db, expense=exp)
     db.commit()
     db.refresh(exp)
 
@@ -382,6 +387,8 @@ def approve_expense(
     exp.status = "approved"
     exp.approved_by = user.id
     exp.approved_at = datetime.now(timezone.utc)
+    # Cashbook should reflect approved expenses only (dedupe by source_type/source_id).
+    ensure_cashbook_entry_for_expense_if_approved(db, expense=exp)
     db.commit()
     db.refresh(exp)
 

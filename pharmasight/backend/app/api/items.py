@@ -1434,6 +1434,62 @@ def update_item(
     return item
 
 
+@router.post("/{item_id}/mark-ready", response_model=ItemResponse)
+def mark_item_ready(
+    item_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Mark item setup as complete (transaction-ready) after validating required unit fields.
+    This is intended for onboarding/import flows where items are created with setup_complete=false.
+    """
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # Validate required fields
+    missing = []
+    if not (getattr(item, "wholesale_unit", None) and str(item.wholesale_unit).strip()):
+        missing.append("wholesale_unit")
+    if not (getattr(item, "retail_unit", None) and str(item.retail_unit).strip()):
+        missing.append("retail_unit")
+    if not (getattr(item, "supplier_unit", None) and str(item.supplier_unit).strip()):
+        missing.append("supplier_unit")
+    ps = getattr(item, "pack_size", None)
+    try:
+        ps_int = int(ps) if ps is not None else None
+    except Exception:
+        ps_int = None
+    if ps_int is None or ps_int < 1:
+        missing.append("pack_size")
+    if getattr(item, "can_break_bulk", False) and (ps_int is None or ps_int < 2):
+        raise HTTPException(status_code=400, detail="Breakable items must have pack_size > 1")
+
+    wus = getattr(item, "wholesale_units_per_supplier", None)
+    if wus is not None:
+        try:
+            if float(wus) < 1:
+                missing.append("wholesale_units_per_supplier")
+        except Exception:
+            missing.append("wholesale_units_per_supplier")
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Item setup is incomplete. Please edit the item and fill: "
+                + ", ".join(missing)
+            ),
+        )
+
+    item.setup_complete = True
+    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, item.company_id, item_id)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_item(
     item_id: UUID,

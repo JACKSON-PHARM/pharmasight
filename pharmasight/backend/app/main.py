@@ -244,6 +244,7 @@ from app.api.users import router as users_router
 from app.api.suppliers import router as suppliers_router
 from app.api.supplier_management import router as supplier_management_router
 from app.api.expenses import router as expenses_router
+from app.api.cashbook import router as cashbook_router
 from app.api.excel_import import router as excel_import_router
 from app.api.tenants import router as tenants_router
 from app.api.onboarding import router as onboarding_router
@@ -273,6 +274,8 @@ app.include_router(purchases_router, prefix="/api/purchases", tags=["Purchases"]
 app.include_router(inventory_router, prefix="/api/inventory", tags=["Inventory"])
 # Expenses (OPEX)
 app.include_router(expenses_router, prefix="/api/expenses", tags=["Expenses"])
+# Cashbook (money movement tracking; sourced from expenses + supplier payments)
+app.include_router(cashbook_router, prefix="/api", tags=["Cashbook"])
 # Supplier management (payments, returns, etc.) must come before suppliers_router so /payments matches before /{supplier_id}
 app.include_router(supplier_management_router, prefix="/api/suppliers", tags=["Supplier Management"])
 app.include_router(suppliers_router, prefix="/api/suppliers", tags=["Suppliers"])

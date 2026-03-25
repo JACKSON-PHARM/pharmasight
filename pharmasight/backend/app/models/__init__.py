@@ -19,6 +19,8 @@ from .supplier_financial import (
     SupplierReturnLine,
     SupplierLedgerEntry,
 )
+# Cashbook (money movement tracking)
+from .cashbook import CashbookEntry
 # Backward compatibility aliases
 PurchaseInvoice = SupplierInvoice
 PurchaseInvoiceItem = SupplierInvoiceItem
@@ -97,4 +99,5 @@ __all__ = [
     "SupplierReturn",
     "SupplierReturnLine",
     "SupplierLedgerEntry",
+    "CashbookEntry",
 ]
