@@ -776,6 +776,14 @@ const API = {
         get: (supplierId) => api.get(`${CONFIG.API_ENDPOINTS.suppliers}/${supplierId}`),
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.suppliers}/`, data),
         update: (supplierId, data) => api.put(`${CONFIG.API_ENDPOINTS.suppliers}/${supplierId}`, data),
+        /** Permanently delete only if supplier has no invoices, payments, ledger, etc. */
+        delete: (supplierId) => api.delete(`${CONFIG.API_ENDPOINTS.suppliers}/${supplierId}`),
+        /** Merge one supplier into another (moves references, then deletes source). */
+        merge: (fromSupplierId, toSupplierId) =>
+            api.post(`${CONFIG.API_ENDPOINTS.suppliers}/merge`, {
+                from_supplier_id: fromSupplierId,
+                to_supplier_id: toSupplierId,
+            }),
         // Supplier management (payments, returns, ledger, reports)
         listPayments: (params = {}) => {
             const qs = new URLSearchParams();

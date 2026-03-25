@@ -188,7 +188,11 @@ class SupplierMonthlyMetricsResponse(BaseModel):
 class SupplierStatementLine(BaseModel):
     date: date
     description: str
-    reference: Optional[str] = None
+    reference: Optional[str] = None  # Optional legacy / internal id
+    system_invoice_number: Optional[str] = None  # e.g. SPV01-000001
+    supplier_document: Optional[str] = None  # Supplier's invoice no. (user-entered), from invoice.reference
+    payment_method: Optional[str] = None
+    payment_reference: Optional[str] = None  # Bank/M-Pesa ref when method is not cash
     debit: Decimal
     credit: Decimal
     balance: Decimal

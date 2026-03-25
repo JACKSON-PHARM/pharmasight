@@ -10,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy import func, and_, case
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql import literal_column
 
 from app.dependencies import get_tenant_db, get_current_user, require_document_belongs_to_user_company
 from app.models import (
@@ -42,6 +43,7 @@ from app.schemas.supplier_management import (
     SupplierReturnLineResponse,
     SupplierLedgerEntryResponse,
     SupplierAgingRow,
+    AgingBucket,
     AgingReportResponse,
     SupplierMonthlyMetricsResponse,
     SupplierStatementResponse,
@@ -49,6 +51,19 @@ from app.schemas.supplier_management import (
 )
 
 router = APIRouter()
+
+
+def _supplier_invoice_effective_due_sql():
+    """
+    COALESCE(invoice.due_date, invoice_date + payment_terms_days).
+    Requires Supplier joined on SupplierInvoice.supplier_id. Uses default_payment_terms_days,
+    then legacy credit_terms, then 0 days (cash / due on invoice date) when both are unset.
+    """
+    days = func.coalesce(Supplier.default_payment_terms_days, Supplier.credit_terms, 0)
+    return func.coalesce(
+        SupplierInvoice.due_date,
+        SupplierInvoice.invoice_date + days * literal_column("interval '1 day'"),
+    )
 
 
 def _effective_company_id(request: Request) -> UUID:
@@ -84,13 +99,17 @@ def list_suppliers_enriched(
         Supplier.is_active == True,
     ).order_by(Supplier.name.asc()).all()
 
-    # Subquery: outstanding and overdue per supplier (from invoices)
+    # Subquery: outstanding and overdue per supplier (from invoices).
+    # Overdue uses effective due date: explicit due_date OR invoice_date + supplier payment terms.
+    eff_due = _supplier_invoice_effective_due_sql()
+    overdue_case = case(
+        (and_(eff_due < today, SupplierInvoice.balance > 0), SupplierInvoice.balance),
+        else_=0,
+    )
     inv_q = db.query(
         SupplierInvoice.supplier_id,
         func.coalesce(func.sum(SupplierInvoice.balance), 0).label("outstanding"),
-        func.coalesce(func.sum(
-            case((and_(SupplierInvoice.due_date.isnot(None), SupplierInvoice.due_date < today), SupplierInvoice.balance), else_=0)
-        ), 0).label("overdue"),
+        func.coalesce(func.sum(overdue_case), 0).label("overdue"),
         func.coalesce(func.sum(
             case((and_(
                 SupplierInvoice.invoice_date >= month_start,
@@ -98,7 +117,7 @@ def list_suppliers_enriched(
                 SupplierInvoice.status == "BATCHED",
             ), SupplierInvoice.total_inclusive), else_=0)
         ), 0).label("this_month"),
-    ).filter(
+    ).join(Supplier, Supplier.id == SupplierInvoice.supplier_id).filter(
         SupplierInvoice.company_id == company_id,
         SupplierInvoice.status == "BATCHED",
     )
@@ -135,6 +154,9 @@ def list_suppliers_enriched(
             "overdue_amount": float(overdue),
             "this_month_purchases": float(this_month),
         })
+    result.sort(
+        key=lambda r: (-float(r["overdue_amount"]), -float(r["outstanding_balance"]), (r["name"] or "").lower()),
+    )
     return result
 
 
@@ -315,7 +337,10 @@ def list_supplier_payments(
         q = q.filter(SupplierPayment.payment_date >= date_from)
     if date_to:
         q = q.filter(SupplierPayment.payment_date <= date_to)
-    payments = q.order_by(SupplierPayment.payment_date.desc()).offset(offset).limit(limit).options(
+    payments = q.order_by(
+        SupplierPayment.payment_date.desc(),
+        SupplierPayment.created_at.desc(),
+    ).offset(offset).limit(limit).options(
         selectinload(SupplierPayment.allocations).selectinload(SupplierPaymentAllocation.supplier_invoice),
         selectinload(SupplierPayment.supplier),
         selectinload(SupplierPayment.branch),
@@ -340,7 +365,6 @@ def list_supplier_payments(
                     supplier_invoice_id=a.supplier_invoice_id,
                     allocated_amount=a.allocated_amount,
                     invoice_number=getattr(a.supplier_invoice, "invoice_number", None) if getattr(a, "supplier_invoice", None) else None,
-                    created_at=a.created_at,
                 )
                 for a in p.allocations
             ],
@@ -616,36 +640,38 @@ def get_supplier_aging_report(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Aging buckets: 0-30, 31-60, 61-90, 90+ days overdue. Based on invoice due_date and balance."""
+    """Aging buckets: 0-30, 31-60, 61-90, 90+ days overdue. Uses effective due date (explicit due_date or invoice_date + supplier terms)."""
     company_id = _effective_company_id(request)
     as_of = as_of_date or date.today()
 
-    # Invoices with balance > 0; due_date for aging buckets
+    eff_due = _supplier_invoice_effective_due_sql()
+
+    # Invoices with balance > 0; bucket by effective due date (same structure as before, but terms fill missing due_date)
     b0_30_case = case(
-        (SupplierInvoice.due_date.is_(None), SupplierInvoice.balance),
-        (SupplierInvoice.due_date >= as_of - timedelta(days=30), SupplierInvoice.balance),
+        (eff_due.is_(None), SupplierInvoice.balance),
+        (eff_due >= as_of - timedelta(days=30), SupplierInvoice.balance),
         else_=0,
     )
     b31_60_case = case(
         (and_(
-            SupplierInvoice.due_date >= as_of - timedelta(days=60),
-            SupplierInvoice.due_date < as_of - timedelta(days=30),
+            eff_due >= as_of - timedelta(days=60),
+            eff_due < as_of - timedelta(days=30),
         ), SupplierInvoice.balance),
         else_=0,
     )
     b61_90_case = case(
         (and_(
-            SupplierInvoice.due_date >= as_of - timedelta(days=90),
-            SupplierInvoice.due_date < as_of - timedelta(days=60),
+            eff_due >= as_of - timedelta(days=90),
+            eff_due < as_of - timedelta(days=60),
         ), SupplierInvoice.balance),
         else_=0,
     )
     b90_plus_case = case(
-        (SupplierInvoice.due_date < as_of - timedelta(days=90), SupplierInvoice.balance),
+        (eff_due < as_of - timedelta(days=90), SupplierInvoice.balance),
         else_=0,
     )
     overdue_case = case(
-        (SupplierInvoice.due_date < as_of, SupplierInvoice.balance),
+        (eff_due < as_of, SupplierInvoice.balance),
         else_=0,
     )
     q = db.query(
@@ -761,13 +787,17 @@ def get_supplier_monthly_metrics(
         q_bal = q_bal.filter(SupplierInvoice.branch_id == branch_id)
     net_outstanding = q_bal.scalar() or Decimal("0")
 
-    # Overdue: invoices with due_date < end and balance > 0
-    q_over = db.query(func.coalesce(func.sum(SupplierInvoice.balance), 0)).filter(
+    # Overdue: same rule as aging — effective due date before end of month, balance > 0
+    eff_due = _supplier_invoice_effective_due_sql()
+    overdue_case = case(
+        (and_(eff_due < end, SupplierInvoice.balance > 0), SupplierInvoice.balance),
+        else_=0,
+    )
+    q_over = db.query(func.coalesce(func.sum(overdue_case), 0)).select_from(SupplierInvoice).join(
+        Supplier, Supplier.id == SupplierInvoice.supplier_id,
+    ).filter(
         SupplierInvoice.company_id == company_id,
         SupplierInvoice.status == "BATCHED",
-        SupplierInvoice.due_date.isnot(None),
-        SupplierInvoice.due_date < end,
-        SupplierInvoice.balance > 0,
     )
     if branch_id:
         q_over = q_over.filter(SupplierInvoice.branch_id == branch_id)
@@ -862,6 +892,23 @@ def get_supplier_statement(
         opening_q = opening_q.filter(SupplierLedgerEntry.branch_id == branch_id)
     opening_balance = opening_q.scalar() or Decimal("0")
 
+    inv_ids = [e.reference_id for e in entries if e.entry_type == "invoice" and e.reference_id]
+    pay_ids = [e.reference_id for e in entries if e.entry_type == "payment" and e.reference_id]
+    ret_ids = [e.reference_id for e in entries if e.entry_type == "return" and e.reference_id]
+
+    inv_map: Dict[UUID, SupplierInvoice] = {}
+    if inv_ids:
+        for inv in db.query(SupplierInvoice).filter(SupplierInvoice.id.in_(inv_ids)).all():
+            inv_map[inv.id] = inv
+    pay_map: Dict[UUID, SupplierPayment] = {}
+    if pay_ids:
+        for p in db.query(SupplierPayment).filter(SupplierPayment.id.in_(pay_ids)).all():
+            pay_map[p.id] = p
+    ret_map: Dict[UUID, SupplierReturn] = {}
+    if ret_ids:
+        for r in db.query(SupplierReturn).filter(SupplierReturn.id.in_(ret_ids)).all():
+            ret_map[r.id] = r
+
     lines = []
     running = opening_balance
     for e in entries:
@@ -877,10 +924,41 @@ def get_supplier_statement(
             desc = "Adjustment"
         elif e.entry_type == "opening_balance":
             desc = "Opening balance"
+
+        sys_inv = None
+        sup_doc = None
+        pay_meth = None
+        pay_ref = None
+        legacy_ref = None
+        if e.entry_type == "invoice" and e.reference_id:
+            inv = inv_map.get(e.reference_id)
+            if inv:
+                sys_inv = inv.invoice_number
+                sup_doc = (inv.reference or "").strip() or None
+                if not sup_doc and getattr(inv, "internal_reference", None):
+                    sup_doc = (inv.internal_reference or "").strip() or None
+        elif e.entry_type == "payment" and e.reference_id:
+            p = pay_map.get(e.reference_id)
+            if p:
+                pay_meth = (p.method or "").strip() or None
+                mlow = (p.method or "").lower()
+                if mlow and mlow != "cash":
+                    pay_ref = (p.reference or "").strip() or None
+        elif e.entry_type == "return" and e.reference_id:
+            r = ret_map.get(e.reference_id)
+            if r:
+                legacy_ref = f"RET-{str(r.id)[:8]}"
+        elif e.reference_id:
+            legacy_ref = str(e.reference_id)
+
         lines.append(SupplierStatementLine(
             date=e.date,
             description=desc,
-            reference=str(e.reference_id) if e.reference_id else None,
+            reference=legacy_ref,
+            system_invoice_number=sys_inv,
+            supplier_document=sup_doc,
+            payment_method=pay_meth,
+            payment_reference=pay_ref,
             debit=e.debit,
             credit=e.credit,
             balance=running,

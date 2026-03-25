@@ -2,6 +2,7 @@
 Purchases API routes (GRN and Supplier Invoices)
 """
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 from typing import Any, List, Optional
 from uuid import UUID
@@ -681,6 +682,12 @@ def create_supplier_invoice(
     # amount_paid is derived only from supplier_payment_allocations (none on draft create)
     balance = total_inclusive
 
+    # Default payment due date from supplier terms when not set on the document (aging / overdue use this).
+    resolved_due_date = invoice.due_date
+    if resolved_due_date is None and invoice.invoice_date is not None:
+        term_days = supplier.default_payment_terms_days or supplier.credit_terms or 0
+        resolved_due_date = invoice.invoice_date + timedelta(days=int(term_days))
+
     # Create supplier invoice (DRAFT status - no stock added yet)
     db_invoice = SupplierInvoice(
         company_id=invoice.company_id,
@@ -690,7 +697,7 @@ def create_supplier_invoice(
         pin_number=None,  # Deprecated field
         reference=invoice.supplier_invoice_number or invoice.reference,  # Store supplier's invoice number (external) in reference
         invoice_date=invoice.invoice_date,
-        due_date=invoice.due_date,
+        due_date=resolved_due_date,
         internal_reference=invoice.internal_reference,
         linked_grn_id=invoice.linked_grn_id,
         total_exclusive=total_exclusive,
@@ -742,6 +749,11 @@ def list_supplier_invoices(
     date_from: Optional[date] = Query(None, description="Filter invoices from this date"),
     date_to: Optional[date] = Query(None, description="Filter invoices to this date"),
     invoice_number: Optional[str] = Query(None, description="Exact invoice number lookup (targeted search for returns)"),
+    search: Optional[str] = Query(
+        None,
+        description="Contains match on system invoice no., supplier ref, or internal ref (use instead of loading all invoices)",
+    ),
+    item_id: Optional[UUID] = Query(None, description="Only invoices that include this line item"),
     limit: Optional[int] = Query(100, ge=1, le=500, description="Max results (default 100; use 50 for return flow)"),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
@@ -749,6 +761,7 @@ def list_supplier_invoices(
     """
     List supplier invoices with filtering. Always applies limit to avoid full-history load.
     For return/credit-note flow: pass date_from=date_to=today and limit=50, or invoice_number for targeted lookup.
+    Use `search` and/or `item_id` to narrow results without scanning the full supplier history.
     """
     query = db.query(SupplierInvoice).filter(SupplierInvoice.company_id == company_id)
 
@@ -757,6 +770,25 @@ def list_supplier_invoices(
 
     if supplier_id:
         query = query.filter(SupplierInvoice.supplier_id == supplier_id)
+
+    if search is not None and str(search).strip():
+        term = f"%{str(search).strip()}%"
+        query = query.filter(
+            or_(
+                SupplierInvoice.invoice_number.ilike(term),
+                SupplierInvoice.reference.ilike(term),
+                SupplierInvoice.internal_reference.ilike(term),
+            )
+        )
+
+    if item_id is not None:
+        inv_ids_sq = (
+            db.query(SupplierInvoiceItem.purchase_invoice_id)
+            .filter(SupplierInvoiceItem.item_id == item_id)
+            .distinct()
+            .subquery()
+        )
+        query = query.filter(SupplierInvoice.id.in_(inv_ids_sq))
 
     if invoice_number is not None and str(invoice_number).strip():
         query = query.filter(SupplierInvoice.invoice_number == str(invoice_number).strip())
@@ -787,10 +819,8 @@ def list_supplier_invoices(
         created_by_user = db.query(User).filter(User.id == invoice.created_by).first()
         if created_by_user:
             invoice.created_by_name = created_by_user.full_name or created_by_user.email
-        
-        # Display placeholder for missing/invalid document number (list is read-only; do not commit)
-        if not invoice.invoice_number or not str(invoice.invoice_number).strip().startswith("SPV"):
-            invoice.invoice_number = "—"
+        # Never mutate invoice_number to a display placeholder here — prepare_* flushes and would
+        # persist duplicate "—" values, violating purchase_invoices_company_id_invoice_number_key.
         prepare_supplier_invoice_for_response(db, invoice)
 
     return invoices

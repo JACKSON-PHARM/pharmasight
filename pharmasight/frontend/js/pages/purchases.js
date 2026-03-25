@@ -21,6 +21,8 @@ let supplierInvoicesUserFilter = 'self';
 /** Purchase Orders list date preset. Use 'this_week' so approved orders from recent days are visible by default. */
 let purchaseOrdersDateFilter = 'this_week';
 let purchaseOrdersUserFilter = 'self';
+/** Prevents duplicate opens while the purchase credit note (supplier return) modal is loading */
+let _createCreditNoteModalOpening = false;
 
 // Guard state for viewing supplier invoices to prevent duplicate API calls and stale UI updates
 let supplierInvoiceViewInProgress = false;
@@ -58,6 +60,16 @@ function syncPurchasesHashToSubPage(subPage) {
 function getLocalDateString() {
     const n = new Date();
     return [n.getFullYear(), String(n.getMonth() + 1).padStart(2, '0'), String(n.getDate()).padStart(2, '0')].join('-');
+}
+
+/** First and last calendar day of the month containing `d`, as YYYY-MM-DD in local time (avoids UTC skew from toISOString()). */
+function getLocalMonthStartEnd(d = new Date()) {
+    const y = d.getFullYear();
+    const m = d.getMonth();
+    const start = new Date(y, m, 1);
+    const end = new Date(y, m + 1, 0);
+    const fmt = (dt) => [dt.getFullYear(), String(dt.getMonth() + 1).padStart(2, '0'), String(dt.getDate()).padStart(2, '0')].join('-');
+    return { monthStart: fmt(start), monthEnd: fmt(end) };
 }
 
 function getSupplierInvoiceItemDisplay(i, cache) {
@@ -1259,18 +1271,89 @@ function createNewSupplierInvoice() {
     loadPurchaseSubPage('create-invoice');
 }
 
-// Create new Credit Note (supplier return) — select from existing supplier invoice
-async function createNewCreditNote() {
+// Create new Credit Note (supplier return) — same as supplier "New Return"; uses supplier management createReturn after invoice selection.
+// prefillSupplierId: scope list/search to one supplier (from supplier detail). prefillInvoiceId: skip to quantities when known (e.g. invoice row Return).
+async function createNewCreditNote(prefillSupplierId = null, prefillInvoiceId = null) {
     if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID) {
         showToast('Company or branch not set.', 'error');
         return;
     }
-    // Show modal immediately; load only today's supplier invoices (fast, limited query)
-    var loadingContent = '<div style="max-width: 560px; padding: 2rem; text-align: center;"><div class="spinner" style="margin: 0 auto 1rem;"></div><p style="color: var(--text-secondary);">Loading today\'s supplier invoices…</p></div>';
-    if (typeof showModal === 'function') showModal('New Credit Note — Select Supplier Invoice', loadingContent);
+
+    if (prefillInvoiceId && prefillSupplierId) {
+        if (_createCreditNoteModalOpening) {
+            if (typeof showToast === 'function') showToast('Opening credit note…', 'info');
+            return;
+        }
+        _createCreditNoteModalOpening = true;
+        try {
+            var loadingInv = '<div style="max-width: 560px; padding: 2rem; text-align: center;"><div class="spinner" style="margin: 0 auto 1rem;"></div><p style="color: var(--text-secondary);">Loading invoice…</p></div>';
+            if (typeof showModal === 'function') showModal('New Credit Note', loadingInv);
+            var invDirect = await API.purchases.getInvoice(prefillInvoiceId);
+            if (!invDirect) {
+                if (typeof closeModal === 'function') closeModal();
+                showToast('Invoice not found.', 'error');
+                return;
+            }
+            if (String(invDirect.supplier_id) !== String(prefillSupplierId)) {
+                if (typeof closeModal === 'function') closeModal();
+                showToast('That invoice does not belong to this supplier.', 'error');
+                return;
+            }
+            if (invDirect.status !== 'BATCHED') {
+                if (typeof closeModal === 'function') closeModal();
+                showToast('Invoice must be posted (batched) before creating a return.', 'warning');
+                return;
+            }
+            if (!invDirect.items || invDirect.items.length === 0) {
+                if (typeof closeModal === 'function') closeModal();
+                showToast('Invoice has no lines to return.', 'error');
+                return;
+            }
+            if (typeof closeModal === 'function') closeModal();
+            showPurchaseReturnStep2(invDirect);
+            return;
+        } catch (e) {
+            if (typeof closeModal === 'function') closeModal();
+            showToast(e.message || 'Failed to load invoice', 'error');
+            return;
+        } finally {
+            _createCreditNoteModalOpening = false;
+        }
+    }
+
+    if (_createCreditNoteModalOpening) {
+        if (typeof showToast === 'function') showToast('Opening credit note…', 'info');
+        return;
+    }
+    _createCreditNoteModalOpening = true;
     try {
+        var supplierName = '';
+        if (prefillSupplierId) {
+            try {
+                var supRow = await API.suppliers.get(prefillSupplierId);
+                supplierName = (supRow && supRow.name) ? String(supRow.name) : '';
+            } catch (_) {}
+        }
+        var modalTitle = 'New Credit Note — Select Supplier Invoice';
+        if (prefillSupplierId && supplierName) {
+            modalTitle = 'New Credit Note — ' + supplierName.replace(/</g, '&lt;');
+        }
+        var loadingContent = '<div style="max-width: 560px; padding: 2rem; text-align: center;"><div class="spinner" style="margin: 0 auto 1rem;"></div><p style="color: var(--text-secondary);">Loading supplier invoices…</p></div>';
+        if (typeof showModal === 'function') showModal(modalTitle, loadingContent);
+
         var todayStr = typeof getLocalDateString === 'function' ? getLocalDateString() : new Date().toISOString().slice(0, 10);
-        var params = { company_id: CONFIG.COMPANY_ID, branch_id: CONFIG.BRANCH_ID, date_from: todayStr, date_to: todayStr, limit: 50 };
+        var d90open = new Date();
+        d90open.setDate(d90open.getDate() - 90);
+        var date90Str = [d90open.getFullYear(), String(d90open.getMonth() + 1).padStart(2, '0'), String(d90open.getDate()).padStart(2, '0')].join('-');
+        var params = { company_id: CONFIG.COMPANY_ID, branch_id: CONFIG.BRANCH_ID, limit: 50 };
+        if (prefillSupplierId) {
+            params.supplier_id = prefillSupplierId;
+            params.date_from = date90Str;
+            params.date_to = todayStr;
+        } else {
+            params.date_from = todayStr;
+            params.date_to = todayStr;
+        }
         var invoices = await API.purchases.listInvoices(params);
         var eligible = (invoices || []).filter(function (inv) { return inv && inv.status === 'BATCHED'; });
         window._purchaseReturnEligibleInvoices = eligible;
@@ -1318,14 +1401,24 @@ async function createNewCreditNote() {
                 });
             });
         }
+        var introP = prefillSupplierId
+            ? ('<p style="margin-bottom: 0.5rem;"><strong>Supplier:</strong> ' + supplierName.replace(/</g, '&lt;') + '</p>' +
+                '<p style="margin-bottom: 0.75rem; color: var(--text-secondary);">Select a posted invoice to return goods against, or search below.</p>')
+            : '<p style="margin-bottom: 0.75rem; color: var(--text-secondary);">Select from today\'s supplier invoices, or search by invoice number / date range.</p>';
+        var listLabel = prefillSupplierId ? 'Recent invoices (this supplier)' : 'Today\'s invoices';
+        var filterPlaceholder = prefillSupplierId ? 'Filter by SPV or supplier ref…' : 'Filter list by number or supplier';
+        var searchSectionTitle = prefillSupplierId ? 'Narrow results' : 'Not from today? Search';
+        var searchSectionHint = prefillSupplierId
+            ? 'Invoice number, or date range (still limited to this supplier).'
+            : 'Provide at least one: invoice number, or date range.';
         var content = '<div style="max-width: 560px;">' +
-            '<p style="margin-bottom: 0.75rem; color: var(--text-secondary);">Select from today\'s supplier invoices, or search by invoice number / date range.</p>' +
-            '<label class="form-label">Today\'s invoices</label>' +
-            '<input type="text" id="' + filterId + '" class="form-input" placeholder="Filter list by number or supplier" style="width: 100%; margin-bottom: 0.5rem;" oninput="if(window._purchaseReturnFilterInvoices) window._purchaseReturnFilterInvoices()">' +
+            introP +
+            '<label class="form-label">' + listLabel + '</label>' +
+            '<input type="text" id="' + filterId + '" class="form-input" placeholder="' + filterPlaceholder + '" style="width: 100%; margin-bottom: 0.5rem;" oninput="if(window._purchaseReturnFilterInvoices) window._purchaseReturnFilterInvoices()">' +
             '<div id="' + listId + '" style="max-height: 220px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 0.35rem; margin-bottom: 1rem;"></div>' +
             '<div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-secondary, #f8fafc); border-radius: 0.35rem;">' +
-            '<p style="margin: 0 0 0.5rem 0; font-size: 0.9rem; font-weight: 600;">Not from today? Search</p>' +
-            '<p style="margin: 0 0 0.5rem 0; font-size: 0.8rem; color: var(--text-secondary);">Provide at least one: invoice number, or date range.</p>' +
+            '<p style="margin: 0 0 0.5rem 0; font-size: 0.9rem; font-weight: 600;">' + searchSectionTitle + '</p>' +
+            '<p style="margin: 0 0 0.5rem 0; font-size: 0.8rem; color: var(--text-secondary);">' + searchSectionHint + '</p>' +
             '<div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.5rem; align-items: end;">' +
             '<div><label class="form-label" style="font-size: 0.8rem;">Invoice number</label><input type="text" id="' + invoiceNoId + '" class="form-input" placeholder="e.g. SPV-01-00012" style="width: 100%;"></div>' +
             '<div><label class="form-label" style="font-size: 0.8rem;">Date from</label><input type="date" id="' + dateFromId + '" class="form-input" value="" style="width: 100%;"></div>' +
@@ -1343,7 +1436,10 @@ async function createNewCreditNote() {
         };
         renderFiltered();
         if (eligible.length === 0) {
-            document.getElementById(listId).innerHTML = '<div style="padding: 1rem; text-align: center; color: var(--text-secondary);">No invoices from today. Use the search below to find an older invoice.</div>';
+            var emptyListMsg = prefillSupplierId
+                ? 'No posted invoices in the last 90 days for this supplier. Use the search below.'
+                : 'No invoices from today. Use the search below to find an older invoice.';
+            document.getElementById(listId).innerHTML = '<div style="padding: 1rem; text-align: center; color: var(--text-secondary);">' + emptyListMsg + '</div>';
         }
         document.getElementById('purchaseReturnSearchBtn').onclick = async function () {
             var no = (document.getElementById(invoiceNoId) && document.getElementById(invoiceNoId).value) ? String(document.getElementById(invoiceNoId).value).trim() : '';
@@ -1358,6 +1454,7 @@ async function createNewCreditNote() {
             btn.textContent = 'Searching…';
             try {
                 var searchParams = { company_id: CONFIG.COMPANY_ID, branch_id: CONFIG.BRANCH_ID, limit: 50 };
+                if (prefillSupplierId) searchParams.supplier_id = prefillSupplierId;
                 if (no) searchParams.invoice_number = no;
                 if (fromVal) searchParams.date_from = fromVal;
                 if (toVal) searchParams.date_to = toVal;
@@ -1397,6 +1494,8 @@ async function createNewCreditNote() {
     } catch (e) {
         if (typeof closeModal === 'function') closeModal();
         showToast(e.message || 'Failed to load supplier invoices', 'error');
+    } finally {
+        _createCreditNoteModalOpening = false;
     }
 }
 
@@ -1482,6 +1581,10 @@ function submitPurchaseReturn(invoice) {
         if (typeof closeModal === 'function') closeModal();
         showToast('Credit note (supplier return) created. Approve it to reduce stock.', 'success');
         if (currentPurchaseSubPage === 'credit-notes' && typeof fetchAndRenderCreditNotesData === 'function') fetchAndRenderCreditNotesData();
+        if (window.currentSupplierDetailId && invoice.supplier_id && String(window.currentSupplierDetailId) === String(invoice.supplier_id)) {
+            if (typeof refreshSupplierDetailAfterAction === 'function') refreshSupplierDetailAfterAction(invoice.supplier_id);
+            if (typeof renderSupplierTabContent === 'function') renderSupplierTabContent(invoice.supplier_id, 'returns');
+        }
     }).catch(function (e) {
         var msg = (e && (e.message || e.data?.detail || e.response?.data?.detail)) ? (typeof e.message === 'string' ? e.message : JSON.stringify(e.data?.detail || e.response?.detail)) : 'Failed to create return';
         showToast(msg, 'error');
@@ -4496,7 +4599,6 @@ if (typeof window !== 'undefined') {
     window.submitNewPayment = submitNewPayment;
     window.showAllocatePaymentModal = showAllocatePaymentModal;
     window.showNewReturnModal = showNewReturnModal;
-    window.submitNewReturn = submitNewReturn;
     window.viewSupplierInvoice = viewSupplierInvoice;
     window.openCreateInvoiceWithSupplier = openCreateInvoiceWithSupplier;
     window.savePurchaseDocument = savePurchaseDocument;
@@ -4676,16 +4778,37 @@ async function fetchSupplierDashboardData() {
     cont.innerHTML = '<div class="spinner"></div>';
     try {
         const params = { branch_id: CONFIG.BRANCH_ID };
-        const [aging, payments, invoices] = await Promise.all([
-            API.suppliers.getAging({ ...params, as_of_date: to }).catch(() => ({ suppliers: [] })),
-            API.suppliers.listPayments({ ...params, date_from: from, date_to: to, limit: 500 }).catch(() => []),
-            API.purchases.listInvoices({ company_id: CONFIG.COMPANY_ID, ...params, date_from: from, date_to: to }).catch(() => []),
+        const [agingSettled, paymentsSettled, invoicesSettled] = await Promise.allSettled([
+            API.suppliers.getAging({ ...params, as_of_date: to }),
+            API.suppliers.listPayments({ ...params, date_from: from, date_to: to, limit: 500 }),
+            API.purchases.listInvoices({ company_id: CONFIG.COMPANY_ID, ...params, date_from: from, date_to: to }),
         ]);
+        let aging = { suppliers: [] };
+        if (agingSettled.status === 'fulfilled') {
+            aging = agingSettled.value || { suppliers: [] };
+        } else {
+            console.warn('Supplier aging report failed:', agingSettled.reason);
+            if (typeof showToast === 'function') {
+                showToast('Could not load outstanding/overdue (aging). Purchases below may still be correct.', 'warning');
+            }
+        }
+        const payments = paymentsSettled.status === 'fulfilled' ? (paymentsSettled.value || []) : [];
+        if (paymentsSettled.status === 'rejected') {
+            console.warn('Supplier payments list failed:', paymentsSettled.reason);
+        }
+        const invoices = invoicesSettled.status === 'fulfilled' ? (invoicesSettled.value || []) : [];
+        if (invoicesSettled.status === 'rejected') {
+            console.warn('Supplier invoices list failed:', invoicesSettled.reason);
+        }
         const totalOutstanding = (aging.suppliers || []).reduce((s, r) => s + (parseFloat(r.total_outstanding) || 0), 0);
         const totalOverdue = (aging.suppliers || []).reduce((s, r) => s + (parseFloat(r.overdue_amount) || 0), 0);
         const purchasesInRange = (invoices || []).filter(inv => inv.status === 'BATCHED').reduce((s, inv) => s + (parseFloat(inv.total_inclusive) || 0), 0);
         const paymentsInRange = (payments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+        const agingWarn = agingSettled.status === 'rejected'
+            ? `<p style="font-size:0.875rem;color:var(--warning-color);margin:0 0 1rem 0;"><i class="fas fa-exclamation-triangle"></i> Outstanding/overdue could not be loaded. Check network or try again.</p>`
+            : '';
         cont.innerHTML = `
+            ${agingWarn}
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
                 <div class="card" style="padding: 1rem; border-left: 4px solid var(--primary-color);"><div style="font-size: 0.75rem; color: var(--text-secondary);">Total Outstanding</div><div style="font-size: 1.5rem; font-weight: 600;">${fmt(totalOutstanding)}</div></div>
                 <div class="card" style="padding: 1rem; border-left: 4px solid var(--danger-color);"><div style="font-size: 0.75rem; color: var(--text-secondary);">Total Overdue</div><div style="font-size: 1.5rem; font-weight: 600; color: var(--danger-color);">${fmt(totalOverdue)}</div></div>
@@ -4965,9 +5088,18 @@ async function renderSupplierDetailPage(supplierId) {
     try {
         const params = {};
         if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
-        const [supplier, enrichedList] = await Promise.all([
+        const now = new Date();
+        const { monthStart, monthEnd } = getLocalMonthStartEnd(now);
+        const [supplier, enrichedList, monthPayments] = await Promise.all([
             API.suppliers.get(supplierId),
             API.suppliers.listEnriched ? API.suppliers.listEnriched(params).catch(() => []) : [],
+            API.suppliers.listPayments({
+                supplier_id: supplierId,
+                branch_id: CONFIG.BRANCH_ID,
+                date_from: monthStart,
+                date_to: monthEnd,
+                limit: 500,
+            }).catch(() => []),
         ]);
         currentSupplierDetail = supplier;
         document.getElementById('supplierDetailTitle').textContent = supplier.name || 'Supplier';
@@ -4976,7 +5108,7 @@ async function renderSupplierDetailPage(supplierId) {
         const ob = enrichedRow != null ? (parseFloat(enrichedRow.outstanding_balance) ?? parseFloat(enrichedRow.outstanding) ?? 0) : 0;
         const ov = enrichedRow != null ? (parseFloat(enrichedRow.overdue_amount) ?? parseFloat(enrichedRow.overdue) ?? 0) : 0;
         const thisMonth = enrichedRow != null ? (parseFloat(enrichedRow.this_month_purchases) ?? parseFloat(enrichedRow.this_month) ?? 0) : 0;
-        const paymentsThisMonth = 0;
+        const paymentsThisMonth = (monthPayments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
         renderSupplierSummaryCards({ outstanding: ob, overdue: ov, thisMonthPurchases: thisMonth, thisMonthPayments: paymentsThisMonth, creditLimit: supplier.credit_limit });
         renderSupplierTabContent(supplierId, currentSupplierTab);
     } catch (e) {
@@ -4993,9 +5125,18 @@ async function refreshSupplierDetailAfterAction(supplierId) {
     try {
         const params = {};
         if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
-        const [supplier, enrichedList] = await Promise.all([
+        const now = new Date();
+        const { monthStart, monthEnd } = getLocalMonthStartEnd(now);
+        const [supplier, enrichedList, monthPayments] = await Promise.all([
             API.suppliers.get(supplierId),
             API.suppliers.listEnriched ? API.suppliers.listEnriched(params).catch(() => []) : [],
+            API.suppliers.listPayments({
+                supplier_id: supplierId,
+                branch_id: CONFIG.BRANCH_ID,
+                date_from: monthStart,
+                date_to: monthEnd,
+                limit: 500,
+            }).catch(() => []),
         ]);
         currentSupplierDetail = supplier;
         const list = Array.isArray(enrichedList) ? enrichedList : [];
@@ -5003,7 +5144,7 @@ async function refreshSupplierDetailAfterAction(supplierId) {
         const ob = enrichedRow != null ? (parseFloat(enrichedRow.outstanding_balance) ?? parseFloat(enrichedRow.outstanding) ?? 0) : 0;
         const ov = enrichedRow != null ? (parseFloat(enrichedRow.overdue_amount) ?? parseFloat(enrichedRow.overdue) ?? 0) : 0;
         const thisMonth = enrichedRow != null ? (parseFloat(enrichedRow.this_month_purchases) ?? parseFloat(enrichedRow.this_month) ?? 0) : 0;
-        const paymentsThisMonth = 0;
+        const paymentsThisMonth = (monthPayments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
         renderSupplierSummaryCards({ outstanding: ob, overdue: ov, thisMonthPurchases: thisMonth, thisMonthPayments: paymentsThisMonth, creditLimit: supplier.credit_limit });
         await renderSupplierTabContent(supplierId, currentSupplierTab);
     } catch (_) {}
@@ -5065,9 +5206,8 @@ async function renderSupplierTabContent(supplierId, tab) {
 
 async function renderSupplierOverviewTab(supplierId, cont) {
     const now = new Date();
-    const month = now.toISOString().slice(0, 7);
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+    const month = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0')].join('-');
+    const { monthStart, monthEnd } = getLocalMonthStartEnd(now);
     const params = {};
     if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
     let metrics = {};
@@ -5151,7 +5291,39 @@ async function renderSupplierProfileTab(supplierId, cont) {
             </div>
             <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Changes</button>
         </form>
+        <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border-color); max-width: 600px;">
+            <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.75rem;">Permanently remove a mistaken duplicate only when this supplier has no invoices, payments, GRNs, purchase orders, or ledger history. Otherwise reassign or archive data first.</p>
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                <button type="button" class="btn btn-outline" id="supplierMergeIntoBtn" style="color: var(--primary-color); border-color: var(--primary-color);"><i class="fas fa-code-merge"></i> Merge into another supplier</button>
+                <button type="button" class="btn btn-outline" id="supplierDeletePermBtn" style="color: var(--danger-color); border-color: var(--danger-color);"><i class="fas fa-trash-alt"></i> Delete supplier permanently</button>
+            </div>
+        </div>
     `;
+    const delPerm = document.getElementById('supplierDeletePermBtn');
+    if (delPerm) {
+        delPerm.addEventListener('click', async () => {
+            if (!confirm('Delete this supplier forever? This only succeeds if there are no related purchase documents or payments.')) return;
+            try {
+                await API.suppliers.delete(supplierId);
+                showToast('Supplier deleted', 'success');
+                window.currentSupplierDetailId = null;
+                if (window.switchPurchaseSubPage) window.switchPurchaseSubPage('suppliers');
+                else window.location.hash = '#purchases-suppliers';
+            } catch (err) {
+                let msg = err.message || 'Cannot delete';
+                try {
+                    const d = err.detail || err.data?.detail;
+                    if (d && typeof d === 'object' && d.message) msg = d.message + (d.counts ? ' ' + JSON.stringify(d.counts) : '');
+                    else if (typeof d === 'string') msg = d;
+                } catch (_) {}
+                showToast(msg, 'error');
+            }
+        });
+    }
+    const mergeBtn = document.getElementById('supplierMergeIntoBtn');
+    if (mergeBtn) {
+        mergeBtn.addEventListener('click', () => showMergeSupplierModal(supplierId));
+    }
     cont.querySelector('form').addEventListener('submit', async (e) => {
         e.preventDefault();
         const fd = new FormData(e.target);
@@ -5176,10 +5348,124 @@ async function renderSupplierProfileTab(supplierId, cont) {
     });
 }
 
+async function showMergeSupplierModal(sourceSupplierId) {
+    if (!sourceSupplierId) return;
+    // Use enriched supplier list (if available) so the dropdown has enough context when names are identical.
+    const params = {};
+    if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+
+    let suppliers = [];
+    try {
+        if (typeof API.suppliers.listEnriched === 'function') {
+            suppliers = await API.suppliers.listEnriched(params);
+        } else {
+            // Active-only list (backend guard); that's fine for merge "keep" target.
+            suppliers = await API.suppliers.list(CONFIG.COMPANY_ID);
+        }
+    } catch (_) {
+        suppliers = [];
+    }
+
+    suppliers = Array.isArray(suppliers) ? suppliers : [];
+    const keepOptions = suppliers
+        .filter(s => String(s.id) !== String(sourceSupplierId))
+        .map(s => {
+            const ob = s.outstanding_balance ?? s.outstanding ?? 0;
+            const ov = s.overdue_amount ?? s.overdue ?? 0;
+            const idSuffix = String(s.id).slice(0, 6);
+            const name = (s.name || s.company_name || '').trim() || 'Supplier';
+            const bits = [];
+            if (ob != null && !isNaN(parseFloat(ob))) bits.push(`${fmt(ob)} outstanding`);
+            if (ov != null && !isNaN(parseFloat(ov)) && parseFloat(ov) > 0) bits.push(`Overdue`);
+            const meta = bits.length ? ` — ${bits.join(', ')}` : '';
+            return `<option value="${escapeHtml(s.id)}">${escapeHtml(name)}${meta} (${escapeHtml(idSuffix)})</option>`;
+        })
+        .join('');
+
+    if (!keepOptions) {
+        showToast('No other active suppliers found to merge into.', 'warning');
+        return;
+    }
+
+    const content = `
+        <div style="padding: 0.25rem 0;">
+            <p style="margin-top: 0; color: var(--text-secondary);">
+                Select the supplier to keep. We will move all linked documents and ledger references from the current supplier into the selected one,
+                then delete the duplicate supplier record.
+            </p>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+                <label class="form-label">Keep as</label>
+                <select class="form-select" id="mergeTargetSupplierId" required>
+                    ${keepOptions}
+                </select>
+            </div>
+            <p style="margin: 0; color: var(--danger-color); font-size: 0.875rem;">
+                This action may take a moment and cannot be undone safely.
+            </p>
+        </div>
+    `;
+    const footer = `
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="mergeSupplierConfirmBtn"><i class="fas fa-code-merge"></i> Merge</button>
+    `;
+
+    showModal('Merge Suppliers', content, footer);
+    const btn = document.getElementById('mergeSupplierConfirmBtn');
+    const select = document.getElementById('mergeTargetSupplierId');
+    if (!btn || !select) return;
+
+    btn.addEventListener('click', async () => {
+        const targetId = select.value;
+        if (!targetId) {
+            showToast('Select a supplier to keep.', 'warning');
+            return;
+        }
+        if (String(targetId) === String(sourceSupplierId)) {
+            showToast('Choose a different supplier.', 'warning');
+            return;
+        }
+        if (!confirm('Merge suppliers? This will delete the duplicate supplier after reassignment.')) return;
+
+        const prevText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Merging…';
+
+        try {
+            await API.suppliers.merge(sourceSupplierId, targetId);
+            closeModal();
+            showToast('Suppliers merged successfully.', 'success');
+
+            // If we are viewing the source supplier detail, navigate to the kept supplier.
+            if (window.currentSupplierDetailId && String(window.currentSupplierDetailId) === String(sourceSupplierId)) {
+                navigateToSupplierDetail(targetId);
+            } else {
+                // Otherwise just refresh the suppliers list so the deleted supplier disappears.
+                try { await loadSuppliers(); renderSuppliersTable(); } catch (_) {}
+            }
+        } catch (err) {
+            let msg = err && (err.message || err.data?.detail || err.response?.data?.detail);
+            if (err && err.detail && typeof err.detail === 'object' && err.detail.message) msg = err.detail.message;
+            if (!msg) {
+                try { msg = JSON.stringify(err); } catch (_) { msg = 'Merge failed'; }
+            }
+            showToast(msg, 'error');
+            btn.disabled = false;
+            btn.innerHTML = prevText;
+        }
+    });
+}
+
 async function renderSupplierInvoicesTab(supplierId, cont) {
     const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId };
     if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
-    const invoices = await API.purchases.listInvoices(params);
+    let invoices;
+    try {
+        invoices = await API.purchases.listInvoices(params);
+    } catch (e) {
+        console.error('Supplier invoices tab:', e);
+        cont.innerHTML = `<p style="color: var(--danger-color);">Failed to load invoices: ${escapeHtml(e.message || String(e))}</p>`;
+        return;
+    }
     if (!invoices || invoices.length === 0) {
         cont.innerHTML = '<div class="text-center" style="padding: 2rem;"><i class="fas fa-file-invoice" style="font-size: 2rem; color: var(--text-secondary);"></i><p>No invoices</p><a href="#" class="btn btn-primary" onclick="window.openCreateInvoiceWithSupplier(\'' + supplierId + '\'); return false;">Record New Invoice</a></div>';
         return;
@@ -5277,8 +5563,8 @@ const SUPPLIER_LEDGER_PAGE_SIZE = 100;
 
 async function renderSupplierLedgerTab(supplierId, cont) {
     const now = new Date();
-    const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-    const defaultTo = now.toISOString().slice(0, 10);
+    const defaultFrom = getLocalMonthStartEnd(now).monthStart;
+    const defaultTo = getLocalDateString();
     const from = supplierLedgerDateFrom[supplierId] || defaultFrom;
     const to = supplierLedgerDateTo[supplierId] || defaultTo;
     const params = { supplier_id: supplierId, date_from: from, date_to: to, limit: SUPPLIER_LEDGER_PAGE_SIZE, offset: 0 };
@@ -5322,8 +5608,8 @@ const supplierStatementDateTo = {};
 
 async function renderSupplierStatementTab(supplierId, cont) {
     const today = new Date();
-    const defaultFrom = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-    const defaultTo = today.toISOString().slice(0, 10);
+    const defaultFrom = getLocalMonthStartEnd(today).monthStart;
+    const defaultTo = getLocalDateString();
     const fromDate = supplierStatementDateFrom[supplierId] || defaultFrom;
     const toDate = supplierStatementDateTo[supplierId] || defaultTo;
     cont.innerHTML = '<div class="spinner"></div>';
@@ -5331,7 +5617,7 @@ async function renderSupplierStatementTab(supplierId, cont) {
     try {
         const [st, aging] = await Promise.all([
             API.suppliers.getStatement({ supplier_id: supplierId, branch_id: CONFIG.BRANCH_ID, from_date: fromDate, to_date: toDate }),
-            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }),
+            API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID }).catch(() => ({ suppliers: [] })),
         ]);
         agingRow = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
         const systemOutstanding = agingRow ? parseFloat(agingRow.total_outstanding) || 0 : 0;
@@ -5350,18 +5636,29 @@ async function renderSupplierStatementTab(supplierId, cont) {
                     <div><h4>${escapeHtml(st.supplier_name)}</h4><p>Period: ${st.from_date} to ${st.to_date}</p><p>Opening: ${fmt(st.opening_balance)}</p></div>
                     <button class="btn btn-primary" onclick="window.print();"><i class="fas fa-print"></i> Print</button>
                 </div>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <thead><tr><th>Date</th><th>Description</th><th>Reference</th><th>Debit</th><th>Credit</th><th>Balance</th></tr></thead>
-                    <tbody>${(st.lines || []).map(l => `
+                <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                    <thead><tr><th>Date</th><th>Description</th><th>Our invoice (SPV)</th><th>Supplier invoice</th><th>Payment</th><th>Debit</th><th>Credit</th><th>Balance</th></tr></thead>
+                    <tbody>${(st.lines || []).map(l => {
+                        const payCell = (l.description === 'Payment' || (l.payment_method && parseFloat(l.credit) > 0))
+                            ? (() => {
+                                const m = (l.payment_method || '').toLowerCase();
+                                const ref = l.payment_reference || '';
+                                if (m === 'cash' || !m) return escapeHtml('Cash');
+                                return escapeHtml([l.payment_method || '', ref].filter(Boolean).join(' — '));
+                            })()
+                            : '—';
+                        return `
                         <tr>
                             <td>${l.date ? new Date(l.date).toLocaleDateString('en-KE') : '—'}</td>
                             <td>${escapeHtml(l.description || '')}</td>
-                            <td>${escapeHtml(l.reference || '')}</td>
+                            <td>${escapeHtml(l.system_invoice_number || '—')}</td>
+                            <td>${escapeHtml(l.supplier_document || '—')}</td>
+                            <td>${payCell}</td>
                             <td>${fmt(l.debit)}</td>
                             <td>${fmt(l.credit)}</td>
                             <td>${fmt(l.balance)}</td>
-                        </tr>
-                    `).join('')}</tbody>
+                        </tr>`;
+                    }).join('')}</tbody>
                 </table>
                 <div style="margin-top: 1rem;">
                     <div style="font-weight: 600;">Statement Closing Balance: ${fmt(closingBalance)}</div>
@@ -5375,13 +5672,21 @@ async function renderSupplierStatementTab(supplierId, cont) {
             supplierStatementDateTo[supplierId] = document.getElementById('statementDateTo').value;
             renderSupplierTabContent(supplierId, 'statement');
         });
-    } catch (_) {
-        cont.innerHTML = '<p>Failed to load statement.</p>';
+    } catch (e) {
+        console.error('Statement tab:', e);
+        cont.innerHTML = `<p style="color: var(--danger-color);">Failed to load statement: ${escapeHtml(e.message || String(e))}</p>`;
     }
 }
 
 async function renderSupplierAgingTab(supplierId, cont) {
-    const aging = await API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID });
+    let aging;
+    try {
+        aging = await API.suppliers.getAging({ branch_id: CONFIG.BRANCH_ID });
+    } catch (e) {
+        console.error('Aging tab:', e);
+        cont.innerHTML = `<p style="color: var(--danger-color);">Failed to load aging: ${escapeHtml(e.message || String(e))}</p>`;
+        return;
+    }
     const row = (aging.suppliers || []).find(s => String(s.supplier_id) === String(supplierId));
     if (!row) {
         cont.innerHTML = '<p>No aging data for this supplier (no outstanding invoices).</p>';
@@ -5399,7 +5704,8 @@ async function renderSupplierAgingTab(supplierId, cont) {
 }
 
 async function renderSupplierMetricsTab(supplierId, cont) {
-    const month = new Date().toISOString().slice(0, 7);
+    const d = new Date();
+    const month = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0')].join('-');
     const params = {};
     if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
     let metrics = {};
@@ -5475,7 +5781,7 @@ async function renderRecordPaymentPage(supplierId) {
         return;
     }
 
-    const payDate = new Date().toISOString().slice(0, 10);
+    const payDate = getLocalDateString();
     let unpaidInvoices = [];
     try {
         const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId };
@@ -5861,230 +6167,13 @@ function showAllocatePaymentModal(invoiceId, supplierId) {
     }
 }
 
-// New Return Modal — full flow: supplier, optional link invoice, items (search + quantity + cost), reason
+/** Supplier detail "New Return" — same as Purchases → Credit Notes (supplier invoice credit note / supplier return). */
 async function showNewReturnModal(supplierId, linkedInvoiceId = null) {
     if (!supplierId) {
         showToast('Select a supplier first (open supplier detail).', 'warning');
         return;
     }
-    let supplier = null;
-    let invoices = [];
-    try {
-        supplier = await API.suppliers.get(supplierId);
-        const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId };
-        if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
-        invoices = await API.purchases.listInvoices(params);
-        invoices = (invoices || []).filter(inv => inv.status === 'BATCHED');
-    } catch (e) {
-        showToast('Could not load supplier or invoices', 'error');
-        return;
-    }
-    const invoiceOptions = invoices.map(inv => `<option value="${inv.id}" ${inv.id === linkedInvoiceId ? 'selected' : ''}>${escapeHtml(inv.invoice_number || inv.id)} - ${fmt(inv.total_inclusive)}</option>`).join('');
-    const returnLines = []; // { item_id, item_name, quantity, unit_cost, line_total, batch_number?, expiry_date? }
-    const today = new Date().toISOString().slice(0, 10);
-    const content = `
-        <form id="newReturnForm">
-            <div class="form-group">
-                <label class="form-label">Supplier</label>
-                <input type="text" class="form-input" value="${escapeHtml(supplier.name || '')}" readonly>
-            </div>
-            <div class="form-group">
-                <label class="form-label">Link to invoice (optional)</label>
-                <select class="form-select" name="linked_invoice_id" id="newReturnLinkedInvoice">
-                    <option value="">— None —</option>
-                    ${invoiceOptions}
-                </select>
-            </div>
-            <div class="form-row">
-                <div class="form-group"><label class="form-label">Return Date *</label><input type="date" class="form-input" name="return_date" value="${today}" required></div>
-                <div class="form-group" style="flex: 1;"><label class="form-label">Reason</label><input type="text" class="form-input" name="reason" placeholder="e.g. Expired, Damaged"></div>
-            </div>
-            <div class="form-group" style="margin-top: 1rem;">
-                <label class="form-label">Items to return</label>
-                <div style="margin-bottom: 0.5rem;">
-                    <input type="text" id="newReturnItemSearch" class="form-input" placeholder="Search item by name or SKU..." style="max-width: 300px;" autocomplete="off">
-                    <span id="newReturnItemStock" style="font-size: 0.875rem; color: var(--text-secondary); margin-left: 0.5rem;"></span>
-                </div>
-                <div class="table-container" style="overflow-x: auto; max-height: 200px;">
-                    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
-                        <thead><tr><th>Item</th><th>Qty</th><th>Unit cost (KES)</th><th>Total (KES)</th><th></th></tr></thead>
-                        <tbody id="newReturnLinesTbody"></tbody>
-                    </table>
-                </div>
-                <p id="newReturnLineError" style="display: none; color: var(--danger-color); font-size: 0.875rem; margin-top: 0.5rem;"></p>
-            </div>
-        </form>
-    `;
-    const footer = `<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button><button type="button" class="btn btn-primary" id="submitNewReturnBtn" onclick="submitNewReturn('${supplierId}')">Save Return (Pending)</button>`;
-    showModal('New Return', content, footer);
-    const tbody = document.getElementById('newReturnLinesTbody');
-    const searchInput = document.getElementById('newReturnItemSearch');
-    const stockSpan = document.getElementById('newReturnItemStock');
-    let searchDropdown = null;
-    let selectedReturnItem = null; // { id, name, sku }
-
-    function renderReturnLines() {
-        if (!tbody) return;
-        if (returnLines.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="padding: 1rem; color: var(--text-secondary);">Search and add items above.</td></tr>';
-            return;
-        }
-        tbody.innerHTML = returnLines.map((line, i) => `
-            <tr data-idx="${i}">
-                <td style="padding: 0.5rem;">${escapeHtml(line.item_name || '—')}</td>
-                <td style="padding: 0.5rem;"><input type="number" class="form-input return-line-qty" data-idx="${i}" value="${line.quantity}" min="0.01" step="0.01" style="width: 80px;"></td>
-                <td style="padding: 0.5rem;"><input type="number" class="form-input return-line-cost" data-idx="${i}" value="${line.unit_cost}" min="0" step="0.01" style="width: 90px;"></td>
-                <td style="padding: 0.5rem;">${fmt(line.quantity * line.unit_cost)}</td>
-                <td style="padding: 0.5rem;"><button type="button" class="btn btn-outline btn-sm" onclick="window.removeNewReturnLine(${i})">Remove</button></td>
-            </tr>
-        `).join('');
-        tbody.querySelectorAll('.return-line-qty').forEach(el => el.addEventListener('input', recalcReturnLine));
-        tbody.querySelectorAll('.return-line-cost').forEach(el => el.addEventListener('input', recalcReturnLine));
-    }
-    function recalcReturnLine() {
-        const idx = parseInt(this.dataset.idx, 10);
-        const row = returnLines[idx];
-        if (!row) return;
-        const qtyEl = tbody.querySelector(`.return-line-qty[data-idx="${idx}"]`);
-        const costEl = tbody.querySelector(`.return-line-cost[data-idx="${idx}"]`);
-        row.quantity = parseFloat(qtyEl?.value) || 0;
-        row.unit_cost = parseFloat(costEl?.value) || 0;
-        row.line_total = row.quantity * row.unit_cost;
-        renderReturnLines();
-    }
-    window.removeNewReturnLine = function (idx) {
-        returnLines.splice(idx, 1);
-        renderReturnLines();
-    };
-
-    searchInput.addEventListener('input', debounceReturnSearch);
-    searchInput.addEventListener('focus', function () {
-        if (searchInput.value.trim().length >= 2) debounceReturnSearch();
-    });
-    let returnSearchTimeout = null;
-    function debounceReturnSearch() {
-        clearTimeout(returnSearchTimeout);
-        returnSearchTimeout = setTimeout(async () => {
-            const q = searchInput.value.trim();
-            if (q.length < 2) {
-                if (searchDropdown) { searchDropdown.remove(); searchDropdown = null; }
-                stockSpan.textContent = '';
-                return;
-            }
-            try {
-                const items = await API.items.search(q, CONFIG.COMPANY_ID, 20, CONFIG.BRANCH_ID, true);
-                if (!items || items.length === 0) {
-                    showReturnItemDropdown([]);
-                    return;
-                }
-                showReturnItemDropdown(items);
-            } catch (_) {
-                stockSpan.textContent = 'Search failed';
-            }
-        }, 60);
-    }
-    function showReturnItemDropdown(items) {
-        if (searchDropdown) searchDropdown.remove();
-        searchDropdown = document.createElement('div');
-        searchDropdown.setAttribute('id', 'newReturnItemDropdown');
-        searchDropdown.style.cssText = 'position: absolute; background: white; border: 1px solid var(--border-color); border-radius: 0.25rem; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-height: 220px; overflow-y: auto; z-index: 1050;';
-        searchDropdown.innerHTML = items.map(it => {
-            const name = (it.name || '').trim() || '—';
-            const sku = (it.sku || it.item_code || '') || '';
-            const stock = it.base_quantity != null ? it.base_quantity : (it.current_stock != null ? it.current_stock : '—');
-            return `<div class="new-return-item-option" data-id="${it.id}" data-name="${escapeHtml(name)}" data-sku="${escapeHtml(sku)}" data-stock="${stock}" data-cost="${it.last_unit_cost != null ? it.last_unit_cost : (it.default_cost != null ? it.default_cost : 0)}" style="padding: 0.5rem 0.75rem; cursor: pointer; border-bottom: 1px solid var(--border-color);">${escapeHtml(name)} ${sku ? '(' + escapeHtml(sku) + ')' : ''} — Stock: ${stock}</div>`;
-        }).join('');
-        searchInput.parentElement.style.position = 'relative';
-        searchInput.parentElement.appendChild(searchDropdown);
-        searchDropdown.querySelectorAll('.new-return-item-option').forEach(el => {
-            el.addEventListener('mousedown', function (e) {
-                e.preventDefault();
-                const id = el.dataset.id;
-                const name = el.dataset.name || '';
-                const sku = el.dataset.sku || '';
-                const stock = parseFloat(el.dataset.stock) || 0;
-                const cost = parseFloat(el.dataset.cost) || 0;
-                searchInput.value = name + (sku ? ' (' + sku + ')' : '');
-                if (searchDropdown) { searchDropdown.remove(); searchDropdown = null; }
-                const existing = returnLines.find(l => String(l.item_id) === String(id));
-                if (existing) {
-                    showToast('Item already in list', 'info');
-                    return;
-                }
-                if (stock <= 0) {
-                    document.getElementById('newReturnLineError').style.display = 'block';
-                    document.getElementById('newReturnLineError').textContent = 'Item has no stock; cannot return.';
-                    return;
-                }
-                returnLines.push({ item_id: id, item_name: name + (sku ? ' (' + sku + ')' : ''), quantity: 1, unit_cost: cost, line_total: cost });
-                renderReturnLines();
-                document.getElementById('newReturnLineError').style.display = 'none';
-                searchInput.value = '';
-            });
-        });
-    }
-    searchInput.addEventListener('blur', () => setTimeout(() => { if (searchDropdown) { searchDropdown.remove(); searchDropdown = null; } }, 150));
-    window._newReturnLines = returnLines;
-    renderReturnLines();
-}
-
-async function submitNewReturn(supplierId) {
-    const form = document.getElementById('newReturnForm');
-    if (!form) return;
-    const fd = new FormData(form);
-    const returnDate = fd.get('return_date');
-    const reason = fd.get('reason') || null;
-    const linkedInvoiceId = fd.get('linked_invoice_id') || null;
-    const lines = window._newReturnLines || [];
-    const tbody = document.getElementById('newReturnLinesTbody');
-    if (tbody && lines.length > 0) {
-        lines.forEach((line, idx) => {
-            const qtyEl = tbody.querySelector(`.return-line-qty[data-idx="${idx}"]`);
-            const costEl = tbody.querySelector(`.return-line-cost[data-idx="${idx}"]`);
-            if (qtyEl) line.quantity = parseFloat(qtyEl.value) || 0;
-            if (costEl) line.unit_cost = parseFloat(costEl.value) || 0;
-            line.line_total = line.quantity * line.unit_cost;
-        });
-    }
-    if (!Array.isArray(lines) || lines.length === 0) {
-        showToast('Add at least one item to return', 'error');
-        return;
-    }
-    const branchId = CONFIG.BRANCH_ID;
-    if (!branchId) {
-        showToast('Branch context required', 'error');
-        return;
-    }
-    const payload = {
-        branch_id: branchId,
-        supplier_id: supplierId,
-        return_date: returnDate,
-        reason: reason || null,
-        linked_invoice_id: linkedInvoiceId || null,
-        lines: lines.map(l => ({
-            item_id: l.item_id,
-            batch_number: l.batch_number || null,
-            expiry_date: l.expiry_date || null,
-            quantity: l.quantity,
-            unit_cost: l.unit_cost,
-            line_total: l.quantity * l.unit_cost,
-        })),
-    };
-    const btn = document.getElementById('submitNewReturnBtn');
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
-    try {
-        await API.suppliers.createReturn(payload);
-        showToast('Return saved (Pending). Approve from Returns tab to credit supplier.', 'success');
-        closeModal();
-        if (window.currentSupplierDetailId && String(window.currentSupplierDetailId) === String(supplierId)) {
-            refreshSupplierDetailAfterAction(supplierId);
-            await renderSupplierTabContent(supplierId, 'returns');
-        }
-    } catch (e) {
-        showToast(e.message || (e.detail && (Array.isArray(e.detail) ? e.detail.map(x => x.msg || x).join(' ') : e.detail)) || 'Failed to save return', 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = 'Save Return (Pending)'; }
-    }
+    await createNewCreditNote(supplierId, linkedInvoiceId);
 }
 
 // =====================================================
