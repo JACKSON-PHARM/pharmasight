@@ -47,6 +47,7 @@ const CONFIG = {
         inventory: '/api/inventory',
         sales: '/api/sales',
         purchases: '/api/purchases',
+        expenses: '/api/expenses',
         companies: '/api/companies',
         branches: '/api/branches',
         suppliers: '/api/suppliers',

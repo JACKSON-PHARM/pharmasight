@@ -1749,6 +1749,18 @@ async function loadPage(pageName) {
                 }
             }
             break;
+        case 'expenses':
+            console.log('Loading expenses page, subPage:', subPage);
+            if (typeof window.loadExpenses === 'function') {
+                window.loadExpenses(subPage || null);
+            } else {
+                console.error('loadExpenses function not found on window object');
+                const page = document.getElementById('expenses');
+                if (page) {
+                    page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Expenses</h3><p>Expenses module is not available. Please refresh the page.</p></div>';
+                }
+            }
+            break;
         case 'items':
             if (window.loadItems) {
                 window.loadItems();

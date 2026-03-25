@@ -203,19 +203,21 @@ def _get_last_wholesale_unit_cost_map(
     item_ids: List[UUID],
 ) -> dict[UUID, Decimal]:
     """
-    Return latest purchase unit cost converted to *wholesale* unit.
+    Return latest purchase-like unit cost converted to *wholesale* unit.
 
     Assumptions:
     - `inventory_ledger.unit_cost` is stored per retail/base unit (see inventory/base-unit migrations).
     - wholesale unit cost = retail/base unit cost * pack_size.
-    - If there is no purchase history, fall back to `items.default_cost_per_base * pack_size`.
+    - We treat `PURCHASE` and incoming `ADJUSTMENT` (stock additions) as "purchase-like" sources,
+      because manual valuation corrections can update historical incoming layers.
+    - If there is no purchase-like history, fall back to `items.default_cost_per_base * pack_size`.
     """
     if not item_ids:
         return {}
 
     items = {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
 
-    # Latest PURCHASE cost per item (avoid window functions — portable & fewer edge-case DB errors).
+    # Latest PURCHASE-like cost per item (avoid window functions — portable & fewer edge-case DB errors).
     agg = (
         db.query(
             InventoryLedger.item_id.label("iid"),
@@ -225,8 +227,9 @@ def _get_last_wholesale_unit_cost_map(
             InventoryLedger.item_id.in_(item_ids),
             InventoryLedger.branch_id == branch_id,
             InventoryLedger.company_id == company_id,
-            InventoryLedger.transaction_type == "PURCHASE",
+            InventoryLedger.transaction_type.in_(["PURCHASE", "ADJUSTMENT"]),
             InventoryLedger.quantity_delta > 0,
+            InventoryLedger.unit_cost > 0,
         )
         .group_by(InventoryLedger.item_id)
         .subquery()
@@ -243,8 +246,9 @@ def _get_last_wholesale_unit_cost_map(
         .filter(
             InventoryLedger.branch_id == branch_id,
             InventoryLedger.company_id == company_id,
-            InventoryLedger.transaction_type == "PURCHASE",
+            InventoryLedger.transaction_type.in_(["PURCHASE", "ADJUSTMENT"]),
             InventoryLedger.quantity_delta > 0,
+            InventoryLedger.unit_cost > 0,
         )
         .all()
     )

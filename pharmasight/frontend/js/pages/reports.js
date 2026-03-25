@@ -224,6 +224,20 @@ async function renderFinancialReports() {
                     <p id="plMeta">Gross profit • Margin —</p>
                 </div>
             </div>
+            <div class="stat-card">
+                <div class="stat-icon"><i class="fas fa-money-bill-wave"></i></div>
+                <div class="stat-info">
+                    <h3 id="plExpenses">—</h3>
+                    <p>Expenses (approved)</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><i class="fas fa-coins"></i></div>
+                <div class="stat-info">
+                    <h3 id="plNetProfit">—</h3>
+                    <p>Net profit</p>
+                </div>
+            </div>
         </div>
 
         <div class="card" style="margin-top: 0.5rem;">
@@ -767,10 +781,12 @@ async function loadGrossProfitReport() {
     const salesEl = document.getElementById('plSales');
     const cogsEl = document.getElementById('plCogs');
     const gpEl = document.getElementById('plGrossProfit');
+    const expEl = document.getElementById('plExpenses');
+    const netEl = document.getElementById('plNetProfit');
     const metaEl = document.getElementById('plMeta');
     const breakdownEl = document.getElementById('plBreakdown');
 
-    if (!startEl || !endEl || !salesEl || !cogsEl || !gpEl || !metaEl || !breakdownEl) return;
+    if (!startEl || !endEl || !salesEl || !cogsEl || !gpEl || !expEl || !netEl || !metaEl || !breakdownEl) return;
 
     const sd = _parseDateInput(startEl.value);
     const ed = _parseDateInput(endEl.value);
@@ -786,24 +802,39 @@ async function loadGrossProfitReport() {
     salesEl.textContent = '—';
     cogsEl.textContent = '—';
     gpEl.textContent = '—';
+    expEl.textContent = '—';
+    netEl.textContent = '—';
     metaEl.textContent = 'Gross profit • Margin —';
 
     try {
         if (!API || !API.sales || typeof API.sales.getGrossProfit !== 'function') {
             throw new Error('Gross profit API not available');
         }
-        const res = await API.sales.getGrossProfit(branchId, { start_date: start, end_date: end, include_breakdown: true });
+        const [res, expRes] = await Promise.all([
+            API.sales.getGrossProfit(branchId, { start_date: start, end_date: end, include_breakdown: true }),
+            (API && API.expenses && typeof API.expenses.summary === 'function')
+                ? API.expenses.summary({ branch_id: branchId, start_date: start, end_date: end, include_breakdown: true }).catch(() => null)
+                : Promise.resolve(null),
+        ]);
         const sales = parseFloat(res.sales_exclusive || 0);
         const cogs = parseFloat(res.cogs || 0);
         const gp = parseFloat(res.gross_profit || 0);
         const margin = parseFloat(res.margin_percent || 0);
+        const expenses = expRes ? parseFloat(expRes.total_expenses || 0) : 0;
+        const netProfit = gp - expenses;
 
         salesEl.textContent = (typeof formatCurrency === 'function') ? formatCurrency(sales) : String(sales);
         cogsEl.textContent = (typeof formatCurrency === 'function') ? formatCurrency(cogs) : String(cogs);
         gpEl.textContent = (typeof formatCurrency === 'function') ? formatCurrency(gp) : String(gp);
-        metaEl.textContent = `Gross profit • Margin ${margin.toFixed(1)}%`;
+        expEl.textContent = (typeof formatCurrency === 'function') ? formatCurrency(expenses) : String(expenses);
+        netEl.textContent = (typeof formatCurrency === 'function') ? formatCurrency(netProfit) : String(netProfit);
+        const cogsSource = (res && res.cogs_source) ? String(res.cogs_source) : '';
+        metaEl.textContent = `Gross profit • Margin ${margin.toFixed(1)}%${cogsSource ? ' • COGS: ' + cogsSource : ''}`;
 
         const rows = Array.isArray(res.breakdown) ? res.breakdown : [];
+        const expRows = expRes && Array.isArray(expRes.breakdown) ? expRes.breakdown : [];
+        const expMap = {};
+        expRows.forEach(r => { if (r && r.date) expMap[String(r.date).slice(0, 10)] = parseFloat(r.total_expenses || 0); });
         if (!rows.length) {
             var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
                 ? window.EmptyStateWatermark.render({ title: 'No transactions in this date range', description: 'Try a different date range.' })
@@ -818,6 +849,8 @@ async function loadGrossProfitReport() {
             const c = parseFloat(r.cogs || 0);
             const g = parseFloat(r.gross_profit || 0);
             const m = parseFloat(r.margin_percent || 0);
+            const e = expMap[d] || 0;
+            const n = g - e;
             const fc = (v) => (typeof formatCurrency === 'function') ? formatCurrency(v) : String(v);
             return `
                 <tr>
@@ -825,6 +858,8 @@ async function loadGrossProfitReport() {
                     <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(s)}</td>
                     <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(c)}</td>
                     <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(g)}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(e)}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(n)}</td>
                     <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${m.toFixed(1)}%</td>
                 </tr>
             `;
@@ -839,6 +874,8 @@ async function loadGrossProfitReport() {
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Sales (excl)</th>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">COGS</th>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Gross profit</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Expenses</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Net profit</th>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Margin</th>
                         </tr>
                     </thead>

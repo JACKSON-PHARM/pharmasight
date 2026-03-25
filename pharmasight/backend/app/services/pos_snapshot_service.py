@@ -93,7 +93,7 @@ def _get_next_expiry_date(
 
 def _get_last_purchase_price_from_ledger(
     db: Session, company_id: UUID, branch_id: UUID, item_id: UUID
-) -> float | None:
+) -> tuple[float | None, datetime | None]:
     """
     Last purchase-like unit cost from inventory ledger (single source of truth).
     Considers the most recent row where:
@@ -103,7 +103,7 @@ def _get_last_purchase_price_from_ledger(
     Same transaction sees just-written rows.
     """
     row = (
-        db.query(InventoryLedger.unit_cost)
+        db.query(InventoryLedger.unit_cost, InventoryLedger.created_at)
         .filter(
             InventoryLedger.company_id == company_id,
             InventoryLedger.branch_id == branch_id,
@@ -116,7 +116,11 @@ def _get_last_purchase_price_from_ledger(
         .limit(1)
         .first()
     )
-    return float(row.unit_cost) if row and row.unit_cost is not None else None
+    if not row:
+        return None, None
+    unit_cost = float(row.unit_cost) if row.unit_cost is not None else None
+    created_at = row.created_at if hasattr(row, "created_at") else None
+    return unit_cost, created_at
 
 
 def refresh_pos_snapshot_for_item(
@@ -155,9 +159,14 @@ def refresh_pos_snapshot_for_item(
     current_stock = float(bal.current_stock or 0) if bal else 0
 
     # last_purchase_price from ledger (latest costed movement)
-    last_purchase_price = _get_last_purchase_price_from_ledger(db, company_id, branch_id, item_id)
+    ledger_last_purchase_price, ledger_last_purchase_created_at = _get_last_purchase_price_from_ledger(
+        db, company_id, branch_id, item_id
+    )
     # Prefer purchase snapshot cost when present: manual cost corrections can update historical
-    # ledger rows in place (same created_at), so ordering by ledger.created_at alone may keep an older cost.
+    # ledger rows in place (same created_at). However, we still must avoid stale purchase snapshots
+    # overriding the ledger after unrelated refreshes (e.g. batching sales).
+    # We solve this by always preferring ledger-derived cost when available, and then writing
+    # back to item_branch_purchase_snapshot so future fast snapshot reads stay consistent.
     purchase_snap_full = (
         db.query(
             ItemBranchPurchaseSnapshot.last_purchase_price,
@@ -171,12 +180,40 @@ def refresh_pos_snapshot_for_item(
         )
         .first()
     )
-    if (
+    last_purchase_price = None
+    if ledger_last_purchase_price is not None and ledger_last_purchase_price > 0:
+        last_purchase_price = ledger_last_purchase_price
+    elif (
         purchase_snap_full
         and purchase_snap_full.last_purchase_price is not None
         and float(purchase_snap_full.last_purchase_price) > 0
     ):
         last_purchase_price = float(purchase_snap_full.last_purchase_price)
+
+    # Write-through: if ledger-derived cost exists and differs from purchase snapshot, fix snapshot.
+    # This prevents stale item_branch_purchase_snapshot values from reverting UI prices
+    # after refreshes triggered by batching sales/inventory writes.
+    if last_purchase_price is not None and last_purchase_price > 0:
+        purchase_snap_price = (
+            float(purchase_snap_full.last_purchase_price)
+            if purchase_snap_full and purchase_snap_full.last_purchase_price is not None
+            else None
+        )
+        should_fix = (
+            purchase_snap_price is None or abs(purchase_snap_price - last_purchase_price) > 0.0001
+        )
+        if should_fix:
+            from app.services.snapshot_service import SnapshotService
+
+            SnapshotService.upsert_purchase_snapshot(
+                db=db,
+                company_id=company_id,
+                branch_id=branch_id,
+                item_id=item_id,
+                last_purchase_price=Decimal(str(last_purchase_price)),
+                last_purchase_date=ledger_last_purchase_created_at,
+                last_supplier_id=purchase_snap_full.last_supplier_id if purchase_snap_full else None,
+            )
 
     # average_cost: prefer last_purchase_price; else get_best_available_cost (which can fall back
     # to items.default_cost_per_base when there is no ledger history for this branch).
@@ -240,8 +277,16 @@ def refresh_pos_snapshot_for_item(
         price_source = None
 
     # Legacy snapshots: last_purchase_date, last_supplier_id; activity dates
-    last_purchase_date = purchase_snap_full.last_purchase_date if purchase_snap_full else None
-    last_supplier_id = str(purchase_snap_full.last_supplier_id) if purchase_snap_full and purchase_snap_full.last_supplier_id else None
+    last_purchase_date = (
+        purchase_snap_full.last_purchase_date
+        if purchase_snap_full and purchase_snap_full.last_purchase_date is not None
+        else ledger_last_purchase_created_at
+    )
+    last_supplier_id = (
+        str(purchase_snap_full.last_supplier_id)
+        if purchase_snap_full and purchase_snap_full.last_supplier_id
+        else None
+    )
 
     search_snap = (
         db.query(

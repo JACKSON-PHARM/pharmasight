@@ -10,6 +10,7 @@ from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier, P
 from .inventory import InventoryLedger, ItemMovement
 from .snapshot import InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot, ItemBranchSnapshot
 from .supplier import Supplier
+from .expense import ExpenseCategory, Expense
 from .purchase import GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem, PurchaseOrder, PurchaseOrderItem
 from .supplier_financial import (
     SupplierPayment,
@@ -56,6 +57,8 @@ __all__ = [
     "ItemBranchSearchSnapshot",
     "ItemBranchSnapshot",
     "Supplier",
+    "ExpenseCategory",
+    "Expense",
     "GRN",
     "GRNItem",
     "SupplierInvoice",

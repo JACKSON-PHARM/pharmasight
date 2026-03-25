@@ -1104,9 +1104,19 @@ def _compute_cogs_from_invoice_lines(
 
     # Prefer batched SALE ledger totals (multi-batch FEFO accurate). Invoice-line math uses
     # unit_cost_used from the first batch only and can over- or under-state COGS vs actual layers.
+    # Financial reporting preference:
+    # - When sales invoice snapshot cost (sales_invoice_items.unit_cost_used) exists,
+    #   reports must match that snapshot cost, because users validate against it.
+    # - Ledger SALE costs are the inventory-layer valuation at batching time and can be
+    #   exaggerated if earlier purchase layers were wrong; fixing those layers does
+    #   not retroactively rewrite historical SALE ledger rows.
+    if ledger_total > 0 and invoice_cogs > 0:
+        return invoice_cogs, invoice_cogs_by_day if by_date else None, "invoice_lines"
+
     if ledger_total > 0:
-        return ledger_total, ledger_cogs_by_day if by_date else None
-    return invoice_cogs, invoice_cogs_by_day
+        return ledger_total, ledger_cogs_by_day if by_date else None, "ledger"
+
+    return invoice_cogs, invoice_cogs_by_day if by_date else None, "invoice_lines"
 
 
 @router.get("/branch/{branch_id}/gross-profit", response_model=dict)
@@ -1174,7 +1184,7 @@ def get_branch_gross_profit(
     net_sales_inclusive = sales_inclusive - credit_notes_total_inclusive
 
     # COGS from invoice lines (cost of quantity SOLD)
-    cogs, cogs_by_day = _compute_cogs_from_invoice_lines(
+    cogs, cogs_by_day, cogs_source = _compute_cogs_from_invoice_lines(
         db, branch_id, sd, ed, by_date=include_breakdown
     )
 
@@ -1236,6 +1246,7 @@ def get_branch_gross_profit(
         "gross_profit": str(gross_profit),
         "margin_percent": str(margin_percent),
         "invoice_count": invoice_count,
+        "cogs_source": cogs_source,
     }
 
     if not include_breakdown:

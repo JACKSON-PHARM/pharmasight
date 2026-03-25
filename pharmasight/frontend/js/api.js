@@ -838,6 +838,41 @@ const API = {
             return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/statement?${qs.toString()}`);
         },
     },
+
+    // Expenses (OPEX only)
+    expenses: {
+        listCategories: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.include_inactive) qs.append('include_inactive', 'true');
+            return api.get(`${CONFIG.API_ENDPOINTS.expenses}/categories?${qs.toString()}`);
+        },
+        createCategory: (data) => api.post(`${CONFIG.API_ENDPOINTS.expenses}/categories`, data),
+        updateCategory: (categoryId, data) => api.put(`${CONFIG.API_ENDPOINTS.expenses}/categories/${categoryId}`, data),
+
+        list: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.date_from) qs.append('date_from', params.date_from);
+            if (params.date_to) qs.append('date_to', params.date_to);
+            if (params.status) qs.append('status', params.status);
+            if (params.limit != null) qs.append('limit', params.limit);
+            if (params.offset != null) qs.append('offset', params.offset);
+            return api.get(`${CONFIG.API_ENDPOINTS.expenses}?${qs.toString()}`);
+        },
+        create: (data) => api.post(`${CONFIG.API_ENDPOINTS.expenses}`, data),
+        update: (expenseId, data) => api.put(`${CONFIG.API_ENDPOINTS.expenses}/${expenseId}`, data),
+        delete: (expenseId) => api.delete(`${CONFIG.API_ENDPOINTS.expenses}/${expenseId}`),
+        approve: (expenseId) => api.patch(`${CONFIG.API_ENDPOINTS.expenses}/${expenseId}/approve`, null),
+
+        summary: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            qs.append('start_date', params.start_date);
+            qs.append('end_date', params.end_date);
+            if (params.include_breakdown === false) qs.append('include_breakdown', 'false');
+            return api.get(`${CONFIG.API_ENDPOINTS.expenses}/summary?${qs.toString()}`);
+        },
+    },
     
     // Excel Import (supports Vyper-style column mapping)
     excel: {
