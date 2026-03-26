@@ -72,15 +72,18 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
+# CORS middleware — explicit origins plus (in non-production) any localhost / 127.0.0.1 port so
+# dev frontends on dynamic ports (start.py) match Origin and OPTIONS preflight succeeds.
+_cors_kw = dict(
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Server-Timing", "X-Search-Path", "X-Timing-LoadMs", "X-Timing-CompanyCheckMs", "X-Timing-InsertMs", "X-Timing-ItemsMapMs", "X-Timing-CostMs", "X-Timing-BuildMs", "X-Timing-TotalMs"],
 )
+if getattr(settings, "ENVIRONMENT", "development") != "production":
+    _cors_kw["allow_origin_regex"] = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
+app.add_middleware(CORSMiddleware, **_cors_kw)
 app.add_middleware(RequestTimingMiddleware)
 
 

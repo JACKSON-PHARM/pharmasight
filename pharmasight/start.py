@@ -6,11 +6,13 @@ Run: python start.py
 
 import json
 import subprocess
+from subprocess import Popen
 import sys
 import os
 import time
 import signal
 from pathlib import Path
+from typing import Optional, Tuple
 
 # Colors for terminal output
 class Colors:
@@ -131,57 +133,79 @@ def write_frontend_runtime_config(project_root: Path, backend_port: int) -> None
         print_colored(f"   Could not write runtime_config.json: {e}", Colors.YELLOW)
 
 
-def start_frontend(project_root, port=3000):
-    """Start the frontend HTTP server with SPA routing"""
+def _find_bindable_port_on_loopback(start: int, span: int) -> Optional[int]:
+    """Pick first TCP port we can bind on 127.0.0.1 (avoids WinError 10013 on some Windows setups)."""
+    import socket
+    for p in range(start, start + span):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", p))
+            s.close()
+            return p
+        except OSError:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return None
+
+
+def _resolve_frontend_port_preference() -> int:
+    """Preferred start port: FRONTEND_PORT env, else 3000."""
+    raw = os.environ.get("FRONTEND_PORT", "").strip()
+    if raw.isdigit():
+        p = int(raw)
+        if 1 <= p <= 65535:
+            return p
+    return 3000
+
+
+def start_frontend(project_root, preferred_port: Optional[int] = None) -> Tuple[Optional[Popen], Optional[int]]:
+    """Start the frontend HTTP server with SPA routing. Returns (process, port) or (None, None)."""
     print_colored("🎨 Starting Frontend Server (SPA routing enabled)...", Colors.YELLOW)
-    
+
     frontend_dir = project_root / "frontend"
     spa_server = frontend_dir / "spa_server.py"
-    
-    # Check if port is in use and try to free it
-    import socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    result = sock.connect_ex(('127.0.0.1', port))
-    sock.close()
-    
-    if result == 0:
-        # Port is in use, try to find and kill the process
-        print_colored(f"⚠️  Port {port} is in use. Attempting to free it...", Colors.YELLOW)
-        try:
-            import subprocess as sp
-            # Find process using the port (Windows)
-            result = sp.run(['netstat', '-ano'], capture_output=True, text=True)
-            for line in result.stdout.split('\n'):
-                if f':{port}' in line and 'LISTENING' in line:
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        pid = parts[-1]
-                        try:
-                            sp.run(['taskkill', '/F', '/PID', pid], capture_output=True)
-                            print_colored(f"✅ Freed port {port} (killed process {pid})", Colors.GREEN)
-                            time.sleep(1)  # Wait a moment for port to be released
-                        except:
-                            pass
-        except:
-            print_colored(f"⚠️  Could not free port {port}. Trying alternative port 3001...", Colors.YELLOW)
-            port = 3001
-    
-    # Start SPA-enabled HTTP server
-    cmd = [
-        sys.executable,
-        str(spa_server),
-        str(port)
-    ]
-    
-    # IMPORTANT: Do NOT capture stdout/stderr here.
-    # We want any errors (e.g. port in use, syntax errors) to be visible
-    # directly in the console, otherwise start.py only shows an exit code.
-    return subprocess.Popen(
+
+    if preferred_port is None:
+        preferred_port = _resolve_frontend_port_preference()
+
+    # Scan primary range then fallback (many dev machines have 3000-3024 busy from other tools).
+    primary_span = int(os.environ.get("FRONTEND_PORT_SPAN", "100").strip() or "100")
+    primary_span = max(1, min(primary_span, 500))
+    port = _find_bindable_port_on_loopback(preferred_port, primary_span)
+    if port is None:
+        fb_start = 3100 if preferred_port < 3100 else preferred_port + primary_span
+        if fb_start > 65000:
+            fb_start = 4000
+        port = _find_bindable_port_on_loopback(fb_start, primary_span)
+    if port is None:
+        print_colored(
+            f"❌ No free port for frontend on 127.0.0.1 (tried {preferred_port}-{preferred_port + primary_span - 1} "
+            f"and {fb_start}-{fb_start + primary_span - 1}).",
+            Colors.RED,
+        )
+        print_colored(
+            "   Set FRONTEND_PORT to a free port, or close apps using those ports (e.g. other dev servers).",
+            Colors.YELLOW,
+        )
+        return None, None
+    if port != preferred_port:
+        print_colored(
+            f"⚠️  Using port {port} (preferred {preferred_port} was busy or blocked).",
+            Colors.YELLOW,
+        )
+
+    cmd = [sys.executable, str(spa_server), str(port)]
+
+    proc = subprocess.Popen(
         cmd,
         cwd=str(frontend_dir),
-        stdout=None,              # Show frontend logs in the main console
-        stderr=subprocess.STDOUT  # Merge stderr with stdout
+        stdout=None,
+        stderr=subprocess.STDOUT,
     )
+    return proc, port
 
 def main():
     """Main function to start both servers"""
@@ -214,18 +238,25 @@ def main():
         time.sleep(2)  # Give backend time to start
         
         # Start frontend
-        frontend_process = start_frontend(project_root)
-        processes.append(("Frontend", frontend_process))
+        frontend_process, frontend_port = start_frontend(project_root)
+        if frontend_process is not None:
+            processes.append(("Frontend", frontend_process))
         time.sleep(1)  # Give frontend time to start
-        
+
         print()
-        print_colored("✅ Both servers are running!", Colors.GREEN)
+        if frontend_process is None or (frontend_process.poll() is not None):
+            print_colored("⚠️  Backend is running; frontend failed to start (see errors above).", Colors.YELLOW)
+        else:
+            print_colored("✅ Both servers are running!", Colors.GREEN)
         print()
         print_colored("📍 URLs:", Colors.CYAN)
         print_colored(f"   Backend API:    http://localhost:{backend_port}", Colors.WHITE)
         print_colored(f"   API Docs:       http://localhost:{backend_port}/docs", Colors.WHITE)
         print_colored(f"   Health Check:   http://localhost:{backend_port}/health", Colors.WHITE)
-        print_colored("   Frontend:       http://localhost:3000", Colors.WHITE)
+        if frontend_port is not None:
+            print_colored(f"   Frontend:       http://127.0.0.1:{frontend_port}", Colors.WHITE)
+        else:
+            print_colored("   Frontend:       (not started)", Colors.WHITE)
         print()
         print_colored("💡 Press Ctrl+C to stop both servers", Colors.YELLOW)
         print()
@@ -234,13 +265,18 @@ def main():
         # In a real scenario, we'd want to see their output
         # For now, we'll just wait for interrupt
         try:
+            logged_stopped = set()
             while True:
                 # Check if processes are still running
                 for name, proc in processes:
-                    if proc.poll() is not None:
-                        print_colored(f"⚠️  {name} server stopped unexpectedly (exit code: {proc.returncode})", Colors.RED)
-                        print_colored(f"   Check the error messages above", Colors.YELLOW)
-                
+                    if proc.poll() is not None and name not in logged_stopped:
+                        logged_stopped.add(name)
+                        print_colored(
+                            f"⚠️  {name} server stopped unexpectedly (exit code: {proc.returncode})",
+                            Colors.RED,
+                        )
+                        print_colored("   Check the error messages above", Colors.YELLOW)
+
                 time.sleep(1)
         except KeyboardInterrupt:
             print()

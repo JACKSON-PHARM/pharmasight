@@ -9,7 +9,7 @@ from sqlalchemy import func
 from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
 from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user, require_document_belongs_to_user_company
@@ -444,8 +444,7 @@ def _get_sales_invoice_response(
     tenant: Optional[Tenant] = None,
 ):
     """Build sales invoice response (load, enrich, return). Optional request for timings; optional tenant for logo URL."""
-    import time as _time
-    t0 = _time.perf_counter()
+    t0 = time.perf_counter()
     if request is not None:
         request.state.timings = {}
     from sqlalchemy.orm import selectinload
@@ -453,12 +452,12 @@ def _get_sales_invoice_response(
         selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item)
     ).filter(SalesInvoice.id == invoice_id).first()
     if request is not None:
-        request.state.timings["LoadMs"] = round((_time.perf_counter() - t0) * 1000, 1)
-    t1 = _time.perf_counter()
+        request.state.timings["LoadMs"] = round((time.perf_counter() - t0) * 1000, 1)
+    t1 = time.perf_counter()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
     if request is not None:
-        request.state.timings["CompanyCheckMs"] = round((_time.perf_counter() - t1) * 1000, 1)
-    t2 = _time.perf_counter()
+        request.state.timings["CompanyCheckMs"] = round((time.perf_counter() - t1) * 1000, 1)
+    t2 = time.perf_counter()
     # Handle backward compatibility - set defaults for missing fields
     if not hasattr(invoice, 'status') or invoice.status is None:
         if hasattr(invoice, 'payment_status') and invoice.payment_status == 'PAID':
@@ -507,8 +506,8 @@ def _get_sales_invoice_response(
                     if price > 0:
                         invoice_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
     if request is not None:
-        request.state.timings["CostEnrichMs"] = round((_time.perf_counter() - t2) * 1000, 1)
-    t3 = _time.perf_counter()
+        request.state.timings["CostEnrichMs"] = round((time.perf_counter() - t2) * 1000, 1)
+    t3 = time.perf_counter()
     for invoice_item in invoice.items:
         # Batch/expiry for receipt/PDF (from ledger when batched); build full batch_allocations for multi-batch FEFO
         sale_ledgers = db.query(InventoryLedger).filter(
@@ -549,8 +548,8 @@ def _get_sales_invoice_response(
                 invoice_item.expiry_date = None
 
     if request is not None:
-        request.state.timings["LedgerMs"] = round((_time.perf_counter() - t3) * 1000, 1)
-    t4 = _time.perf_counter()
+        request.state.timings["LedgerMs"] = round((time.perf_counter() - t3) * 1000, 1)
+    t4 = time.perf_counter()
     # Print letterhead: company, branch, user, logo URL for print (all documents)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     if company:
@@ -572,8 +571,8 @@ def _get_sales_invoice_response(
         invoice.created_by_username = creator.username or getattr(creator, "full_name", None) or ""
 
     if request is not None:
-        request.state.timings["BuildMs"] = round((_time.perf_counter() - t4) * 1000, 1)
-        request.state.timings["TotalMs"] = round((_time.perf_counter() - t0) * 1000, 1)
+        request.state.timings["BuildMs"] = round((time.perf_counter() - t4) * 1000, 1)
+        request.state.timings["TotalMs"] = round((time.perf_counter() - t0) * 1000, 1)
     return invoice
 
 
@@ -1965,7 +1964,7 @@ def batch_sales_invoice(
                     amount=remainder,
                     payment_reference=None,
                     paid_by=batched_by,
-                    paid_at=datetime.combine(invoice.invoice_date, time.min, tzinfo=timezone.utc),
+                    paid_at=datetime.combine(invoice.invoice_date, dt_time.min, tzinfo=timezone.utc),
                 )
                 db.add(ip)
                 db.flush()
