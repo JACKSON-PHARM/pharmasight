@@ -19,7 +19,7 @@ Never expose raw storage paths to frontend; use signed URLs (5–15 min expiry).
 """
 import logging
 from typing import Optional, Tuple, Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from uuid import UUID
 import httpx
 from supabase import Client
@@ -108,9 +108,15 @@ def _create_signed_url_via_rest(
     """
     if not base_url or not service_role_key:
         return None
-    endpoint = f"{base_url.rstrip('/')}/storage/v1/object/sign/{bucket_name}/{object_path.lstrip('/')}"
+    # Supabase expects the object name to be URL-encoded; for paths containing folders,
+    # we must encode slashes as %2F to avoid server-side path validation errors.
+    safe_bucket = quote((bucket_name or "").strip(), safe="")
+    raw_object = (object_path or "").lstrip("/")
+    encoded_object = quote(raw_object, safe="")  # encode slashes too
+    endpoint = f"{base_url.rstrip('/')}/storage/v1/object/sign/{safe_bucket}/{encoded_object}"
     headers = {
-        "apikey": service_role_key,
+        # apikey can be anon/service; Authorization must be the JWT service role.
+        "apikey": (getattr(settings, "SUPABASE_KEY", "") or "").strip() or service_role_key,
         "Authorization": f"Bearer {service_role_key}",
         "Content-Type": "application/json",
     }
