@@ -21,6 +21,7 @@ import logging
 from typing import Optional, Tuple, Any
 from urllib.parse import urlparse
 from uuid import UUID
+import httpx
 from supabase import Client
 
 from app.config import settings
@@ -68,6 +69,85 @@ def _normalize_supabase_base_url(raw_url: str, *, source: str) -> str:
         return ""
     # Drop query/fragment if present; keep only scheme + host.
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _build_effective_storage_config(tenant: Optional[Any] = None) -> Tuple[str, str]:
+    """Return effective (url, key) based on storage mode and optional tenant."""
+    tenant_url = ""
+    tenant_key = ""
+    if tenant and _tenant_storage_overrides_enabled():
+        tenant_url = (getattr(tenant, "supabase_storage_url", None) or "").strip()
+        tenant_key = (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()
+    elif tenant and ((getattr(tenant, "supabase_storage_url", None) or "").strip() or (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()):
+        logger.info("Supabase storage: tenant overrides present but ignored in single_project mode.")
+
+    if tenant_key and (tenant_key.startswith("sb_secret_") or tenant_key.startswith("sb_publishable_")):
+        logger.warning(
+            "Supabase storage: tenant key is sb_secret_/sb_publishable_; using env SUPABASE_SERVICE_ROLE_KEY instead."
+        )
+        tenant_key = ""
+
+    env_url = _normalize_supabase_base_url(getattr(settings, "SUPABASE_URL", "") or "", source="SUPABASE_URL")
+    normalized_tenant_url = _normalize_supabase_base_url(tenant_url, source="tenant.supabase_storage_url") if tenant_url else ""
+    url = normalized_tenant_url or env_url
+    key = tenant_key or (settings.SUPABASE_SERVICE_ROLE_KEY or "").strip()
+    return (url, key)
+
+
+def _create_signed_url_via_rest(
+    *,
+    base_url: str,
+    service_role_key: str,
+    bucket_name: str,
+    object_path: str,
+    expires_in: int,
+) -> Optional[str]:
+    """
+    Direct Storage API fallback for signed URLs.
+    Useful when storage3 SDK receives a non-JSON response and raises JSONDecodeError.
+    """
+    if not base_url or not service_role_key:
+        return None
+    endpoint = f"{base_url.rstrip('/')}/storage/v1/object/sign/{bucket_name}/{object_path.lstrip('/')}"
+    headers = {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(endpoint, headers=headers, json={"expiresIn": int(expires_in)})
+        if resp.status_code >= 400:
+            snippet = (resp.text or "")[:300]
+            logger.warning(
+                "storage REST sign failed status=%s endpoint=%s body=%r",
+                resp.status_code,
+                endpoint,
+                snippet,
+            )
+            return None
+        try:
+            payload = resp.json() if resp.content else {}
+        except Exception:
+            snippet = (resp.text or "")[:300]
+            logger.warning(
+                "storage REST sign returned non-JSON status=%s endpoint=%s body=%r",
+                resp.status_code,
+                endpoint,
+                snippet,
+            )
+            return None
+        path = payload.get("signedURL") or payload.get("signedUrl") or payload.get("signed_url") or payload.get("url")
+        if not path:
+            logger.warning("storage REST sign response missing URL keys=%s", list(payload.keys()) if isinstance(payload, dict) else [])
+            return None
+        if isinstance(path, str) and (path.startswith("http://") or path.startswith("https://")):
+            return path
+        # Supabase often returns /storage/v1/object/sign/... so prefix base URL.
+        return f"{base_url.rstrip('/')}{path if str(path).startswith('/') else '/' + str(path)}"
+    except Exception as e:
+        logger.warning("storage REST sign exception endpoint=%s err=%s", endpoint, e)
+        return None
 
 
 def _bucket_and_key(stored_path: str) -> Optional[Tuple[str, str]]:
@@ -126,24 +206,7 @@ def _client(tenant: Optional[Any] = None) -> Optional[Client]:
     In single_project mode (default), always use global env SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY.
     In tenant_project mode, tenant.supabase_storage_* overrides are allowed.
     """
-    tenant_url = ""
-    tenant_key = ""
-    if tenant and _tenant_storage_overrides_enabled():
-        tenant_url = (getattr(tenant, "supabase_storage_url", None) or "").strip()
-        tenant_key = (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()
-    elif tenant and ((getattr(tenant, "supabase_storage_url", None) or "").strip() or (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()):
-        logger.info("Supabase storage: tenant overrides present but ignored in single_project mode.")
-
-    # Python client requires JWT (eyJ...). If tenant row has sb_secret_/sb_publishable_, fall back to env.
-    if tenant_key and (tenant_key.startswith("sb_secret_") or tenant_key.startswith("sb_publishable_")):
-        logger.warning(
-            "Supabase storage: tenant key is sb_secret_/sb_publishable_; using env SUPABASE_SERVICE_ROLE_KEY instead."
-        )
-        tenant_key = ""
-    env_url = _normalize_supabase_base_url(getattr(settings, "SUPABASE_URL", "") or "", source="SUPABASE_URL")
-    tenant_url = _normalize_supabase_base_url(tenant_url, source="tenant.supabase_storage_url") if tenant_url else ""
-    url = tenant_url or env_url
-    key = tenant_key or (settings.SUPABASE_SERVICE_ROLE_KEY or "").strip()
+    url, key = _build_effective_storage_config(tenant)
     if not url or not key:
         return None
     try:
@@ -382,7 +445,8 @@ def get_signed_url(
     if bucket_name == BUCKET and tenant is not None and not _path_belongs_to_tenant(stored_path, tenant):
         logger.warning("get_signed_url: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
         return None
-    client = _client(tenant) if (bucket_name == BUCKET and tenant is not None) else _client(None)
+    effective_tenant = tenant if (bucket_name == BUCKET and tenant is not None) else None
+    client = _client(effective_tenant)
     if not client:
         client = _client(None)
     if not client:
@@ -415,7 +479,17 @@ def get_signed_url(
         return url
     except Exception as e:
         logger.warning("get_signed_url %s: %s", stored_path, e, exc_info=True)
-        return None
+        # SDK sometimes fails to parse non-JSON responses. Try direct Storage REST request.
+        base_url, key = _build_effective_storage_config(effective_tenant)
+        if not base_url or not key:
+            base_url, key = _build_effective_storage_config(None)
+        return _create_signed_url_via_rest(
+            base_url=base_url,
+            service_role_key=key,
+            bucket_name=bucket_name,
+            object_path=object_path,
+            expires_in=expires_in,
+        )
 
 
 def get_signed_url_with_path_tenant(
@@ -452,4 +526,13 @@ def get_signed_url_with_path_tenant(
         return url
     except Exception as e:
         logger.warning("get_signed_url_with_path_tenant %s: %s", stored_path, e)
-        return None
+        base_url, key = _build_effective_storage_config(path_tenant)
+        if not base_url or not key:
+            base_url, key = _build_effective_storage_config(None)
+        return _create_signed_url_via_rest(
+            base_url=base_url,
+            service_role_key=key,
+            bucket_name=BUCKET,
+            object_path=stored_path[len(BUCKET) + 1:],
+            expires_in=expires_in,
+        )
