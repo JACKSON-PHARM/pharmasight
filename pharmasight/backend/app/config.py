@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")  # Anon key (for frontend)
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")  # Service role key (admin, server-side only)
+    # Storage routing mode:
+    # - single_project (default): ignore tenant.supabase_storage_* and use env SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY
+    # - tenant_project: allow tenant.supabase_storage_* overrides (legacy/per-tenant mode)
+    STORAGE_MODE: str = os.getenv("STORAGE_MODE", "single_project").strip().lower()
+    # Legacy migration fallback for stored tenant-assets paths that resolve via path tenant row.
+    # Keep disabled by default to avoid silent reintroduction of per-tenant project behavior.
+    ENABLE_LEGACY_PATH_TENANT_FALLBACK: bool = os.getenv("ENABLE_LEGACY_PATH_TENANT_FALLBACK", "false").lower() in ("true", "1", "yes")
     SUPABASE_DB_PASSWORD: str = os.getenv("SUPABASE_DB_PASSWORD", "")
     SUPABASE_DB_HOST: str = os.getenv("SUPABASE_DB_HOST", "db.kwvkkbofubsjiwqlqakt.supabase.co")
     SUPABASE_DB_NAME: str = os.getenv("SUPABASE_DB_NAME", "postgres")
@@ -73,6 +80,14 @@ class Settings(BaseSettings):
     # Session pooler host for tenant DBs (e.g. aws-1-eu-west-1.pooler.supabase.com).
     # If unset, derived from DATABASE_URL when it contains pooler.supabase.com.
     SUPABASE_POOLER_HOST: str = os.getenv("SUPABASE_POOLER_HOST", "").strip()
+
+    @field_validator("STORAGE_MODE", mode="before")
+    @classmethod
+    def validate_storage_mode(cls, value: str) -> str:
+        mode = (value or "single_project").strip().lower()
+        if mode not in {"single_project", "tenant_project"}:
+            return "single_project"
+        return mode
 
     # Build connection string if not provided
     @property

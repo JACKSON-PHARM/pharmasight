@@ -19,6 +19,7 @@ Never expose raw storage paths to frontend; use signed URLs (5–15 min expiry).
 """
 import logging
 from typing import Optional, Tuple, Any
+from urllib.parse import urlparse
 from uuid import UUID
 from supabase import Client
 
@@ -35,6 +36,38 @@ ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg"}
 MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2MB
 # Signed URL expiry: 5–15 min (10 min default). Never expose raw paths to frontend.
 SIGNED_URL_EXPIRY_SECONDS = 600  # 10 minutes
+
+
+def _tenant_storage_overrides_enabled() -> bool:
+    """True only when explicitly running in tenant_project mode."""
+    return (getattr(settings, "STORAGE_MODE", "single_project") or "single_project").strip().lower() == "tenant_project"
+
+
+def _normalize_supabase_base_url(raw_url: str, *, source: str) -> str:
+    """
+    Normalize and validate Supabase project base URL.
+    Expected format: https://<project-ref>.supabase.co
+    """
+    url = (raw_url or "").strip().strip('"').strip("'")
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        logger.warning("Supabase storage: invalid %s URL scheme", source)
+        return ""
+    if not parsed.netloc:
+        logger.warning("Supabase storage: invalid %s URL host", source)
+        return ""
+    path = (parsed.path or "").strip("/")
+    if path:
+        logger.warning(
+            "Supabase storage: %s URL contains path '%s'; use base project URL only (https://<ref>.supabase.co).",
+            source,
+            path,
+        )
+        return ""
+    # Drop query/fragment if present; keep only scheme + host.
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _bucket_and_key(stored_path: str) -> Optional[Tuple[str, str]]:
@@ -90,22 +123,26 @@ def _client(tenant: Optional[Any] = None) -> Optional[Client]:
     """
     Supabase client for storage.
 
-    Per-tenant override is optional and may be partial:
-    - If tenant.supabase_storage_url is set, it overrides the URL; otherwise falls back to env SUPABASE_URL.
-    - If tenant.supabase_storage_service_role_key is set, it overrides the key; otherwise falls back to env SUPABASE_SERVICE_ROLE_KEY.
-
-    This allows a deployment to keep a single app-wide SUPABASE_URL while setting keys per tenant, but also
-    supports fully per-tenant Supabase projects when both fields are provided.
+    In single_project mode (default), always use global env SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY.
+    In tenant_project mode, tenant.supabase_storage_* overrides are allowed.
     """
-    tenant_url = (getattr(tenant, "supabase_storage_url", None) or "").strip() if tenant else ""
-    tenant_key = (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip() if tenant else ""
+    tenant_url = ""
+    tenant_key = ""
+    if tenant and _tenant_storage_overrides_enabled():
+        tenant_url = (getattr(tenant, "supabase_storage_url", None) or "").strip()
+        tenant_key = (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()
+    elif tenant and ((getattr(tenant, "supabase_storage_url", None) or "").strip() or (getattr(tenant, "supabase_storage_service_role_key", None) or "").strip()):
+        logger.info("Supabase storage: tenant overrides present but ignored in single_project mode.")
+
     # Python client requires JWT (eyJ...). If tenant row has sb_secret_/sb_publishable_, fall back to env.
     if tenant_key and (tenant_key.startswith("sb_secret_") or tenant_key.startswith("sb_publishable_")):
         logger.warning(
             "Supabase storage: tenant key is sb_secret_/sb_publishable_; using env SUPABASE_SERVICE_ROLE_KEY instead."
         )
         tenant_key = ""
-    url = tenant_url or (settings.SUPABASE_URL or "").strip()
+    env_url = _normalize_supabase_base_url(getattr(settings, "SUPABASE_URL", "") or "", source="SUPABASE_URL")
+    tenant_url = _normalize_supabase_base_url(tenant_url, source="tenant.supabase_storage_url") if tenant_url else ""
+    url = tenant_url or env_url
     key = tenant_key or (settings.SUPABASE_SERVICE_ROLE_KEY or "").strip()
     if not url or not key:
         return None

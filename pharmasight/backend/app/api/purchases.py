@@ -61,10 +61,15 @@ from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
 from app.services.document_pdf_generator import build_grn_pdf, build_supplier_invoice_pdf
 from app.services.canonical_pricing import CanonicalPricingService
+from app.config import settings
 import json
 import sqlalchemy.exc
 
 router = APIRouter()
+
+
+def _legacy_path_tenant_fallback_enabled() -> bool:
+    return bool(getattr(settings, "ENABLE_LEGACY_PATH_TENANT_FALLBACK", False))
 
 
 def _parse_expiry_date(expiry) -> Optional[date]:
@@ -2413,9 +2418,10 @@ def _resolve_asset_bytes(
         data = download_file(stored_path, tenant=tenant)
         if data is not None:
             return data
-    path_tenant = _tenant_for_stored_path(master_db, stored_path)
-    if path_tenant:
-        return download_file_with_path_tenant(stored_path, path_tenant)
+    if _legacy_path_tenant_fallback_enabled():
+        path_tenant = _tenant_for_stored_path(master_db, stored_path)
+        if path_tenant:
+            return download_file_with_path_tenant(stored_path, path_tenant)
     return None
 
 
@@ -2434,7 +2440,7 @@ def _resolve_signed_url(
         url = get_signed_url(stored_path, tenant=tenant)
         if url:
             return url
-    if str(stored_path).startswith("tenant-assets/"):
+    if _legacy_path_tenant_fallback_enabled() and str(stored_path).startswith("tenant-assets/"):
         path_tenant = _tenant_for_stored_path(master_db, stored_path)
         if path_tenant:
             return get_signed_url_with_path_tenant(stored_path, path_tenant)
@@ -2579,7 +2585,7 @@ def get_purchase_order_pdf_url(
     url = None
     if tenant is not None:
         url = get_signed_url(order.pdf_path, tenant=tenant)
-    if not url and str(order.pdf_path or "").startswith("tenant-assets/"):
+    if not url and _legacy_path_tenant_fallback_enabled() and str(order.pdf_path or "").startswith("tenant-assets/"):
         path_tenant = _tenant_for_stored_path(master_db, order.pdf_path)
         if path_tenant:
             url = get_signed_url_with_path_tenant(order.pdf_path, path_tenant)
