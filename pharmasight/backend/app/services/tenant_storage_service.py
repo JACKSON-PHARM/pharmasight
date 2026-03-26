@@ -157,6 +157,117 @@ def _create_signed_url_via_rest(
         return None
 
 
+def _encode_storage_object_path_for_url(object_path: str) -> str:
+    """
+    Encode Supabase Storage object paths for URL path parameters.
+    Preserves `/` separators while encoding each segment.
+    """
+    raw = (object_path or "").lstrip("/")
+    segments = [quote(seg, safe="") for seg in raw.split("/") if seg != ""]
+    return "/".join(segments)
+
+
+def _storage_rest_auth_headers(service_role_key: str) -> dict:
+    """
+    Storage REST endpoints require service role JWT for private buckets.
+    We send both Authorization and apikey for maximum compatibility.
+    """
+    anon_key = (getattr(settings, "SUPABASE_KEY", "") or "").strip()
+    return {
+        "Authorization": f"Bearer {service_role_key}",
+        "apikey": anon_key or service_role_key,
+    }
+
+
+def _list_buckets_via_rest(*, base_url: str, service_role_key: str) -> Optional[list]:
+    endpoint = f"{base_url.rstrip('/')}/storage/v1/bucket"
+    headers = _storage_rest_auth_headers(service_role_key)
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(endpoint, headers=headers)
+        if resp.status_code >= 400:
+            logger.warning("storage REST list buckets failed status=%s body=%r", resp.status_code, (resp.text or "")[:300])
+            return None
+        return resp.json() if resp.content else []
+    except Exception as e:
+        logger.warning("storage REST list buckets exception endpoint=%s err=%s", endpoint, e)
+        return None
+
+
+def _create_bucket_via_rest(*, base_url: str, service_role_key: str, bucket_name: str) -> bool:
+    endpoint = f"{base_url.rstrip('/')}/storage/v1/bucket"
+    headers = {**_storage_rest_auth_headers(service_role_key), "Content-Type": "application/json"}
+    payload = {"name": bucket_name, "public": False}
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(endpoint, headers=headers, json=payload)
+        if resp.status_code >= 400:
+            logger.warning("storage REST create bucket failed status=%s body=%r", resp.status_code, (resp.text or "")[:300])
+            return False
+        return True
+    except Exception as e:
+        logger.warning("storage REST create bucket exception endpoint=%s err=%s", endpoint, e)
+        return False
+
+
+def _upload_object_via_rest(
+    *,
+    base_url: str,
+    service_role_key: str,
+    bucket_name: str,
+    object_path: str,
+    content: bytes,
+    content_type: str,
+) -> bool:
+    endpoint = (
+        f"{base_url.rstrip('/')}/storage/v1/object/{quote(bucket_name, safe='')}/{_encode_storage_object_path_for_url(object_path)}"
+    )
+    headers = {
+        **_storage_rest_auth_headers(service_role_key),
+        "Content-Type": content_type or "application/octet-stream",
+        "x-upsert": "true",
+        "cache-control": "0",
+    }
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            resp = client.post(endpoint, headers=headers, content=content)
+        if resp.status_code >= 400:
+            logger.warning("storage REST upload failed status=%s endpoint=%s body=%r", resp.status_code, endpoint, (resp.text or "")[:300])
+            return False
+        return True
+    except Exception as e:
+        logger.warning("storage REST upload exception endpoint=%s err=%s", endpoint, e)
+        return False
+
+
+def _download_object_authenticated_via_rest(
+    *,
+    base_url: str,
+    service_role_key: str,
+    bucket_name: str,
+    object_path: str,
+) -> Optional[bytes]:
+    endpoint = (
+        f"{base_url.rstrip('/')}/storage/v1/object/authenticated/{quote(bucket_name, safe='')}/{_encode_storage_object_path_for_url(object_path)}"
+    )
+    headers = _storage_rest_auth_headers(service_role_key)
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            resp = client.get(endpoint, headers=headers)
+        if resp.status_code >= 400:
+            logger.warning(
+                "storage REST download failed status=%s endpoint=%s body=%r",
+                resp.status_code,
+                endpoint,
+                (resp.text or "")[:300],
+            )
+            return None
+        return resp.content
+    except Exception as e:
+        logger.warning("storage REST download exception endpoint=%s err=%s", endpoint, e)
+        return None
+
+
 def _bucket_and_key(stored_path: str) -> Optional[Tuple[str, str]]:
     """
     Parse stored_path into (bucket_name, object_key) for company-assets, user-assets, or tenant-assets.
@@ -251,20 +362,33 @@ def path_po_pdf(tenant_id: UUID, po_id: UUID) -> str:
     return f"{tenant_id}/documents/purchase_orders/{po_id}.pdf"
 
 
-def ensure_bucket(client: Client, bucket_name: Optional[str] = None) -> None:
+def ensure_bucket(tenant: Optional[Any], bucket_name: Optional[str] = None) -> None:
     """
     Ensure the given bucket exists and is private. Idempotent.
     If bucket_name is None, uses BUCKET (tenant-assets).
     """
     name = bucket_name or BUCKET
-    try:
-        buckets = client.storage.list_buckets()
-        names = [b.name for b in (buckets or [])]
-        if name not in names:
-            client.storage.create_bucket(name, options={"private": True})
+    base_url, key = _build_effective_storage_config(tenant)
+    if not base_url or not key:
+        logger.warning("ensure_bucket: missing storage config; cannot ensure bucket %s", name)
+        return
+
+    buckets = _list_buckets_via_rest(base_url=base_url, service_role_key=key)
+    if buckets is None:
+        return
+    bucket_names = []
+    for b in buckets:
+        # Supabase returns `id` and `name`; support either.
+        bn = b.get("name") if isinstance(b, dict) else None
+        if not bn and isinstance(b, dict):
+            bn = b.get("id")
+        if bn:
+            bucket_names.append(bn)
+
+    if name not in bucket_names:
+        ok = _create_bucket_via_rest(base_url=base_url, service_role_key=key, bucket_name=name)
+        if ok:
             logger.info("Created storage bucket %s (private)", name)
-    except Exception as e:
-        logger.warning("ensure_bucket %s: %s", name, e)
 
 
 def validate_image_upload(
@@ -303,28 +427,40 @@ def upload_file(
         ok, err = validate_image_upload(content, content_type)
         if not ok:
             return None
-    client = _client(tenant)
-    if not client:
+    base_url, key = _build_effective_storage_config(tenant)
+    if not base_url or not key:
         return None
-    ensure_bucket(client)
+    ensure_bucket(tenant)
     # Enforced folder structure: tenant-assets/{tenant_id}/...
     relative = f"{tenant_id}/{file_path}" if not file_path.startswith(str(tenant_id)) else file_path
-    try:
-        client.storage.from_(BUCKET).upload(
-            relative,
-            content,
-            file_options={
-                "content-type": content_type,
-                # Prevent stale cached assets when overwriting the same key (e.g. stamp.png)
-                # Supabase storage uses Cache-Control headers; 0 = no cache.
-                "cacheControl": "0",
-                "x-upsert": "true",
-            },
-        )
+    ok = _upload_object_via_rest(
+        base_url=base_url,
+        service_role_key=key,
+        bucket_name=BUCKET,
+        object_path=relative,
+        content=content,
+        content_type=content_type,
+    )
+    if ok:
         return f"{BUCKET}/{relative}"
+
+    # Fallback to SDK (kept as backup). Avoid raising: signed URL generation depends on this.
+    try:
+        client = _client(tenant)
+        if client:
+            client.storage.from_(BUCKET).upload(
+                relative,
+                content,
+                file_options={
+                    "content-type": content_type,
+                    "cacheControl": "0",
+                    "x-upsert": "true",
+                },
+            )
+            return f"{BUCKET}/{relative}"
     except Exception as e:
-        logger.exception("upload_file %s: %s", relative, e)
-        return None
+        logger.exception("upload_file SDK fallback %s: %s", relative, e)
+    return None
 
 
 def upload_logo(
@@ -393,21 +529,31 @@ def download_file(stored_path: str, tenant: Optional[Any] = None) -> Optional[by
         return None
     bucket_name, object_path = parsed
     # tenant-assets: when tenant is set, enforce path belongs to tenant
-    if bucket_name == BUCKET and tenant is not None and not _path_belongs_to_tenant(stored_path, tenant):
+    # In single_project mode, tenant-scoped prefix mismatches can happen after consolidation;
+    # DB-level ownership checks are responsible for authorization, so we don't hard-fail here.
+    if (
+        bucket_name == BUCKET
+        and tenant is not None
+        and _tenant_storage_overrides_enabled()
+        and not _path_belongs_to_tenant(stored_path, tenant)
+    ):
         logger.warning("download_file: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
         return None
-    client = _client(tenant) if (bucket_name == BUCKET and tenant is not None) else _client(None)
-    if not client:
-        client = _client(None)
-    if not client:
+    # tenant-assets: enforce tenant match; otherwise use global env.
+    effective_tenant = tenant if bucket_name == BUCKET and tenant is not None else None
+    base_url, key = _build_effective_storage_config(effective_tenant)
+    if not base_url or not key:
         return None
-    ensure_bucket(client, bucket_name)
-    try:
-        data = client.storage.from_(bucket_name).download(object_path)
-        return data if isinstance(data, bytes) else None
-    except Exception as e:
-        logger.warning("download_file %s: %s", stored_path, e)
-        return None
+    ensure_bucket(effective_tenant, bucket_name=bucket_name)
+    data = _download_object_authenticated_via_rest(
+        base_url=base_url,
+        service_role_key=key,
+        bucket_name=bucket_name,
+        object_path=object_path,
+    )
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data)
+    return None
 
 
 def download_file_with_path_tenant(
@@ -422,12 +568,17 @@ def download_file_with_path_tenant(
     """
     if not stored_path or not stored_path.startswith(BUCKET + "/"):
         return None
-    client = _client(path_tenant)
-    if not client:
+    base_url, key = _build_effective_storage_config(path_tenant)
+    if not base_url or not key:
         return None
     try:
         object_path = stored_path[len(BUCKET) + 1:]
-        data = client.storage.from_(BUCKET).download(object_path)
+        data = _download_object_authenticated_via_rest(
+            base_url=base_url,
+            service_role_key=key,
+            bucket_name=BUCKET,
+            object_path=object_path,
+        )
         return data if isinstance(data, bytes) else None
     except Exception as e:
         logger.warning("download_file_with_path_tenant %s: %s", stored_path, e)
@@ -449,7 +600,14 @@ def get_signed_url(
         logger.warning("get_signed_url: unsupported path prefix: %s", stored_path[:80] if stored_path else "")
         return None
     bucket_name, object_path = parsed
-    if bucket_name == BUCKET and tenant is not None and not _path_belongs_to_tenant(stored_path, tenant):
+    # In single_project mode, allow signing even if tenant id prefix doesn't match the resolved tenant row.
+    # Authorization is enforced by the calling API via DB ownership checks (e.g. order.company_id).
+    if (
+        bucket_name == BUCKET
+        and tenant is not None
+        and _tenant_storage_overrides_enabled()
+        and not _path_belongs_to_tenant(stored_path, tenant)
+    ):
         logger.warning("get_signed_url: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
         return None
     effective_tenant = tenant if (bucket_name == BUCKET and tenant is not None) else None
