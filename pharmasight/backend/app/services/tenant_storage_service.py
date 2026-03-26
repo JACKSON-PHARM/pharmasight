@@ -108,11 +108,12 @@ def _create_signed_url_via_rest(
     """
     if not base_url or not service_role_key:
         return None
-    # Supabase expects the object name to be URL-encoded; for paths containing folders,
-    # we must encode slashes as %2F to avoid server-side path validation errors.
+    # Supabase path params capture the "object name/path" including folders separated by `/`.
+    # We should NOT encode the `/` separators; instead, encode each segment while preserving slashes.
     safe_bucket = quote((bucket_name or "").strip(), safe="")
     raw_object = (object_path or "").lstrip("/")
-    encoded_object = quote(raw_object, safe="")  # encode slashes too
+    segments = [quote(seg, safe="") for seg in raw_object.split("/") if seg != ""]
+    encoded_object = "/".join(segments)
     endpoint = f"{base_url.rstrip('/')}/storage/v1/object/sign/{safe_bucket}/{encoded_object}"
     headers = {
         # apikey can be anon/service; Authorization must be the JWT service role.
