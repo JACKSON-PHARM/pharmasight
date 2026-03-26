@@ -5784,7 +5784,7 @@ async function renderRecordPaymentPage(supplierId) {
     const payDate = getLocalDateString();
     let unpaidInvoices = [];
     try {
-        const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId };
+        const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId, limit: 500 };
         if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
         const list = await API.purchases.listInvoices(params);
         unpaidInvoices = (list || []).filter(inv => inv.status === 'BATCHED' && (parseFloat(inv.balance) || 0) > 0);
@@ -5918,9 +5918,13 @@ async function renderRecordPaymentPage(supplierId) {
     const amountEl = document.getElementById('newPaymentAmount');
     const summaryEl = document.getElementById('newPaymentAllocSummary');
     const warningEl = document.getElementById('newPaymentUnallocatedWarning');
+    function getAllocAmountInputs() {
+        const tbody = document.getElementById('newPaymentAllocTbody');
+        return tbody ? tbody.querySelectorAll('.alloc-amount') : [];
+    }
     function getTotalSelectedAllocation() {
         let total = 0;
-        document.querySelectorAll('.alloc-amount').forEach(function(input) {
+        getAllocAmountInputs().forEach(function(input) {
             total += parseFloat(input.value) || 0;
         });
         return total;
@@ -5960,7 +5964,7 @@ async function renderRecordPaymentPage(supplierId) {
                 }
             });
         });
-        document.querySelectorAll('.alloc-amount').forEach(function(input) {
+        getAllocAmountInputs().forEach(function(input) {
             input.addEventListener('input', function() {
                 const row = this.closest('tr');
                 const val = parseFloat(this.value) || 0;
@@ -6106,30 +6110,79 @@ async function submitNewPayment(supplierId) {
         showToast('Reference is required for MPesa, Bank, Card, and Cheque payments (e.g. transaction ID, M-Pesa code)', 'error');
         return;
     }
-    const allocations = [];
-    let totalAlloc = 0;
-    document.querySelectorAll('.alloc-amount').forEach(input => {
-        const val = parseFloat(input.value) || 0;
-        if (val <= 0) return;
-        const balance = parseFloat(input.dataset.balance) || 0;
-        if (val > balance) {
-            showToast(`Allocation ${val} exceeds invoice balance ${balance}`, 'error');
-            return;
-        }
-        allocations.push({ supplier_invoice_id: input.dataset.invoiceId, allocated_amount: val });
-        totalAlloc += val;
-    });
-    if (totalAlloc > amount) {
-        showToast('Total allocated cannot exceed payment amount', 'error');
-        return;
-    }
     if (!CONFIG.BRANCH_ID) {
         showToast('Branch context required. Select a branch in Settings.', 'error');
         return;
     }
+
+    const tbody = document.getElementById('newPaymentAllocTbody');
+    const allocInputs = tbody ? tbody.querySelectorAll('.alloc-amount') : [];
+    const rawByInvoice = {};
+    allocInputs.forEach(function(input) {
+        const val = parseFloat(input.value) || 0;
+        if (val <= 0) return;
+        const iid = input.dataset.invoiceId;
+        if (!iid) return;
+        rawByInvoice[iid] = (rawByInvoice[iid] || 0) + val;
+    });
+
     const btn = document.getElementById('submitNewPaymentBtn');
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
     try {
+        const balanceById = {};
+        const numberById = {};
+        const params = { company_id: CONFIG.COMPANY_ID, supplier_id: supplierId, limit: 500 };
+        if (CONFIG.BRANCH_ID) params.branch_id = CONFIG.BRANCH_ID;
+        const list = await API.purchases.listInvoices(params);
+        for (let i = 0; i < (list || []).length; i++) {
+            const inv = list[i];
+            if (inv.status === 'BATCHED') {
+                balanceById[inv.id] = Math.max(0, parseFloat(inv.balance) || 0);
+                numberById[inv.id] = inv.invoice_number || String(inv.id);
+            }
+        }
+        const missingIds = Object.keys(rawByInvoice).filter(function(id) { return balanceById[id] === undefined; });
+        if (missingIds.length) {
+            await Promise.all(missingIds.map(function(id) {
+                return API.purchases.getInvoice(id).then(function(inv) {
+                    balanceById[id] = inv.status === 'BATCHED' ? Math.max(0, parseFloat(inv.balance) || 0) : 0;
+                    numberById[id] = inv.invoice_number || id;
+                }).catch(function() {
+                    balanceById[id] = 0;
+                    numberById[id] = id;
+                });
+            }));
+        }
+
+        const allocations = [];
+        let totalAlloc = 0;
+        const invIds = Object.keys(rawByInvoice);
+        for (let j = 0; j < invIds.length; j++) {
+            const invoiceId = invIds[j];
+            const rawVal = rawByInvoice[invoiceId];
+            const cap = balanceById[invoiceId] != null ? balanceById[invoiceId] : 0;
+            const invLabel = numberById[invoiceId] || invoiceId;
+            if (rawVal > cap + 0.0001) {
+                showToast(
+                    cap <= 0.0001
+                        ? ('Invoice ' + invLabel + ' no longer has an outstanding balance (it may have been paid already). Refresh the page and try again.')
+                        : ('Allocation for ' + invLabel + ' exceeds remaining balance (KES ' + cap.toFixed(2) + '). Refresh the page or reduce the amount.'),
+                    'error'
+                );
+                return;
+            }
+            const allocAmt = Math.min(rawVal, cap);
+            if (allocAmt > 0.0001) {
+                allocations.push({ supplier_invoice_id: invoiceId, allocated_amount: allocAmt });
+                totalAlloc += allocAmt;
+            }
+        }
+
+        if (totalAlloc > amount + 0.0001) {
+            showToast('Total allocated cannot exceed payment amount', 'error');
+            return;
+        }
+        if (btn) btn.textContent = 'Saving...';
         await API.suppliers.createPayment({
             branch_id: CONFIG.BRANCH_ID,
             supplier_id: supplierId,

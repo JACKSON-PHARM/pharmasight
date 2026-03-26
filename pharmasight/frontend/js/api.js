@@ -152,7 +152,9 @@ class APIClient {
                             if (refreshResp.ok && refreshData && refreshData.access_token) {
                                 localStorage.setItem('pharmasight_access_token', refreshData.access_token);
                                 if (refreshData.refresh_token) localStorage.setItem('pharmasight_refresh_token', refreshData.refresh_token);
-                                var retryOpts = { ...options, _retried401: true };
+                                // Must skip dedupe on retry: the original request is still registered as
+                                // in-flight, so reusing the same key would return that promise and deadlock.
+                                var retryOpts = { ...options, _retried401: true, _skipDedupe: true };
                                 return await this.request(endpoint, retryOpts);
                             }
                         } catch (refreshErr) {

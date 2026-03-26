@@ -2596,6 +2596,14 @@ def get_purchase_order_pdf_url(
             status_code=503,
             detail="Could not generate PDF URL. Check Supabase storage config (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) and Render logs.",
         )
+    url_str = str(url)
+    # Do not log token itself; only validate structure.
+    # Print to stdout so it always shows up in Render/terminal logs.
+    print(
+        f"pdf-url ok order_id={order_id} pdf_path_prefix={(str(order.pdf_path or ''))[:80]} "
+        f"url_prefix={url_str[:80]} token_present={'token=' in url_str} starts_http={url_str.startswith('http')}",
+        flush=True,
+    )
     return {"url": url}
 
 

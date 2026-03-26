@@ -190,9 +190,17 @@ def _create_signed_url_via_rest(
             logger.warning("storage REST sign response missing URL keys=%s", list(payload.keys()) if isinstance(payload, dict) else [])
             return None
         if isinstance(path, str) and (path.startswith("http://") or path.startswith("https://")):
-            return path
+            full_url = path
         # Supabase often returns /storage/v1/object/sign/... so prefix base URL.
-        return f"{base_url.rstrip('/')}{path if str(path).startswith('/') else '/' + str(path)}"
+        full_url = f"{base_url.rstrip('/')}{path if str(path).startswith('/') else '/' + str(path)}"
+        logger.info(
+            "storage REST sign ok bucket=%s object=%s url_has_token=%s url_prefix=%s",
+            bucket_name,
+            object_path[:120],
+            ("token=" in full_url),
+            full_url[:50],
+        )
+        return full_url
     except Exception as e:
         logger.warning("storage REST sign exception endpoint=%s err=%s", endpoint, e)
         return None
@@ -768,6 +776,12 @@ def get_signed_url(
             url = result.url
         if not url:
             logger.warning("get_signed_url: could not extract URL from result type=%s", type(result).__name__)
+        # Supabase SDK can return a relative signedURL like `/object/sign/...`.
+        # Browser `window.open()` expects an absolute URL.
+        if isinstance(url, str) and url.startswith("/"):
+            base_url2, _ = _build_effective_storage_config(effective_tenant)
+            if base_url2:
+                url = f"{base_url2.rstrip('/')}{url}"
         return url
     except Exception as e:
         logger.warning("get_signed_url %s: %s", stored_path, e, exc_info=True)
@@ -821,6 +835,10 @@ def get_signed_url_with_path_tenant(
             url = result.signedURL
         elif hasattr(result, "url"):
             url = result.url
+        if isinstance(url, str) and url.startswith("/"):
+            base_url2, _ = _build_effective_storage_config(path_tenant)
+            if base_url2:
+                url = f"{base_url2.rstrip('/')}{url}"
         return url
     except Exception as e:
         logger.warning("get_signed_url_with_path_tenant %s: %s", stored_path, e)
