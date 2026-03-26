@@ -91,6 +91,23 @@ def _build_effective_storage_config(tenant: Optional[Any] = None) -> Tuple[str, 
     normalized_tenant_url = _normalize_supabase_base_url(tenant_url, source="tenant.supabase_storage_url") if tenant_url else ""
     url = normalized_tenant_url or env_url
     key = tenant_key or (settings.SUPABASE_SERVICE_ROLE_KEY or "").strip()
+
+    # Supabase Storage REST expects a JWT for service-role auth.
+    # Legacy service_role keys are JWTs starting with `eyJ...`.
+    # If someone pastes the newer `sb_secret_...` key, Storage returns "Invalid Compact JWS".
+    if key:
+        if key.startswith(("sb_secret_", "sb_publishable_")):
+            logger.warning(
+                "Supabase storage: SUPABASE_SERVICE_ROLE_KEY looks like sb_secret_/sb_publishable_; using JWT service_role key is required."
+            )
+            key = ""
+        elif not key.startswith("eyJ"):
+            logger.warning(
+                "Supabase storage: SUPABASE_SERVICE_ROLE_KEY does not look like a JWT (expected prefix 'eyJ'). Value prefix=%r",
+                key[:8],
+            )
+            key = ""
+
     return (url, key)
 
 
@@ -116,10 +133,9 @@ def _create_signed_url_via_rest(
     segments = [quote(seg, safe="-._~") for seg in raw_object.split("/") if seg != ""]
     encoded_object = "/".join(segments)
     endpoint = f"{base_url.rstrip('/')}/storage/v1/object/sign/{safe_bucket}/{encoded_object}"
+    # Try with Authorization first; if it fails due to invalid JWS, retry without Authorization.
     headers = {
-        # apikey can be anon/service; Authorization must be the JWT service role.
-        "apikey": (getattr(settings, "SUPABASE_KEY", "") or "").strip() or service_role_key,
-        "Authorization": f"Bearer {service_role_key}",
+        **_storage_rest_auth_headers(service_role_key, include_authorization=True),
         "Content-Type": "application/json",
     }
     try:
@@ -127,13 +143,37 @@ def _create_signed_url_via_rest(
             resp = client.post(endpoint, headers=headers, json={"expiresIn": int(expires_in)})
         if resp.status_code >= 400:
             snippet = (resp.text or "")[:300]
-            logger.warning(
-                "storage REST sign failed status=%s endpoint=%s body=%r",
-                resp.status_code,
-                endpoint,
-                snippet,
-            )
-            return None
+            msg = ""
+            try:
+                msg = resp.json().get("message", "")  # type: ignore[union-attr]
+            except Exception:
+                msg = ""
+            if "Invalid Compact JWS" in str(msg):
+                headers = {
+                    **_storage_rest_auth_headers(service_role_key, include_authorization=False),
+                    "Content-Type": "application/json",
+                }
+                with httpx.Client(timeout=15.0) as client:
+                    resp2 = client.post(endpoint, headers=headers, json={"expiresIn": int(expires_in)})
+                if resp2.status_code >= 400:
+                    snippet2 = (resp2.text or "")[:300]
+                    logger.warning(
+                        "storage REST sign failed status=%s endpoint=%s body=%r",
+                        resp2.status_code,
+                        endpoint,
+                        snippet2,
+                    )
+                    return None
+                resp = resp2
+                snippet = snippet2 if 'snippet2' in locals() else snippet
+            else:
+                logger.warning(
+                    "storage REST sign failed status=%s endpoint=%s body=%r",
+                    resp.status_code,
+                    endpoint,
+                    snippet,
+                )
+                return None
         try:
             payload = resp.json() if resp.content else {}
         except Exception:
@@ -168,25 +208,45 @@ def _encode_storage_object_path_for_url(object_path: str) -> str:
     return "/".join(segments)
 
 
-def _storage_rest_auth_headers(service_role_key: str) -> dict:
+def _storage_rest_auth_headers(service_role_key: str, *, include_authorization: bool = True) -> dict:
     """
     Storage REST endpoints require service role JWT for private buckets.
     We send both Authorization and apikey for maximum compatibility.
     """
     anon_key = (getattr(settings, "SUPABASE_KEY", "") or "").strip()
-    return {
-        "Authorization": f"Bearer {service_role_key}",
+    headers = {
         "apikey": anon_key or service_role_key,
     }
+    if include_authorization:
+        headers["Authorization"] = f"Bearer {service_role_key}"
+    return headers
 
 
 def _list_buckets_via_rest(*, base_url: str, service_role_key: str) -> Optional[list]:
     endpoint = f"{base_url.rstrip('/')}/storage/v1/bucket"
-    headers = _storage_rest_auth_headers(service_role_key)
+    # Some environments reject service-role key in Authorization; retry without Authorization on specific failure.
+    headers = _storage_rest_auth_headers(service_role_key, include_authorization=True)
     try:
         with httpx.Client(timeout=15.0) as client:
             resp = client.get(endpoint, headers=headers)
         if resp.status_code >= 400:
+            msg = ""
+            try:
+                msg = resp.json().get("message", "")  # type: ignore[union-attr]
+            except Exception:
+                msg = ""
+            if "Invalid Compact JWS" in str(msg):
+                headers = _storage_rest_auth_headers(service_role_key, include_authorization=False)
+                with httpx.Client(timeout=15.0) as client:
+                    resp2 = client.get(endpoint, headers=headers)
+                if resp2.status_code >= 400:
+                    logger.warning(
+                        "storage REST list buckets failed status=%s body=%r",
+                        resp2.status_code,
+                        (resp2.text or "")[:300],
+                    )
+                    return None
+                return resp2.json() if resp2.content else []
             logger.warning("storage REST list buckets failed status=%s body=%r", resp.status_code, (resp.text or "")[:300])
             return None
         return resp.json() if resp.content else []
@@ -197,12 +257,25 @@ def _list_buckets_via_rest(*, base_url: str, service_role_key: str) -> Optional[
 
 def _create_bucket_via_rest(*, base_url: str, service_role_key: str, bucket_name: str) -> bool:
     endpoint = f"{base_url.rstrip('/')}/storage/v1/bucket"
-    headers = {**_storage_rest_auth_headers(service_role_key), "Content-Type": "application/json"}
+    headers = {**_storage_rest_auth_headers(service_role_key, include_authorization=True), "Content-Type": "application/json"}
     payload = {"name": bucket_name, "public": False}
     try:
         with httpx.Client(timeout=15.0) as client:
             resp = client.post(endpoint, headers=headers, json=payload)
         if resp.status_code >= 400:
+            msg = ""
+            try:
+                msg = resp.json().get("message", "")  # type: ignore[union-attr]
+            except Exception:
+                msg = ""
+            if "Invalid Compact JWS" in str(msg):
+                headers = {**_storage_rest_auth_headers(service_role_key, include_authorization=False), "Content-Type": "application/json"}
+                with httpx.Client(timeout=15.0) as client:
+                    resp2 = client.post(endpoint, headers=headers, json=payload)
+                if resp2.status_code >= 400:
+                    logger.warning("storage REST create bucket failed status=%s body=%r", resp2.status_code, (resp2.text or "")[:300])
+                    return False
+                return True
             logger.warning("storage REST create bucket failed status=%s body=%r", resp.status_code, (resp.text or "")[:300])
             return False
         return True
@@ -224,7 +297,7 @@ def _upload_object_via_rest(
         f"{base_url.rstrip('/')}/storage/v1/object/{quote(bucket_name, safe='')}/{_encode_storage_object_path_for_url(object_path)}"
     )
     headers = {
-        **_storage_rest_auth_headers(service_role_key),
+        **_storage_rest_auth_headers(service_role_key, include_authorization=True),
         "Content-Type": content_type or "application/octet-stream",
         "x-upsert": "true",
         "cache-control": "0",
@@ -233,6 +306,29 @@ def _upload_object_via_rest(
         with httpx.Client(timeout=20.0) as client:
             resp = client.post(endpoint, headers=headers, content=content)
         if resp.status_code >= 400:
+            msg = ""
+            try:
+                msg = resp.json().get("message", "")  # type: ignore[union-attr]
+            except Exception:
+                msg = ""
+            if "Invalid Compact JWS" in str(msg):
+                headers = {
+                    **_storage_rest_auth_headers(service_role_key, include_authorization=False),
+                    "Content-Type": content_type or "application/octet-stream",
+                    "x-upsert": "true",
+                    "cache-control": "0",
+                }
+                with httpx.Client(timeout=20.0) as client:
+                    resp2 = client.post(endpoint, headers=headers, content=content)
+                if resp2.status_code >= 400:
+                    logger.warning(
+                        "storage REST upload failed status=%s endpoint=%s body=%r",
+                        resp2.status_code,
+                        endpoint,
+                        (resp2.text or "")[:300],
+                    )
+                    return False
+                return True
             logger.warning("storage REST upload failed status=%s endpoint=%s body=%r", resp.status_code, endpoint, (resp.text or "")[:300])
             return False
         return True
@@ -251,11 +347,29 @@ def _download_object_authenticated_via_rest(
     endpoint = (
         f"{base_url.rstrip('/')}/storage/v1/object/authenticated/{quote(bucket_name, safe='')}/{_encode_storage_object_path_for_url(object_path)}"
     )
-    headers = _storage_rest_auth_headers(service_role_key)
+    headers = _storage_rest_auth_headers(service_role_key, include_authorization=True)
     try:
         with httpx.Client(timeout=20.0) as client:
             resp = client.get(endpoint, headers=headers)
         if resp.status_code >= 400:
+            msg = ""
+            try:
+                msg = resp.json().get("message", "")  # type: ignore[union-attr]
+            except Exception:
+                msg = ""
+            if "Invalid Compact JWS" in str(msg):
+                headers = _storage_rest_auth_headers(service_role_key, include_authorization=False)
+                with httpx.Client(timeout=20.0) as client:
+                    resp2 = client.get(endpoint, headers=headers)
+                if resp2.status_code >= 400:
+                    logger.warning(
+                        "storage REST download failed status=%s endpoint=%s body=%r",
+                        resp2.status_code,
+                        endpoint,
+                        (resp2.text or "")[:300],
+                    )
+                    return None
+                return resp2.content
             logger.warning(
                 "storage REST download failed status=%s endpoint=%s body=%r",
                 resp.status_code,
@@ -447,6 +561,9 @@ def upload_file(
 
     # Fallback to SDK (kept as backup). Avoid raising: signed URL generation depends on this.
     try:
+        # Only fallback when we still have a plausible JWT; otherwise SDK will also fail.
+        if not (key and key.startswith("eyJ")):
+            return None
         client = _client(tenant)
         if client:
             client.storage.from_(BUCKET).upload(
