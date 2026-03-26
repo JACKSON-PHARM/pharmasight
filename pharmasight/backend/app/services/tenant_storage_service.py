@@ -213,9 +213,9 @@ def _storage_rest_auth_headers(service_role_key: str, *, include_authorization: 
     Storage REST endpoints require service role JWT for private buckets.
     We send both Authorization and apikey for maximum compatibility.
     """
-    anon_key = (getattr(settings, "SUPABASE_KEY", "") or "").strip()
     headers = {
-        "apikey": anon_key or service_role_key,
+        # Storage REST expects the service-role JWT in both places for best compatibility.
+        "apikey": service_role_key,
     }
     if include_authorization:
         headers["Authorization"] = f"Bearer {service_role_key}"
