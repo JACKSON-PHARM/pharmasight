@@ -110,9 +110,10 @@ def _create_signed_url_via_rest(
         return None
     # Supabase path params capture the "object name/path" including folders separated by `/`.
     # We should NOT encode the `/` separators; instead, encode each segment while preserving slashes.
-    safe_bucket = quote((bucket_name or "").strip(), safe="")
+    # Keep RFC3986 unreserved characters unencoded so UUIDs (with '-') match storage expectations.
+    safe_bucket = quote((bucket_name or "").strip(), safe="-._~")
     raw_object = (object_path or "").lstrip("/")
-    segments = [quote(seg, safe="") for seg in raw_object.split("/") if seg != ""]
+    segments = [quote(seg, safe="-._~") for seg in raw_object.split("/") if seg != ""]
     encoded_object = "/".join(segments)
     endpoint = f"{base_url.rstrip('/')}/storage/v1/object/sign/{safe_bucket}/{encoded_object}"
     headers = {
@@ -163,7 +164,7 @@ def _encode_storage_object_path_for_url(object_path: str) -> str:
     Preserves `/` separators while encoding each segment.
     """
     raw = (object_path or "").lstrip("/")
-    segments = [quote(seg, safe="") for seg in raw.split("/") if seg != ""]
+    segments = [quote(seg, safe="-._~") for seg in raw.split("/") if seg != ""]
     return "/".join(segments)
 
 
