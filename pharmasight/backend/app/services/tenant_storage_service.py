@@ -446,13 +446,22 @@ def get_signed_url(
         logger.warning("get_signed_url: path tenant mismatch, refusing cross-tenant access: %s", stored_path[:80])
         return None
     effective_tenant = tenant if (bucket_name == BUCKET and tenant is not None) else None
-    client = _client(effective_tenant)
+
+    # REST-first: avoids storage3 SDK JSON parsing issues when Supabase returns a non-JSON body (HTML error page, etc).
+    base_url, key = _build_effective_storage_config(effective_tenant)
+    rest_url = _create_signed_url_via_rest(
+        base_url=base_url,
+        service_role_key=key,
+        bucket_name=bucket_name,
+        object_path=object_path,
+        expires_in=expires_in,
+    )
+    if rest_url:
+        return rest_url
+
+    client = _client(effective_tenant) or _client(None)
     if not client:
-        client = _client(None)
-    if not client:
-        logger.warning(
-            "get_signed_url: Supabase client not available. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
-        )
+        logger.warning("get_signed_url: Supabase client not available. Check SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY.")
         return None
     try:
         result = client.storage.from_(bucket_name).create_signed_url(object_path, expires_in)
@@ -479,17 +488,7 @@ def get_signed_url(
         return url
     except Exception as e:
         logger.warning("get_signed_url %s: %s", stored_path, e, exc_info=True)
-        # SDK sometimes fails to parse non-JSON responses. Try direct Storage REST request.
-        base_url, key = _build_effective_storage_config(effective_tenant)
-        if not base_url or not key:
-            base_url, key = _build_effective_storage_config(None)
-        return _create_signed_url_via_rest(
-            base_url=base_url,
-            service_role_key=key,
-            bucket_name=bucket_name,
-            object_path=object_path,
-            expires_in=expires_in,
-        )
+        return None
 
 
 def get_signed_url_with_path_tenant(
@@ -501,11 +500,27 @@ def get_signed_url_with_path_tenant(
     Return signed URL using the tenant that owns the path (for legacy stored PDFs).
     Use when pdf_path is under a different tenant_id (e.g. pre single-DB migration).
     """
-    client = _client(path_tenant)
-    if not client or not stored_path or not stored_path.startswith(BUCKET + "/"):
+    if not stored_path or not stored_path.startswith(BUCKET + "/"):
+        return None
+
+    object_path = stored_path[len(BUCKET) + 1:]
+
+    # REST-first for legacy path-tenant signing.
+    base_url, key = _build_effective_storage_config(path_tenant)
+    rest_url = _create_signed_url_via_rest(
+        base_url=base_url,
+        service_role_key=key,
+        bucket_name=BUCKET,
+        object_path=object_path,
+        expires_in=expires_in,
+    )
+    if rest_url:
+        return rest_url
+
+    client = _client(path_tenant) or _client(None)
+    if not client:
         return None
     try:
-        object_path = stored_path[len(BUCKET) + 1:]
         result = client.storage.from_(BUCKET).create_signed_url(object_path, expires_in)
         url = None
         if isinstance(result, dict):
@@ -526,13 +541,4 @@ def get_signed_url_with_path_tenant(
         return url
     except Exception as e:
         logger.warning("get_signed_url_with_path_tenant %s: %s", stored_path, e)
-        base_url, key = _build_effective_storage_config(path_tenant)
-        if not base_url or not key:
-            base_url, key = _build_effective_storage_config(None)
-        return _create_signed_url_via_rest(
-            base_url=base_url,
-            service_role_key=key,
-            bucket_name=BUCKET,
-            object_path=stored_path[len(BUCKET) + 1:],
-            expires_in=expires_in,
-        )
+        return None
