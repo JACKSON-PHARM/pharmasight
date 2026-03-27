@@ -2133,11 +2133,23 @@ function updateSupplierInvoiceCreateHeader(showDraft) {
 }
 
 function mapTableItemToSupplierInvoiceItem(item) {
+    // IMPORTANT (Accounting): supplier invoice backend schema does not persist discount_percent.
+    // To keep payable + stock valuation correct, we materialize any discount into the net unit cost
+    // before sending to the API (so unit_cost_exclusive reflects the true amount paid per unit).
+    const round2 = (n) => {
+        if (typeof window !== 'undefined' && typeof window.roundMoney2 === 'function') return window.roundMoney2(n);
+        return Math.round((parseFloat(n) || 0) * 100) / 100;
+    };
+    const grossUnit = parseFloat(item.unit_price) || 0;
+    const discPct = parseFloat(item.discount_percent) || 0;
+    const safeDisc = discPct > 0 ? Math.min(100, Math.max(0, discPct)) : 0;
+    const netUnit = safeDisc > 0 ? round2(grossUnit * (1 - safeDisc / 100)) : grossUnit;
+
     const itemData = {
         item_id: item.item_id,
         unit_name: item.unit_name || 'unit',
         quantity: parseFloat(item.quantity) || 1,
-        unit_cost_exclusive: parseFloat(item.unit_price) || 0,
+        unit_cost_exclusive: netUnit,
         vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
     };
     if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
@@ -2145,7 +2157,8 @@ function mapTableItemToSupplierInvoiceItem(item) {
             batch_number: b.batch_number || '',
             expiry_date: b.expiry_date || null,
             quantity: parseFloat(b.quantity) || 0,
-            unit_cost: parseFloat(b.unit_cost) || 0
+            // Batch distribution is also per purchase unit; keep it aligned with discounted net unit cost.
+            unit_cost: safeDisc > 0 ? round2((parseFloat(b.unit_cost) || 0) * (1 - safeDisc / 100)) : (parseFloat(b.unit_cost) || 0)
         }));
     }
     return itemData;
