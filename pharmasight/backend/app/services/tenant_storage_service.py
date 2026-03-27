@@ -189,10 +189,15 @@ def _create_signed_url_via_rest(
         if not path:
             logger.warning("storage REST sign response missing URL keys=%s", list(payload.keys()) if isinstance(payload, dict) else [])
             return None
-        if isinstance(path, str) and (path.startswith("http://") or path.startswith("https://")):
-            full_url = path
-        # Supabase often returns /storage/v1/object/sign/... so prefix base URL.
-        full_url = f"{base_url.rstrip('/')}{path if str(path).startswith('/') else '/' + str(path)}"
+        full_url = _to_absolute_storage_signed_url(base_url, path)
+        if not full_url.startswith(("http://", "https://")):
+            logger.warning(
+                "storage REST sign produced invalid URL bucket=%s object=%s raw=%r",
+                bucket_name,
+                object_path[:120],
+                path,
+            )
+            return None
         logger.info(
             "storage REST sign ok bucket=%s object=%s url_has_token=%s url_prefix=%s",
             bucket_name,
@@ -214,6 +219,23 @@ def _encode_storage_object_path_for_url(object_path: str) -> str:
     raw = (object_path or "").lstrip("/")
     segments = [quote(seg, safe="-._~") for seg in raw.split("/") if seg != ""]
     return "/".join(segments)
+
+
+def _to_absolute_storage_signed_url(base_url: str, path_or_url: Any) -> str:
+    """
+    Normalize a Supabase signed URL into an absolute browser-safe URL.
+    """
+    raw = str(path_or_url or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://")):
+        return raw
+    rel = raw if raw.startswith("/") else f"/{raw}"
+    if rel.startswith("/object/"):
+        rel = f"/storage/v1{rel}"
+    elif not rel.startswith("/storage/v1/"):
+        rel = f"/storage/v1{rel}"
+    return f"{(base_url or '').rstrip('/')}{rel}"
 
 
 def _storage_rest_auth_headers(service_role_key: str, *, include_authorization: bool = True) -> dict:
@@ -776,12 +798,11 @@ def get_signed_url(
             url = result.url
         if not url:
             logger.warning("get_signed_url: could not extract URL from result type=%s", type(result).__name__)
-        # Supabase SDK can return a relative signedURL like `/object/sign/...`.
-        # Browser `window.open()` expects an absolute URL.
-        if isinstance(url, str) and url.startswith("/"):
+        # Normalize SDK signed URL to absolute URL suitable for browser open/print.
+        if isinstance(url, str):
             base_url2, _ = _build_effective_storage_config(effective_tenant)
             if base_url2:
-                url = f"{base_url2.rstrip('/')}{url}"
+                url = _to_absolute_storage_signed_url(base_url2, url)
         return url
     except Exception as e:
         logger.warning("get_signed_url %s: %s", stored_path, e, exc_info=True)
@@ -835,10 +856,10 @@ def get_signed_url_with_path_tenant(
             url = result.signedURL
         elif hasattr(result, "url"):
             url = result.url
-        if isinstance(url, str) and url.startswith("/"):
+        if isinstance(url, str):
             base_url2, _ = _build_effective_storage_config(path_tenant)
             if base_url2:
-                url = f"{base_url2.rstrip('/')}{url}"
+                url = _to_absolute_storage_signed_url(base_url2, url)
         return url
     except Exception as e:
         logger.warning("get_signed_url_with_path_tenant %s: %s", stored_path, e)
