@@ -164,6 +164,22 @@ class APIClient {
                     if (typeof window.showToast === 'function') {
                         window.showToast('Session expired. Please log in again.', 'warning');
                     }
+                    // UX optimization: when session expires from inside a modal flow,
+                    // immediately close modal + route to login so user is never stuck.
+                    try {
+                        if (typeof window.closeModal === 'function') {
+                            window.closeModal();
+                        }
+                    } catch (_) {}
+                    try {
+                        if (!window.__pharmasightAuthRedirecting) {
+                            window.__pharmasightAuthRedirecting = true;
+                            window.location.hash = '#login';
+                            if (typeof window.loadPage === 'function') {
+                                window.loadPage('login');
+                            }
+                        }
+                    } catch (_) {}
                     if (typeof window.globalLogout === 'function') {
                         window.globalLogout();
                     }
