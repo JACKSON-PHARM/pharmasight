@@ -4378,8 +4378,10 @@ function openBulkSupplierInvoicePaymentModal() {
 function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
     const total = parseFloat(totalAmount) || 0;
     const prevPaid = parseFloat(currentPaid) || 0;
-    const balance = Math.max(0, Math.round((total - prevPaid) * 10000) / 10000);
-    const balanceStr = balance.toFixed(2);
+    const balance = Math.max(0, (total - prevPaid));
+    // Keep display at 2dp but never prefill an amount that exceeds exact outstanding.
+    const safePayNow = Math.max(0, Math.floor(balance * 100) / 100);
+    const balanceStr = safePayNow.toFixed(2);
     const today = typeof getLocalDateString === 'function' ? getLocalDateString() : new Date().toISOString().slice(0, 10);
 
     const content = `
@@ -4503,14 +4505,15 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
                 let invBalance = inv.balance != null && inv.balance !== ''
                     ? parseFloat(inv.balance)
                     : (invTotal - invPaid);
-                invBalance = typeof roundMoneySupplierPay === 'function' ? roundMoneySupplierPay(invBalance) : Math.max(0, Math.round(invBalance * 100) / 100);
+                invBalance = Math.max(0, invBalance);
+                const maxPayNow = Math.max(0, Math.floor(invBalance * 100) / 100);
 
                 if (invBalance <= 0) {
                     showToast('No outstanding balance on this invoice', 'error');
                     return;
                 }
-                if (payNow > invBalance + 1e-6) {
-                    showToast('Amount cannot exceed the outstanding balance (' + formatCurrency(invBalance) + ')', 'error');
+                if (payNow > maxPayNow + 1e-6) {
+                    showToast('Amount cannot exceed the outstanding balance (' + formatCurrency(maxPayNow) + ')', 'error');
                     return;
                 }
 
