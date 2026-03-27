@@ -1882,7 +1882,19 @@ async function renderCreateSupplierInvoicePage() {
                 unit_name: item.unit_name,
                 unit_price: parseFloat(item.unit_cost_exclusive) || 0,
                 tax_percent: parseFloat(item.vat_rate) || 0,
-                discount_percent: 0,
+                    discount_percent: (() => {
+                        // Backend stores gross unit_cost_exclusive, but line totals are net after discount.
+                        // Infer effective discount so auto-save doesn't revert totals back to gross.
+                        const grossUnit = parseFloat(item.unit_cost_exclusive) || 0;
+                        const qty = parseFloat(item.quantity) || 0;
+                        const netExclusive = parseFloat(item.line_total_exclusive) || 0;
+                        if (!(grossUnit > 0) || !(qty > 0)) return 0;
+                        const base = grossUnit * qty;
+                        if (!(base > 0)) return 0;
+                        const disc = 100 * (1 - (netExclusive / base));
+                        if (!isFinite(disc)) return 0;
+                        return Math.max(0, Math.min(100, disc));
+                    })(),
                 total: parseFloat(item.line_total_inclusive) || 0,
                 batches
             };
@@ -2133,23 +2145,15 @@ function updateSupplierInvoiceCreateHeader(showDraft) {
 }
 
 function mapTableItemToSupplierInvoiceItem(item) {
-    // IMPORTANT (Accounting): supplier invoice backend schema does not persist discount_percent.
-    // To keep payable + stock valuation correct, we materialize any discount into the net unit cost
-    // before sending to the API (so unit_cost_exclusive reflects the true amount paid per unit).
-    const round2 = (n) => {
-        if (typeof window !== 'undefined' && typeof window.roundMoney2 === 'function') return window.roundMoney2(n);
-        return Math.round((parseFloat(n) || 0) * 100) / 100;
-    };
-    const grossUnit = parseFloat(item.unit_price) || 0;
-    const discPct = parseFloat(item.discount_percent) || 0;
-    const safeDisc = discPct > 0 ? Math.min(100, Math.max(0, discPct)) : 0;
-    const netUnit = safeDisc > 0 ? round2(grossUnit * (1 - safeDisc / 100)) : grossUnit;
-
     const itemData = {
         item_id: item.item_id,
         unit_name: item.unit_name || 'unit',
         quantity: parseFloat(item.quantity) || 1,
-        unit_cost_exclusive: netUnit,
+        // Accounting model:
+        // - Keep original/gross unit cost in `unit_cost_exclusive` (used for last_unit_cost & margins).
+        // - Send `discount_percent` so the backend calculates *payable* totals using net cost.
+        unit_cost_exclusive: parseFloat(item.unit_price) || 0,
+        discount_percent: Math.min(100, Math.max(0, parseFloat(item.discount_percent) || 0)),
         vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
     };
     if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
@@ -2157,8 +2161,8 @@ function mapTableItemToSupplierInvoiceItem(item) {
             batch_number: b.batch_number || '',
             expiry_date: b.expiry_date || null,
             quantity: parseFloat(b.quantity) || 0,
-            // Batch distribution is also per purchase unit; keep it aligned with discounted net unit cost.
-            unit_cost: safeDisc > 0 ? round2((parseFloat(b.unit_cost) || 0) * (1 - safeDisc / 100)) : (parseFloat(b.unit_cost) || 0)
+            // Keep batch unit cost as original/gross so inventory valuation and `last_unit_cost` stay correct.
+            unit_cost: parseFloat(b.unit_cost) || (parseFloat(item.unit_price) || 0)
         }));
     }
     return itemData;
@@ -2217,6 +2221,17 @@ async function onSupplierInvoiceAddItem(item) {
                     quantity: i.quantity,
                     unit_price: i.unit_cost_exclusive,
                     tax_percent: i.vat_rate,
+                    discount_percent: (() => {
+                        const grossUnit = parseFloat(i.unit_cost_exclusive) || 0;
+                        const qty = parseFloat(i.quantity) || 0;
+                        const netExclusive = parseFloat(i.line_total_exclusive) || 0;
+                        if (!(grossUnit > 0) || !(qty > 0)) return 0;
+                        const base = grossUnit * qty;
+                        if (!(base > 0)) return 0;
+                        const disc = 100 * (1 - (netExclusive / base));
+                        if (!isFinite(disc)) return 0;
+                        return Math.max(0, Math.min(100, disc));
+                    })(),
                     total: i.line_total_inclusive,
                     batches: batches
                 };
@@ -2248,6 +2263,17 @@ async function onSupplierInvoiceAddItem(item) {
                 quantity: i.quantity,
                 unit_price: i.unit_cost_exclusive,
                 tax_percent: i.vat_rate,
+                discount_percent: (() => {
+                    const grossUnit = parseFloat(i.unit_cost_exclusive) || 0;
+                    const qty = parseFloat(i.quantity) || 0;
+                    const netExclusive = parseFloat(i.line_total_exclusive) || 0;
+                    if (!(grossUnit > 0) || !(qty > 0)) return 0;
+                    const base = grossUnit * qty;
+                    if (!(base > 0)) return 0;
+                    const disc = 100 * (1 - (netExclusive / base));
+                    if (!isFinite(disc)) return 0;
+                    return Math.max(0, Math.min(100, disc));
+                })(),
                 total: i.line_total_inclusive,
                 batches: batches
             };
@@ -2952,6 +2978,7 @@ async function savePurchaseDocument(event, documentType) {
                         unit_name: item.unit_name,
                         quantity: item.quantity,
                         unit_cost_exclusive: item.unit_price, // Supplier invoice uses exclusive cost
+                        discount_percent: item.discount_percent || 0,
                         vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
                     };
                     
@@ -3921,6 +3948,7 @@ async function autoSaveInvoice() {
                     unit_name: item.unit_name,
                     quantity: item.quantity,
                     unit_cost_exclusive: item.unit_price,
+                    discount_percent: item.discount_percent || 0,
                     vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
                 };
                 

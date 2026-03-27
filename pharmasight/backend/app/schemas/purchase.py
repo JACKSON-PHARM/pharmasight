@@ -97,7 +97,7 @@ class SupplierInvoiceItemBase(BaseModel):
 
 class SupplierInvoiceItemCreate(SupplierInvoiceItemBase):
     """Create supplier invoice item"""
-    pass
+    discount_percent: Decimal = Field(default=0, ge=0, le=100)
 
 
 class SupplierInvoiceItemUpdate(BaseModel):
@@ -105,6 +105,7 @@ class SupplierInvoiceItemUpdate(BaseModel):
     quantity: Optional[Decimal] = Field(None, gt=0)
     unit_name: Optional[str] = None
     unit_cost_exclusive: Optional[Decimal] = Field(None, ge=0)
+    discount_percent: Optional[Decimal] = Field(None, ge=0, le=100)
     vat_rate: Optional[Decimal] = Field(None, ge=0, le=100)
     batches: Optional[List[BatchDistribution]] = None
     batch_data: Optional[str] = Field(None, description="JSON string of batch distribution (alternative to batches)")

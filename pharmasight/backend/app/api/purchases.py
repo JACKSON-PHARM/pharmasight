@@ -646,8 +646,15 @@ def create_supplier_invoice(
                     from_dict=False,
                 )
         
+        # Accounting model:
+        # - Keep original/gross unit cost in `unit_cost_exclusive` for inventory valuation and `last_unit_cost`.
+        # - Apply discount only to *payable* totals (line totals / supplier ledger) by calculating net cost here.
+        disc_pct = Decimal(str(getattr(item_data, "discount_percent", 0) or 0))
+        disc_pct = max(Decimal("0"), min(Decimal("100"), disc_pct))
+        net_unit_cost_exclusive = unit_cost_exclusive * (Decimal("100") - disc_pct) / Decimal("100")
+
         # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%); use item master VAT if request sent 0
-        line_total_exclusive = unit_cost_exclusive * item_data.quantity
+        line_total_exclusive = net_unit_cost_exclusive * item_data.quantity
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
         if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
             vat_rate_pct = Decimal(str(vat_rate_to_percent(item.vat_rate)))
@@ -987,7 +994,14 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
             require_batch=bool(getattr(cfg, "require_batch_tracking", True)),
             require_expiry=bool(getattr(cfg, "require_expiry_tracking", True)),
         )
-    line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
+    # Accounting model:
+    # - Keep original/gross unit cost in `unit_cost_exclusive` for inventory valuation and `last_unit_cost`.
+    # - Apply discount only to *payable* totals by calculating net unit cost for line totals.
+    disc_pct = Decimal(str(getattr(item_data, "discount_percent", 0) or 0))
+    disc_pct = max(Decimal("0"), min(Decimal("100"), disc_pct))
+    net_unit_cost_exclusive = item_data.unit_cost_exclusive * (Decimal("100") - disc_pct) / Decimal("100")
+
+    line_total_exclusive = net_unit_cost_exclusive * item_data.quantity
     vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
     if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item.vat_rate)))
@@ -1155,6 +1169,20 @@ def update_supplier_invoice_item(
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
+    # Discount model:
+    # - `line.unit_cost_exclusive` is stored as gross/original cost (used for inventory valuation & last_unit_cost).
+    # - `line.line_total_exclusive` is stored as net after discount (used for payable/supplier ledger totals).
+    # - If client does not send discount_percent on update, infer the effective discount from existing totals.
+    existing_gross_base = (line.unit_cost_exclusive or Decimal("0")) * (line.quantity or Decimal("0"))
+    existing_net_exclusive = line.line_total_exclusive or Decimal("0")
+    inferred_disc_pct = Decimal("0")
+    if existing_gross_base > 0:
+        inferred_disc_pct = (existing_gross_base - existing_net_exclusive) * Decimal("100") / existing_gross_base
+    inferred_disc_pct = max(Decimal("0"), min(Decimal("100"), inferred_disc_pct))
+
+    disc_pct = Decimal(str(payload.discount_percent)) if payload.discount_percent is not None else inferred_disc_pct
+    disc_pct = max(Decimal("0"), min(Decimal("100"), disc_pct))
+
     if payload.quantity is not None:
         line.quantity = payload.quantity
     if payload.unit_name is not None:
@@ -1219,7 +1247,8 @@ def update_supplier_invoice_item(
             "unit_cost": float(b.unit_cost)
         } for b in payload.batches])
 
-    line_total_exclusive = (line.unit_cost_exclusive or Decimal("0")) * (line.quantity or Decimal("0"))
+    net_unit_cost_exclusive = (line.unit_cost_exclusive or Decimal("0")) * (Decimal("100") - disc_pct) / Decimal("100")
+    line_total_exclusive = net_unit_cost_exclusive * (line.quantity or Decimal("0"))
     line_vat = line_total_exclusive * (line.vat_rate or Decimal("0")) / Decimal("100")
     line.line_total_exclusive = line_total_exclusive
     line.vat_amount = line_vat
@@ -1340,8 +1369,15 @@ def update_supplier_invoice(
                     stock_validation_config_update, override=True, from_dict=False,
                 )
         
+        # Accounting model:
+        # - Keep original/gross unit cost in `unit_cost_exclusive`.
+        # - Apply discount only to payable totals (line totals) by calculating net unit cost.
+        disc_pct = Decimal(str(getattr(item_data, "discount_percent", 0) or 0))
+        disc_pct = max(Decimal("0"), min(Decimal("100"), disc_pct))
+        net_unit_cost_exclusive = item_data.unit_cost_exclusive * (Decimal("100") - disc_pct) / Decimal("100")
+
         # Calculate line totals (VAT) — normalize vat_rate; use item master VAT if request sent 0
-        line_total_exclusive = item_data.unit_cost_exclusive * item_data.quantity
+        line_total_exclusive = net_unit_cost_exclusive * item_data.quantity
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
         if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
             vat_rate_pct = Decimal(str(vat_rate_to_percent(item.vat_rate)))
