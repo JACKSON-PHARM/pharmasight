@@ -64,6 +64,7 @@ from app.services.canonical_pricing import CanonicalPricingService
 from app.config import settings
 import json
 import sqlalchemy.exc
+import httpx
 
 router = APIRouter()
 
@@ -2406,22 +2407,58 @@ def _resolve_asset_bytes(
     Resolve asset bytes from stored path (company-assets/, user-assets/, or tenant-assets/).
     Prefers path-based download (no tenant) so company/user assets work; falls back to tenant for legacy paths.
     """
-    if not _is_storage_path(stored_path):
+    raw = str(stored_path or "").strip()
+    if not raw:
+        return None
+    # Support already-signed/absolute asset URLs (defensive for migrated data).
+    if raw.startswith("http://") or raw.startswith("https://"):
+        try:
+            with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+                resp = client.get(raw)
+            if resp.status_code == 200 and resp.content:
+                return bytes(resp.content)
+        except Exception:
+            return None
+        return None
+    if not _is_storage_path(raw):
         return None
     # First try without tenant (works for company-assets, user-assets, and tenant-assets with global client)
-    data = download_file(stored_path, tenant=None)
+    data = download_file(raw, tenant=None)
     if data is not None:
         return data
-    if not str(stored_path).startswith("tenant-assets/"):
+    if not raw.startswith("tenant-assets/"):
+        # For company-assets/user-assets, authenticated download can fail in some envs;
+        # fallback to signed URL then fetch bytes over HTTPS.
+        signed = _resolve_signed_url(raw, tenant, master_db)
+        if signed:
+            try:
+                with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+                    resp = client.get(signed)
+                if resp.status_code == 200 and resp.content:
+                    return bytes(resp.content)
+            except Exception:
+                return None
         return None
     if tenant is not None:
-        data = download_file(stored_path, tenant=tenant)
+        data = download_file(raw, tenant=tenant)
         if data is not None:
             return data
     if _legacy_path_tenant_fallback_enabled():
-        path_tenant = _tenant_for_stored_path(master_db, stored_path)
+        path_tenant = _tenant_for_stored_path(master_db, raw)
         if path_tenant:
-            return download_file_with_path_tenant(stored_path, path_tenant)
+            data = download_file_with_path_tenant(raw, path_tenant)
+            if data is not None:
+                return data
+    # Last resort for tenant-assets too: signed URL fetch.
+    signed = _resolve_signed_url(raw, tenant, master_db)
+    if signed:
+        try:
+            with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+                resp = client.get(signed)
+            if resp.status_code == 200 and resp.content:
+                return bytes(resp.content)
+        except Exception:
+            return None
     return None
 
 
