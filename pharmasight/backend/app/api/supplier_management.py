@@ -3,7 +3,7 @@ Supplier Management API: payments, allocations, returns, ledger, aging, metrics,
 company_id is resolved from session only (never from request body).
 """
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional, Dict, Tuple
 from uuid import UUID
 
@@ -194,6 +194,7 @@ def create_supplier_payment(
 
     total_allocated = Decimal("0")
     allocations_by_invoice: Dict[UUID, Tuple[SupplierInvoice, Decimal]] = {}  # invoice_id -> (inv, total_alloc_to_this_inv)
+    q2 = Decimal("0.01")
     if body.allocations:
         for alloc in body.allocations:
             inv = db.query(SupplierInvoice).filter(
@@ -211,9 +212,10 @@ def create_supplier_payment(
                     status_code=400,
                     detail=f"Invoice {inv.invoice_number} is not posted (BATCHED). Cannot allocate payment.",
                 )
-            outstanding = outstanding_after_allocations(db, inv)
+            # Compare at currency precision (2dp) to avoid fractional-cent drift from floats / decimals.
+            outstanding = outstanding_after_allocations(db, inv).quantize(q2, rounding=ROUND_HALF_UP)
             existing = allocations_by_invoice.get(inv.id, (inv, Decimal("0")))[1]
-            new_total_alloc = existing + alloc.allocated_amount
+            new_total_alloc = (existing + alloc.allocated_amount).quantize(q2, rounding=ROUND_HALF_UP)
             if new_total_alloc > outstanding:
                 raise HTTPException(
                     status_code=400,
@@ -222,7 +224,7 @@ def create_supplier_payment(
             total_allocated += alloc.allocated_amount
             allocations_by_invoice[inv.id] = (inv, new_total_alloc)
 
-    if body.allocations and total_allocated > body.amount:
+    if body.allocations and total_allocated.quantize(q2, rounding=ROUND_HALF_UP) > body.amount.quantize(q2, rounding=ROUND_HALF_UP):
         raise HTTPException(
             status_code=400,
             detail=f"Total allocated ({total_allocated}) cannot exceed payment amount ({body.amount})",

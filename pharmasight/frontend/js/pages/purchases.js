@@ -4465,7 +4465,8 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
             }
             const payNowRaw = document.getElementById('sipAmountPayNow');
             let payNow = parseFloat(payNowRaw && payNowRaw.value ? payNowRaw.value : '0');
-            payNow = typeof roundMoneySupplierPay === 'function' ? roundMoneySupplierPay(payNow) : Math.round(payNow * 100) / 100;
+            // Never round up beyond outstanding; use floor-to-cents.
+            payNow = Math.floor((parseFloat(payNow) || 0) * 100) / 100;
             const refVal = refInput && refInput.value ? refInput.value.trim() : '';
             const method = (methodEl && methodEl.value) ? methodEl.value.toLowerCase() : 'cash';
             const cashlessMethods = ['mpesa', 'bank', 'card', 'cheque'];
@@ -4513,7 +4514,13 @@ function updateInvoicePayment(invoiceId, totalAmount, currentPaid) {
                     return;
                 }
                 if (payNow > maxPayNow + 1e-6) {
-                    showToast('Amount cannot exceed the outstanding balance (' + formatCurrency(maxPayNow) + ')', 'error');
+                    // Clamp and continue (prevents backend rejects on fractional-cent drift)
+                    payNow = maxPayNow;
+                    if (payNowRaw) payNowRaw.value = String(maxPayNow.toFixed(2));
+                    if (typeof showToast === 'function') showToast('Amount adjusted to remaining balance (' + formatCurrency(maxPayNow) + ')', 'info');
+                }
+                if (payNow <= 0) {
+                    showToast('No outstanding balance on this invoice', 'error');
                     return;
                 }
 
