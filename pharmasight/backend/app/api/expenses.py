@@ -1,6 +1,11 @@
 """
 Expenses API (OPEX only).
 
+TODO(company_modules): Consider router-level require_module("finance") once every company has an
+explicit ``finance`` row (or defaults are aligned). ``is_module_enabled_for_company`` treats missing
+non-pharmacy modules as disabled, so adding finance gating without a DB backfill would 403 existing
+OPEX users.
+
 Rules:
 - Expenses are always operational (OPEX); no stock or supplier linkage.
 - Approval workflow: if amount > threshold => pending else approved.

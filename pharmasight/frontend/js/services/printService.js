@@ -115,7 +115,10 @@
                 total: inv.total_inclusive != null ? inv.total_inclusive : (inv.total_amount || 0),
                 servedBy: inv.created_by_username || inv.created_by_name || '',
                 generatedTime: formatTime(),
-                transactionMessage: (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : ''
+                transactionMessage: (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '',
+                // KRA eTIMS (for thermal receipts)
+                kraReceiptNumber: inv.kra_receipt_number || null,
+                kraQrCode: inv.kra_qr_code || null
             };
         }
         if (type === 'QUOTATION') {

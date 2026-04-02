@@ -230,6 +230,7 @@
 
         <div class="admin-tabs">
             <button type="button" class="admin-tab active" data-tab="tenants">Tenants</button>
+            <button type="button" class="admin-tab" data-tab="licensing">Licensing</button>
             <button type="button" class="admin-tab" data-tab="platform-dashboard">Platform Dashboard</button>
         </div>
 
@@ -311,15 +312,19 @@
         <div id="platform-dashboard-content-wrap" class="admin-tab-content">
             <div id="platform-dashboard-mount"></div>
         </div>
+
+        <div id="licensing-content-wrap" class="admin-tab-content">
+            <div id="platform-licensing-mount"></div>
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <!-- Local QR generator (no external CDN dependency). -->
     <script src="/js/qrcode.vendor.iife.js"></script>
     <!-- Load required scripts first -->
-    <script src="/js/config.js?v=8"></script>
-    <script src="/js/api.js"></script>
-    <script src="/js/utils.js"></script>
+    <script src="/js/config.js?v=9"></script>
+    <script src="/js/api.js?v=9"></script>
+    <script src="/js/utils.js?v=9"></script>
     
     <script type="module">
         async function setupPublicDemoSignupQr() {
@@ -455,11 +460,18 @@
                 t.classList.toggle('active', t.dataset.tab === tabId);
             });
             document.querySelectorAll('.admin-tab-content').forEach(el => {
-                const id = el.id === 'tenants-content' ? 'tenants' : (el.id === 'platform-dashboard-content-wrap' ? 'platform-dashboard' : null);
+                const id = el.id === 'tenants-content'
+                    ? 'tenants'
+                    : (el.id === 'platform-dashboard-content-wrap'
+                        ? 'platform-dashboard'
+                        : (el.id === 'licensing-content-wrap' ? 'licensing' : null));
                 el.classList.toggle('active', id === tabId);
             });
             if (tabId === 'platform-dashboard') {
                 window.initPlatformDashboard?.();
+            }
+            if (tabId === 'licensing') {
+                window.initPlatformLicensing?.();
             }
         }
 
@@ -481,12 +493,17 @@
                     }
                 }
 
-                const { init } = await import('/js/pages/admin_tenants.js');
+                const { init } = await import('/js/pages/admin_tenants.js?v=9');
                 await init();
 
-                const { init: initDashboard } = await import('/js/pages/admin_dashboard.js');
+                const { init: initDashboard } = await import('/js/pages/admin_dashboard.js?v=9');
                 window.initPlatformDashboard = async () => {
                     await initDashboard();
+                };
+
+                const { init: initLicensing } = await import('/js/pages/admin_platform_licensing.js?v=9');
+                window.initPlatformLicensing = async () => {
+                    await initLicensing();
                 };
             } catch (error) {
                 console.error('Error loading admin panel:', error);

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session, selectinload
 
 from app.dependencies import get_tenant_db, get_current_user, require_document_belongs_to_user_company
+from app.module_enforcement import require_module
 from app.models import (
     BranchOrder,
     BranchOrderLine,
@@ -42,7 +43,7 @@ from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.order_book_service import OrderBookService
 from app.services.document_service import DocumentService
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 logger = logging.getLogger(__name__)
 
 

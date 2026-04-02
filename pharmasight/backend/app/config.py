@@ -153,6 +153,32 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "14"))
     RESET_TOKEN_EXPIRE_MINUTES: int = 60
 
+    # KRA eTIMS OSCU (OAuth: prefer ETIMS_APP_* from developer.go.ke; never store these in DB or expose to frontend)
+    # Sandbox OSCU API root (Postman: https://sbx.kra.go.ke/etims-oscu/api/v1)
+    ETIMS_SANDBOX_API_BASE: str = os.getenv(
+        "ETIMS_SANDBOX_API_BASE", "https://sbx.kra.go.ke/etims-oscu/api/v1"
+    ).rstrip("/")
+    # Sandbox OAuth host only (token path /v1/token/generate); not the same prefix as OSCU on Apigee
+    ETIMS_SANDBOX_OAUTH_BASE: str = os.getenv("ETIMS_SANDBOX_OAUTH_BASE", "https://sbx.kra.go.ke").rstrip(
+        "/"
+    )
+    ETIMS_PRODUCTION_API_BASE: str = os.getenv(
+        "ETIMS_PRODUCTION_API_BASE", "https://etims-api.kra.go.ke/etims-api"
+    ).rstrip("/")
+    # KRA developer portal app (Consumer Key / Consumer Secret) — use in .env locally and Render env secrets in prod
+    ETIMS_APP_CONSUMER_KEY: str = os.getenv("ETIMS_APP_CONSUMER_KEY", "").strip()
+    ETIMS_APP_CONSUMER_SECRET: str = os.getenv("ETIMS_APP_CONSUMER_SECRET", "").strip()
+    # When "sandbox" or "production", overrides branch.environment for KRA API base + token path (single-tenant deploys)
+    ETIMS_ENVIRONMENT: str = os.getenv("ETIMS_ENVIRONMENT", "").strip().lower()
+    # Legacy names (optional fallback if ETIMS_APP_* not set)
+    ETIMS_OAUTH_USERNAME: str = os.getenv("ETIMS_OAUTH_USERNAME", "").strip()
+    ETIMS_OAUTH_PASSWORD: str = os.getenv("ETIMS_OAUTH_PASSWORD", "").strip()
+    # VAT code mapping (override if sandbox code list differs)
+    ETIMS_VAT_CAT_STANDARD: str = os.getenv("ETIMS_VAT_CAT_STANDARD", "A").strip() or "A"
+    ETIMS_VAT_CAT_ZERO: str = os.getenv("ETIMS_VAT_CAT_ZERO", "B").strip() or "B"
+    ETIMS_TAX_TY_STANDARD: str = os.getenv("ETIMS_TAX_TY_STANDARD", "V").strip() or "V"
+    ETIMS_TAX_TY_ZERO: str = os.getenv("ETIMS_TAX_TY_ZERO", "B").strip() or "B"
+
     class Config:
         env_file = _ENV_FILE if _ENV_FILE else [".env", "../.env"]
         case_sensitive = True

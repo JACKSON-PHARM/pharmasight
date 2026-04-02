@@ -25,6 +25,11 @@ class Company(Base):
     currency = Column(String(10), default="KES")
     timezone = Column(String(50), default="Africa/Nairobi")
     fiscal_start_date = Column(Date)
+    # Platform subscription fields (managed by platform admin)
+    subscription_plan = Column(Text, nullable=True)
+    subscription_status = Column(Text, nullable=True)
+    trial_expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -32,6 +37,11 @@ class Company(Base):
     branches = relationship("Branch", back_populates="company", cascade="all, delete-orphan")
     items = relationship("Item", back_populates="company", cascade="all, delete-orphan")
     suppliers = relationship("Supplier", back_populates="company", cascade="all, delete-orphan")
+    modules = relationship(
+        "CompanyModule",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
 
 
 class Branch(Base):
@@ -59,6 +69,12 @@ class Branch(Base):
     # Relationships
     company = relationship("Company", back_populates="branches")
     settings = relationship("BranchSetting", back_populates="branch", uselist=False, cascade="all, delete-orphan")
+    etims_credentials = relationship(
+        "BranchEtimsCredentials",
+        back_populates="branch",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 
 class BranchSetting(Base):
@@ -76,4 +92,28 @@ class BranchSetting(Base):
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
     branch = relationship("Branch", back_populates="settings")
+
+
+class BranchEtimsCredentials(Base):
+    """Per-branch eTIMS OSCU credentials (sandbox/production)."""
+
+    __tablename__ = "branch_etims_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, unique=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    kra_bhf_id = Column(String(50), nullable=True)
+    device_serial = Column(String(100), nullable=True)
+    cmc_key_encrypted = Column(Text, nullable=True)
+    environment = Column(String(20), nullable=False, default="sandbox")
+    enabled = Column(Boolean, nullable=False, default=False)
+    kra_oauth_username = Column(String(255), nullable=True)
+    kra_oauth_password = Column(Text, nullable=True)
+    connection_status = Column(String(30), nullable=False, default="not_configured")
+    last_tested_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    branch = relationship("Branch", back_populates="etims_credentials")
+    company = relationship("Company")
 

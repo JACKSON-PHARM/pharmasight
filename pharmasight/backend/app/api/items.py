@@ -15,7 +15,15 @@ from sqlalchemy.exc import IntegrityError
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
-from app.dependencies import get_tenant_db, get_current_user, get_effective_company_id_for_user, _user_has_permission, get_tenant_or_default
+from app.dependencies import (
+    get_tenant_db,
+    get_current_user,
+    get_effective_company_id_for_user,
+    _user_has_permission,
+    get_tenant_or_default,
+    ensure_user_has_branch_access,
+)
+from app.module_enforcement import require_module
 from decimal import Decimal
 from app.models import (
     Item, ItemPricing, CompanyPricingDefault,
@@ -70,7 +78,7 @@ from app.models.tenant import Tenant
 from app.services.plan_context import get_tenant_plan_context
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 # Roles allowed to perform manual stock adjustment (add/reduce)
 ADJUST_STOCK_ALLOWED_ROLES = {"admin", "pharmacist", "auditor", "super admin"}
@@ -296,6 +304,16 @@ def create_item(
     Rejects duplicate names and duplicate SKU/code (same company, case-insensitive). No duplicate items allowed.
     Item and item_branch_snapshot are updated in a single transaction: if snapshot refresh fails, the item is not committed.
     """
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     # Enforce demo product limits (demo tenants cannot exceed product_limit)
     plan_ctx = get_tenant_plan_context(tenant)
     if plan_ctx.get("plan_type") == "demo":
@@ -402,6 +420,17 @@ def stock_batch(
     Numeric stock is ALWAYS retail/base quantity. stock_display shows multi-tier breakdown for UX.
     Do NOT use item.base_unit as label for numeric stock.
     """
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(body.company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    ensure_user_has_branch_access(db, user.id, body.branch_id)
+    if not _user_has_permission(db, user.id, "inventory.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     if not body.item_ids:
         return {"stocks": {}}
     # Fetch stock from inventory_balances (snapshot)
@@ -453,9 +482,20 @@ def search_items(
     Item search: single service path. Snapshot (item_branch_snapshot) is primary when branch_id is set;
     heavy path is fallback only on exception or missing branch_id. Same response shape for both.
     Returns: id, name, base_unit, prices, sku, stock, VAT, margin_percent, next_expiry_date.
-    Uses db from get_current_user to avoid a second tenant DB connection (get_tenant_db).
+    Uses db from auth (get_current_user) to avoid a second tenant DB connection (get_tenant_db).
     """
     _user, db = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, _user)
+    if effective_company_id is None or str(company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    if branch_id is not None:
+        ensure_user_has_branch_access(db, _user.id, branch_id)
+    if not _user_has_permission(db, _user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     result, path, server_timing = ItemSearchService.search(
         db, q, company_id, branch_id, limit, include_pricing, context
     )
@@ -494,6 +534,15 @@ def search_items_debug(
             status_code=400,
             content={"detail": "branch_id is required for search-debug"},
         )
+    effective_company_id = get_effective_company_id_for_user(db, _user)
+    if effective_company_id is None or str(company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    ensure_user_has_branch_access(db, _user.id, branch_id)
+    if not _user_has_permission(db, _user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     search_term_pattern = f"%{q.lower()}%"
     # Same snapshot columns as search
     rows = (
@@ -627,15 +676,7 @@ def get_item_batches_endpoint(
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch or branch.company_id != item.company_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found or does not belong to item company.")
-    has_branch_access = db.query(UserBranchRole).filter(
-        UserBranchRole.user_id == user.id,
-        UserBranchRole.branch_id == branch_id,
-    ).first() is not None
-    if not has_branch_access:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have access to this branch.",
-        )
+    ensure_user_has_branch_access(db, user.id, branch_id)
     batches = get_item_batches(db, company_id=item.company_id, branch_id=branch_id, item_id=item_id)
     return ItemBatchesResponse(batches=batches)
 
@@ -653,9 +694,17 @@ def get_item(
     the item row (3-tier: base, retail, supplier) so the unit dropdown always shows all tiers.
     Does not use the item_units table (works when that table is missing).
     """
+    user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if branch_id is not None:
+        ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     default_cost = float(
         CanonicalPricingService.get_best_available_cost(db, item.id, branch_id, item.company_id)
     ) if branch_id else 0.0
@@ -682,9 +731,16 @@ def get_item_activity(
     Read-only item activity for transaction documents (sales, purchases, quotations).
     Returns: order & supply details, stock (session + other branches), expiry & batch.
     """
+    user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     company_id = item.company_id
 
     # ---- Order & supply ----
@@ -815,10 +871,16 @@ def get_item_3tier_pricing(
     db: Session = Depends(get_tenant_db),
 ):
     """Get 3-tier pricing for an item. Requires authentication."""
+    user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     tier_pricing = PricingService.get_3tier_pricing(db, item_id)
     if not tier_pricing:
         return {"message": "No 3-tier pricing configured for this item"}
@@ -835,10 +897,16 @@ def get_item_tier_price(
     db: Session = Depends(get_tenant_db),
 ):
     """Get price for a specific tier (supplier, wholesale, or retail)"""
+    user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     if tier.lower() not in ['supplier', 'wholesale', 'retail']:
         raise HTTPException(status_code=400, detail="Tier must be 'supplier', 'wholesale', or 'retail'")
     
@@ -862,6 +930,8 @@ def get_items_count(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Could not resolve company for this user.")
     if company_id != effective_company_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company's data.")
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     count = db.query(Item).filter(Item.company_id == company_id).count()
     return {"count": count}
 
@@ -887,6 +957,10 @@ def get_items_overview(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Could not resolve company for this user.")
     if company_id != effective_company_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company's data.")
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if branch_id is not None:
+        ensure_user_has_branch_access(db, user.id, branch_id)
     # Base query for items (units are from item columns; no item_units table)
     items_query = db.query(Item).filter(Item.company_id == company_id)
     total_count = items_query.count()
@@ -1066,6 +1140,8 @@ def get_items_by_company(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Could not resolve company for this user.")
     if company_id != effective_company_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company's data.")
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     query = db.query(Item).filter(Item.company_id == company_id)
     
     # Apply pagination if limit is provided
@@ -1100,6 +1176,13 @@ def adjust_stock(
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+
+    effective_company_id = get_effective_company_id_for_user(db, current_user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    ensure_user_has_branch_access(db, current_user.id, body.branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.adjust"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     user_role = _get_user_role(body.user_id, body.branch_id, db)
     if not user_role or user_role not in ADJUST_STOCK_ALLOWED_ROLES:
@@ -1173,8 +1256,6 @@ def adjust_stock(
             db, item.company_id, body.branch_id, item_id, unit_cost
         )
         if outlier.get("is_outlier"):
-            from app.dependencies import _user_has_permission
-
             has_override = _user_has_permission(db, current_user.id, "inventory.cost_override")
             if not has_override:
                 baseline = outlier.get("baseline_cost")
@@ -1212,7 +1293,6 @@ def adjust_stock(
     if body.direction.lower() == "add" and getattr(item, "track_expiry", False):
         short_expiry_override_adjust = bool(body and getattr(body, "short_expiry_override", False))
         if short_expiry_override_adjust:
-            from app.dependencies import _user_has_permission
             from app.api.users import _user_has_owner_or_admin_role
 
             if not _user_has_permission(
@@ -1355,10 +1435,16 @@ def update_item(
     - Base unit and unit conversions are editable ONLY if item has no inventory_ledger records
     - Name, category, pricing, barcode are always editable
     """
+    user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     # Lock structural fields only when item has real transactions (sales, purchases, or non–opening-balance ledger).
     # Items with only OPENING_BALANCE (e.g. from Excel import) can still be edited.
     has_transactions = item_id in ExcelImportService._get_items_with_real_transactions(db, item.company_id, [item_id])
@@ -1444,9 +1530,15 @@ def mark_item_ready(
     Mark item setup as complete (transaction-ready) after validating required unit fields.
     This is intended for onboarding/import flows where items are created with setup_complete=false.
     """
+    user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     # Validate required fields
     missing = []
@@ -1501,9 +1593,15 @@ def delete_item(
     Soft delete (default): set is_active=False; item stays in DB.
     Permanent delete (permanent=true): only when item has never had a transaction (no sales, purchases, or non–opening-balance ledger). Removes item and related data from the company database.
     """
+    user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     if permanent:
         has_transactions = item_id in ExcelImportService._get_items_with_real_transactions(db, item.company_id, [item_id])
@@ -1545,6 +1643,16 @@ def bulk_create_items(
     
     if len(bulk_data.items) > 1000:
         raise HTTPException(status_code=400, detail="Maximum 1000 items per batch")
+
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(bulk_data.company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     
     # Enforce demo product limits (demo tenants cannot exceed product_limit via bulk import)
     plan_ctx = get_tenant_plan_context(tenant)
@@ -1748,6 +1856,17 @@ def get_recommended_price(
     db: Session = Depends(get_tenant_db),
 ):
     """Get recommended selling price for item (tier: retail / wholesale / supplier)."""
+    user, _ = current_user_and_db
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     try:
         tier_clean = (tier or "retail").lower()
         if tier_clean not in ("retail", "wholesale", "supplier"):
@@ -1781,6 +1900,17 @@ def has_transactions(
     """
     from app.models.sale import SalesInvoiceItem
     from app.models.purchase import SupplierInvoiceItem
+
+    user, _ = current_user_and_db
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     
     # Check for sales transactions
     sales_count = db.query(func.count(SalesInvoiceItem.id)).join(
@@ -1837,9 +1967,16 @@ def get_ledger_batches(
     - only batches with remaining > 0 are returned
     - ledger_id = most recent positive ledger row for that batch (row whose cost will be adjusted)
     """
+    user, _ = current_user_and_db
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     # Fetch all positive movements for this item/branch, then aggregate per batch in Python.
     rows = (
         db.query(InventoryLedger)
@@ -1944,6 +2081,7 @@ def post_cost_adjustment(
     branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
     if not branch:
         raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
+    ensure_user_has_branch_access(db, user.id, body.branch_id)
     bs = (
         db.query(BranchSetting)
         .filter(BranchSetting.branch_id == body.branch_id)
@@ -2087,6 +2225,7 @@ def post_batch_quantity_correction(
     branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
     if not branch:
         raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
+    ensure_user_has_branch_access(db, user.id, body.branch_id)
     expiry_date_parsed = None
     if body.expiry_date and body.expiry_date.strip():
         try:
@@ -2244,6 +2383,7 @@ def post_batch_metadata_correction(
     branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == item.company_id).first()
     if not branch:
         raise HTTPException(status_code=400, detail="Branch not found or does not belong to company.")
+    ensure_user_has_branch_access(db, user.id, body.branch_id)
     new_expiry_parsed = None
     if body.new_expiry_date and body.new_expiry_date.strip():
         try:

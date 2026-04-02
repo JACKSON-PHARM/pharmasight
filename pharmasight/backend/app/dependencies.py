@@ -90,6 +90,24 @@ def require_document_belongs_to_user_company(
         raise HTTPException(status_code=404, detail=f"{document_name} not found")
 
 
+def require_company_match(
+    resource_company_id: Optional[UUID],
+    user_company_id: Optional[UUID],
+    *,
+    message: str = "Access denied to this resource",
+) -> None:
+    """
+    Centralized 403 when a resource's company_id must match the authenticated user's company.
+    Use after fetching a row by primary key to block cross-company ID guessing.
+    """
+    if user_company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=message)
+    if resource_company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=message)
+    if str(resource_company_id) != str(user_company_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=message)
+
+
 # -----------------------------------------------------------------------------
 # Tenant engine pool (Step 2)
 # One engine + session factory per tenant database_url. Legacy uses existing
@@ -859,6 +877,28 @@ def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bo
         & (UserBranchRole.user_id == user_id)
     ).filter(Permission.name == permission_name).first()
     return has_perm is not None
+
+
+def ensure_user_has_branch_access(db: Session, user_id: UUID, branch_id: UUID) -> None:
+    """
+    Require a user_branch_roles row for (user_id, branch_id).
+    Raises 403 if the user is not assigned to that branch.
+    """
+    from app.models.user import UserBranchRole
+    ok = (
+        db.query(UserBranchRole.id)
+        .filter(
+            UserBranchRole.user_id == user_id,
+            UserBranchRole.branch_id == branch_id,
+        )
+        .first()
+        is not None
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this branch",
+        )
 
 
 def user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID) -> bool:

@@ -239,7 +239,19 @@ def run_tenant_migrations():
 
 
 # Import and include routers
-from app.api import items_router, sales_router, purchases_router, inventory_router, quotations_router, stock_take_router, order_book_router, branch_inventory_router
+from app.api import (
+    items_router,
+    sales_router,
+    purchases_router,
+    inventory_router,
+    quotations_router,
+    stock_take_router,
+    order_book_router,
+    branch_inventory_router,
+    modules_router,
+    clinic_router,
+)
+from app.api import etims
 from app.api.company import router as company_router
 from app.api.startup import router as startup_router
 from app.api.invite import router as invite_router
@@ -266,6 +278,8 @@ from app.api.auth import router as auth_router
 from app.api.reports import router as reports_router
 from app.api.impersonation import router as impersonation_router
 from app.api.admin_metrics import router as admin_metrics_router
+from app.api.admin_platform_licensing import router as admin_platform_licensing_router
+from app.api.platform_admin import router as platform_admin_router
 
 app.include_router(invite_router, prefix="/api", tags=["User Invitation & Setup"])
 app.include_router(startup_router, prefix="/api", tags=["Startup & Initialization"])
@@ -287,10 +301,15 @@ app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotation
 app.include_router(stock_take_router, prefix="/api/stock-take", tags=["Stock Take"])
 app.include_router(order_book_router, prefix="/api/order-book", tags=["Order Book"])
 app.include_router(branch_inventory_router, prefix="/api/branch-inventory", tags=["Branch Inventory"])
+app.include_router(modules_router, prefix="/api", tags=["Modules"])
+app.include_router(clinic_router, prefix="/api", tags=["Clinic / OPD"])
+app.include_router(etims.router, prefix="/api/etims", tags=["ETIMS"])
 app.include_router(reports_router, prefix="/api", tags=["Reports"])
 app.include_router(tenants_router, prefix="/api/admin", tags=["Tenant Management (Admin)"])
 app.include_router(impersonation_router, prefix="/api/admin", tags=["Admin Impersonation"])
 app.include_router(admin_metrics_router, prefix="/api/admin", tags=["Platform Admin Dashboard"])
+app.include_router(admin_platform_licensing_router, prefix="/api/admin", tags=["Platform Licensing (Admin)"])
+app.include_router(platform_admin_router, prefix="/api", tags=["Platform Admin (RBAC)"])
 app.include_router(onboarding_router, prefix="/api", tags=["Client Onboarding"])
 if migrations_router:
     app.include_router(migrations_router, prefix="/api", tags=["Migration Management (Admin)"])

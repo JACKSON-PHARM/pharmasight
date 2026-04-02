@@ -304,6 +304,8 @@ const API = {
             formData.append('file', file);
             return api.post(`/api/companies/${companyId}/stamp`, formData, { headers: {} });
         },
+        /** Company-scoped module entitlements (enabled flags); not user RBAC. */
+        modules: () => api.get('/api/company/modules'),
     },
     branch: {
         list: (companyId) => api.get(`/api/branches/company/${companyId}`),
@@ -313,6 +315,34 @@ const API = {
         setAsHq: (branchId) => api.post(`/api/branches/${branchId}/set-hq`, null),
         getSettings: (branchId) => api.get(`/api/branches/${branchId}/settings`),
         updateSettings: (branchId, data) => api.patch(`/api/branches/${branchId}/settings`, data),
+    },
+
+    // Modules (UI visibility only)
+    modules: {
+        me: () => api.get('/api/modules/me'),
+    },
+
+    // Clinic / OPD (requires clinic module + auth)
+    clinic: {
+        patients: {
+            list: (q) => api.get('/api/clinic/patients', q ? { q } : {}),
+            get: (id) => api.get(`/api/clinic/patients/${id}`),
+            create: (data) => api.post('/api/clinic/patients', data),
+        },
+        encounters: {
+            list: (status) => api.get('/api/clinic/encounters', status ? { status } : {}),
+            get: (id) => api.get(`/api/clinic/encounters/${id}`),
+            create: (data) => api.post('/api/clinic/encounters', data),
+            patchStatus: (id, status) => api.patch(`/api/clinic/encounters/${id}/status`, { status }),
+            notes: {
+                list: (encounterId) => api.get(`/api/clinic/encounters/${encounterId}/notes`),
+                add: (encounterId, data) => api.post(`/api/clinic/encounters/${encounterId}/notes`, data),
+            },
+            orders: {
+                list: (encounterId) => api.get(`/api/clinic/encounters/${encounterId}/orders`),
+                create: (encounterId, data) => api.post(`/api/clinic/encounters/${encounterId}/orders`, data),
+            },
+        },
     },
 
     // Items
@@ -1191,6 +1221,15 @@ const API = {
     // Authentication
     auth: {
         usernameLogin: (data) => api.post('/api/auth/username-login', data),
+        me: () => api.get('/api/auth/me'),
+    },
+    // Platform Admin (RBAC: platform_super_admin)
+    platformAdmin: {
+        companies: (params = {}) => api.get('/api/platform-admin/companies', params),
+        company: (companyId) => api.get(`/api/platform-admin/company/${companyId}`),
+        patchModules: (companyId, data) => api.patch(`/api/platform-admin/company/${companyId}/modules`, data),
+        patchSubscription: (companyId, data) => api.patch(`/api/platform-admin/company/${companyId}/subscription`, data),
+        patchStatus: (companyId, data) => api.patch(`/api/platform-admin/company/${companyId}/status`, data),
     },
     // Admin Authentication
     adminAuth: {
@@ -1213,6 +1252,18 @@ const API = {
             },
             subscription: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/subscription`),
             modules: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/modules`),
+        },
+        platformLicensing: {
+            companies: (params = {}, requestOptions = {}) =>
+                api.get('/api/admin/platform-licensing/companies', params, requestOptions),
+            company: (companyId) => api.get(`/api/admin/platform-licensing/company/${companyId}`),
+            patchModules: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/modules`, data),
+            patchSubscription: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/subscription`, data),
+            patchStatus: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/status`, data),
+            etimsCompany: (companyId) => api.get(`/api/admin/platform-licensing/company/${companyId}/etims`),
+            etimsPatchCompanyPin: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/etims/pin`, data),
+            etimsPatchBranch: (branchId, data) => api.patch(`/api/admin/platform-licensing/branch/${branchId}/etims`, data),
+            etimsTestBranchConnection: (branchId) => api.post(`/api/admin/platform-licensing/branch/${branchId}/etims/test-connection`, {}),
         },
         plans: {
             list: () => api.get('/api/admin/plans'),

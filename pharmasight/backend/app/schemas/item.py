@@ -78,7 +78,10 @@ class ItemBase(BaseModel):
     wholesale_units_per_supplier: float = Field(default=1, ge=1, description="Wholesale-to-supplier: 1 supplier = N wholesale (integer, e.g. 12)")
     can_break_bulk: bool = Field(default=False, description="Can sell individual retail units? (requires pack_size > 1)")
     # VAT
-    vat_category: str = Field(default="ZERO_RATED", description="ZERO_RATED | STANDARD_RATED")
+    vat_category: str = Field(
+        default="ZERO_RATED",
+        description="ZERO_RATED | STANDARD_RATED | VAT_INCLUSIVE (eTIMS maps inclusive label to standard-rated codes)",
+    )
     vat_rate: float = Field(default=0, ge=0, le=100, description="0 or 16")
     # Tracking flags
     track_expiry: bool = Field(default=False, description="Whether item requires expiry date tracking")

@@ -72,6 +72,17 @@ async function loadSettingsSubPage(subPage) {
             console.log('[SETTINGS] Case: documentBranding');
             await renderDocumentBrandingPage();
             break;
+        case 'etims':
+            console.log('[SETTINGS] Case: etims');
+            if (typeof window.renderEtimsSettingsPage === 'function') {
+                await window.renderEtimsSettingsPage();
+            } else {
+                const p = document.getElementById('settings');
+                if (p) {
+                    p.innerHTML = '<div class="card"><div class="card-body"><p class="alert alert-warning">eTIMS settings script not loaded. Refresh the page.</p></div></div>';
+                }
+            }
+            break;
         default:
             console.log('[SETTINGS] Case: default (company)');
             await renderCompanyProfilePage();
@@ -279,10 +290,10 @@ async function renderCompanyProfilePage() {
                     
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">PIN / Tax ID</label>
+                            <label class="form-label">KRA PIN / Tax ID (company TIN)</label>
                             <input type="text" class="form-input" name="pin" 
                                    value="${companyData?.pin || ''}"
-                                   placeholder="Tax identification number">
+                                   placeholder="KRA PIN used for eTIMS / OSCU">
                         </div>
                     </div>
                     
@@ -402,12 +413,25 @@ async function renderBranchesPage() {
     if (!page) return;
     
     let branches = [];
+    let etimsSummary = null;
     if (CONFIG.COMPANY_ID) {
         try {
             branches = await API.branch.list(CONFIG.COMPANY_ID);
         } catch (error) {
             console.error('Error loading branches:', error);
         }
+    }
+    if (API.etims && typeof API.etims.summary === 'function') {
+        try {
+            etimsSummary = await API.etims.summary();
+        } catch (e) {
+            console.warn('eTIMS summary not available:', e);
+        }
+    }
+    function etimsRowForBranchId(bid) {
+        const rows = etimsSummary && etimsSummary.branches;
+        if (!rows || !bid) return null;
+        return rows.find((x) => String(x.branch_id) === String(bid));
     }
     
     const currentBranch = branches.find(b => b.id === CONFIG.BRANCH_ID);
@@ -442,6 +466,7 @@ async function renderBranchesPage() {
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Type</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Address</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Phone</th>
+                                    <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">eTIMS</th>
                                     <th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Actions</th>
                                 </tr>
                             </thead>
@@ -457,6 +482,16 @@ async function renderBranchesPage() {
                                         </td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${escapeHtml(branch.address || '—')}</td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${escapeHtml(branch.phone || '—')}</td>
+                                        <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); font-size: 0.8rem;">
+                                            ${(() => {
+                                                const er = etimsRowForBranchId(branch.id);
+                                                const badgeFn = typeof window.etimsBadgeHtml === 'function' ? window.etimsBadgeHtml : null;
+                                                const st = er ? er.connection_status : 'not_configured';
+                                                const en = er ? !!er.enabled : false;
+                                                const badge = badgeFn ? badgeFn(st, en) : escapeHtml(st);
+                                                return `<div style="display:flex;flex-direction:column;gap:0.35rem;align-items:flex-start;">${badge}<button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation(); try{ window.location.hash = '#settings-etims?branch=' + encodeURIComponent('${branch.id}'); }catch(_){ } if(window.loadPage) window.loadPage('settings-etims');" title="View eTIMS compliance status"><i class="fas fa-stamp"></i> View</button></div>`;
+                                            })()}
+                                        </td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                                             ${!branch.is_hq ? `<button class="btn btn-outline btn-sm" onclick="setBranchAsHq('${branch.id}')" title="Set as HQ (Headquarters)">
                                                 <i class="fas fa-building"></i> Set as HQ

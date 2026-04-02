@@ -60,6 +60,11 @@ from app.services.demo_signup_service import create_demo_tenant
 router = APIRouter()
 
 
+class AuthMeResponse(BaseModel):
+    user_id: str
+    roles: List[str]
+
+
 def _trial_expired(tenant: Optional[Tenant]) -> bool:
     """True if tenant is on trial and trial_ends_at is in the past (UTC)."""
     if tenant is None:
@@ -118,6 +123,29 @@ class StartDemoResponse(BaseModel):
     access_token: str
     refresh_token: str
     tenant_id: str
+
+
+@router.get("/auth/me", response_model=AuthMeResponse)
+def auth_me(
+    user_db: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Return current authenticated user_id and RBAC role names.
+    Used for UI gating (e.g. Platform Admin visibility).
+    """
+    user, _ = user_db
+    from app.models.user import UserBranchRole, UserRole
+
+    rows = (
+        db.query(UserRole.role_name)
+        .join(UserBranchRole, UserBranchRole.role_id == UserRole.id)
+        .filter(UserBranchRole.user_id == user.id)
+        .distinct()
+        .all()
+    )
+    roles = sorted({(r[0] or "").strip().lower() for r in (rows or []) if r and r[0]})
+    return {"user_id": str(user.id), "roles": roles}
     tenant_subdomain: str
     username: str
 

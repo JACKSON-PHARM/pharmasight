@@ -12,7 +12,17 @@ from decimal import Decimal
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
-from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user, require_document_belongs_to_user_company
+from app.dependencies import (
+    get_tenant_db,
+    get_current_user,
+    get_tenant_or_default,
+    get_tenant_optional,
+    require_document_belongs_to_user_company,
+    _user_has_permission,
+    get_effective_company_id_for_user,
+    ensure_user_has_branch_access,
+)
+from app.module_enforcement import require_module
 from app.services.document_pdf_generator import build_sales_invoice_pdf
 from app.services.tenant_storage_service import download_file, get_signed_url
 from app.models import (
@@ -41,7 +51,7 @@ from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
 from app.utils.vat import vat_rate_to_percent
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 # Log when draft snapshot COGS (qty×mult×unit_cost_used) would differ from batched ledger by
 # more than this fraction of line revenue (before overwriting unit_cost_used at batch).
@@ -149,6 +159,17 @@ def create_sales_invoice(
     
     If payment_mode is 'credit', customer_name and customer_phone are required.
     """
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(invoice.company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.create"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     # Validate credit payment mode requirements
     if invoice.payment_mode == 'credit':
         if not invoice.customer_name or not invoice.customer_name.strip():
@@ -380,6 +401,9 @@ def get_sales_invoice_pdf(
         selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item)
     ).filter(SalesInvoice.id == invoice_id).first()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     items_data = []
@@ -455,6 +479,9 @@ def _get_sales_invoice_response(
         request.state.timings["LoadMs"] = round((time.perf_counter() - t0) * 1000, 1)
     t1 = time.perf_counter()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     if request is not None:
         request.state.timings["CompanyCheckMs"] = round((time.perf_counter() - t1) * 1000, 1)
     t2 = time.perf_counter()
@@ -623,6 +650,9 @@ def add_sales_invoice_item(
     request.state.timings["LoadMs"] = round((time.perf_counter() - t0) * 1000, 1)
     t1 = time.perf_counter()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     request.state.timings["CompanyCheckMs"] = round((time.perf_counter() - t1) * 1000, 1)
     t2 = time.perf_counter()
     if invoice.status != "DRAFT":
@@ -842,6 +872,7 @@ def delete_sales_invoice_item(
     Remove one line item from a DRAFT invoice. Only DRAFT invoices can be edited.
     """
     from sqlalchemy.orm import selectinload
+    user = current_user_and_db[0]
     invoice = (
         db.query(SalesInvoice)
         .options(selectinload(SalesInvoice.items))
@@ -850,6 +881,10 @@ def delete_sales_invoice_item(
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -885,6 +920,7 @@ def update_sales_invoice_item(
     """
     from sqlalchemy.orm import selectinload
 
+    user = current_user_and_db[0]
     invoice = (
         db.query(SalesInvoice)
         .options(selectinload(SalesInvoice.items))
@@ -893,6 +929,10 @@ def update_sales_invoice_item(
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -955,7 +995,6 @@ def update_sales_invoice_item(
 
     db.commit()
     db.refresh(invoice)
-    user = current_user_and_db[0]
     return _get_sales_invoice_response(invoice_id, db, user)
 
 
@@ -967,6 +1006,17 @@ def get_branch_today_summary(
     db: Session = Depends(get_tenant_db),
 ):
     """Get total sales for today for the branch by invoice business date. If user_id is provided, only sales batched by that user."""
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     today = date.today()
     q = db.query(
         func.coalesce(func.sum(SalesInvoice.total_inclusive), 0).label("total_inclusive"),
@@ -1137,6 +1187,17 @@ def get_branch_gross_profit(
            Then subtract SALE_RETURN ledger total_cost linked to credit notes in range.
     Gross profit = Net sales − COGS.
     """
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     sd, ed = _resolve_date_range(preset, start_date, end_date)
 
     # Use invoice business date so back-dated invoices stay on their intended day.
@@ -1350,6 +1411,17 @@ def get_branch_invoices(
     """
     from sqlalchemy.orm import selectinload
 
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     query = db.query(SalesInvoice).options(
         selectinload(SalesInvoice.items)
     ).filter(SalesInvoice.branch_id == branch_id)
@@ -1463,6 +1535,9 @@ def create_credit_note(
     if not invoice:
         raise HTTPException(status_code=404, detail="Original invoice not found")
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, body.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     if invoice.company_id != body.company_id or invoice.branch_id != body.branch_id:
         raise HTTPException(status_code=400, detail="Invoice must belong to the same company and branch")
     if invoice.status not in ("BATCHED", "PAID"):
@@ -1660,6 +1735,9 @@ def get_branch_credit_notes(
     user = current_user_and_db[0]
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     require_document_belongs_to_user_company(db, user, branch, "Branch", request)
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     q = (
         db.query(CreditNote)
         .options(selectinload(CreditNote.items))
@@ -1686,10 +1764,15 @@ def update_sales_invoice(
     
     Only DRAFT invoices can be updated. BATCHED invoices cannot be updated.
     """
+    user, _ = current_user_and_db
     db_invoice = db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).first()
     if not db_invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    require_document_belongs_to_user_company(db, user, db_invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, db_invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     if db_invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -1773,6 +1856,9 @@ def batch_sales_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     if invoice.status == "BATCHED":
         raise HTTPException(
@@ -2036,10 +2122,15 @@ def delete_sales_invoice(
     
     Only DRAFT invoices can be deleted. BATCHED invoices cannot be deleted.
     """
+    user, _ = current_user_and_db
     invoice = db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.delete"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -2071,6 +2162,11 @@ def add_invoice_payment(
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    user = current_user_and_db[0]
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     if invoice.status not in ["BATCHED", "PAID"]:
         raise HTTPException(
             status_code=400,
@@ -2147,6 +2243,15 @@ def get_invoice_payments(
     db: Session = Depends(get_tenant_db),
 ):
     """Get all payments for a sales invoice"""
+    user = current_user_and_db[0]
+    invoice = db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     payments = db.query(InvoicePayment).filter(
         InvoicePayment.invoice_id == invoice_id
     ).order_by(InvoicePayment.created_at).all()
@@ -2164,6 +2269,7 @@ def delete_invoice_payment(
     
     Only allowed if invoice is still BATCHED (not yet PAID)
     """
+    user = current_user_and_db[0]
     payment = db.query(InvoicePayment).filter(InvoicePayment.id == payment_id).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
@@ -2171,7 +2277,11 @@ def delete_invoice_payment(
     invoice = db.query(SalesInvoice).filter(SalesInvoice.id == payment.invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     if invoice.status == "PAID":
         raise HTTPException(
             status_code=400,
@@ -2214,7 +2324,8 @@ def convert_sales_invoice_to_quotation(
     """
     from sqlalchemy.orm import selectinload
     from app.models import Quotation, QuotationItem
-    
+
+    user = current_user_and_db[0]
     # Get invoice
     invoice = db.query(SalesInvoice).options(
         selectinload(SalesInvoice.items)
@@ -2222,7 +2333,11 @@ def convert_sales_invoice_to_quotation(
     
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,

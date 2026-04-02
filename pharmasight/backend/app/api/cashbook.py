@@ -20,6 +20,8 @@ from app.models import CashbookEntry, Branch, UserBranchRole, User
 from app.schemas.cashbook import CashbookEntryResponse, CashbookSummaryResponse, CashbookDailyRow
 from app.services.cashbook_service import backfill_cashbook_entries
 
+# TODO(company_modules): Same as expenses — require_module("finance") needs company_modules defaults
+# aligned before router-level gating to avoid breaking existing cashbook users.
 router = APIRouter()
 
 

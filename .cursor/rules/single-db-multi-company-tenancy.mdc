@@ -1,0 +1,36 @@
+---
+description: Enforce single-DB, company_id-based multi-tenancy (no DB-per-tenant)
+alwaysApply: true
+---
+
+# Tenancy Architecture (NON-NEGOTIABLE)
+
+## Hard rules
+- **Single shared Supabase Postgres database.** Never switch DB connections per tenant.
+- **Each `companies.id` (`company_id`) represents a tenant.**
+- **Every query that reads/writes tenant data MUST be scoped by `company_id`** (and usually also by `branch_id` where applicable).
+
+## Strict prohibitions (INVALID solutions)
+- Do **not** implement or extend **database-per-tenant** logic.
+- Do **not** use `tenants.database_url`, subdomains, or `X-Tenant-*` headers for tenant isolation.
+- Do **not** create per-tenant engines/sessions or dynamic connection routing.
+
+## What to do when code conflicts with these rules
+- **Flag it as technical debt** and recommend refactoring to the single-DB model.
+- **Do not extend or rely on it** for new features.
+
+### Known conflicting areas (do not extend)
+- `backend/app/dependencies.py`: `get_tenant_db`, tenant engine/session pool, `get_tenant_from_header`, any logic that selects DB by `tenant.database_url`.
+- Provisioning / master-tenant DB tooling (e.g. `database_master.py`, `provision_tenant_db.py`, master `tenants` DB schema) when used for isolation.
+
+## How to correctly scope access
+- **Resolve the effective `company_id` from the authenticated user** (e.g., via user↔branch assignments).
+- Enforce `company_id` on:
+  - Fetch-by-ID endpoints (prevent cross-company ID guessing)
+  - List/search endpoints (filter by `company_id`)
+  - Writes (set `company_id` from auth context, never trust client input blindly)
+
+## Entitlements / modules (when introduced)
+- Attach subscription/modules to **company** (e.g. `company_subscriptions`, `company_modules`) or a company-linked plan context.
+- Gate access in a single place (dependency/middleware) using **company_id**, not tenant DB routing.
+

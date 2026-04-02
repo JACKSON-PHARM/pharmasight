@@ -205,6 +205,19 @@ let salesInvoicesUserFilter = 'self';
 let salesQuotationsDateFilter = 'today';
 let salesQuotationsUserFilter = 'self';
 
+let salesInvoicesLoading = false;
+
+function setSalesInvoicesApplyLoading(isLoading) {
+    salesInvoicesLoading = !!isLoading;
+    const btn = document.getElementById('salesApplyBtn');
+    if (!btn) return;
+    btn.disabled = salesInvoicesLoading;
+    const idle = btn.querySelector('.sales-apply-idle');
+    const loading = btn.querySelector('.sales-apply-loading');
+    if (idle) idle.style.display = salesInvoicesLoading ? 'none' : '';
+    if (loading) loading.style.display = salesInvoicesLoading ? '' : 'none';
+}
+
 function getDocumentListDateRange(preset) {
     if (preset === 'custom') return null;
     const now = new Date();
@@ -305,8 +318,9 @@ async function renderSalesInvoicesPage() {
                         <span>-</span>
                         <input type="date" class="form-input" id="filterDateTo" value="${defaultTo}" style="width: 120px; padding: 0.35rem 0.5rem;">
                     </div>
-                    <button type="button" class="btn btn-primary btn-sm" onclick="if(window.applySalesDateFilter) window.applySalesDateFilter()">
-                        <i class="fas fa-check"></i> Apply
+                    <button type="button" class="btn btn-primary btn-sm" id="salesApplyBtn" onclick="if(window.applySalesDateFilter) window.applySalesDateFilter()">
+                        <span class="sales-apply-idle"><i class="fas fa-check"></i> Apply</span>
+                        <span class="sales-apply-loading" style="display:none;"><i class="fas fa-spinner fa-spin"></i> Applying...</span>
                     </button>
                     <button type="button" class="btn btn-outline btn-sm" onclick="if(window.clearSalesDateFilter) window.clearSalesDateFilter()">
                         <i class="fas fa-times"></i> Clear
@@ -695,7 +709,10 @@ async function convertQuotationToInvoice(quotationId) {
             payment_mode: 'cash',
             payment_status: 'PAID'
         });
-        showToast('Quotation converted to invoice successfully!', 'success');
+        showToast(
+            'Quotation converted to invoice successfully. The invoice uses this branch for stock and eTIMS when submission is enabled.',
+            'success'
+        );
         // Switch to invoices page and show the new invoice
         loadSalesSubPage('invoices');
         // TODO: Optionally highlight the new invoice
@@ -864,7 +881,7 @@ function renderSalesInvoicesTableBody() {
                         ${status === 'BATCHED' || status === 'PAID' ? `
                             <button class="btn btn-sm btn-outline" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.printSalesInvoice) window.printSalesInvoice('${invoice.id}')" title="Print"><i class="fas fa-print"></i></button>
                         ` : ''}
-                        <button class="btn btn-sm btn-outline" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoice.id}', '${String(invoice.invoice_no || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="PDF"><i class="fas fa-file-pdf"></i></button>
+                        <button class="btn btn-sm btn-outline" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoice.id}', '${String(invoice.invoice_no || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="${invoice.kra_qr_code ? 'PDF (includes KRA QR when present)' : 'PDF'}"><i class="fas fa-file-pdf"></i></button>
                     </div>
                 </td>
             </tr>
@@ -1351,6 +1368,7 @@ async function renderCreateSalesInvoicePage() {
         <div class="invoice-context-banner invoice-context-sales" role="status">
             <i class="fas fa-file-invoice-dollar"></i> Sales Invoice — You are entering a sale to a customer (outgoing).
         </div>
+        <div id="salesEtimsBatchBanner" style="display: none;" class="no-print"></div>
         <div class="card sales-invoice-transaction-page" style="margin-bottom: 0; padding: 0; display: flex; flex-direction: column; min-height: calc(100vh - 6rem); max-height: calc(100vh - 6rem); box-shadow: none; border: 1px solid var(--border-color);">
             <!-- Transaction bar: Back (left) | Sales Invoice (center) | actions (right, edit only) -->
             <div style="display: flex; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); flex-shrink: 0;">
@@ -1409,6 +1427,10 @@ async function renderCreateSalesInvoicePage() {
     
     // Initialize TransactionItemsTable component
     initializeSalesInvoiceItemsTable();
+
+    if (typeof window.refreshSalesEtimsBatchBanner === 'function') {
+        void window.refreshSalesEtimsBatchBanner();
+    }
     
     // Set up payment mode change handler
     setTimeout(() => {
@@ -2835,7 +2857,7 @@ async function autoSaveQuotation() {
 }
 
 // Date filter functions
-function applySalesDateFilter() {
+async function applySalesDateFilter() {
     const presetEl = document.getElementById('salesDateFilter');
     if (presetEl) salesInvoicesDateFilter = presetEl.value || 'today';
     const userEl = document.getElementById('salesUserFilter');
@@ -2849,7 +2871,46 @@ function applySalesDateFilter() {
             if (toEl) toEl.value = range.dateTo;
         }
     }
-    renderSalesInvoicesTableBody();
+    // Important: Apply should call the server so invoice lookups (e.g. INV-BR-000201)
+    // work even when not present in the initial "last 30 days" cache.
+    try {
+        if (!window.API || !API.sales || !CONFIG || !CONFIG.BRANCH_ID) {
+            renderSalesInvoicesTableBody();
+            return;
+        }
+
+        const dateFrom = (document.getElementById('filterDateFrom')?.value || '').trim();
+        const dateTo = (document.getElementById('filterDateTo')?.value || '').trim();
+        const rawSearch = (document.getElementById('salesSearchInput')?.value || '').trim();
+        const normalized = rawSearch.toUpperCase().replace(/\s+/g, '');
+
+        // If it looks like an invoice number, use backend's targeted exact lookup (invoice_no).
+        // Examples: INV-BR-000201, INV-HQ-000123, etc.
+        const looksLikeInvoiceNo =
+            /^[A-Z]{2,6}-[A-Z]{1,6}-\d{3,}$/.test(normalized) ||
+            /^INV[A-Z0-9-]{3,}$/.test(normalized);
+
+        setSalesInvoicesApplyLoading(true);
+        const params = {
+            date_from: dateFrom || undefined,
+            date_to: dateTo || undefined,
+            limit: 100,
+        };
+        if (rawSearch && looksLikeInvoiceNo) {
+            params.invoice_no = normalized;
+            params.limit = 1;
+        }
+
+        salesInvoices = await API.sales.getBranchInvoices(CONFIG.BRANCH_ID, params);
+    } catch (err) {
+        console.error('Failed to apply sales filters:', err);
+        if (typeof window.showToast === 'function') {
+            window.showToast(err?.message || 'Failed to load sales invoices', 'error');
+        }
+    } finally {
+        setSalesInvoicesApplyLoading(false);
+        renderSalesInvoicesTableBody();
+    }
 }
 
 function clearSalesDateFilter() {
@@ -4531,6 +4592,45 @@ if (typeof window !== 'undefined') {
     window.updateSalesSubNavActiveState = updateSalesSubNavActiveState;
     window.createNewSalesInvoice = createNewSalesInvoice;
     window.renderCreateSalesInvoicePage = renderCreateSalesInvoicePage;
+    window.refreshSalesEtimsBatchBanner = async function refreshSalesEtimsBatchBanner() {
+        const host = document.getElementById('salesEtimsBatchBanner');
+        if (!host) return;
+        if (!CONFIG.BRANCH_ID || !API.etims || typeof API.etims.getBranchCredentials !== 'function') {
+            host.style.display = 'none';
+            host.innerHTML = '';
+            return;
+        }
+        const inv =
+            typeof currentInvoice !== 'undefined' && currentInvoice && currentInvoice.invoiceData
+                ? currentInvoice.invoiceData
+                : null;
+        const isDraft = inv && String(inv.status || '').toUpperCase() === 'DRAFT';
+        if (!isDraft) {
+            host.style.display = 'none';
+            host.innerHTML = '';
+            return;
+        }
+        try {
+            const st = await API.etims.getBranchCredentials(CONFIG.BRANCH_ID);
+            const warn =
+                (st.enabled && st.connection_status !== 'verified') || st.connection_status === 'failed';
+            if (warn) {
+                host.innerHTML =
+                    '<div class="alert alert-warning" style="margin: 0 0.75rem 0.5rem 0.75rem; padding: 0.5rem 0.75rem; font-size: 0.85rem;"><i class="fas fa-exclamation-triangle"></i> <strong>eTIMS:</strong> ' +
+                    (st.connection_status === 'failed'
+                        ? 'Last connection or submission check <strong>failed</strong>. Fix credentials and run <strong>Test eTIMS Connection</strong> in Settings → eTIMS before expecting KRA receipts.'
+                        : 'Submission is enabled but the branch is <strong>not verified</strong>. Run <strong>Test eTIMS Connection</strong> in Settings → eTIMS.') +
+                    '</div>';
+                host.style.display = 'block';
+            } else {
+                host.innerHTML = '';
+                host.style.display = 'none';
+            }
+        } catch (_) {
+            host.style.display = 'none';
+            host.innerHTML = '';
+        }
+    };
     window.saveSalesInvoice = saveSalesInvoice;
     window.applySalesDateFilter = applySalesDateFilter;
     window.clearSalesDateFilter = clearSalesDateFilter;

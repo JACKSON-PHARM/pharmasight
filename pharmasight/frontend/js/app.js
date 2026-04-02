@@ -124,6 +124,12 @@ function initializeAppShell() {
     console.log('[APP SHELL] Initializing app shell components...');
     
     try {
+        // Module UI (switcher + dynamic sidebar) is UI-only. It renders sidebar items
+        // and must run before we wire navigation so the initial menu matches the user's modules.
+        if (window.ModuleUI && typeof ModuleUI._bindComingSoonToast === 'function') {
+            ModuleUI._bindComingSoonToast();
+        }
+
         // Initialize navigation and menu toggle (only for app layout)
         initializeNavigation();
         initializeMenuToggle();
@@ -227,7 +233,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Load appropriate auth page
             // Ensure hash is set to login if it's pointing to an app route
             let route = routeHash.replace('#', '').split('?')[0] || 'login';
-            const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select'];
+            const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'patients', 'encounters', 'consultation'];
             if (!isAuthRoute_ && appRoutes.includes(route)) {
                 // Hash is pointing to app route but not authenticated - force login
                 route = 'login';
@@ -304,7 +310,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     
                     // Force hash to login immediately (before any async operations)
                     const currentHash = window.location.hash.replace('#', '');
-                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set', 'setup'];
+                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set', 'setup', 'patients', 'encounters', 'consultation'];
                     
                     if (appRoutes.includes(currentHash) || !currentHash || currentHash === '') {
                         console.log('[AUTH STATE CHANGE] Redirecting from app route to login (tenant-free URL):', currentHash);
@@ -590,6 +596,36 @@ async function startAppFlow() {
             }
         } catch (e) {
             console.warn('[APP FLOW] Tenant discovery skipped:', e);
+        }
+
+        // UI module visibility: company entitlements first, then switcher + sidebar
+        try {
+            if (window.ModuleUI) {
+                if (typeof ModuleUI.loadCompanyModules === 'function') {
+                    await ModuleUI.loadCompanyModules();
+                }
+                if (typeof ModuleUI.init === 'function') {
+                    await ModuleUI.init();
+                }
+            }
+        } catch (e) {
+            console.warn('[APP FLOW] Module UI init skipped:', e);
+        }
+
+        // Fetch roles for UI gating (platform admin, etc.)
+        try {
+            if (window.API && API.auth && typeof API.auth.me === 'function') {
+                const me = await API.auth.me();
+                window.__authMe = me || null;
+                window.__authMeRoles = Array.isArray(me?.roles) ? me.roles.map((r) => String(r).toLowerCase()) : [];
+            } else {
+                window.__authMe = null;
+                window.__authMeRoles = [];
+            }
+        } catch (e) {
+            console.warn('[APP FLOW] /api/auth/me failed:', e && e.message);
+            window.__authMe = null;
+            window.__authMeRoles = [];
         }
         
         // Check URL parameters first to determine flow type
@@ -1359,6 +1395,31 @@ async function loadPage(pageName) {
         window.__suppressToasts = false;
         return; // Navigation blocked
     }
+
+    const routeBaseForModule = String(pageName || '').split('?')[0] || '';
+    const authRoutesForModuleGate = ['login', 'password-set', 'password-reset', 'reset-password', 'tenant-invite-setup', 'setup'];
+    const isAuthPageForModuleGate = authRoutesForModuleGate.includes(routeBaseForModule);
+    const authenticatedForModuleGate = isAuthenticated();
+    if (
+        !window.__skipModuleRouteEnforce &&
+        authenticatedForModuleGate &&
+        !isAuthPageForModuleGate &&
+        window.ModuleUI &&
+        typeof window.ModuleUI.getRedirectIfOutsideModule === 'function'
+    ) {
+        const redir = window.ModuleUI.getRedirectIfOutsideModule(routeBaseForModule);
+        if (redir) {
+            window.__skipModuleRouteEnforce = true;
+            loadPageInProgress = false;
+            window.__suppressToasts = false;
+            try {
+                await loadPage(redir);
+            } finally {
+                window.__skipModuleRouteEnforce = false;
+            }
+            return;
+        }
+    }
     
     currentPage = pageName;
     
@@ -1700,6 +1761,11 @@ async function loadPage(pageName) {
         case 'landing':
             if (window.loadLanding) window.loadLanding();
             break;
+        case 'module-coming-soon':
+            if (typeof window.loadModuleComingSoon === 'function') {
+                window.loadModuleComingSoon();
+            }
+            break;
         case 'dashboard':
             if (window.loadDashboard) window.loadDashboard();
             break;
@@ -1771,6 +1837,31 @@ async function loadPage(pageName) {
                 if (page) {
                     page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Cashbook</h3><p>Cashbook module is not available. Please refresh the page.</p></div>';
                 }
+            }
+            break;
+        case 'patients':
+            if (typeof window.loadClinicPatients === 'function') {
+                window.loadClinicPatients();
+            }
+            break;
+        case 'platform-admin-companies':
+            if (typeof window.loadPlatformAdminCompanies === 'function') {
+                window.loadPlatformAdminCompanies();
+            }
+            break;
+        case 'platform-admin-company':
+            if (typeof window.loadPlatformAdminCompany === 'function') {
+                window.loadPlatformAdminCompany();
+            }
+            break;
+        case 'encounters':
+            if (typeof window.loadClinicEncounters === 'function') {
+                window.loadClinicEncounters();
+            }
+            break;
+        case 'consultation':
+            if (typeof window.loadClinicConsultation === 'function') {
+                window.loadClinicConsultation();
             }
             break;
         case 'items':

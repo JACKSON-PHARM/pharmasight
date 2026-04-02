@@ -1,5 +1,10 @@
 """
 Inventory API routes
+
+TODO(company_modules): `company_modules` may define a separate ``inventory`` flag (default off when
+no row). These routes are part of the pharmacy operational surface; they use require_module("pharmacy")
+until product policy explicitly splits inventory entitlements from pharmacy without breaking existing
+deployments.
 """
 from datetime import date, timedelta, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,7 +14,14 @@ from typing import List, Optional
 from uuid import UUID
 from decimal import Decimal
 
-from app.dependencies import get_tenant_db, get_current_user, get_effective_company_id_for_user
+from app.dependencies import (
+    get_tenant_db,
+    get_current_user,
+    get_effective_company_id_for_user,
+    ensure_user_has_branch_access,
+    _user_has_permission,
+)
+from app.module_enforcement import require_module
 from app.models import Item, Branch, InventoryLedger
 from app.schemas.inventory import StockBalance, StockAvailability, BatchStock
 from app.services.inventory_service import InventoryService, _unit_for_display
@@ -17,7 +29,7 @@ from app.services.item_units_helper import get_stock_display_unit
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.pricing_service import PricingService
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 
 def _require_branch_belongs_to_user_company(db: Session, branch, user) -> None:
@@ -27,6 +39,20 @@ def _require_branch_belongs_to_user_company(db: Session, branch, user) -> None:
     effective_company_id = get_effective_company_id_for_user(db, user)
     if effective_company_id is not None and str(branch.company_id) != str(effective_company_id):
         raise HTTPException(status_code=403, detail="Access denied to this branch")
+
+
+def _inventory_branch_ubr_and_item_company(
+    db: Session, user, item_id: UUID, branch_id: UUID
+) -> None:
+    """Branch exists, belongs to user's company, user has UBR; item belongs to branch's company."""
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    _require_branch_belongs_to_user_company(db, branch, user)
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item or str(item.company_id) != str(branch.company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
 
 
 @router.get("/stock/{item_id}/{branch_id}", response_model=dict)
@@ -41,6 +67,10 @@ def get_current_stock(
     Numeric stock is ALWAYS retail/base quantity.
     retail_unit is the correct label for the numeric value.
     """
+    user, _ = current_user_and_db
+    _inventory_branch_ubr_and_item_company(db, user, item_id, branch_id)
+    if not _user_has_permission(db, user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
     stock = InventoryService.get_current_stock(db, item_id, branch_id)
     item = db.query(Item).filter(Item.id == item_id).first()
     retail_unit = _unit_for_display(get_stock_display_unit(item), "piece") if item else "piece"
@@ -64,6 +94,10 @@ def get_stock_availability(
     db: Session = Depends(get_tenant_db),
 ):
     """Get stock availability with unit breakdown and batch breakdown"""
+    user, _ = current_user_and_db
+    _inventory_branch_ubr_and_item_company(db, user, item_id, branch_id)
+    if not _user_has_permission(db, user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
     availability = InventoryService.get_stock_availability(db, item_id, branch_id)
     if not availability:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -78,6 +112,10 @@ def get_stock_by_batch(
     db: Session = Depends(get_tenant_db),
 ):
     """Get stock breakdown by batch (FEFO order)"""
+    user, _ = current_user_and_db
+    _inventory_branch_ubr_and_item_company(db, user, item_id, branch_id)
+    if not _user_has_permission(db, user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
     batches = InventoryService.get_stock_by_batch(db, item_id, branch_id)
     return batches
 
@@ -92,6 +130,10 @@ def allocate_stock_fefo(
     db: Session = Depends(get_tenant_db),
 ):
     """Allocate stock using FEFO"""
+    user, _ = current_user_and_db
+    _inventory_branch_ubr_and_item_company(db, user, item_id, branch_id)
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=403, detail="Permission denied")
     try:
         # Convert to base units
         quantity_base = InventoryService.convert_to_base_units(
@@ -117,6 +159,10 @@ def check_stock_availability(
     db: Session = Depends(get_tenant_db),
 ):
     """Check if stock is available"""
+    user, _ = current_user_and_db
+    _inventory_branch_ubr_and_item_company(db, user, item_id, branch_id)
+    if not _user_has_permission(db, user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
     try:
         is_available, available, required = InventoryService.check_stock_availability(
             db, item_id, branch_id, quantity, unit_name
@@ -143,6 +189,9 @@ def get_all_stock(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
     _require_branch_belongs_to_user_company(db, branch, current_user)
+    ensure_user_has_branch_access(db, current_user.id, branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     # 1) Get item_ids with stock > 0 in ONE query (avoids loading all company items)
     stock_aggregates = (
@@ -196,6 +245,9 @@ def get_expiring_count(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
     _require_branch_belongs_to_user_company(db, branch, current_user)
+    ensure_user_has_branch_access(db, current_user.id, branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     cutoff = date.today() + timedelta(days=days)
 
@@ -241,6 +293,9 @@ def get_expiring_list(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
     _require_branch_belongs_to_user_company(db, branch, current_user)
+    ensure_user_has_branch_access(db, current_user.id, branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     cutoff = date.today() + timedelta(days=days)
 
@@ -314,6 +369,9 @@ def get_total_stock_value(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
     _require_branch_belongs_to_user_company(db, branch, current_user)
+    ensure_user_has_branch_access(db, current_user.id, branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     company_item_ids = list(
         db.query(Item.id).filter(Item.company_id == branch.company_id).all()
@@ -372,6 +430,9 @@ def get_items_in_stock_count(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
     _require_branch_belongs_to_user_company(db, branch, current_user)
+    ensure_user_has_branch_access(db, current_user.id, branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     company_item_ids = db.query(Item.id).filter(Item.company_id == branch.company_id)
     subq = (
@@ -402,6 +463,9 @@ def get_all_stock_overview(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
     _require_branch_belongs_to_user_company(db, branch, current_user)
+    ensure_user_has_branch_access(db, current_user.id, branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     items = db.query(Item).filter(Item.company_id == branch.company_id).all()
     
@@ -466,6 +530,9 @@ def get_stock_valuation(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
     _require_branch_belongs_to_user_company(db, branch, current_user)
+    ensure_user_has_branch_access(db, current_user.id, branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     # Parse as_of_date; default to today (use end of day for ledger filter)
     if as_of_date and as_of_date.strip():

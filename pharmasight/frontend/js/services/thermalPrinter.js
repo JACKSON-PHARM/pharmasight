@@ -92,6 +92,39 @@
     }
 
     /**
+     * Generate QR PNG data URL from kraQrCode using qrcode.vendor.iife.js.
+     * Returns null when QRCode library is not available.
+     * @param {string} text
+     * @returns {Promise<string|null>}
+     */
+    async function buildQrImageData(text) {
+        const value = (text != null && text !== '') ? String(text) : '';
+        if (!value) return null;
+        // QRCode global comes from js/qrcode.vendor.iife.js
+        if (typeof QRCode === 'undefined') return null;
+        try {
+            return await new Promise((resolve, reject) => {
+                try {
+                    const canvas = document.createElement('canvas');
+                    QRCode.toCanvas(canvas, value, { width: 180 }, function (err) {
+                        if (err) return reject(err);
+                        try {
+                            const url = canvas.toDataURL('image/png');
+                            resolve(url);
+                        } catch (e) {
+                            reject(e);
+                        }
+                    });
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        } catch (_) {
+            return null;
+        }
+    }
+
+    /**
      * Build ESC/POS receipt from structured data.
      * @param {Object} data - Receipt/invoice data
      * @param {string} [data.companyName] - Company name
@@ -173,9 +206,17 @@
         if (data.transactionMessage) add(truncate(fmt(data.transactionMessage), maxChars));
         if (data.servedBy) add(truncate(`Served by: ${fmt(data.servedBy)}`, maxChars));
         add(truncate(`Generated: ${fmt(data.generatedTime)}`, maxChars));
+        // KRA receipt / verification section (text only; QR image printed separately when available)
+        if (data.kraReceiptNumber) {
+            add('');
+            add(truncate(`KRA Receipt: ${fmt(data.kraReceiptNumber)}`, maxChars));
+        }
+        if (data.kraQrCode) {
+            add(truncate('Scan to verify with KRA', maxChars));
+        }
         add('');
         add(CMD_CENTER);
-        add(centerLine('powered by pharmaSight solutions', maxChars));
+        add(centerLine('powered by PharmaSight Solutions', maxChars));
         add(CMD_LEFT);
         add('');
         add(CMD_CUT);
@@ -201,8 +242,16 @@
             await connectPrinter();
         }
         const rawData = buildEscPosReceipt(data);
+        const payload = rawData.slice(); // text receipt
+        // Optional QR image (printer-agnostic bitmap via QZ Tray)
+        if (data.kraQrCode) {
+            const qrDataUrl = await buildQrImageData(data.kraQrCode).catch(() => null);
+            if (qrDataUrl) {
+                payload.push({ type: 'image', data: qrDataUrl, options: { language: 'escp', dotDensity: 'single' } });
+            }
+        }
         const config = qz.configs.create(name, { encoding: 'UTF-8' });
-        await qz.print(config, rawData);
+        await qz.print(config, payload);
     }
 
     if (typeof window !== 'undefined') {

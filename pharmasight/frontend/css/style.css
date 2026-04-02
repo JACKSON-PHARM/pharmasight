@@ -831,6 +831,112 @@ body {
     gap: 1rem;
 }
 
+/* Module switcher (top navigation) */
+.module-switcher {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: min(100%, 520px);
+    padding: 0.25rem 0.45rem;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: rgba(248, 250, 252, 0.85);
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+}
+.module-switcher::-webkit-scrollbar {
+    height: 5px;
+}
+.module-switcher::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.45);
+    border-radius: 999px;
+}
+.module-switcher:empty {
+    display: none;
+}
+.module-switcher-btn {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0.4rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    border-bottom: 2px solid transparent;
+}
+.module-switcher-btn:hover {
+    background: rgba(37, 99, 235, 0.08);
+    color: var(--primary-color);
+}
+.module-switcher-btn.active {
+    background: rgba(37, 99, 235, 0.18);
+    color: var(--primary-color, #2563eb);
+    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
+    border-bottom-color: rgba(37, 99, 235, 0.55);
+}
+
+/* Sidebar: module section labels + empty module hint */
+.nav-section-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-weight: 800;
+    color: var(--text-secondary);
+    padding: 0.85rem 1rem 0.3rem;
+    margin: 0;
+    user-select: none;
+}
+.nav-sidebar-empty-hint {
+    padding: 1.1rem 1.25rem;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+/* Placeholder page for modules without real pages yet */
+.module-coming-soon-card {
+    max-width: 520px;
+    margin: 2rem auto;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow);
+}
+.module-coming-soon-inner {
+    padding: 2rem 1.75rem;
+    text-align: center;
+}
+.module-coming-soon-icon {
+    font-size: 2.25rem;
+    color: var(--primary-color);
+    margin-bottom: 0.75rem;
+    opacity: 0.9;
+}
+.module-coming-soon-inner h2 {
+    margin: 0 0 0.5rem;
+    font-size: 1.35rem;
+}
+.module-coming-soon-lead {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin: 0 0 0.75rem;
+    color: var(--text-primary);
+}
+.module-coming-soon-hint {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
 /* Invoice context banners: clarify Sales vs Supplier invoice pages */
 .invoice-context-banner {
     padding: 0.4rem 0.75rem;

@@ -10,7 +10,13 @@ from sqlalchemy import and_, or_, func, desc
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta
-from app.dependencies import get_tenant_db, get_current_user
+from app.dependencies import (
+    get_tenant_db,
+    get_current_user,
+    get_effective_company_id_for_user,
+    require_company_match,
+)
+from app.module_enforcement import require_module
 from app.config import settings
 from app.models import (
     StockTakeSession, StockTakeCount, StockTakeCounterLock, StockTakeAdjustment,
@@ -35,7 +41,7 @@ from app.services.stock_validation_service import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 
 # ============================================
@@ -917,21 +923,42 @@ def create_count(
 def list_counts(
     session_id: UUID,
     counter_id: Optional[UUID] = Query(None, description="Filter by counter"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
-    """List counts for a session"""
-    query = db.query(StockTakeCount).filter(
-        StockTakeCount.session_id == session_id
+    """List counts for a session (scoped to the authenticated user's company)."""
+    user, _ = current_user_and_db
+    user_company_id = get_effective_company_id_for_user(db, user)
+    if user_company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot resolve company for this request",
+        )
+    session = (
+        db.query(StockTakeSession)
+        .filter(
+            StockTakeSession.id == session_id,
+            StockTakeSession.company_id == user_company_id,
+        )
+        .first()
     )
-    
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    query = db.query(StockTakeCount).filter(StockTakeCount.session_id == session_id)
+
     if counter_id:
         query = query.filter(StockTakeCount.counted_by == counter_id)
-    
+
     counts = query.order_by(desc(StockTakeCount.counted_at)).all()
-    
+
     result = []
     for count in counts:
-        item = db.query(Item).filter(Item.id == count.item_id).first()
+        item = (
+            db.query(Item)
+            .filter(Item.id == count.item_id, Item.company_id == user_company_id)
+            .first()
+        )
         counter = db.query(User).filter(User.id == count.counted_by).first()
         
         result.append(StockTakeCountResponse(
@@ -1415,7 +1442,8 @@ def check_draft_documents(
 def start_branch_stock_take(
     branch_id: UUID,
     user_id: UUID = Query(None, description="User ID starting the stock take (optional)"),
-    db: Session = Depends(get_tenant_db)
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
 ):
     """
     Start stock take for a branch (automatic participation)
@@ -1428,6 +1456,9 @@ def start_branch_stock_take(
     a branch that is in stock take mode.
     """
     try:
+        user, _ = current_user_and_db
+        user_company_id = get_effective_company_id_for_user(db, user)
+
         # Check for existing active session
         existing = db.query(StockTakeSession).filter(
             and_(
@@ -1443,11 +1474,16 @@ def start_branch_stock_take(
                 detail="Branch already has an active stock take session"
             )
         
-        # Get branch
+        # Get branch and enforce company isolation
         branch = db.query(Branch).filter(Branch.id == branch_id).first()
         if not branch:
             logger.error(f"Branch {branch_id} not found when starting stock take")
             raise HTTPException(status_code=404, detail="Branch not found")
+        require_company_match(
+            branch.company_id,
+            user_company_id,
+            message="Access denied to this branch",
+        )
         
         # Generate INTERNAL session code (database requirement - NOT user-facing)
         # IMPORTANT: Users are automatically onboarded - they NEVER see or use this code
@@ -1484,12 +1520,13 @@ def start_branch_stock_take(
         
         # Create session with auto-join enabled (all users can participate)
         # Empty allowed_counters means all users can participate
+        creator_id = user_id if user_id is not None else user.id
         new_session = StockTakeSession(
             company_id=branch.company_id,
             branch_id=branch_id,
             session_code=session_code,
             status='ACTIVE',  # Start immediately
-            created_by=user_id,  # User who started it (or None if system)
+            created_by=creator_id,
             allowed_counters=[],  # Empty = all users can participate
             assigned_shelves={},
             is_multi_user=True,

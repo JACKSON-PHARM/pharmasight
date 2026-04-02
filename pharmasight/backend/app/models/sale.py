@@ -41,6 +41,19 @@ class SalesInvoice(Base):
     created_by = Column(UUID(as_uuid=True), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+    # eTIMS / KRA (populated after batch + async submit; snapshot lines set at batch)
+    kra_receipt_number = Column(String(100), nullable=True)
+    kra_signature = Column(Text, nullable=True)
+    kra_qr_code = Column(Text, nullable=True)
+    submission_status = Column(String(30), nullable=True)
+    kra_submitted_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    kra_last_error = Column(Text, nullable=True)
+    # OPD: optional link to clinic encounter (draft invoice opened at visit start)
+    encounter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("encounters.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # Relationships
     company = relationship("Company")
@@ -50,6 +63,7 @@ class SalesInvoice(Base):
     payments = relationship("Payment", back_populates="sales_invoice", cascade="all, delete-orphan")
     invoice_payments = relationship("InvoicePayment", back_populates="sales_invoice", cascade="all, delete-orphan")
     credit_notes = relationship("CreditNote", back_populates="original_invoice")
+    encounter = relationship("Encounter", foreign_keys="[SalesInvoice.encounter_id]")
 
     __table_args__ = (
         {"comment": "KRA-compliant sales document. Immutable after creation."},
@@ -81,6 +95,12 @@ class SalesInvoiceItem(Base):
     item_name = Column(String(255), nullable=True)
     item_code = Column(String(100), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    # eTIMS line snapshot (set at invoice batch; immutable once submission_status is set on parent invoice)
+    vat_cat_cd = Column(String(20), nullable=True)
+    tax_ty_cd = Column(String(20), nullable=True)
+    item_cls_cd = Column(String(50), nullable=True)
+    pkg_unit_cd = Column(String(20), nullable=True)
+    qty_unit_cd = Column(String(20), nullable=True)
 
     # Relationships
     sales_invoice = relationship("SalesInvoice", back_populates="items")

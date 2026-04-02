@@ -11,7 +11,9 @@ from pydantic import BaseModel
 from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, require_settings_edit, get_current_user, get_effective_company_id_for_user
 from app.models.tenant import Tenant
 from app.models.company import Company, Branch, BranchSetting
+from app.models.company_module import CompanyModule
 from app.models.settings import CompanySetting
+from app.module_metadata import get_core_modules
 from app.schemas.company import (
     CompanyCreate, CompanyResponse, CompanyUpdate,
     BranchCreate, BranchResponse, BranchUpdate,
@@ -31,6 +33,17 @@ from app.services.tenant_storage_service import (
 from app.services.plan_context import get_tenant_plan_context
 
 router = APIRouter()
+
+# Business + clinical modules returned by GET /api/company/modules (stable order for clients).
+# Core modules are implicit and must NOT appear here.
+_COMPANY_MODULE_ENTITLEMENT_KEYS: List[str] = [
+    "pharmacy",
+    "inventory",
+    "finance",
+    "clinic",
+    "lab",
+    "billing",
+]
 
 # Company setting keys that affect POS snapshot (margin, VAT, category-level): enqueue bulk refresh
 BULK_IMPACT_SETTING_KEYS = frozenset({"pricing_settings", "report_settings"})
@@ -101,6 +114,72 @@ def create_company(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating company: {str(e)}"
         )
+
+
+@router.get("/company/modules")
+def get_company_modules_entitlements(
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+) -> Dict[str, Any]:
+    """
+    Returns only licensed (business/clinical) modules.
+
+    - Core modules are implicit and never included in the response.
+    - Backward compatible behavior: if there is no row for ``pharmacy``, it is treated as enabled.
+    """
+    user = current_user_and_db[0]
+    company_id = get_effective_company_id_for_user(db, user)
+
+    def _row(name: str) -> Dict[str, Any]:
+        return {"name": name, "enabled": True}
+
+    if company_id is None:
+        # No company context: keep UI functional (pharmacy default), omit core modules.
+        return {"modules": [_row("pharmacy")]}
+
+    rows = (
+        db.query(CompanyModule)
+        .filter(
+            CompanyModule.company_id == company_id,
+            CompanyModule.is_enabled.is_(True),
+        )
+        .all()
+    )
+
+    enabled_names: set[str] = set()
+    for r in rows or []:
+        key = str(r.module_name or "").strip().lower()
+        if not key:
+            continue
+        enabled_names.add(key)
+
+    # Backward compatibility: missing `pharmacy` row means pharmacy is enabled.
+    pharmacy_row = (
+        db.query(CompanyModule.id)
+        .filter(
+            CompanyModule.company_id == company_id,
+            CompanyModule.module_name == "pharmacy",
+        )
+        .first()
+    )
+    if pharmacy_row is None:
+        enabled_names.add("pharmacy")
+
+    # Core modules are implicit platform capabilities: never return them from company licensing.
+    core_modules = get_core_modules(db)
+    enabled_names = {n for n in enabled_names if n not in core_modules}
+
+    ordered: List[Dict[str, Any]] = []
+    for name in _COMPANY_MODULE_ENTITLEMENT_KEYS:
+        if name in enabled_names:
+            ordered.append(_row(name))
+
+    known = set(_COMPANY_MODULE_ENTITLEMENT_KEYS)
+    for name in sorted(enabled_names):
+        if name not in known:
+            ordered.append(_row(name))
+
+    return {"modules": ordered}
 
 
 @router.get("/companies", response_model=List[CompanyResponse])

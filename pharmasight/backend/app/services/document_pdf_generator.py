@@ -24,6 +24,7 @@ from reportlab.platypus import (
     Spacer,
     Table,
     TableStyle,
+    Image as RLImage,
 )
 
 from app.services.document_pdf_commons import (
@@ -41,6 +42,30 @@ DOC_TYPE_QUOTATION = "quotation"
 DOC_TYPE_PURCHASE_ORDER = "purchase_order"
 DOC_TYPE_SUPPLIER_INVOICE = "supplier_invoice"
 DOC_TYPE_GRN = "grn"
+
+
+def kra_qr_png_bytes(kra_qr_code: Optional[str]) -> Optional[bytes]:
+    """Build PNG bytes for PDF: base64 PNG payload or QR from string."""
+    if not kra_qr_code or not str(kra_qr_code).strip():
+        return None
+    s = str(kra_qr_code).strip()
+    try:
+        import base64
+
+        raw = base64.b64decode(s, validate=False)
+        if len(raw) > 24 and raw[:8] == b"\x89PNG\r\n\x1a\x0a":
+            return raw
+    except Exception:
+        pass
+    try:
+        import qrcode
+
+        img = qrcode.make(s, box_size=3, border=2)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
 
 
 def _format_date(d) -> str:
@@ -196,6 +221,21 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
         flow.append(Paragraph(f"<b>Net: {total_exclusive:,.2f}</b>", st["detail"]))
         flow.append(Paragraph(f"<b>VAT: {vat_amount:,.2f}</b>", st["detail"]))
         flow.append(Paragraph(f"<b>Total: {total_inclusive:,.2f}</b>", st["detail"]))
+        kra_rn = payload.get("kra_receipt_number")
+        kra_sig = payload.get("kra_signature")
+        kra_qr_png = payload.get("kra_qr_png_bytes")
+        if kra_rn or kra_sig or kra_qr_png:
+            flow.append(Spacer(1, 5 * mm))
+            flow.append(Paragraph("<b>KRA eTIMS</b>", st["detail"]))
+            if kra_rn:
+                flow.append(Paragraph(f"Receipt no.: {kra_rn}", st["detail"]))
+            if kra_sig:
+                sig_s = str(kra_sig)
+                sig_short = (sig_s[:200] + "…") if len(sig_s) > 200 else sig_s
+                flow.append(Paragraph(f"Signature / control data: {sig_short}", st["detail"]))
+            if kra_qr_png:
+                flow.append(Spacer(1, 2 * mm))
+                flow.append(RLImage(BytesIO(kra_qr_png), width=38 * mm, height=38 * mm))
     elif doc_type == DOC_TYPE_PURCHASE_ORDER:
         total_amount = payload.get("total_amount") or Decimal("0")
         flow.append(Paragraph(f"<b>Total: {total_amount:,.2f}</b>", st["detail"]))
@@ -416,6 +456,9 @@ def build_sales_invoice_pdf(
     prepared_by: Optional[str] = None,
     printed_by: Optional[str] = None,
     served_by: Optional[str] = None,
+    kra_receipt_number: Optional[str] = None,
+    kra_signature: Optional[str] = None,
+    kra_qr_code: Optional[str] = None,
 ) -> bytes:
     """Build A4 PDF for a sales invoice. Logo right, company left; footer: prepared/printed/served, till; no status."""
     items = items or []
@@ -455,6 +498,9 @@ def build_sales_invoice_pdf(
         "vat_amount": vat_amount,
         "total_inclusive": total_inclusive,
         "notes": notes,
+        "kra_receipt_number": (kra_receipt_number or "").strip() or None,
+        "kra_signature": (kra_signature or "").strip() or None,
+        "kra_qr_png_bytes": kra_qr_png_bytes(kra_qr_code),
     }
     return build_document_pdf(DOC_TYPE_SALES_INVOICE, payload)
 

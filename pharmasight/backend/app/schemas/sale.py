@@ -67,6 +67,12 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     expiry_date: Optional[str] = None  # ISO date from ledger when batched, for receipt print
     batch_allocations: Optional[List[BatchAllocationDisplay]] = None  # All batches used (FEFO) for receipt/PDF
     created_at: datetime
+    # eTIMS line snapshot (set at batch)
+    vat_cat_cd: Optional[str] = None
+    tax_ty_cd: Optional[str] = None
+    item_cls_cd: Optional[str] = None
+    pkg_unit_cd: Optional[str] = None
+    qty_unit_cd: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -132,6 +138,13 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     created_by_username: Optional[str] = None
     # Short-lived signed URL for company logo (for print/HTML); only when logo in tenant-assets
     logo_url: Optional[str] = None
+    # eTIMS / KRA (submission layer)
+    kra_receipt_number: Optional[str] = None
+    kra_signature: Optional[str] = None
+    kra_qr_code: Optional[str] = None
+    submission_status: Optional[str] = None
+    kra_submitted_at: Optional[datetime] = None
+    kra_last_error: Optional[str] = None
 
     class Config:
         from_attributes = True

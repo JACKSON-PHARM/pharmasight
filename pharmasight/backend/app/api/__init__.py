@@ -9,6 +9,8 @@ from .quotations import router as quotations_router
 from .stock_take import router as stock_take_router
 from .order_book import router as order_book_router
 from .branch_inventory import router as branch_inventory_router
+from .modules import router as modules_router
+from .clinic import router as clinic_router
 
 __all__ = [
     "items_router",
@@ -19,4 +21,6 @@ __all__ = [
     "stock_take_router",
     "order_book_router",
     "branch_inventory_router",
+    "modules_router",
+    "clinic_router",
 ]

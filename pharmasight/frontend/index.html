@@ -164,6 +164,8 @@
                         <span id="statusBranch">Not Set</span>
                     </div>
                 </div>
+                <!-- Module switcher (UI visibility only; modules fetched from /api/modules/me) -->
+                <div id="moduleSwitcher" class="module-switcher no-print" aria-label="Module switcher"></div>
                 <!-- Global Item Search + quick actions (Add Sale, Add Supplier Invoice) in one row -->
                 <div id="globalItemSearchBar" class="global-item-search-bar top-bar-search">
                     <div class="global-item-search-wrap">
@@ -253,6 +255,7 @@
                         </a>
                     </div>
                 </div>
+                <div id="module-coming-soon" class="page"></div>
                 <div id="dashboard" class="page">
                     <h2>Dashboard</h2>
                     <div class="dashboard-toolbar">
@@ -344,8 +347,13 @@
                 <div id="stock-take" class="page"></div>
                 <div id="expenses" class="page"></div>
                 <div id="cashbook" class="page"></div>
+                <div id="patients" class="page"></div>
+                <div id="encounters" class="page"></div>
+                <div id="consultation" class="page"></div>
                 <div id="reports" class="page"></div>
                 <div id="settings" class="page"></div>
+                <div id="platform-admin-companies" class="page"></div>
+                <div id="platform-admin-company" class="page"></div>
                 <div id="branch-select" class="page"></div>
             </div>
         </main>
@@ -394,7 +402,7 @@
         
         // Track script loading
         let scriptsLoaded = 0;
-        const totalScripts = 11; // Count of script tags after this one
+        const totalScripts = 12; // Count of script tags after this one
         
         // Monitor DOMContentLoaded
         if (document.readyState === 'loading') {
@@ -436,8 +444,10 @@
     <script src="js/utils.js?v=8"></script>
     <!-- QZ Tray for thermal ESC/POS printing (optional; thermal prints fall back to browser if not loaded) -->
     <script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2/qz-tray.js"></script>
-    <script src="js/services/thermalPrinter.js?v=1"></script>
-    <script src="js/services/printService.js?v=1"></script>
+    <!-- QR code generator (used for PDF and thermal receipts) -->
+    <script src="js/qrcode.vendor.iife.js"></script>
+    <script src="js/services/thermalPrinter.js?v=2"></script>
+    <script src="js/services/printService.js?v=2"></script>
     <script src="js/utils/itemMapper.js?v=2"></script>
     <script src="js/components/EmptyStateWatermark.js?v=1"></script>
     <!-- Security Utilities -->
@@ -446,6 +456,8 @@
     <script src="js/utils/login_security.js?v=1"></script>
     <!-- Permissions utilities -->
     <script src="js/utils/permissions.js?v=1"></script>
+    <!-- Module switcher + dynamic sidebar (UI-only visibility) -->
+    <script src="js/services/module_ui.js?v=1"></script>
     <!-- Stock Take (before app.js so loadStockTake exists when router runs) -->
     <script src="js/pages/stock_take.js?v=11"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
@@ -475,9 +487,13 @@
     <script src="js/pages/purchases.js?v=24"></script>
     <script src="js/pages/expenses.js?v=1"></script>
     <script src="js/pages/cashbook.js?v=1"></script>
+    <script src="js/pages/clinic.js?v=1"></script>
     <script src="js/pages/inventory.js?v=9"></script>
     <script src="js/pages/reports.js?v=1"></script>
+    <script src="js/pages/settings_etims.js?v=3"></script>
     <script src="js/pages/settings.js?v=8"></script>
+    <script src="js/pages/platform_admin_companies.js?v=1"></script>
+    <script src="js/pages/platform_admin_company.js?v=1"></script>
     <script src="js/pages/change_password.js?v=1"></script>
 </body>
 </html>

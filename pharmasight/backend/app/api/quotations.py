@@ -33,6 +33,7 @@ from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_multiplier_from_item, get_unit_display_short
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.etims.invoice_etims_snapshot import apply_etims_snapshots_on_batch
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
 from app.services.tenant_storage_service import get_signed_url
 from app.utils.vat import vat_rate_to_percent
@@ -770,8 +771,12 @@ def convert_quotation_to_invoice(
             vat_amount=q_item.vat_amount,
             line_total_exclusive=line_total_exclusive,
             line_total_inclusive=line_total_inclusive,
-            unit_cost_used=unit_cost_used
+            unit_cost_used=unit_cost_used,
+            item_name=(item.name if item else None) or "",
+            item_code=(item.sku or "") if item else "",
         )
+        if item is not None:
+            invoice_item.item = item
         invoice_items.append(invoice_item)
         
         # Create ledger entries (negative for sales)
@@ -854,7 +859,13 @@ def convert_quotation_to_invoice(
     db_invoice.batched = True
     db_invoice.batched_by = quotation.created_by
     db_invoice.batched_at = datetime.utcnow()
-    
+
+    for inv_item in invoice_items:
+        if getattr(inv_item, "item", None) is None:
+            inv_item.item = db.query(Item).filter(Item.id == inv_item.item_id).first()
+    apply_etims_snapshots_on_batch(db_invoice)
+    db.flush()
+
     db.commit()
     
     # After stock is reduced, check if items should be added to order book

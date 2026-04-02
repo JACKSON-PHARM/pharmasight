@@ -5,6 +5,7 @@ from app.database import Base
 
 # Import all models
 from .company import Company, Branch, BranchSetting
+from .company_module import CompanyModule
 from .user import User, UserRole, UserBranchRole
 from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier, PricingSettings
 from .inventory import InventoryLedger, ItemMovement
@@ -38,12 +39,15 @@ from .branch_inventory import (
     BranchReceipt,
     BranchReceiptLine,
 )
+from .clinic import Patient, Encounter, EncounterNote, ClinicOrder, ClinicOrderItem
+from .etims_sync_cursor import EtimsSyncCursor
 
 __all__ = [
     "Base",
     "Company",
     "Branch",
     "BranchSetting",
+    "CompanyModule",
     "User",
     "UserRole",
     "UserBranchRole",
@@ -100,4 +104,10 @@ __all__ = [
     "SupplierReturnLine",
     "SupplierLedgerEntry",
     "CashbookEntry",
+    "Patient",
+    "Encounter",
+    "EncounterNote",
+    "ClinicOrder",
+    "ClinicOrderItem",
+    "EtimsSyncCursor",
 ]

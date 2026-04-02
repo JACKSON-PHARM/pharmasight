@@ -4,11 +4,22 @@ Purchases API routes (GRN and Supplier Invoices)
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
-from app.dependencies import get_tenant_db, get_current_user, get_tenant_optional, get_tenant_or_default, require_document_belongs_to_user_company
+from app.dependencies import (
+    get_tenant_db,
+    get_current_user,
+    get_tenant_optional,
+    get_tenant_or_default,
+    require_document_belongs_to_user_company,
+    require_company_match,
+    get_effective_company_id_for_user,
+    ensure_user_has_branch_access,
+    _user_has_permission,
+)
+from app.module_enforcement import require_module
 from app.database_master import get_master_db
 from app.models.tenant import Tenant
 from app.models.settings import CompanySetting
@@ -66,7 +77,34 @@ import json
 import sqlalchemy.exc
 import httpx
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
+
+
+def _purchase_company_branch_perm(
+    db: Session,
+    user: User,
+    company_id: UUID,
+    branch_id: UUID,
+    *,
+    permission: str,
+) -> None:
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, permission):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+
+def _purchase_after_document(db: Session, user: User, document, permission: str) -> None:
+    branch_id = getattr(document, "branch_id", None)
+    if branch_id is not None:
+        ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, permission):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
 
 def _legacy_path_tenant_fallback_enabled() -> bool:
@@ -207,6 +245,11 @@ def create_grn(
     This updates inventory ledger with stock and cost.
     VAT is handled separately in Purchase Invoice.
     """
+    user, _ = current_user_and_db
+    _purchase_company_branch_perm(
+        db, user, grn.company_id, grn.branch_id, permission="purchases.create"
+    )
+
     # Generate GRN number
     grn_no = DocumentService.get_grn_number(
         db, grn.company_id, grn.branch_id
@@ -432,11 +475,18 @@ def get_grn_pdf(
     db: Session = Depends(get_tenant_db),
 ):
     """Generate and return GRN as PDF (Download PDF). On-demand only."""
+    user, _ = current_user_and_db
     grn = db.query(GRN).options(
         selectinload(GRN.items).selectinload(GRNItem.item)
     ).filter(GRN.id == grn_id).first()
     if not grn:
         raise HTTPException(status_code=404, detail="GRN not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(grn.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="GRN not found")
+    ensure_user_has_branch_access(db, user.id, grn.branch_id)
+    if not _user_has_permission(db, user.id, "purchases.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     company = db.query(Company).filter(Company.id == grn.company_id).first()
     branch = db.query(Branch).filter(Branch.id == grn.branch_id).first()
     supplier_name = grn.supplier.name if grn.supplier else "—"
@@ -478,12 +528,19 @@ def get_grn(
     db: Session = Depends(get_tenant_db),
 ):
     """Get GRN by ID"""
+    user, _ = current_user_and_db
     # Eagerly load items relationship to avoid lazy loading issues
     grn = db.query(GRN).options(
         selectinload(GRN.items)
     ).filter(GRN.id == grn_id).first()
     if not grn:
         raise HTTPException(status_code=404, detail="GRN not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(grn.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="GRN not found")
+    ensure_user_has_branch_access(db, user.id, grn.branch_id)
+    if not _user_has_permission(db, user.id, "purchases.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     return grn
 
 
@@ -502,6 +559,9 @@ def create_supplier_invoice(
     Supplier's invoice number (external) is stored in reference field.
     """
     user = current_user_and_db[0]
+    _purchase_company_branch_perm(
+        db, user, invoice.company_id, invoice.branch_id, permission="purchases.create"
+    )
 
     # Enforce per-supplier requirement for external supplier invoice number when configured.
     supplier = (
@@ -776,6 +836,18 @@ def list_supplier_invoices(
     For return/credit-note flow: pass date_from=date_to=today and limit=50, or invoice_number for targeted lookup.
     Use `search` and/or `item_id` to narrow results without scanning the full supplier history.
     """
+    user, _ = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    if branch_id is not None:
+        ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "purchases.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     query = db.query(SupplierInvoice).filter(SupplierInvoice.company_id == company_id)
 
     if branch_id:
@@ -854,6 +926,7 @@ def get_supplier_invoice_pdf(
         selectinload(SupplierInvoice.items).selectinload(SupplierInvoiceItem.item)
     ).filter(SupplierInvoice.id == invoice_id).first()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    _purchase_after_document(db, user, invoice, "purchases.view")
     prepare_supplier_invoice_for_response(db, invoice)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
@@ -913,6 +986,7 @@ def get_supplier_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    _purchase_after_document(db, user, invoice, "purchases.view")
     prepare_supplier_invoice_for_response(db, invoice)
     # Load supplier and branch names
     if invoice.supplier:
@@ -1053,6 +1127,7 @@ def add_supplier_invoice_item(
         .first()
     )
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    _purchase_after_document(db, user, invoice, "purchases.edit")
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -1114,6 +1189,7 @@ def delete_supplier_invoice_item(
     db: Session = Depends(get_tenant_db),
 ):
     """Remove one line from a DRAFT supplier invoice."""
+    user = current_user_and_db[0]
     invoice = (
         db.query(SupplierInvoice)
         .options(selectinload(SupplierInvoice.items))
@@ -1122,6 +1198,8 @@ def delete_supplier_invoice_item(
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    _purchase_after_document(db, user, invoice, "purchases.edit")
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -1149,6 +1227,7 @@ def update_supplier_invoice_item(
     db: Session = Depends(get_tenant_db),
 ):
     """Update one line on a DRAFT supplier invoice (qty, unit, cost, batch_data)."""
+    user = current_user_and_db[0]
     invoice = (
         db.query(SupplierInvoice)
         .options(selectinload(SupplierInvoice.items))
@@ -1157,6 +1236,8 @@ def update_supplier_invoice_item(
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    _purchase_after_document(db, user, invoice, "purchases.edit")
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -1282,10 +1363,13 @@ def update_supplier_invoice(
     - When user clicks "Update Invoice" button
     - Automatically when changes occur (auto-save)
     """
+    user, _ = current_user_and_db
     db_invoice = db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).first()
     if not db_invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    require_document_belongs_to_user_company(db, user, db_invoice, "Invoice", None)
+    _purchase_after_document(db, user, db_invoice, "purchases.edit")
+
     if db_invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -1496,6 +1580,7 @@ def batch_supplier_invoice(
         .first()
     )
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    _purchase_after_document(db, user, invoice, "purchases.edit")
 
     if invoice.status == "BATCHED":
         raise HTTPException(
@@ -1948,10 +2033,13 @@ def delete_supplier_invoice(
     Only DRAFT invoices can be deleted. BATCHED invoices cannot be deleted
     (stock already added to inventory).
     """
+    user, _ = current_user_and_db
     invoice = db.query(SupplierInvoice).filter(SupplierInvoice.id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    _purchase_after_document(db, user, invoice, "purchases.delete")
+
     if invoice.status != "DRAFT":
         raise HTTPException(
             status_code=400,
@@ -1984,6 +2072,11 @@ def create_purchase_order(
     Purchase orders are created before receiving goods.
     They can later be converted to GRN when goods are received.
     """
+    user, _ = current_user_and_db
+    _purchase_company_branch_perm(
+        db, user, order.company_id, order.branch_id, permission="purchases.manage"
+    )
+
     # Generate order number
     order_no = DocumentService.get_purchase_order_number(
         db, order.company_id, order.branch_id
@@ -2091,13 +2184,14 @@ def create_purchase_order(
 
 @router.get("/order", response_model=List[PurchaseOrderResponse])
 def list_purchase_orders(
+    _auth: Tuple[User, Session] = Depends(get_current_user),
     company_id: UUID = Query(..., description="Company ID"),
     branch_id: Optional[UUID] = Query(None, description="Branch ID"),
     supplier_id: Optional[UUID] = Query(None, description="Supplier ID"),
     date_from: Optional[date] = Query(None, description="Filter orders from this date"),
     date_to: Optional[date] = Query(None, description="Filter orders to this date"),
     status: Optional[str] = Query(None, description="Filter by status (PENDING, APPROVED, RECEIVED, CANCELLED)"),
-    db: Session = Depends(get_tenant_db)
+    db: Session = Depends(get_tenant_db),
 ):
     """
     List purchase orders with filtering
@@ -2109,8 +2203,20 @@ def list_purchase_orders(
     - date_to: Filter orders to this date
     - status: Filter by status (PENDING, APPROVED, RECEIVED, CANCELLED)
     """
+    user, _ = _auth
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(company_id) != str(effective_company_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this company's data.",
+        )
+    if branch_id is not None:
+        ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "purchases.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     query = db.query(PurchaseOrder).filter(PurchaseOrder.company_id == company_id)
-    
+
     if branch_id:
         query = query.filter(PurchaseOrder.branch_id == branch_id)
     
@@ -2168,6 +2274,7 @@ def get_purchase_order(
         selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.item)
     ).filter(PurchaseOrder.id == order_id).first()
     require_document_belongs_to_user_company(db, user, order, "Purchase order", request)
+    _purchase_after_document(db, user, order, "purchases.view")
     # Load supplier, branch, and user names
     if order.supplier:
         order.supplier_name = order.supplier.name
@@ -2229,6 +2336,7 @@ def add_purchase_order_item(
         .first()
     )
     require_document_belongs_to_user_company(db, user, order, "Purchase order", request)
+    _purchase_after_document(db, user, order, "purchases.manage")
     if order.status != "PENDING":
         raise HTTPException(
             status_code=400,
@@ -2333,6 +2441,7 @@ def delete_purchase_order_item(
     db: Session = Depends(get_tenant_db),
 ):
     """Remove one line from a PENDING purchase order."""
+    user = current_user_and_db[0]
     order = (
         db.query(PurchaseOrder)
         .options(selectinload(PurchaseOrder.items))
@@ -2341,6 +2450,8 @@ def delete_purchase_order_item(
     )
     if not order:
         raise HTTPException(status_code=404, detail="Purchase order not found")
+    require_document_belongs_to_user_company(db, user, order, "Purchase order", None)
+    _purchase_after_document(db, user, order, "purchases.manage")
     if order.status != "PENDING":
         raise HTTPException(
             status_code=400,
@@ -2356,12 +2467,25 @@ def delete_purchase_order_item(
 
 
 @router.put("/order/{order_id}", response_model=PurchaseOrderResponse)
-def update_purchase_order(order_id: UUID, order_update: PurchaseOrderCreate, db: Session = Depends(get_tenant_db)):
+def update_purchase_order(
+    order_id: UUID,
+    order_update: PurchaseOrderCreate,
+    _auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
     """Update purchase order (only if status is PENDING)"""
+    user, _ = _auth
     db_order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not db_order:
         raise HTTPException(status_code=404, detail="Purchase order not found")
-    
+    user_company_id = get_effective_company_id_for_user(db, user)
+    require_company_match(
+        db_order.company_id,
+        user_company_id,
+        message="Access denied to this purchase order",
+    )
+    _purchase_after_document(db, user, db_order, "purchases.manage")
+
     if db_order.status != "PENDING":
         raise HTTPException(
             status_code=400,
@@ -2542,6 +2666,8 @@ def approve_purchase_order(
     ).filter(PurchaseOrder.id == order_id).first()
     if not db_order:
         raise HTTPException(status_code=404, detail="Purchase order not found")
+    require_document_belongs_to_user_company(db, current_user, db_order, "Purchase order", None)
+    _purchase_after_document(db, current_user, db_order, "purchases.manage")
     if db_order.status != "PENDING":
         raise HTTPException(
             status_code=400,
@@ -2650,6 +2776,7 @@ def get_purchase_order_pdf_url(
     user = current_user_and_db[0]
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     require_document_belongs_to_user_company(db, user, order, "Purchase order", request)
+    _purchase_after_document(db, user, order, "purchases.view")
     if not order.pdf_path:
         raise HTTPException(
             status_code=404,
@@ -2704,6 +2831,7 @@ def regenerate_purchase_order_pdf(
     if not db_order:
         raise HTTPException(status_code=404, detail="Purchase order not found")
     require_document_belongs_to_user_company(db, user, db_order, "Purchase order", request)
+    _purchase_after_document(db, user, db_order, "purchases.manage")
     if db_order.status != "APPROVED":
         raise HTTPException(
             status_code=400,
@@ -2789,10 +2917,13 @@ def delete_purchase_order(
     db: Session = Depends(get_tenant_db),
 ):
     """Delete purchase order (only if status is PENDING)"""
+    user, _ = current_user_and_db
     db_order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not db_order:
         raise HTTPException(status_code=404, detail="Purchase order not found")
-    
+    require_document_belongs_to_user_company(db, user, db_order, "Purchase order", None)
+    _purchase_after_document(db, user, db_order, "purchases.manage")
+
     if db_order.status != "PENDING":
         raise HTTPException(
             status_code=400,

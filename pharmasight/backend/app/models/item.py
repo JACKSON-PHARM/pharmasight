@@ -40,7 +40,7 @@ class Item(Base):
     pricing_tier = Column(String(50), nullable=True)  # Drives default margin; if None, derived from product_category
     base_unit = Column(String(50), nullable=False)  # = retail_unit (ledger and stock quantities are in retail units)
     # VAT: vat_category + vat_rate only
-    vat_category = Column(String(20), default="ZERO_RATED")  # ZERO_RATED | STANDARD_RATED
+    vat_category = Column(String(20), default="ZERO_RATED")  # ZERO_RATED | STANDARD_RATED | VAT_INCLUSIVE
     vat_rate = Column(Numeric(5, 2), default=0)  # 0 for zero-rated, 16 for standard-rated
     is_active = Column(Boolean, default=True)
     # 3-tier units: supplier / wholesale / retail + conversion rates
@@ -64,6 +64,11 @@ class Item(Base):
     promo_end_date = Column(Date, nullable=True)
     # When False, item was imported with minimal data; user must complete pack size and units before transacting
     setup_complete = Column(Boolean, nullable=False, default=True)
+    # Optional KRA item master codes (sync via eTIMS saveItem when implemented)
+    kra_item_cls_cd = Column(String(50), nullable=True)
+    kra_pkg_unit_cd = Column(String(20), nullable=True)
+    kra_qty_unit_cd = Column(String(20), nullable=True)
+    kra_tax_ty_cd = Column(String(20), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
