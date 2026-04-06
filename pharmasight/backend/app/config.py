@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Optional, List
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve .env paths relative to this file so SMTP/email works regardless of cwd.
 _CONFIG_DIR = Path(__file__).resolve().parent.parent  # backend/
@@ -41,7 +41,15 @@ def normalize_postgres_url(url: str) -> str:
 
 class Settings(BaseSettings):
     """Application settings"""
-    
+
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE if _ENV_FILE else [".env", "../.env"],
+        case_sensitive=True,
+        # .env often contains integration keys (e.g. KRA Postman CONSUMER_KEY) not modeled here;
+        # forbidding extras breaks imports and scripts like backfill_pos_snapshot.
+        extra="ignore",
+    )
+
     # App
     APP_NAME: str = "PharmaSight"
     APP_VERSION: str = "0.1.0"
@@ -178,10 +186,6 @@ class Settings(BaseSettings):
     ETIMS_VAT_CAT_ZERO: str = os.getenv("ETIMS_VAT_CAT_ZERO", "B").strip() or "B"
     ETIMS_TAX_TY_STANDARD: str = os.getenv("ETIMS_TAX_TY_STANDARD", "V").strip() or "V"
     ETIMS_TAX_TY_ZERO: str = os.getenv("ETIMS_TAX_TY_ZERO", "B").strip() or "B"
-
-    class Config:
-        env_file = _ENV_FILE if _ENV_FILE else [".env", "../.env"]
-        case_sensitive = True
 
 
 settings = Settings()

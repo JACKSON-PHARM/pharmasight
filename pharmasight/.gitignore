@@ -31,6 +31,13 @@ ENV/
 .env.local
 .env.*.local
 
+# OSCU standalone runner local secrets / cache
+.oscu_profiles.json
+.cmc_cache.json
+.oscu_config.json
+test_pins.csv
+.test_state.json
+
 # IDE
 .vscode/
 .idea/

@@ -40,6 +40,7 @@ _PERMISSION_PREFIX_TO_MODULE: list[tuple[str, str]] = [
 _PERMISSION_NAME_TO_MODULE: dict[str, str] = {
     # Some projects use non-prefix permissions; keep explicit overrides here.
     "purchases.manage": "pharmacy",  # aggregate permission introduced for pharmacy UI
+    "purchases.batch_supplier_invoice": "pharmacy",
     "inventory.manage": "pharmacy",
     "inventory.adjust": "pharmacy",
 }

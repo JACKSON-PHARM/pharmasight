@@ -1580,7 +1580,8 @@ def batch_supplier_invoice(
         .first()
     )
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
-    _purchase_after_document(db, user, invoice, "purchases.edit")
+    # Posting to inventory is gated separately from draft edits (purchases.edit).
+    _purchase_after_document(db, user, invoice, "purchases.batch_supplier_invoice")
 
     if invoice.status == "BATCHED":
         raise HTTPException(

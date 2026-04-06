@@ -24,6 +24,22 @@ let purchaseOrdersUserFilter = 'self';
 /** Prevents duplicate opens while the purchase credit note (supplier return) modal is loading */
 let _createCreditNoteModalOpening = false;
 
+/** Whether current user may post supplier invoices to inventory (batch). Set by refreshSupplierInvoiceBatchPermission. */
+let supplierInvoiceBatchAllowed = false;
+
+async function refreshSupplierInvoiceBatchPermission() {
+    try {
+        if (typeof Permissions !== 'undefined' && Permissions.hasPermission) {
+            const bid = typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID ? CONFIG.BRANCH_ID : null;
+            supplierInvoiceBatchAllowed = await Permissions.hasPermission('purchases.batch_supplier_invoice', bid);
+        } else {
+            supplierInvoiceBatchAllowed = false;
+        }
+    } catch (_) {
+        supplierInvoiceBatchAllowed = false;
+    }
+}
+
 // Guard state for viewing supplier invoices to prevent duplicate API calls and stale UI updates
 let supplierInvoiceViewInProgress = false;
 let supplierInvoiceViewCurrentId = null;
@@ -662,6 +678,7 @@ async function fetchAndRenderSupplierInvoicesData() {
     if (!tbody) return;
     
     try {
+        await refreshSupplierInvoiceBatchPermission();
         await loadPurchaseDocuments('invoice');
         renderSupplierInvoicesTableBody();
     } catch (error) {
@@ -758,7 +775,7 @@ function renderSupplierInvoicesTableBody() {
                     <span class="badge ${paymentStatusClass}" style="margin-left: 0.2rem; font-size: 0.7rem;">${paymentStatus}</span>
                 </td>
                 <td style="padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);">
-                    ${docStatus === 'DRAFT' ? `<button class="btn btn-primary btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.batchSupplierInvoice) window.batchSupplierInvoice('${doc.id}', this)" title="Batch"><i class="fas fa-boxes"></i></button>` : ''}
+                    ${docStatus === 'DRAFT' && supplierInvoiceBatchAllowed ? `<button class="btn btn-primary btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.batchSupplierInvoice) window.batchSupplierInvoice('${doc.id}', this)" title="Batch"><i class="fas fa-boxes"></i></button>` : ''}
                     <button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.updateInvoicePayment) window.updateInvoicePayment('${doc.id}', ${total}, ${paid})" title="Payment"><i class="fas fa-money-bill-wave"></i></button>
                     <button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'invoice')" title="View"><i class="fas fa-eye"></i></button>
                     <button class="btn btn-outline btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.75rem;" onclick="event.stopPropagation(); if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${doc.id}', '${String(doc.invoice_number || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="PDF"><i class="fas fa-file-pdf"></i></button>
@@ -1829,7 +1846,8 @@ async function renderCreatePurchaseOrderPage() {
 // Render Create Supplier Invoice Page (RECEIVING document - ADDS STOCK)
 async function renderCreateSupplierInvoicePage() {
     console.log('renderCreatePurchaseInvoicePage()');
-    
+    await refreshSupplierInvoiceBatchPermission();
+
     const page = document.getElementById('purchases');
     if (!page) {
         console.error('Purchases page element not found!');
@@ -1931,9 +1949,15 @@ async function renderCreateSupplierInvoicePage() {
             <i class="fas fa-file-pdf"></i> Download PDF
         </button>
         ${invoiceData.status === 'DRAFT' ? `
+            ${supplierInvoiceBatchAllowed ? `
             <button type="button" class="btn btn-primary" id="batchInvoiceBtn" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${invoiceData.id}', this)" title="Batch Invoice (Add Stock)">
                 <i class="fas fa-boxes"></i> Batch Invoice
             </button>
+            ` : `
+            <span style="font-size: 0.8rem; color: var(--text-secondary); align-self: center; max-width: 14rem;" title="Posting to inventory requires the Batch supplier invoice permission on your role.">
+                Draft only — posting stock requires batch permission.
+            </span>
+            `}
             <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deleteSupplierInvoice) window.deleteSupplierInvoice('${invoiceData.id}')" title="Delete Invoice (Only for DRAFT)">
                 <i class="fas fa-trash"></i> Delete
             </button>
@@ -4094,6 +4118,15 @@ if (typeof window !== 'undefined') {
 
 // Batch supplier invoice (add stock to inventory)
 async function batchSupplierInvoice(invoiceId, buttonEl, confirmationsBody) {
+    if (typeof Permissions !== 'undefined' && Permissions.hasPermission) {
+        const bid = typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID ? CONFIG.BRANCH_ID : null;
+        if (!(await Permissions.hasPermission('purchases.batch_supplier_invoice', bid))) {
+            if (typeof showToast === 'function') {
+                showToast('You do not have permission to post supplier invoices to inventory (batch).', 'error');
+            }
+            return;
+        }
+    }
     if (!confirmationsBody && !confirm('Are you sure you want to batch this invoice? This will add stock to inventory and cannot be undone.')) {
         return;
     }
@@ -4617,6 +4650,7 @@ if (typeof window !== 'undefined') {
     window.createNewPurchaseInvoice = createNewSupplierInvoice; // Backward compatibility
     window.createNewCreditNote = createNewCreditNote;
     window.batchSupplierInvoice = batchSupplierInvoice;
+    window.refreshSupplierInvoiceBatchPermission = refreshSupplierInvoiceBatchPermission;
     window.showShortExpiryOverrideModal = showShortExpiryOverrideModal;
     window.updateInvoicePayment = updateInvoicePayment;
     window.toggleSelectAllPayableSupplierInvoices = toggleSelectAllPayableSupplierInvoices;

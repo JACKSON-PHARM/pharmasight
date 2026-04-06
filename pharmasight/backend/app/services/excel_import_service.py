@@ -1129,6 +1129,9 @@ class ExcelImportService:
                 )
                 if stock_qty > 0:
                     result['opening_balance_created'] = 1
+                else:
+                    # No ledger row for qty 0 (DB constraint); still load snapshot so search finds the item.
+                    SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item.id)
             except Exception as stock_error:
                 logger.warning(f"Could not create opening balance for item '{item_name}': {stock_error}")
                 raise
@@ -1391,7 +1394,8 @@ class ExcelImportService:
             )
         ).first()
         
-        # IMPORTANT: quantity_delta MUST NOT be zero (database constraint)
+        # IMPORTANT: quantity_delta MUST NOT be zero (inventory_ledger CHECK constraint).
+        # Callers that need search/POS visibility for 0-stock items must refresh item_branch_snapshot separately.
         if quantity == 0:
             return
 
@@ -1814,26 +1818,33 @@ class ExcelImportService:
                 ]
                 SnapshotService.upsert_inventory_balance_bulk(db, balance_rows)
                 SnapshotService.upsert_purchase_snapshot_bulk(db, purchase_rows)
-                # Keep new tenant imports searchable immediately:
-                # Bulk imports can enqueue background refresh (fast but delayed). For typical tenant-sized
-                # imports we refresh the imported items synchronously so the UI search snapshot updates
-                # before the request/job finishes.
-                first_ob = opening_balances[0]
-                imported_item_ids = list({ob.get('item_id') for ob in opening_balances if ob.get('item_id')})
-                snapshot_refresh_mode = 'sync_items'
-                if imported_item_ids and len(imported_item_ids) <= 5000:
-                    for iid in imported_item_ids:
-                        SnapshotRefreshService.refresh_item_sync(db, first_ob['company_id'], first_ob['branch_id'], iid)
-                else:
-                    # Large imports: fall back to background branch refresh to keep latency reasonable.
-                    snapshot_refresh_mode = 'enqueue_branch_refresh'
-                    SnapshotRefreshService.enqueue_branch_refresh(
-                        db, first_ob['company_id'], first_ob['branch_id'], reason="excel_import_bulk"
-                    )
                 result['opening_balances_created'] = len(opening_balances)
-                logger.info(f"Bulk inserted {len(opening_balances)} opening balances (snapshot refresh: {snapshot_refresh_mode})")
+                logger.info(f"Bulk inserted {len(opening_balances)} opening balances")
             except Exception as e:
                 logger.warning(f"Some opening balances failed bulk insert: {e}")
+
+        # Step 12: item_branch_snapshot for every item in this batch (including 0 opening stock).
+        # Step 8 only adds opening_balances when stock_qty > 0, so without this, zero-stock uploads are invisible in search.
+        batch_snapshot_item_ids = [iid for iid in all_item_ids_batch if iid not in items_with_real_tx_set]
+        batch_snapshot_item_ids = list(dict.fromkeys(batch_snapshot_item_ids))
+        if batch_snapshot_item_ids:
+            try:
+                snapshot_refresh_mode = "sync_items"
+                if len(batch_snapshot_item_ids) <= 5000:
+                    for iid in batch_snapshot_item_ids:
+                        SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, iid)
+                else:
+                    snapshot_refresh_mode = "enqueue_branch_refresh"
+                    SnapshotRefreshService.enqueue_branch_refresh(
+                        db, company_id, branch_id, reason="excel_import_bulk"
+                    )
+                logger.info(
+                    "Excel bulk batch snapshot refresh (%s): %s items",
+                    snapshot_refresh_mode,
+                    len(batch_snapshot_item_ids),
+                )
+            except Exception as e:
+                logger.warning("Excel bulk batch snapshot refresh failed: %s", e)
 
         return result
     
