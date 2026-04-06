@@ -9,6 +9,7 @@ Auth: get_current_user_optional / get_current_user accept PharmaSight internal J
 Tenant comes from token claims or X-Tenant-* header (legacy/default DB when none).
 """
 from urllib.parse import urlparse, quote
+import re
 import time as _time
 
 import logging
@@ -33,6 +34,7 @@ from app.utils.auth_internal import (
     CLAIM_TENANT_SUBDOMAIN,
     decode_internal_token,
 )
+from app.utils.subscription_billing import is_trial_expired
 
 logger = logging.getLogger(__name__)
 
@@ -609,6 +611,52 @@ def _resolve_user_and_db_for_request(
     )
 
 
+def _tenant_for_subscription_check(request: Request, master_db: Session, payload: dict) -> Optional[Tenant]:
+    """Master tenant row for trial/subscription (same resolution as authenticated API routing)."""
+    tenant = _tenant_from_token_or_header(request, master_db, payload)
+    if tenant is None:
+        tenant = _get_default_tenant(master_db)
+    return tenant
+
+
+def _path_allowed_for_expired_trial(path: str, method: str) -> bool:
+    """
+    When tenant trial_ends_at has passed (status still trial), allow auth/session + read-only shell
+    (companies/branches/modules) so the client can show dashboard + upgrade messaging.
+    """
+    p = (path or "").strip().rstrip("/") or "/"
+    m = (method or "GET").upper()
+    if p == "/api/auth/me" and m == "GET":
+        return True
+    if p == "/api/auth/logout" and m == "POST":
+        return True
+    if p == "/api/auth/refresh" and m == "POST":
+        return True
+    if p in ("/api/auth/change-password", "/api/users/change-password-first-time") and m == "POST":
+        return True
+    if p == "/api/setup/status" and m == "GET":
+        return True
+    if p == "/api/company/modules" and m == "GET":
+        return True
+    if p == "/api/modules/me" and m == "GET":
+        return True
+    if m == "GET" and re.match(r"^/api/users/[0-9a-fA-F-]{36}/permissions$", p):
+        return True
+    if m == "GET" and p == "/api/companies":
+        return True
+    if m == "GET" and re.match(r"^/api/companies/[0-9a-fA-F-]{36}$", p):
+        return True
+    if m == "GET" and re.match(r"^/api/companies/[0-9a-fA-F-]{36}/(logo|stamp|settings)$", p):
+        return True
+    if m == "GET" and re.match(r"^/api/branches/company/[0-9a-fA-F-]{36}$", p):
+        return True
+    if m == "GET" and re.match(r"^/api/branches/[0-9a-fA-F-]{36}$", p):
+        return True
+    if m == "GET" and re.match(r"^/api/branches/[0-9a-fA-F-]{36}/settings$", p):
+        return True
+    return False
+
+
 def _resolve_user_and_db_optional(
     request: Request,
     master_db: Session,
@@ -650,6 +698,19 @@ def get_current_user(
         sub = UUID(str(payload["sub"]))
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    path = (request.url.path or "").strip().rstrip("/") or "/"
+    method = (request.method or "GET").upper()
+    tenant_sub = _tenant_for_subscription_check(request, master_db, payload)
+    if tenant_sub and is_trial_expired(tenant_sub):
+        if not _path_allowed_for_expired_trial(path, method):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "trial_expired",
+                    "message": "Your trial has ended. Upgrade to continue using this feature.",
+                },
+            )
 
     jti = payload.get(CLAIM_JTI)
     cache_key = (jti, str(sub))

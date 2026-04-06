@@ -131,6 +131,29 @@ class APIClient {
                 error.status = response.status;
                 error.data = data;
                 console.error('API Error Response:', { url, status: response.status, data });
+                if (response.status === 403 && data && data.detail != null) {
+                    var d = data.detail;
+                    var code =
+                        typeof d === 'object' && d !== null && !Array.isArray(d) && d.code
+                            ? d.code
+                            : null;
+                    if (code === 'trial_expired') {
+                        try {
+                            var msg =
+                                typeof d === 'object' && d !== null && d.message
+                                    ? String(d.message)
+                                    : '';
+                            if (
+                                window.SubscriptionUI &&
+                                typeof window.SubscriptionUI.notifyTrialExpiredFromApi === 'function'
+                            ) {
+                                window.SubscriptionUI.notifyTrialExpiredFromApi(msg);
+                            } else {
+                                window.__pharmasightTrialExpiredFromApi = true;
+                            }
+                        } catch (_) {}
+                    }
+                }
                 if (response.status === 401) {
                     var alreadyRetried = options._retried401 === true;
                     var isInternalAuth = false;

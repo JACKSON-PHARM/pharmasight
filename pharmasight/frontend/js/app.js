@@ -419,6 +419,14 @@ function initializeHashRouting() {
                 loadPage('branch-select');
                 return;
             }
+
+            if (window.SubscriptionUI && typeof window.SubscriptionUI.getRedirectIfOutsideSubscription === 'function') {
+                const subRedirect = window.SubscriptionUI.getRedirectIfOutsideSubscription(routeBase);
+                if (subRedirect) {
+                    window.location.hash = '#' + subRedirect;
+                    return;
+                }
+            }
             
             // PHASE 2: Check if branch is in stock take mode and redirect if needed
             if (branch && CONFIG.BRANCH_ID && hash !== 'stock-take' && hash !== 'branch-select' && hash !== 'setup') {
@@ -598,6 +606,25 @@ async function startAppFlow() {
             console.warn('[APP FLOW] Tenant discovery skipped:', e);
         }
 
+        // Roles + subscription/trial context (before ModuleUI so sidebar can restrict to dashboard-only)
+        try {
+            if (window.API && API.auth && typeof API.auth.me === 'function') {
+                const me = await API.auth.me();
+                window.__authMe = me || null;
+                window.__authMeRoles = Array.isArray(me?.roles) ? me.roles.map((r) => String(r).toLowerCase()) : [];
+            } else {
+                window.__authMe = null;
+                window.__authMeRoles = [];
+            }
+        } catch (e) {
+            console.warn('[APP FLOW] /api/auth/me failed:', e && e.message);
+            window.__authMe = null;
+            window.__authMeRoles = [];
+        }
+        if (window.SubscriptionUI && typeof window.SubscriptionUI.refreshBannerAndShell === 'function') {
+            window.SubscriptionUI.refreshBannerAndShell();
+        }
+
         // UI module visibility: company entitlements first, then switcher + sidebar
         try {
             if (window.ModuleUI) {
@@ -612,20 +639,12 @@ async function startAppFlow() {
             console.warn('[APP FLOW] Module UI init skipped:', e);
         }
 
-        // Fetch roles for UI gating (platform admin, etc.)
-        try {
-            if (window.API && API.auth && typeof API.auth.me === 'function') {
-                const me = await API.auth.me();
-                window.__authMe = me || null;
-                window.__authMeRoles = Array.isArray(me?.roles) ? me.roles.map((r) => String(r).toLowerCase()) : [];
-            } else {
-                window.__authMe = null;
-                window.__authMeRoles = [];
+        if (window.SubscriptionUI && typeof window.SubscriptionUI.getRedirectIfOutsideSubscription === 'function') {
+            const route = (window.location.hash || '').replace('#', '').split('?')[0] || '';
+            const subRedirect = window.SubscriptionUI.getRedirectIfOutsideSubscription(route);
+            if (subRedirect && route !== subRedirect) {
+                window.location.hash = '#' + subRedirect;
             }
-        } catch (e) {
-            console.warn('[APP FLOW] /api/auth/me failed:', e && e.message);
-            window.__authMe = null;
-            window.__authMeRoles = [];
         }
         
         // Check URL parameters first to determine flow type
@@ -802,8 +821,16 @@ async function startAppFlow() {
             const requested = (window.location.hash || '').replace('#', '');
             const requestedBase = (requested || '').split('?')[0] || '';
             const shouldDefault = !requestedBase || requestedBase === 'branch-select';
-            const targetRoute = shouldDefault ? 'dashboard' : (requested || 'dashboard');
-            const nextScreen = shouldDefault ? 'dashboard' : requestedBase;
+            let targetRoute = shouldDefault ? 'dashboard' : (requested || 'dashboard');
+            let nextScreen = shouldDefault ? 'dashboard' : requestedBase;
+            if (window.SubscriptionUI && typeof window.SubscriptionUI.getRedirectIfOutsideSubscription === 'function') {
+                const subRedirect = window.SubscriptionUI.getRedirectIfOutsideSubscription(shouldDefault ? 'dashboard' : requestedBase);
+                if (subRedirect) {
+                    targetRoute = subRedirect;
+                    nextScreen = subRedirect;
+                    window.location.hash = '#' + subRedirect;
+                }
+            }
             if (currentScreen !== nextScreen) {
                 console.log('✅ Company, branches, and branch selection OK – loading route:', targetRoute);
                 await updateStatusBar(user);
@@ -2065,6 +2092,10 @@ async function updateStatusBar(user) {
     } else {
         statusBranch.textContent = 'Not Set';
         statusBranch.classList.add('status-warning');
+    }
+
+    if (window.SubscriptionUI && typeof window.SubscriptionUI.refreshBannerAndShell === 'function') {
+        window.SubscriptionUI.refreshBannerAndShell();
     }
 }
 

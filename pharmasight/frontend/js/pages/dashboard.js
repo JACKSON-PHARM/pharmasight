@@ -50,6 +50,47 @@ async function loadDashboard() {
     const page = document.getElementById('dashboard');
     if (!page) return;
 
+    var trialExpired =
+        (window.SubscriptionUI && window.SubscriptionUI.effectiveAccess && window.SubscriptionUI.effectiveAccess() === 'trial_expired') ||
+        (window.__authMe && window.__authMe.subscription_access === 'trial_expired');
+    if (trialExpired) {
+        const toolbar = page.querySelector('.dashboard-toolbar');
+        const hint = page.querySelector('.dashboard-hint');
+        const grid = document.getElementById('dashboardStatsGrid');
+        if (toolbar) toolbar.style.display = 'none';
+        if (hint) hint.style.display = 'none';
+        if (grid) grid.style.display = 'none';
+        let panel = document.getElementById('trialExpiredPanel');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'trialExpiredPanel';
+            const anchor = page.querySelector('.dashboard-toolbar');
+            if (anchor && anchor.parentNode) {
+                anchor.parentNode.insertBefore(panel, anchor);
+            } else {
+                page.appendChild(panel);
+            }
+        }
+        panel.className = 'card trial-expired-card';
+        panel.style.display = 'block';
+        panel.innerHTML =
+            '<div style="padding: 2rem; text-align: center; max-width: 36rem; margin: 0 auto;">' +
+            '<h2 style="margin: 0 0 0.5rem;">Trial ended</h2>' +
+            '<p style="color: var(--text-secondary); margin-bottom: 1rem;">Your PharmaSight trial has ended. Upgrade to continue using sales, inventory, purchases, and reports.</p>' +
+            '<p style="color: var(--text-secondary); font-size: 0.875rem;">Contact support to upgrade your subscription.</p>' +
+            '</div>';
+        return;
+    }
+
+    const expiredPanel = document.getElementById('trialExpiredPanel');
+    if (expiredPanel) expiredPanel.style.display = 'none';
+    const toolbarRestore = page.querySelector('.dashboard-toolbar');
+    const hintRestore = page.querySelector('.dashboard-hint');
+    const gridRestore = document.getElementById('dashboardStatsGrid');
+    if (toolbarRestore) toolbarRestore.style.display = '';
+    if (hintRestore) hintRestore.style.display = '';
+    if (gridRestore) gridRestore.style.display = '';
+
     const branchId = getBranchIdForStock();
     const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'ordersProcessed', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
 
@@ -136,6 +177,12 @@ async function loadDashboard() {
 async function applyDashboardFilters() {
     const active = (typeof currentPage !== 'undefined' ? currentPage : (window.currentPage || ''));
     if (active !== 'dashboard') return;
+    if (
+        (window.SubscriptionUI && window.SubscriptionUI.effectiveAccess && window.SubscriptionUI.effectiveAccess() === 'trial_expired') ||
+        (window.__authMe && window.__authMe.subscription_access === 'trial_expired')
+    ) {
+        return;
+    }
     const branchId = getBranchIdForStock();
     if (!branchId) {
         if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');

@@ -4,12 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>PharmaSight - Pharmacy Management System</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=2">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
+    <!-- Trial expired: fixed global notice (shown via SubscriptionUI + API 403 sync) -->
+    <div id="trialExpiredGlobalNotice" class="trial-expired-global-notice" hidden aria-live="assertive" role="alert"></div>
     <!-- Auth Layout Container (Unauthenticated routes only) -->
     <div id="authLayout" style="display: none;">
         <!-- Auth pages (login, password-set, etc.) will be rendered here -->
@@ -134,6 +136,7 @@
 
         <!-- Main Content -->
         <main class="main-content">
+            <div id="subscriptionBanner" class="subscription-banner-strip" style="display: none;" role="status" aria-live="polite"></div>
             <!-- Top Bar -->
             <header class="top-bar">
                 <button class="menu-toggle" id="menuToggle">
@@ -430,8 +433,8 @@
             console.log('✅ Window load event fired - all resources loaded');
         });
     </script>
-    <script src="js/config.js?v=8"></script>
-    <script src="js/api.js?v=10"></script>
+    <script src="js/config.js?v=9"></script>
+    <script src="js/api.js?v=11"></script>
     <!-- Global Supabase Client (must load before auth modules) -->
     <script src="js/services/supabase_client.js?v=1"></script>
     <!-- Legacy auth (backward compatibility) -->
@@ -456,12 +459,13 @@
     <script src="js/utils/login_security.js?v=1"></script>
     <!-- Permissions utilities -->
     <script src="js/utils/permissions.js?v=1"></script>
+    <script src="js/services/subscription_ui.js?v=2"></script>
     <!-- Module switcher + dynamic sidebar (UI-only visibility) -->
-    <script src="js/services/module_ui.js?v=1"></script>
+    <script src="js/services/module_ui.js?v=2"></script>
     <!-- Stock Take (before app.js so loadStockTake exists when router runs) -->
     <script src="js/pages/stock_take.js?v=11"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
-    <script src="js/app.js?v=21"></script>
+    <script src="js/app.js?v=22"></script>
     <script src="js/pages/login.js?v=1"></script>
     <script src="js/pages/password_reset.js?v=3"></script>
     <script src="js/pages/tenant_invite_setup.js?v=1"></script>
@@ -477,7 +481,7 @@
     <script src="js/pages/branch_select.js?v=3"></script>
     <script src="js/pages/setup.js?v=7"></script>
     <script src="js/pages/landing.js?v=1"></script>
-    <script src="js/pages/dashboard.js?v=6"></script>
+    <script src="js/pages/dashboard.js?v=8"></script>
     <script src="js/pages/items.js?v=7"></script>
     <script src="js/pages/sales.js?v=7"></script>
     <script src="js/utils/searchCache.js"></script>

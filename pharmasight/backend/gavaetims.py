@@ -14,6 +14,9 @@ Each run you are prompted: ``Enter Application Test PIN:``, or pass ``python gav
 ``python gavaetims.py <PIN> --clean-run`` clears item/stock/composition/sales progress for that PIN.
 ``python gavaetims.py <PIN> --force-stock-replay`` drops only ``insertStockIOInitial`` /
 ``saveStockMasterInitial`` and related pending/SAR keys so the pair reruns together.
+``python gavaetims.py <PIN> --diagnostic-stock-io`` (with a clean OSCU SBX stock state) resets local
+resume for the initial stock triple, forces ``sarNo=1`` / line qty 1, and prints full
+``insertStockIOInitial`` / ``saveStockMasterInitial`` payloads for SBX direction checks (no extra retries).
 
 Optional ``.env`` overrides **only**:
   BEARER_TOKEN  — skip OAuth
@@ -51,19 +54,21 @@ saved product and typically gets ``resultCd=000``.
 parent ``insertStockIOInitial`` — *before* composition, import, sales, and purchases — so the parent
 item has on-hand qty for the later sale; (2) ``saveStockMaster`` after ``insertTrnsPurchase`` and the
 final ``insertStockIO`` + ``selectStockMoveList``. Skipping later steps does **not** explain
-``saveStockMasterInitial`` failing with “Expected: -N” vs “rsdQty cannot be negative”; that pattern
-is sandbox **stacked stock IO / SAR** (clear OSCU stock for the PIN, then ``--reset-stock``).
+``saveStockMasterInitial`` failing with rsdQty vs Stock IO mismatch; that pattern is often sandbox
+**stacked stock IO / SAR** (clear OSCU stock for the PIN, then ``--reset-stock``).
 **Hybrid order (SBX + GavaConnect):** ``selectItemList`` → ``saveItem`` → ``selectItemListPostSave`` →
 **initial** ``insertStockIOInitial`` + ``selectStockMoveListInitial`` + ``saveStockMasterInitial`` (minimal parent stock so sales can succeed) →
 ``saveComponentItem`` / ``saveItemComposition`` → import steps → ``saveInvoice`` (``/saveTrnsSalesOsdc``) →
 ``selectTrnsPurchaseSalesList`` + ``insertTrnsPurchase`` → **final** ``insertStockIO`` + ``selectStockMoveList`` +
 ``saveStockMaster`` (reconciliation). Use ``--clean-run`` to drop stale ``item_cd`` / completed steps;
 ``--reset-stock`` only clears stock-step keys.
-**Stock IO + save:** run ``insertStockIO`` and ``saveStockMaster`` in the **same** process invocation;
-resuming after ``insertStockIO`` alone can leave SBX needing a negative ``rsdQty`` that the API then
-rejects. If SBX alternates “cannot be negative” with “Expected: -N”, **KRA still holds stacked IOs**
-(local restarts do not fix that): reset stock/SAR on the **OSCU sandbox portal** for the PIN, then
-run ``python gavaetims.py <PIN> --reset-stock`` and a full sequence once.
+**Stock IO + save:** run ``insertStockIO`` and ``saveStockMaster`` in the **same** process invocation.
+The runner tracks ``current_stock_balance`` (on-hand qty) and sends ``rsdQty`` equal to that balance
+after each STOCK IN/OUT (``sarTyCd`` 11 is treated as IN in this testcase). Resuming after
+``insertStockIO`` alone can leave SBX out of sync with local state; if saves keep failing,
+**KRA may still hold stacked IOs** (local restarts do not fix that): reset stock/SAR on the **OSCU
+sandbox portal** for the PIN, then run ``python gavaetims.py <PIN> --reset-stock`` and a full
+sequence once.
 **Customer/supplier master POSTs** (``/saveCustomer``, ``/saveSupplier``) and legacy **``/selectCustomer``**
 often hit Apigee ``targetPath`` faults; this runner uses **``/selectCustomerList``** and
 **``/selectTaxpayerInfo``** (skipped automatically if SBX returns the same fault).
@@ -75,7 +80,7 @@ no imported-item rows (result not ``000`` → logged and skipped).
 right after ``saveComponentItem``; the runner’s **composition prelude** posts component-only
 ``insertStockIO`` + ``saveStockMaster`` so SAR/parent sequencing stays consistent. **Parent** stock IO
 and ``saveStockMaster`` run later (after purchases). If SBX stacks unreconciled component IOs, clear
-``stock_io_component_pending_rsd_qty`` in ``.test_state.json`` or reset stock on the OSCU portal.
+``component_stock_balance`` in ``.test_state.json`` or reset stock on the OSCU portal.
 **Quantity unit:** sandbox ``saveItem`` rejects ``qtyUnitCd`` values that are not on KRA’s allow-list
 (e.g. ``XU`` → HTTP 400 “Invalid Quantity Unit Code”). Use a listed code such as ``TU`` (unit /
 standard measure); ``itemCd`` embeds the same 2-letter segment for type-1 items.
@@ -156,6 +161,19 @@ _SELECT_STOCK_MOVE_ENDPOINTS = frozenset(
 INITIAL_SAVE_STOCKMASTER_DIRTY_THRESHOLD = 10
 # Unreconciled SAR count (stock_io_next_sar_no - 1) at or above this → likely stacked IO / SBX rsdQty deadlock.
 INITIAL_SAVE_STOCKMASTER_SAR_BACKLOG_DIRTY = 3
+
+# Stock IOSaveReq: ``sarTyCd`` 11 is treated as STOCK IN (increases on-hand qty) per OSCU testcase.
+SAR_TY_CD_STOCK_IN = "11"
+
+
+def stock_balance_delta_for_sar_line(sar_ty_cd: str, line_qty: float) -> float:
+    """Signed change to on-hand balance for one Stock IO line: IN adds, OUT subtracts."""
+    ty = (sar_ty_cd or "").strip()
+    q = float(line_qty)
+    if ty == SAR_TY_CD_STOCK_IN:
+        return q
+    # Extend when this runner posts other sarTyCd values (e.g. stock OUT).
+    return q
 
 
 # Endpoint ``name`` keys matching the ``sequence`` tuples (for resume skips).
@@ -294,6 +312,8 @@ def reset_pin_clean_run(pin_blob: dict) -> None:
         "stock_io_next_sar_no",
         "stock_io_pending_rsd_qty",
         "stock_io_component_pending_rsd_qty",
+        "current_stock_balance",
+        "component_stock_balance",
         "stocked_component_for_composition",
         "kra_item_cd_suffix_by_prefix",
     ):
@@ -317,6 +337,8 @@ def reset_pin_stock_progress(pin_blob: dict) -> None:
     pin_blob["completed_endpoints"] = [x for x in ce if x not in drop]
     for k in (
         "stock_io_component_pending_rsd_qty",
+        "current_stock_balance",
+        "component_stock_balance",
         "stocked_component_for_composition",
     ):
         pin_blob.pop(k, None)
@@ -341,6 +363,21 @@ def reset_pin_initial_stock_atomic_pair(pin_blob: dict) -> None:
     ]
     pin_blob["stock_io_pending_rsd_qty"] = 0.0
     pin_blob.pop("stock_io_next_sar_no", None)
+    pin_blob.pop("current_stock_balance", None)
+
+
+def apply_diagnostic_stock_io_reset(pin_blob: dict) -> None:
+    """Single SBX check: drop local resume for the initial IO → move list → save triple; SAR 1; balance 0."""
+    ce = list(pin_blob.get("completed_endpoints") or [])
+    drop = {
+        "insertStockIOInitial",
+        "selectStockMoveListInitial",
+        "saveStockMasterInitial",
+    }
+    pin_blob["completed_endpoints"] = [x for x in ce if x not in drop]
+    pin_blob["stock_io_next_sar_no"] = 1
+    pin_blob["current_stock_balance"] = 0.0
+    pin_blob["stock_io_pending_rsd_qty"] = 0.0
 
 
 def reconcile_item_cd_with_pin_state(pin_blob: dict, run_item_cd: str) -> str:
@@ -499,8 +536,8 @@ def input_line(label: str, default: str) -> str:
     return s or d
 
 
-def cli_pin_and_flags() -> tuple[str, bool, bool, bool, frozenset[str] | None]:
-    """PIN + ``--reset-stock`` + ``--clean-run`` + ``--force-stock-replay`` + optional ``--only``."""
+def cli_pin_and_flags() -> tuple[str, bool, bool, bool, frozenset[str] | None, bool]:
+    """PIN + ``--reset-stock`` + ``--clean-run`` + ``--force-stock-replay`` + optional ``--only`` + ``--diagnostic-stock-io``."""
     raw = [str(x).strip() for x in sys.argv[1:] if str(x).strip()]
     only_steps: frozenset[str] | None = None
     rest: list[str] = []
@@ -531,11 +568,12 @@ def cli_pin_and_flags() -> tuple[str, bool, bool, bool, frozenset[str] | None]:
     reset_stock = "--reset-stock" in flags
     clean_run = "--clean-run" in flags
     force_stock_replay = "--force-stock-replay" in flags
-    return pin, reset_stock, clean_run, force_stock_replay, only_steps
+    diagnostic_stock_io = "--diagnostic-stock-io" in flags
+    return pin, reset_stock, clean_run, force_stock_replay, only_steps, diagnostic_stock_io
 
 
 def prompt_app_pin() -> str:
-    pin, _, _, _, _ = cli_pin_and_flags()
+    pin, _, _, _, _, _ = cli_pin_and_flags()
     if pin:
         return pin
     print(
@@ -545,6 +583,8 @@ def prompt_app_pin() -> str:
         "After resetting stock/SAR on the OSCU portal: python gavaetims.py <PIN> --reset-stock\n"
         "To drop stale item/stock state: python gavaetims.py <PIN> --clean-run\n"
         "To replay only insertStockIOInitial+saveStockMasterInitial: python gavaetims.py <PIN> --force-stock-replay\n"
+        "SBX stock direction diagnostic (clean portal stock + local reset): "
+        "python gavaetims.py <PIN> --diagnostic-stock-io\n"
     )
     s = input("Enter Application Test PIN: ").strip()
     if not s:
@@ -1239,14 +1279,23 @@ def detect_dirty_sandbox_before_initial_save_stock_master(
     """
     reasons: list[str] = []
     thr = float(threshold)
-    raw = pin_blob.get("stock_io_pending_rsd_qty")
+    bal = 0.0
+    raw_bal = pin_blob.get("current_stock_balance")
     try:
-        pend = float(raw) if raw is not None and str(raw).strip() != "" else 0.0
+        if raw_bal is not None and str(raw_bal).strip() != "":
+            bal = float(raw_bal)
     except (TypeError, ValueError):
-        pend = 0.0
-    if abs(pend) > thr:
+        bal = 0.0
+    if abs(bal) < 1e-12:
+        raw = pin_blob.get("stock_io_pending_rsd_qty")
+        try:
+            pend = float(raw) if raw is not None and str(raw).strip() != "" else 0.0
+        except (TypeError, ValueError):
+            pend = 0.0
+        bal = abs(pend)
+    if abs(bal) > thr:
         reasons.append(
-            f"|stock_io_pending_rsd_qty| is {abs(pend):g} (threshold {thr:g}) — local runner state "
+            f"|current_stock_balance| is {abs(bal):g} (threshold {thr:g}) — local runner state "
             "suggests accumulated unreconciled Stock IO / SAR backlog."
         )
 
@@ -1259,7 +1308,7 @@ def detect_dirty_sandbox_before_initial_save_stock_master(
         reasons.append(
             f"stock_io_next_sar_no={next_sar} implies ~{sar_depth} unreconciled SAR row(s) "
             f"(>={INITIAL_SAVE_STOCKMASTER_SAR_BACKLOG_DIRTY}) — SBX often deadlocks saveStockMasterInitial "
-            "(negative rsdQty rejected vs positive mismatch). Clear stock/SAR for this PIN or use a fresh PIN."
+            "(rsdQty vs Stock IO mismatch). Clear stock/SAR for this PIN or use a fresh PIN."
         )
 
     surl = f"{base_url.rstrip('/')}/selectStockMoveList"
@@ -1479,9 +1528,14 @@ def main():
     state_root[pin_key] = pin_blob
     completed_list: list[str] = list(pin_blob.get("completed_endpoints") or [])
 
-    _, reset_stock_cli, clean_run_cli, force_stock_replay_cli, only_steps_cli = (
-        cli_pin_and_flags()
-    )
+    (
+        _,
+        reset_stock_cli,
+        clean_run_cli,
+        force_stock_replay_cli,
+        only_steps_cli,
+        diagnostic_stock_io_cli,
+    ) = cli_pin_and_flags()
     if clean_run_cli:
         reset_pin_clean_run(pin_blob)
         save_test_state(state_root)
@@ -1497,7 +1551,7 @@ def main():
         print(
             "NOTE: --reset-stock applied: removed stock-related steps from completed_endpoints, cleared "
             "stock_io_next_sar_no (next insert defaults to 1; KRA may respond with Expected: N — the "
-            "runner will sync), stock_io_pending_rsd_qty=0. "
+            "runner will sync), stock_io_pending_rsd_qty=0, current_stock_balance cleared. "
             "If KRA still holds an old SAR sequence, the first insertStockIO may self-correct; "
             "otherwise clear backlog on the OSCU portal or use a fresh test PIN "
             f"(see {STATE_FILE.name})."
@@ -1508,8 +1562,8 @@ def main():
         completed_list = list(pin_blob.get("completed_endpoints") or [])
         print(
             "NOTE: --force-stock-replay applied: dropped insertStockIOInitial / saveStockMasterInitial "
-            f"from completed_endpoints; stock_io_pending_rsd_qty=0; cleared stock_io_next_sar_no "
-            f"(see {STATE_FILE.name})."
+            f"from completed_endpoints; stock_io_pending_rsd_qty=0; cleared stock_io_next_sar_no and "
+            f"current_stock_balance (see {STATE_FILE.name})."
         )
 
     # Pre-hybrid runs often left insertStockIO (+ selectStockMoveList) without saveStockMaster.
@@ -1523,8 +1577,9 @@ def main():
         print(
             "NOTE: Hybrid migration — dropping legacy insertStockIO / selectStockMoveList "
             "(saveStockMaster never completed). Reset stock_io_pending_rsd_qty=0; clearing "
-            "stock_io_next_sar_no. Next: insertStockIOInitial → saveStockMasterInitial. If rsdQty still "
-            f"mismatches, clear stock on OSCU for this PIN, then --reset-stock (see {STATE_FILE.name})."
+            "stock_io_next_sar_no and current_stock_balance. Next: insertStockIOInitial → saveStockMasterInitial. "
+            "If rsdQty still mismatches, clear stock on OSCU for this PIN, then --reset-stock "
+            f"(see {STATE_FILE.name})."
         )
         completed_list = [
             x
@@ -1534,6 +1589,7 @@ def main():
         pin_blob["completed_endpoints"] = list(completed_list)
         pin_blob["stock_io_pending_rsd_qty"] = 0.0
         pin_blob.pop("stock_io_next_sar_no", None)
+        pin_blob.pop("current_stock_balance", None)
         save_test_state(state_root)
 
     _parent_io_done_tags = frozenset({"insertStockIO", "insertStockIOInitial"})
@@ -1554,22 +1610,22 @@ def main():
     if (
         not only_steps_cli
         and _any_parent_insert_done
-        and pin_blob.get("stock_io_pending_rsd_qty") is None
+        and pin_blob.get("current_stock_balance") is None
     ):
         try:
             _n_heal = int(pin_blob.get("stock_io_next_sar_no") or 1)
         except (TypeError, ValueError):
             _n_heal = 1
         if _n_heal > 1:
-            pin_blob["stock_io_pending_rsd_qty"] = -float((_n_heal - 1) * _sq_heal)
+            pin_blob["current_stock_balance"] = float((_n_heal - 1) * _sq_heal)
             save_test_state(state_root)
             print(
-                "NOTE: Healed stock_io_pending_rsd_qty from SAR sequence "
-                f"({pin_blob['stock_io_pending_rsd_qty']}), matching pending saveStockMaster."
+                "NOTE: Healed current_stock_balance from SAR sequence "
+                f"({pin_blob['current_stock_balance']}), matching Stock IO depth before saveStockMaster."
             )
 
-    # Do not strip insertStockIOInitial when saveStockMasterInitial is still pending: negative
-    # stock_io_pending_rsd_qty after insert is normal. Re-playing insert would stack SAR/IO on KRA.
+    # Do not strip insertStockIOInitial when saveStockMasterInitial is still pending: non-zero
+    # current_stock_balance after insert is normal. Re-playing insert would stack SAR/IO on KRA.
 
     # Wedged resume: final parent insertStockIO + selectStockMoveList done but saveStockMaster not.
     if (
@@ -1578,24 +1634,24 @@ def main():
         and "selectStockMoveList" in completed_list
         and "saveStockMaster" not in completed_list
     ):
-        _pr_w = pin_blob.get("stock_io_pending_rsd_qty")
+        _bw = pin_blob.get("current_stock_balance")
         try:
-            _pv_w = (
-                float(_pr_w)
-                if _pr_w is not None and str(_pr_w).strip() != ""
+            _bal_w = (
+                float(_bw)
+                if _bw is not None and str(_bw).strip() != ""
                 else 0.0
             )
         except (TypeError, ValueError):
-            _pv_w = 0.0
-        if _pv_w < -1e-9:
+            _bal_w = 0.0
+        if _bal_w > 1e-9:
             print(
-                "NOTE: Stock pipeline wedged (pending saveStockMaster with negative rsdQty but that "
-                "step never completed). This is parent-item insertStockIO reconciliation (saveItemComposition "
-                "already ran earlier with its own component stock prelude). Removing insertStockIO and "
-                "selectStockMoveList from completed_endpoints so they run again in this process together "
-                "with saveStockMaster (SBX usually accepts negative rsdQty immediately after insertStockIO "
-                "in the same invocation). If insertStockIO then fails, reset OSCU stock/SAR for this PIN "
-                f"and adjust stock_io_* keys in {STATE_FILE.name}."
+                "NOTE: Stock pipeline wedged (pending saveStockMaster with unreconciled "
+                "current_stock_balance but that step never completed). This is parent-item insertStockIO "
+                "reconciliation (saveItemComposition already ran earlier with its own component stock "
+                "prelude). Removing insertStockIO and selectStockMoveList from completed_endpoints so they "
+                "run again in this process together with saveStockMaster. If insertStockIO then fails, "
+                "reset OSCU stock/SAR for this PIN and adjust current_stock_balance / stock_io_* keys in "
+                f"{STATE_FILE.name}."
             )
             completed_list = [
                 x
@@ -1619,6 +1675,24 @@ def main():
         completed_list = [x for x in completed_list if x != "insertStockIO"]
         pin_blob["completed_endpoints"] = list(completed_list)
         save_test_state(state_root)
+
+    if diagnostic_stock_io_cli:
+        apply_diagnostic_stock_io_reset(pin_blob)
+        completed_list = list(pin_blob.get("completed_endpoints") or [])
+        save_test_state(state_root)
+        print(
+            "\n"
+            + "=" * 78
+            + "\nDIAGNOSTIC SBX STOCK IO (--diagnostic-stock-io)\n"
+            "  • Resume disabled for insertStockIOInitial / selectStockMoveListInitial / saveStockMasterInitial\n"
+            "  • Single SAR: stock_io_next_sar_no=1 → first IO uses sarNo=1, orgSarNo=0; "
+            "current_stock_balance=0 before POST\n"
+            "  • initial_parent_stock_qty forced to 1 (line qty)\n"
+            "  • insertStockIOInitial: one POST only (no retry loop). saveStockMasterInitial: _cap_attempts=1\n"
+            "  • If KRA says Expected: -1, sarTyCd=11 may be OUT for SBX (direction mismatch).\n"
+            + "=" * 78
+            + "\n"
+        )
 
     if only_steps_cli:
         if set(only_steps_cli).issubset(set(completed_list)):
@@ -1746,6 +1820,9 @@ def main():
 
     item_cd = reconcile_item_cd_with_pin_state(pin_blob, item_cd)
     initial_parent_stock_qty = 1.0
+    if diagnostic_stock_io_cli:
+        initial_parent_stock_qty = 1.0
+        stock_qty = 1
 
     qty = 1.0
     prc = 100.0
@@ -2298,7 +2375,6 @@ def main():
         save_test_state(state_root)
 
     select_item_list_parsed: dict | None = None
-    allow_neg_rsd_for_master = False
     final_parent_insert_io_just_ran = False
     initial_insert_io_just_ran = False
     ran_insert_stock_io_initial_this_run = False
@@ -2306,7 +2382,6 @@ def main():
 
     def ensure_component_stock_before_composition() -> None:
         """KRA rejects saveItemComposition with Insufficient Stock unless cpstItemCd has inventory."""
-        _pend_pk = "stock_io_component_pending_rsd_qty"
         if pin_blob.get("stocked_component_for_composition"):
             print(
                 "NOTE: Stock prelude for saveItemComposition skipped (already done for this component)."
@@ -2328,20 +2403,16 @@ def main():
         io_url = f"{BASE_URL.rstrip('/')}/insertStockIO"
         sm_url = f"{BASE_URL.rstrip('/')}/saveStockMaster"
 
-        pending_val: float | None = None
-        raw_pend = pin_blob.get(_pend_pk)
-        if raw_pend is not None and str(raw_pend).strip() != "":
-            try:
-                pending_val = float(raw_pend)
-            except (TypeError, ValueError):
-                pending_val = None
-
         prelude_io_sar = int(pin_blob.get("stock_io_next_sar_no") or 1) - 1
 
-        if pending_val is not None and abs(pending_val) >= 1e-9:
+        try:
+            _comp_bal_skip = float(pin_blob.get("component_stock_balance") or 0.0)
+        except (TypeError, ValueError):
+            _comp_bal_skip = 0.0
+        if _comp_bal_skip >= 1e-9 and not pin_blob.get("stocked_component_for_composition"):
             print(
-                "PRELUDE: pending component Stock IO "
-                f"(rplQty ~ {pending_val}); skipping insertStockIO, reconciling via saveStockMaster only."
+                "PRELUDE: component Stock IO already increased on-hand balance "
+                f"({_comp_bal_skip:g}); skipping insertStockIO, reconciling via saveStockMaster only."
             )
         else:
             try:
@@ -2358,7 +2429,7 @@ def main():
             prelude_io_sar = sar_no_used
             for outer_attempt, org_sar_val in enumerate(org_sar_tries):
                 reg_ty = "M"
-                sar_ty = "11"
+                sar_ty = SAR_TY_CD_STOCK_IN
                 stock_line = {
                     "itemSeq": 1,
                     "itemCd": comp_cd,
@@ -2411,8 +2482,10 @@ def main():
                     succeeded = True
                     prelude_io_sar = sar_no_used
                     pin_blob["stock_io_next_sar_no"] = sar_no_used + 1
-                    _acc = float(pin_blob.get(_pend_pk) or 0)
-                    pin_blob[_pend_pk] = _acc - qty_f
+                    _prev_c = float(pin_blob.get("component_stock_balance") or 0.0)
+                    pin_blob["component_stock_balance"] = _prev_c + stock_balance_delta_for_sar_line(
+                        sar_ty, qty_f
+                    )
                     save_test_state(state_root)
                     break
                 if outer_attempt >= len(org_sar_tries) - 1:
@@ -2430,9 +2503,9 @@ def main():
             time.sleep(2)
 
         try:
-            _rsd = float(pin_blob.get(_pend_pk))
+            _rsd = float(pin_blob.get("component_stock_balance") or 0.0)
         except (TypeError, ValueError):
-            _rsd = -abs(qty_f)
+            _rsd = float(qty_f)
         sm_payload = {
             "itemCd": comp_cd,
             "rsdQty": _rsd,
@@ -2469,23 +2542,13 @@ def main():
         ok_sm, parsed_sm, resp_sm = _post_save_comp_prelude(_rsd, "")
         ge_sm = kra_top_level_error_detail(parsed_sm)
         rc_sm = extract_result_cd(parsed_sm)
-        if not ok_sm and _rsd < 0:
-            b = _hdr_blob(parsed_sm).lower()
-            if "cannot be a negative value" in b or "negative value" in b:
-                ok_sm, parsed_sm, resp_sm = _post_save_comp_prelude(
-                    abs(_rsd), "positive after SBX rejected negative"
-                )
-                ge_sm = kra_top_level_error_detail(parsed_sm)
-                rc_sm = extract_result_cd(parsed_sm)
         if not ok_sm:
             blob = _hdr_blob(parsed_sm)
             exp = kra_expected_rsd_qty_from_mismatch_message(blob)
             if exp is not None:
-                _try_vals: list[float] = [exp]
-                if exp < 0:
-                    _try_vals.append(abs(exp))
+                _try_vals: list[float] = [abs(exp)]
                 for j, rsd_try in enumerate(_try_vals):
-                    pin_blob[_pend_pk] = rsd_try
+                    pin_blob["component_stock_balance"] = rsd_try
                     save_test_state(state_root)
                     ok_sm, parsed_sm, resp_sm = _post_save_comp_prelude(
                         rsd_try, f"KRA Expected mismatch attempt {j + 1}"
@@ -2494,11 +2557,6 @@ def main():
                     rc_sm = extract_result_cd(parsed_sm)
                     if ok_sm:
                         break
-                    b2 = _hdr_blob(parsed_sm).lower()
-                    if rsd_try < 0 and (
-                        "cannot be a negative value" in b2 or "negative value" in b2
-                    ):
-                        continue
         if not ok_sm:
             raise SystemExit(
                 "STOP: composition prelude saveStockMaster failed "
@@ -2506,7 +2564,6 @@ def main():
                 + (f", {ge_sm}" if ge_sm else "")
                 + ")"
             )
-        pin_blob.pop(_pend_pk, None)
         pin_blob["stocked_component_for_composition"] = True
         save_test_state(state_root)
         print("CONTINUE: component stock prelude OK (ready for saveItemComposition).")
@@ -2530,34 +2587,42 @@ def main():
         )
         if only_steps_cli:
             skip_completed = False
-        if skip_completed and endpoint_name == "insertStockIOInitial":
+        if (
+            skip_completed
+            and endpoint_name == "insertStockIOInitial"
+            and not diagnostic_stock_io_cli
+        ):
             if "saveStockMasterInitial" not in completed_list:
                 try:
                     _ns_skip = int(pin_blob.get("stock_io_next_sar_no") or 1)
                 except (TypeError, ValueError):
                     _ns_skip = 1
                 _line_skip = float(initial_parent_stock_qty)
-                _raw_p = pin_blob.get("stock_io_pending_rsd_qty")
-                _have_p = False
-                if _raw_p is not None and str(_raw_p).strip() != "":
+                _have_bal = False
+                _raw_b = pin_blob.get("current_stock_balance")
+                if _raw_b is not None and str(_raw_b).strip() != "":
                     try:
-                        _pv = float(_raw_p)
-                        if abs(_pv) >= 1e-9:
-                            _have_p = True
-                            pin_blob["stock_io_pending_rsd_qty"] = _pv
+                        _bv = float(_raw_b)
+                        if abs(_bv) >= 1e-9:
+                            _have_bal = True
+                            pin_blob["current_stock_balance"] = _bv
                     except (TypeError, ValueError):
                         pass
-                if not _have_p:
-                    pin_blob["stock_io_pending_rsd_qty"] = -float(
-                        max(0, _ns_skip - 1) * _line_skip
-                    )
-                allow_neg_rsd_for_master = True
+                if not _have_bal:
+                    _est = float(max(0, _ns_skip - 1) * _line_skip)
+                    try:
+                        _rp = pin_blob.get("stock_io_pending_rsd_qty")
+                        if _rp is not None and str(_rp).strip() != "":
+                            _est = abs(float(_rp))
+                    except (TypeError, ValueError):
+                        pass
+                    pin_blob["current_stock_balance"] = _est
                 ran_insert_stock_io_initial_this_run = True
                 save_test_state(state_root)
                 print(
                     "NOTE: insertStockIOInitial already on SBX — not re-posting; "
                     f"stock_io_next_sar_no={_ns_skip}, "
-                    f"stock_io_pending_rsd_qty={pin_blob['stock_io_pending_rsd_qty']!r} "
+                    f"current_stock_balance={pin_blob['current_stock_balance']!r} "
                     "(saveStockMasterInitial still pending)."
                 )
                 continue
@@ -2630,7 +2695,8 @@ def main():
                     sar_no_used = 1
                 org_sar_primary = 0 if sar_no_used == 1 else sar_no_used - 1
                 reg_ty = "M"
-                sar_ty = "11"
+                # insertStockIOInitial: diagnostic — testing sarTyCd "01" vs SBX Stock IO / saveStockMaster rsdQty.
+                sar_ty = "01"
                 icd = (item_cls_dynamic.get("itemClsCd") or "1010000000").strip()
                 tty = (item_cls_dynamic.get("taxTyCd") or "A").strip()
                 stock_line = {
@@ -2672,11 +2738,28 @@ def main():
                     f"sarNo={sar_no_used},orgSarNo={org_lbl},"
                     f"regTy={reg_ty},sarTy={sar_ty}"
                 )
-                print(f"RUNNING {_io_log} [{label}]")
-                print(
-                    "Request JSON:",
-                    json.dumps(io_root, indent=2, ensure_ascii=False),
-                )
+                if diagnostic_stock_io_cli:
+                    print(
+                        "\n"
+                        + "=" * 78
+                        + "\nDIAGNOSTIC insertStockIOInitial — FULL PAYLOAD (before POST)\n"
+                        + f"RUNNING {_io_log} [{label}]\n"
+                        + "=" * 78
+                    )
+                    print(json.dumps(io_root, indent=2, ensure_ascii=False))
+                    print(
+                        "=" * 78
+                        + f"\nExpect after success (HTTP OK, resultCd 000): "
+                        f"current_stock_balance = {line_qty_f:g}\n"
+                        + "=" * 78
+                        + "\n"
+                    )
+                else:
+                    print(f"RUNNING {_io_log} [{label}]")
+                    print(
+                        "Request JSON:",
+                        json.dumps(io_root, indent=2, ensure_ascii=False),
+                    )
                 resp = requests.post(
                     url, headers=headers, json=io_root, timeout=60
                 )
@@ -2689,12 +2772,17 @@ def main():
                     and result_cd_io == "000"
                 ):
                     pin_blob["stock_io_next_sar_no"] = sar_no_used + 1
-                    pin_blob["stock_io_pending_rsd_qty"] = -float(
-                        sar_no_used * line_qty_f
+                    _prev = float(pin_blob.get("current_stock_balance") or 0.0)
+                    pin_blob["current_stock_balance"] = _prev + stock_balance_delta_for_sar_line(
+                        sar_ty, line_qty_f
                     )
-                    allow_neg_rsd_for_master = True
                     ran_insert_stock_io_initial_this_run = True
                     initial_insert_io_just_ran = True
+                    if diagnostic_stock_io_cli:
+                        print(
+                            "\nDIAGNOSTIC: after insertStockIOInitial success — "
+                            f"current_stock_balance={pin_blob.get('current_stock_balance')!r}\n"
+                        )
                     log_api_result_summary(
                         _io_log, resp, parsed_io, result_cd_io
                     )
@@ -2728,7 +2816,7 @@ def main():
                     for outer_attempt, org_sar_val in enumerate(org_sar_tries):
                         # Paybill/KRA StockIOSaveReq shape (not stockInOutList / per-line ioTyCd).
                         reg_ty = "M"
-                        sar_ty = "11"
+                        sar_ty = SAR_TY_CD_STOCK_IN
                         icd = (item_cls_dynamic.get("itemClsCd") or "1010000000").strip()
                         tty = (item_cls_dynamic.get("taxTyCd") or "A").strip()
                         stock_line = {
@@ -2805,12 +2893,10 @@ def main():
                         if inner_ok:
                             succeeded = True
                             pin_blob["stock_io_next_sar_no"] = sar_no_used + 1
-                            # Cumulative pending for all posted SAR rows not yet reconciled by saveStockMaster*.
-                            # sar_no_used = serial of this successful IO; KRA expects rsdQty magnitude = sar_no_used * line_qty.
-                            pin_blob["stock_io_pending_rsd_qty"] = -float(
-                                sar_no_used * line_qty_f
+                            _prev = float(pin_blob.get("current_stock_balance") or 0.0)
+                            pin_blob["current_stock_balance"] = _prev + stock_balance_delta_for_sar_line(
+                                sar_ty, line_qty_f
                             )
-                            allow_neg_rsd_for_master = True
                             final_parent_insert_io_just_ran = True
                             ran_insert_stock_io_parent_this_run = True
                             log_api_result_summary(
@@ -3128,6 +3214,7 @@ def main():
             pin_blob["component_item_cd"] = comp_cd
             pin_blob.pop("stocked_component_for_composition", None)
             pin_blob.pop("stock_io_component_pending_rsd_qty", None)
+            pin_blob.pop("component_stock_balance", None)
             persist_item_cd_suffix_map(pin_blob, comp_cd)
             save_test_state(state_root)
             flush_progress("saveComponentItem", mark_endpoint_complete=True)
@@ -3240,44 +3327,30 @@ def main():
                 payload["invcNo"] = _invc_base
 
         if endpoint_name in ("saveStockMaster", "saveStockMasterInitial"):
-            if (
-                endpoint_name == "saveStockMasterInitial"
-                and ran_insert_stock_io_initial_this_run
-            ):
-                _pend_raw = pin_blob.get("stock_io_pending_rsd_qty")
-                if _pend_raw is not None and str(_pend_raw).strip() != "":
-                    payload["rsdQty"] = float(_pend_raw)
-                else:
-                    payload["rsdQty"] = -float(initial_parent_stock_qty)
+            try:
+                _bal_sm = float(pin_blob.get("current_stock_balance") or 0.0)
+            except (TypeError, ValueError):
+                _bal_sm = 0.0
+            payload["rsdQty"] = _bal_sm
+            print(
+                f"{endpoint_name}: rsdQty = current_stock_balance (call selectStockMoveList* before this)"
+            )
+            print(f"{endpoint_name} rsdQty={payload['rsdQty']!r}")
+            if endpoint_name == "saveStockMasterInitial" and diagnostic_stock_io_cli:
                 print(
-                    "saveStockMasterInitial: signed rsdQty (call selectStockMoveListInitial before this)"
+                    "\n"
+                    + "=" * 78
+                    + "\nDIAGNOSTIC saveStockMasterInitial — FULL PAYLOAD (before POST)\n"
+                    + "=" * 78
                 )
-                print(f"saveStockMasterInitial rsdQty={payload['rsdQty']!r}")
-            else:
-                # Final saveStockMaster, resume paths, or unpaired initial: signed pending / template qty.
-                _q = float(payload.get("rsdQty", stock_qty))
-                _pend_raw = pin_blob.get("stock_io_pending_rsd_qty")
-                _pv = _q
-                if _pend_raw is not None and str(_pend_raw).strip() != "":
-                    try:
-                        _pv = float(_pend_raw)
-                    except (TypeError, ValueError):
-                        _pv = _q
-                if not allow_neg_rsd_for_master and _pv < 0:
-                    if endpoint_name == "saveStockMaster" and "selectStockMoveList" in completed_list:
-                        print(
-                            "NOTE: saveStockMaster resume: parent insertStockIO was skipped this invocation "
-                            f"but pending rsdQty ~ {_pv} and selectStockMoveList already completed — "
-                            "attempting saveStockMaster (SBX may still reject; reset OSCU stock/SAR if so)."
-                        )
-                    else:
-                        raise SystemExit(
-                            "STOP: saveStockMaster / saveStockMasterInitial needs negative rsdQty for pending "
-                            "Stock IO but allow_neg_rsd_for_master=false. Replay the matching insertStockIO* in "
-                            "this run or use --reset-stock / --force-stock-replay "
-                            f"(pending rsdQty ~ {_pv}, see {STATE_FILE.name})."
-                        )
-                payload["rsdQty"] = _pv
+                print(json.dumps(payload, indent=2, ensure_ascii=False))
+                print(
+                    "=" * 78
+                    + "\nExpect rsdQty = 1 when diagnostic reset ran with line qty 1 (balance from 0).\n"
+                    "If KRA returns Expected: -1 vs your rsdQty, SBX internal sign may disagree with this balance.\n"
+                    + "=" * 78
+                    + "\n"
+                )
 
         if endpoint_name == "saveInvoice":
             il = payload.get("itemList")
@@ -3327,32 +3400,6 @@ def main():
                         "saveItem). Check branch/tin and SBX latency."
                     )
                 break
-            # Final saveStockMaster only: SBX sometimes accepts +|rsdQty| after rejecting negative.
-            # saveStockMasterInitial: never flip sign — SBX then returns "Expected: -N" vs Stock IO.
-            if endpoint_name == "saveStockMaster":
-                _last_try = attempt >= _cap_attempts - 1
-                if not _last_try:
-                    rh_sm = parsed.get("responseHeader") if isinstance(parsed, dict) else None
-                    blob_sm = ""
-                    if isinstance(rh_sm, dict):
-                        blob_sm = (
-                            f"{rh_sm.get('debugMessage') or ''} "
-                            f"{rh_sm.get('customerMessage') or ''}"
-                        )
-                    try:
-                        cur_rq = float(payload.get("rsdQty", 0))
-                    except (TypeError, ValueError):
-                        cur_rq = 0.0
-                    bsl = blob_sm.lower()
-                    if cur_rq < 0 and (
-                        "cannot be negative" in bsl or "negative value" in bsl
-                    ):
-                        payload["rsdQty"] = abs(cur_rq)
-                        print(
-                            "RETRY: saveStockMaster — SBX rejected negative rsdQty; "
-                            f"retrying once with rsdQty={payload['rsdQty']!r}."
-                        )
-                        continue
             _last_att = attempt >= _cap_attempts - 1
             if _last_att:
                 if endpoint_name == "saveStockMasterInitial":
@@ -3522,7 +3569,6 @@ def main():
             endpoint_name, result_cd
         ):
             pin_blob["stock_io_pending_rsd_qty"] = 0.0
-            allow_neg_rsd_for_master = False
             save_test_state(state_root)
 
     print("\nDONE: validation sequence completed successfully.")

@@ -133,6 +133,9 @@ function loadConfig() {
     const saved = localStorage.getItem('pharmasight_config');
     if (saved) {
         const config = JSON.parse(saved);
+        if (typeof config.API_BASE_URL === 'string' && config.API_BASE_URL.trim()) {
+            config.API_BASE_URL = config.API_BASE_URL.trim().replace(/\/+$/, '');
+        }
         Object.assign(CONFIG, config);
     }
     
@@ -247,6 +250,7 @@ async function saveCompanyPrintSettings() {
 function saveConfig() {
     const printBool = (k) => CONFIG[k] === true;
     localStorage.setItem('pharmasight_config', JSON.stringify({
+        API_BASE_URL: CONFIG.API_BASE_URL != null && CONFIG.API_BASE_URL !== '' ? CONFIG.API_BASE_URL : '',
         COMPANY_ID: CONFIG.COMPANY_ID,
         BRANCH_ID: CONFIG.BRANCH_ID,
         USER_ID: CONFIG.USER_ID,

@@ -22,7 +22,16 @@ from app.config import settings
 from app.database import SessionLocal
 from app.rate_limit import limiter
 from app.database_master import get_master_db
-from app.dependencies import get_current_user, get_tenant_db, get_tenant_from_header, tenant_db_session, get_effective_company_id_for_user, invalidate_auth_cache_for_user
+from app.dependencies import (
+    get_current_user,
+    get_tenant_db,
+    get_tenant_from_header,
+    tenant_db_session,
+    get_effective_company_id_for_user,
+    invalidate_auth_cache_for_user,
+    _tenant_from_token_or_header,
+    _get_default_tenant,
+)
 from app.utils.auth_internal import (
     CLAIM_EXP,
     CLAIM_JTI,
@@ -56,6 +65,7 @@ from app.utils.auth_internal import (
 )
 from app.services.plan_context import get_tenant_plan_context
 from app.services.demo_signup_service import create_demo_tenant
+from app.utils.subscription_billing import compute_subscription_billing_state
 
 router = APIRouter()
 
@@ -63,18 +73,10 @@ router = APIRouter()
 class AuthMeResponse(BaseModel):
     user_id: str
     roles: List[str]
-
-
-def _trial_expired(tenant: Optional[Tenant]) -> bool:
-    """True if tenant is on trial and trial_ends_at is in the past (UTC)."""
-    if tenant is None:
-        return False
-    if tenant.status != "trial" or not tenant.trial_ends_at:
-        return False
-    end = tenant.trial_ends_at
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=timezone.utc)
-    return end < datetime.now(timezone.utc)
+    subscription_access: Optional[str] = None
+    tenant_status: Optional[str] = None
+    trial_ends_at: Optional[datetime] = None
+    trial_days_remaining: Optional[int] = None
 
 
 # When user is found only in default/legacy DB (no tenant DB), reset token uses this subdomain.
@@ -127,12 +129,14 @@ class StartDemoResponse(BaseModel):
 
 @router.get("/auth/me", response_model=AuthMeResponse)
 def auth_me(
+    request: Request,
     user_db: Tuple[User, Session] = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     """
-    Return current authenticated user_id and RBAC role names.
-    Used for UI gating (e.g. Platform Admin visibility).
+    Return current authenticated user_id, RBAC role names, and subscription/trial context
+    from the master tenant row (for dashboard messaging and UI gating).
     """
     user, _ = user_db
     from app.models.user import UserBranchRole, UserRole
@@ -145,9 +149,24 @@ def auth_me(
         .all()
     )
     roles = sorted({(r[0] or "").strip().lower() for r in (rows or []) if r and r[0]})
-    return {"user_id": str(user.id), "roles": roles}
-    tenant_subdomain: str
-    username: str
+
+    auth = request.headers.get("Authorization")
+    token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
+    payload = decode_internal_token(token) if token else None
+    tenant = None
+    if payload:
+        tenant = _tenant_from_token_or_header(request, master_db, payload)
+    if tenant is None:
+        tenant = _get_default_tenant(master_db)
+    state = compute_subscription_billing_state(tenant)
+    return {
+        "user_id": str(user.id),
+        "roles": roles,
+        "subscription_access": state.get("subscription_access"),
+        "tenant_status": state.get("tenant_status"),
+        "trial_ends_at": state.get("trial_ends_at"),
+        "trial_days_remaining": state.get("trial_days_remaining"),
+    }
 
 
 def _find_user_in_db(db: Session, normalized_username: str, check_email: bool) -> Optional[User]:
@@ -343,11 +362,7 @@ def username_login(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Account suspended. Please contact support.",
             )
-        if _trial_expired(tenant):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Trial expired. Please contact support to upgrade.",
-            )
+        # Expired trials may still sign in; the app restricts features until they upgrade.
         # Demo expiry enforcement: block login for expired demo tenants before issuing tokens
         if tenant is not None:
             plan_ctx = get_tenant_plan_context(tenant)

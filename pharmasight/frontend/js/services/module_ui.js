@@ -311,6 +311,18 @@
         const mainNav = document.getElementById('mainNav');
         if (!mainNav) return;
 
+        if (
+            (window.SubscriptionUI && window.SubscriptionUI.effectiveAccess && window.SubscriptionUI.effectiveAccess() === 'trial_expired') ||
+            (window.__authMe && window.__authMe.subscription_access === 'trial_expired')
+        ) {
+            mainNav.innerHTML = `
+                <a href="#" class="nav-item" data-page="dashboard" data-has-sub="false">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Dashboard</span>
+                </a>`;
+            return;
+        }
+
         const rows = flattenSidebarConfig(moduleName);
         if (rows.length === 0) {
             mainNav.innerHTML =
@@ -347,6 +359,14 @@
     function renderModuleSwitcher() {
         const wrap = document.getElementById('moduleSwitcher');
         if (!wrap) return;
+
+        if (
+            (window.SubscriptionUI && window.SubscriptionUI.effectiveAccess && window.SubscriptionUI.effectiveAccess() === 'trial_expired') ||
+            (window.__authMe && window.__authMe.subscription_access === 'trial_expired')
+        ) {
+            wrap.innerHTML = '';
+            return;
+        }
 
         if (!_modules || _modules.length === 0) {
             wrap.innerHTML = '';

@@ -628,6 +628,69 @@ body {
     font-size: 1.5rem;
 }
 
+/* Fixed global trial-expired alert (above entire app; synced from API 403 + /auth/me) */
+.trial-expired-global-notice {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100000;
+    padding: 0.65rem 1rem;
+    text-align: center;
+    font-weight: 600;
+    font-size: 0.95rem;
+    line-height: 1.35;
+    color: #fff;
+    background: linear-gradient(90deg, #991b1b, #dc2626, #b91c1c);
+    background-size: 200% 100%;
+    box-shadow: 0 4px 20px rgba(185, 28, 28, 0.55);
+    animation: trial-expired-global-pulse 2.5s ease-in-out infinite, trial-expired-global-shimmer 10s linear infinite;
+    pointer-events: none;
+}
+
+.trial-expired-global-notice[hidden],
+.trial-expired-global-notice:not(.is-visible) {
+    display: none !important;
+}
+
+.trial-expired-global-notice.is-visible {
+    display: block !important;
+}
+
+.trial-expired-global-inner {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    max-width: 56rem;
+    margin: 0 auto;
+}
+
+body.trial-expired-global-active {
+    padding-top: 2.75rem;
+}
+
+@keyframes trial-expired-global-pulse {
+    0%,
+    100% {
+        opacity: 1;
+        filter: brightness(1);
+    }
+    50% {
+        opacity: 0.88;
+        filter: brightness(1.18);
+    }
+}
+
+@keyframes trial-expired-global-shimmer {
+    0% {
+        background-position: 0% 50%;
+    }
+    100% {
+        background-position: 200% 50%;
+    }
+}
+
 /* Main Content */
 .main-content {
     flex: 1;
@@ -640,6 +703,46 @@ body {
 
 .sidebar.collapsed ~ .main-content {
     margin-left: 80px;
+}
+
+/* Subscription / trial banner (top of main content) */
+.subscription-banner-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1.25rem;
+    margin: 0 1.5rem 0.5rem 1.5rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    background: linear-gradient(90deg, rgba(20, 184, 166, 0.14), rgba(59, 130, 246, 0.08));
+    border: 1px solid rgba(20, 184, 166, 0.35);
+    color: var(--text-primary);
+}
+
+body.subscription-trial-expired .subscription-banner-strip {
+    background: linear-gradient(90deg, rgba(251, 191, 36, 0.2), rgba(254, 215, 170, 0.25));
+    border-color: rgba(245, 158, 11, 0.45);
+}
+
+.subscription-banner-strip--danger {
+    background: linear-gradient(90deg, rgba(220, 38, 38, 0.18), rgba(248, 113, 113, 0.22)) !important;
+    border: 1px solid rgba(220, 38, 38, 0.45) !important;
+    color: #7f1d1d !important;
+}
+
+.subscription-banner-icon {
+    flex-shrink: 0;
+    color: var(--primary-color);
+}
+
+.subscription-banner-warn {
+    color: var(--warning-color, #d97706);
+}
+
+.trial-expired-card {
+    border: 1px dashed var(--border-color);
+    background: var(--card-bg);
+    margin-bottom: 1.5rem;
 }
 
 /* Status Bar (phAMACore style) */
