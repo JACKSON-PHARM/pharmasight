@@ -78,7 +78,8 @@ adjust the path in the ``sequence`` table). **``updateImportItem``** is optional
 no imported-item rows (result not ``000`` → logged and skipped).
 **``saveItemComposition``** requires **on-hand stock** for ``cpstItemCd``. In this order it runs
 right after ``saveComponentItem``; the runner’s **composition prelude** posts component-only
-``insertStockIO`` + ``saveStockMaster`` so SAR/parent sequencing stays consistent. **Parent** stock IO
+``insertStockIO`` + ``selectStockMoveList`` (baseline ``lastReqDt``) + ``saveStockMaster`` so SBX
+matches the parent **initial stock** triple and inventory is visible to composition. **Parent** stock IO
 and ``saveStockMaster`` run later (after purchases). If SBX stacks unreconciled component IOs, clear
 ``component_stock_balance`` in ``.test_state.json`` or reset stock on the OSCU portal.
 **Quantity unit:** sandbox ``saveItem`` rejects ``qtyUnitCd`` values that are not on KRA’s allow-list
@@ -162,18 +163,11 @@ INITIAL_SAVE_STOCKMASTER_DIRTY_THRESHOLD = 10
 # Unreconciled SAR count (stock_io_next_sar_no - 1) at or above this → likely stacked IO / SBX rsdQty deadlock.
 INITIAL_SAVE_STOCKMASTER_SAR_BACKLOG_DIRTY = 3
 
+# After component stock prelude, wait before ``saveItemComposition`` so SBX inventory can settle.
+COMPOSITION_DELAY = 5
+
 # Stock IOSaveReq: ``sarTyCd`` 11 is treated as STOCK IN (increases on-hand qty) per OSCU testcase.
 SAR_TY_CD_STOCK_IN = "11"
-
-
-def stock_balance_delta_for_sar_line(sar_ty_cd: str, line_qty: float) -> float:
-    """Signed change to on-hand balance for one Stock IO line: IN adds, OUT subtracts."""
-    ty = (sar_ty_cd or "").strip()
-    q = float(line_qty)
-    if ty == SAR_TY_CD_STOCK_IN:
-        return q
-    # Extend when this runner posts other sarTyCd values (e.g. stock OUT).
-    return q
 
 
 # Endpoint ``name`` keys matching the ``sequence`` tuples (for resume skips).
@@ -316,6 +310,13 @@ def reset_pin_clean_run(pin_blob: dict) -> None:
         "component_stock_balance",
         "stocked_component_for_composition",
         "kra_item_cd_suffix_by_prefix",
+        "item_cd_suffix_last_digit",
+        "item_cd_suffix_tail_mod",
+        "item_cd_suffix_tail_res",
+        "item_dft_prc",
+        "item_nm_stock",
+        "component_item_cls_cd",
+        "component_item_tax_ty_cd",
     ):
         pin_blob.pop(k, None)
     pin_blob["stock_io_pending_rsd_qty"] = 0.0
@@ -1051,10 +1052,23 @@ def max_numeric_suffix_for_prefix(parsed: dict | None, prefix: str) -> int:
     return mx
 
 
-def next_suffix_int_after(high_water: int) -> int:
-    """Smallest value greater than high_water whose last digit is 1 (KRA SBX itemCd sequence rule)."""
+def next_suffix_int_after(high_water: int, last_digit: int = 1) -> int:
+    """Smallest value > high_water whose last decimal digit matches KRA SBX rule (often 1; SBX may require 3, …)."""
+    ld = int(last_digit) % 10
     n = int(high_water) + 1
-    while n % 10 != 1:
+    while n % 10 != ld:
+        n += 1
+    if n > 9_999_999:
+        raise ValueError("itemCd 7-digit suffix exhausted (>9999999)")
+    return n
+
+
+def next_suffix_int_after_mod(high_water: int, modulus: int, residue: int) -> int:
+    """Smallest n > high_water with n % modulus == residue (e.g. suffix ending …13 → mod 100, res 13)."""
+    n = int(high_water) + 1
+    m = int(modulus)
+    r = int(residue) % m
+    while n % m != r:
         n += 1
     if n > 9_999_999:
         raise ValueError("itemCd 7-digit suffix exhausted (>9999999)")
@@ -1086,7 +1100,21 @@ def alloc_monotonic_item_cd_suffix(
     cur = attempt_hw.get(prefix)
     if cur is None:
         cur = base_floor
-    nxt = next_suffix_int_after(cur)
+    tm = pin_blob.get("item_cd_suffix_tail_mod")
+    tr = pin_blob.get("item_cd_suffix_tail_res")
+    if isinstance(tm, int) and isinstance(tr, int):
+        if tm == 10:
+            nxt = next_suffix_int_after(cur, tr % 10)
+        else:
+            nxt = next_suffix_int_after_mod(cur, tm, tr)
+    else:
+        ld_raw = pin_blob.get("item_cd_suffix_last_digit")
+        ld = 1
+        if isinstance(ld_raw, int) and 0 <= ld_raw <= 9:
+            ld = ld_raw
+        elif isinstance(ld_raw, str) and ld_raw.strip().isdigit():
+            ld = int(ld_raw.strip()) % 10
+        nxt = next_suffix_int_after(cur, ld)
     attempt_hw[prefix] = nxt
     return f"{nxt:07d}"
 
@@ -1179,6 +1207,69 @@ def kra_expected_next_sar_no_from_message(msg: str | None) -> int | None:
         return None
 
 
+def kra_save_item_error_text(parsed: dict | None) -> str:
+    """Join KRA saveItem failure messages (HTTP 400 gate) for parsing."""
+    if not isinstance(parsed, dict):
+        return ""
+    rh = parsed.get("responseHeader")
+    if not isinstance(rh, dict):
+        return ""
+    parts: list[str] = []
+    for k in ("customerMessage", "debugMessage"):
+        v = rh.get(k)
+        if v is not None and str(v).strip():
+            parts.append(str(v).strip())
+    return " ".join(parts)
+
+
+def kra_parse_item_cd_suffix_constraint(msg: str | None) -> tuple[int, int] | None:
+    """
+    Parse saveItem rejection, e.g. ``********3`` or ``********13`` (multi-digit tail).
+    Returns (modulus, residue) for the 7-digit numeric suffix, e.g. (10, 3) or (100, 13).
+    """
+    if not msg:
+        return None
+    m = re.search(
+        r"Expected sequence ending with[:\s]*\*+(\d+)",
+        msg,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    try:
+        tail = int(m.group(1))
+    except ValueError:
+        return None
+    if tail < 10:
+        return (10, tail % 10)
+    if tail < 100:
+        return (100, tail)
+    if tail < 1000:
+        return (1000, tail)
+    if tail < 10000:
+        return (10_000, tail)
+    return None
+
+
+def stock_io_line_amounts_for_tax_ty(
+    *,
+    unit_prc: float,
+    qty: float,
+    tax_ty_cd: str,
+) -> tuple[float, float, float, float]:
+    """
+    (splyAmt, taxblAmt, taxAmt, totAmt) for one stock IO line.
+    SBX validates taxblAmt for taxTyCd B: VAT-inclusive supply splits ≈ /1.16.
+    """
+    sply = float(unit_prc) * float(qty)
+    tty = (tax_ty_cd or "A").strip().upper()
+    if tty == "B":
+        taxbl = round(sply / 1.16, 2)
+        tax_amt = round(sply - taxbl, 2)
+        return sply, taxbl, tax_amt, sply
+    return sply, sply, 0.0, sply
+
+
 def endpoint_accepts_result_cd(endpoint_name: str, result_cd: str | None) -> bool:
     """Whether the step may proceed without a resultCd retry (body-only; HTTP/gate checked separately)."""
     c = (result_cd or "").strip()
@@ -1261,6 +1352,119 @@ def count_stock_move_list_rows_for_item(
 
     walk(parsed)
     return best
+
+
+def _first_rsd_qty_for_item_in_stock_move_tree(
+    parsed: dict | None, want_item_cd: str
+) -> float | None:
+    """Depth-first: first quantity field on a dict whose itemCd matches (selectStockMoveList-style)."""
+    want = (want_item_cd or "").strip()
+    if not want or not isinstance(parsed, dict):
+        return None
+
+    def walk(o: object) -> float | None:
+        if isinstance(o, dict):
+            ic = str(o.get("itemCd") or "").strip()
+            if ic == want:
+                for k in ("rsdQty", "rplQty", "qty", "stkQty"):
+                    if k in o and o[k] is not None:
+                        try:
+                            return float(o[k])
+                        except (TypeError, ValueError):
+                            pass
+            for v in o.values():
+                r = walk(v)
+                if r is not None:
+                    return r
+        elif isinstance(o, list):
+            for x in o:
+                r = walk(x)
+                if r is not None:
+                    return r
+        return None
+
+    return walk(parsed)
+
+
+def composition_probe_select_stock_move_for_item(
+    *,
+    base_url: str,
+    headers: dict,
+    tin: str,
+    bhf_id: str,
+    component_item_cd: str,
+    label: str,
+) -> tuple[float | None, dict | None, requests.Response]:
+    """
+    POST ``/selectStockMoveList`` (lastReqDt=now) and log full JSON; return best-effort rsdQty for item.
+    If delta returns resultCd 001 (no rows) or rsdQty cannot be resolved, retry once with
+    ``lastReqDt=20100101000000`` so SBX returns full move history (same pattern as selectItemListPostSave).
+    """
+    surl = f"{base_url.rstrip('/')}/selectStockMoveList"
+    pl = {
+        "tin": tin,
+        "bhfId": bhf_id,
+        "lastReqDt": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+    }
+    resp = requests.post(surl, headers=headers, json=pl, timeout=120)
+    try:
+        parsed = resp.json()
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = None
+    rsd = _first_rsd_qty_for_item_in_stock_move_tree(parsed, component_item_cd)
+    rc = extract_result_cd(parsed) if isinstance(parsed, dict) else None
+    if (
+        rsd is None
+        and isinstance(parsed, dict)
+        and (rc or "").strip() == "001"
+    ):
+        print(
+            f"\nCOMPOSITION DIAG: selectStockMoveList [{label}] — resultCd=001 (no delta rows); "
+            "retrying with baseline lastReqDt=20100101000000 …"
+        )
+        pl["lastReqDt"] = "20100101000000"
+        resp = requests.post(surl, headers=headers, json=pl, timeout=120)
+        try:
+            parsed = resp.json()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        rsd = _first_rsd_qty_for_item_in_stock_move_tree(parsed, component_item_cd)
+    print(f"\nCOMPOSITION DIAG: selectStockMoveList (component) [{label}]")
+    print(f"  component_item_cd={component_item_cd!r}")
+    print(f"  HTTP={resp.status_code}")
+    if rsd is not None:
+        print(f"  extracted rsdQty (best-effort) for component={rsd:g}")
+    else:
+        print(
+            "  extracted rsdQty: (none — no matching itemCd row or convertible quantity field)"
+        )
+    print("  full response JSON:")
+    print(
+        json.dumps(
+            parsed,
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        )
+    )
+    return rsd, parsed, resp
+
+
+def save_item_composition_insufficient_stock(parsed: dict | None) -> bool:
+    """True when SBX rejects saveItemComposition with insufficient component/parent stock."""
+    if not isinstance(parsed, dict):
+        return False
+    rh = parsed.get("responseHeader")
+    if not isinstance(rh, dict):
+        return False
+    cm = str(rh.get("customerMessage") or "")
+    dm = str(rh.get("debugMessage") or "")
+    return (
+        "Insufficient" in cm
+        or "Insufficient" in dm
+        or "insufficient" in dm.lower()
+        or "insufficient" in cm.lower()
+    )
 
 
 def detect_dirty_sandbox_before_initial_save_stock_master(
@@ -1386,6 +1590,32 @@ def kra_top_level_error_detail(parsed_json) -> str | None:
     if msg:
         parts.append(msg)
     return " | ".join(parts)
+
+
+def save_stock_master_strict_failure_reason(parsed: dict | None) -> str | None:
+    """
+    GavaConnect / certification UI treat saveStockMaster* as failed unless the body shows a clean 000.
+    Some SBX responses use HTTP 200 with responseHeader.responseCode 400 + null responseBody — gate_err
+    catches that. This adds checks where responseHeader looks OK but resultCd is missing or not 000.
+    """
+    if not isinstance(parsed, dict):
+        return "no parsed JSON"
+    rc = extract_result_cd(parsed)
+    if (rc or "").strip() != "000":
+        return f"resultCd={rc!r} (GavaConnect expects 000 in responseBody)"
+    rh = parsed.get("responseHeader")
+    if isinstance(rh, dict):
+        code = rh.get("responseCode")
+        try:
+            hri = int(code) if code is not None else None
+        except (TypeError, ValueError):
+            hri = None
+        if hri is not None and hri >= 400:
+            return (
+                f"responseHeader.responseCode={hri} with resultCd={rc!r} "
+                "(treat as failure — matches GavaConnect red state)"
+            )
+    return None
 
 
 def print_response_body_result_cd(parsed, endpoint_name: str) -> None:
@@ -2394,9 +2624,23 @@ def main():
             )
         qty_f = max(float(stock_qty), 1.0)
         prc_f = 10.0
-        line_sply = float(prc_f) * qty_f
-        icd = (item_cls_dynamic.get("itemClsCd") or "1010000000").strip()
-        tty = (item_cls_dynamic.get("taxTyCd") or "A").strip()
+        icd = (
+            pin_blob.get("component_item_cls_cd")
+            or item_cls_dynamic.get("itemClsCd")
+            or "1010000000"
+        )
+        icd = str(icd).strip()
+        tty = (
+            pin_blob.get("component_item_tax_ty_cd")
+            or item_cls_dynamic.get("taxTyCd")
+            or "A"
+        )
+        tty = str(tty).strip()
+        line_sply, taxbl_p, tax_amt_p, tot_amt_p = stock_io_line_amounts_for_tax_ty(
+            unit_prc=prc_f,
+            qty=qty_f,
+            tax_ty_cd=tty,
+        )
         io_ocrn_8 = (sales_dt or "").strip()[:8]
         if len(io_ocrn_8) != 8:
             io_ocrn_8 = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -2429,10 +2673,13 @@ def main():
             prelude_io_sar = sar_no_used
             for outer_attempt, org_sar_val in enumerate(org_sar_tries):
                 reg_ty = "M"
-                sar_ty = SAR_TY_CD_STOCK_IN
+                # SBX: use same sarTyCd as insertStockIOInitial ("01"); sarTyCd 11 can invert
+                # direction vs saveStockMaster reconciliation for this flow.
+                sar_ty = "01"
                 stock_line = {
                     "itemSeq": 1,
                     "itemCd": comp_cd,
+                    "ioTyCd": "1",  # SBX: missing ioTyCd defaults to OUT; "1" = stock IN
                     "itemClsCd": icd,
                     "itemNm": "COMPONENT ITEM",
                     "pkgUnitCd": pkg_unit_cd,
@@ -2442,10 +2689,10 @@ def main():
                     "prc": float(prc_f),
                     "splyAmt": line_sply,
                     "totDcAmt": 0.0,
-                    "taxblAmt": line_sply,
+                    "taxblAmt": taxbl_p,
                     "taxTyCd": tty,
-                    "taxAmt": 0.0,
-                    "totAmt": line_sply,
+                    "taxAmt": tax_amt_p,
+                    "totAmt": tot_amt_p,
                 }
                 io_root: dict = {
                     "sarNo": sar_no_used,
@@ -2454,9 +2701,9 @@ def main():
                     "sarTyCd": sar_ty,
                     "ocrnDt": io_ocrn_8,
                     "totItemCnt": 1,
-                    "totTaxblAmt": line_sply,
-                    "totTaxAmt": 0.0,
-                    "totAmt": line_sply,
+                    "totTaxblAmt": taxbl_p,
+                    "totTaxAmt": tax_amt_p,
+                    "totAmt": tot_amt_p,
                     "regrId": "system",
                     "regrNm": "system",
                     "modrId": "system",
@@ -2483,9 +2730,7 @@ def main():
                     prelude_io_sar = sar_no_used
                     pin_blob["stock_io_next_sar_no"] = sar_no_used + 1
                     _prev_c = float(pin_blob.get("component_stock_balance") or 0.0)
-                    pin_blob["component_stock_balance"] = _prev_c + stock_balance_delta_for_sar_line(
-                        sar_ty, qty_f
-                    )
+                    pin_blob["component_stock_balance"] = _prev_c + qty_f
                     save_test_state(state_root)
                     break
                 if outer_attempt >= len(org_sar_tries) - 1:
@@ -2501,6 +2746,29 @@ def main():
             if not succeeded:
                 raise SystemExit("STOP: composition prelude insertStockIO did not succeed.")
             time.sleep(2)
+            # Mirror parent triple: insertStockIOInitial → selectStockMoveListInitial →
+            # saveStockMasterInitial. Without a move-list read, SBX often returns resultCd 001 on
+            # probes and saveItemComposition may still see "Insufficient Stock" even when
+            # saveStockMaster would accept rsdQty.
+            _sml_url = f"{BASE_URL.rstrip('/')}/selectStockMoveList"
+            _sml_pl = {
+                "tin": effective_tin,
+                "bhfId": branch_id,
+                "lastReqDt": "20100101000000",
+            }
+            print(
+                "PRELUDE selectStockMoveList (after component insertStockIO, before saveStockMaster) …"
+            )
+            resp_sml = requests.post(_sml_url, headers=headers, json=_sml_pl, timeout=120)
+            _p_sml = print_full_response_json(
+                resp_sml, "selectStockMoveList (composition prelude)"
+            )
+            _rc_sml = extract_result_cd(_p_sml) if isinstance(_p_sml, dict) else None
+            print(
+                f"NOTE: composition prelude move list resultCd={_rc_sml!r} "
+                f"HTTP={resp_sml.status_code} (001=no rows in body; saveStockMaster still runs next)"
+            )
+            time.sleep(4)
 
         try:
             _rsd = float(pin_blob.get("component_stock_balance") or 0.0)
@@ -2546,7 +2814,9 @@ def main():
             blob = _hdr_blob(parsed_sm)
             exp = kra_expected_rsd_qty_from_mismatch_message(blob)
             if exp is not None:
-                _try_vals: list[float] = [abs(exp)]
+                _try_vals: list[float] = [exp]
+                if abs(exp) not in _try_vals:
+                    _try_vals.append(abs(exp))
                 for j, rsd_try in enumerate(_try_vals):
                     pin_blob["component_stock_balance"] = rsd_try
                     save_test_state(state_root)
@@ -2679,7 +2949,17 @@ def main():
                 if is_initial_parent_io
                 else float(stock_qty)
             )
-            line_sply = float(prc) * line_qty_f
+            try:
+                unit_prc_io = float(pin_blob.get("item_dft_prc"))
+            except (TypeError, ValueError):
+                unit_prc_io = float(prc)
+            _nm_io = (pin_blob.get("item_nm_stock") or "").strip() or "TEST ITEM"
+            tty_io = (item_cls_dynamic.get("taxTyCd") or "A").strip()
+            line_sply, _taxbl_io, _tax_io, _tot_io = stock_io_line_amounts_for_tax_ty(
+                unit_prc=unit_prc_io,
+                qty=line_qty_f,
+                tax_ty_cd=tty_io,
+            )
             io_ocrn_8 = (sales_dt or "").strip()[:8]
             if len(io_ocrn_8) != 8:
                 io_ocrn_8 = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -2687,121 +2967,140 @@ def main():
             # First IO: orgSarNo=0. Later IOs: orgSarNo references the previous sarNo (sarNo-1).
 
             if is_initial_parent_io:
-                try:
-                    sar_no_used = int(pin_blob.get("stock_io_next_sar_no") or 1)
-                except (TypeError, ValueError):
-                    sar_no_used = 1
-                if sar_no_used < 1:
-                    sar_no_used = 1
-                org_sar_primary = 0 if sar_no_used == 1 else sar_no_used - 1
-                reg_ty = "M"
-                sar_ty = "01"
-                icd = (item_cls_dynamic.get("itemClsCd") or "1010000000").strip()
-                tty = (item_cls_dynamic.get("taxTyCd") or "A").strip()
-                stock_line = {
-                    "itemSeq": 1,
-                    "itemCd": item_cd,
-                    "itemClsCd": icd,
-                    "itemNm": "TEST ITEM",
-                    "pkgUnitCd": pkg_unit_cd,
-                    "pkg": line_qty_f,
-                    "qtyUnitCd": qty_unit_cd,
-                    "qty": line_qty_f,
-                    "prc": float(prc),
-                    "splyAmt": line_sply,
-                    "totDcAmt": 0.0,
-                    "taxblAmt": line_sply,
-                    "taxTyCd": tty,
-                    "taxAmt": 0.0,
-                    "totAmt": line_sply,
-                }
-                io_root = {
-                    "sarNo": sar_no_used,
-                    "regTyCd": reg_ty,
-                    "custTin": effective_tin,
-                    "sarTyCd": sar_ty,
-                    "ocrnDt": io_ocrn_8,
-                    "totItemCnt": 1,
-                    "totTaxblAmt": line_sply,
-                    "totTaxAmt": 0.0,
-                    "totAmt": line_sply,
-                    "regrId": "system",
-                    "regrNm": "system",
-                    "modrId": "system",
-                    "modrNm": "system",
-                    "itemList": [deepcopy(stock_line)],
-                }
-                io_root["orgSarNo"] = org_sar_primary
-                org_lbl = str(org_sar_primary)
-                label = (
-                    f"sarNo={sar_no_used},orgSarNo={org_lbl},"
-                    f"regTy={reg_ty},sarTy={sar_ty}"
-                )
-                if diagnostic_stock_io_cli:
-                    print(f"\nRUNNING {_io_log} [{label}]")
-                    print("\n--- INSERT STOCK IO PAYLOAD ---")
-                    print(json.dumps(io_root, indent=2, ensure_ascii=False))
-                else:
-                    print(f"RUNNING {_io_log} [{label}]")
-                    print(
-                        "Request JSON:",
-                        json.dumps(io_root, indent=2, ensure_ascii=False),
+                ok_initial = False
+                for _sar_try in range(8):
+                    try:
+                        sar_no_used = int(pin_blob.get("stock_io_next_sar_no") or 1)
+                    except (TypeError, ValueError):
+                        sar_no_used = 1
+                    if sar_no_used < 1:
+                        sar_no_used = 1
+                    org_sar_primary = 0 if sar_no_used == 1 else sar_no_used - 1
+                    reg_ty = "M"
+                    sar_ty = "01"
+                    icd = (item_cls_dynamic.get("itemClsCd") or "1010000000").strip()
+                    tty = tty_io
+                    stock_line = {
+                        "itemSeq": 1,
+                        "itemCd": item_cd,
+                        "ioTyCd": "1",  # SBX: missing ioTyCd defaults to OUT; "1" = stock IN
+                        "itemClsCd": icd,
+                        "itemNm": _nm_io,
+                        "pkgUnitCd": pkg_unit_cd,
+                        "pkg": line_qty_f,
+                        "qtyUnitCd": qty_unit_cd,
+                        "qty": line_qty_f,
+                        "prc": float(unit_prc_io),
+                        "splyAmt": line_sply,
+                        "totDcAmt": 0.0,
+                        "taxblAmt": _taxbl_io,
+                        "taxTyCd": tty,
+                        "taxAmt": _tax_io,
+                        "totAmt": _tot_io,
+                    }
+                    io_root = {
+                        "sarNo": sar_no_used,
+                        "regTyCd": reg_ty,
+                        "custTin": effective_tin,
+                        "sarTyCd": sar_ty,
+                        "ocrnDt": io_ocrn_8,
+                        "totItemCnt": 1,
+                        "totTaxblAmt": _taxbl_io,
+                        "totTaxAmt": _tax_io,
+                        "totAmt": _tot_io,
+                        "regrId": "system",
+                        "regrNm": "system",
+                        "modrId": "system",
+                        "modrNm": "system",
+                        "itemList": [deepcopy(stock_line)],
+                    }
+                    io_root["orgSarNo"] = org_sar_primary
+                    org_lbl = str(org_sar_primary)
+                    label = (
+                        f"sarNo={sar_no_used},orgSarNo={org_lbl},"
+                        f"regTy={reg_ty},sarTy={sar_ty}"
                     )
-                resp = requests.post(
-                    url, headers=headers, json=io_root, timeout=60
-                )
-                parsed_io = print_full_response_json(resp, _io_log)
-                result_cd_io = extract_result_cd(parsed_io)
-                gate_err = kra_top_level_error_detail(parsed_io)
-                if (
-                    resp.status_code < 400
-                    and not gate_err
-                    and result_cd_io == "000"
-                ):
-                    pin_blob["stock_io_next_sar_no"] = sar_no_used + 1
-                    _prev = float(pin_blob.get("current_stock_balance") or 0.0)
-                    pin_blob["current_stock_balance"] = _prev + stock_balance_delta_for_sar_line(
-                        sar_ty, line_qty_f
-                    )
-                    ran_insert_stock_io_initial_this_run = True
-                    initial_insert_io_just_ran = True
                     if diagnostic_stock_io_cli:
+                        print(f"\nRUNNING {_io_log} [{label}]")
+                        print("\n--- INSERT STOCK IO PAYLOAD ---")
+                        print(json.dumps(io_root, indent=2, ensure_ascii=False))
+                    else:
+                        print(f"RUNNING {_io_log} [{label}]")
                         print(
-                            "\ncurrent_stock_balance="
-                            f"{pin_blob.get('current_stock_balance')!r}"
+                            "Request JSON:",
+                            json.dumps(io_root, indent=2, ensure_ascii=False),
                         )
-                        _rh0 = (
-                            parsed_io.get("responseHeader")
-                            if isinstance(parsed_io, dict)
-                            else None
-                        )
-                        if isinstance(_rh0, dict):
+                    resp = requests.post(
+                        url, headers=headers, json=io_root, timeout=60
+                    )
+                    parsed_io = print_full_response_json(resp, _io_log)
+                    result_cd_io = extract_result_cd(parsed_io)
+                    gate_err = kra_top_level_error_detail(parsed_io)
+                    if (
+                        resp.status_code < 400
+                        and not gate_err
+                        and result_cd_io == "000"
+                    ):
+                        pin_blob["stock_io_next_sar_no"] = sar_no_used + 1
+                        _prev = float(pin_blob.get("current_stock_balance") or 0.0)
+                        pin_blob["current_stock_balance"] = _prev + line_qty_f
+                        ran_insert_stock_io_initial_this_run = True
+                        initial_insert_io_just_ran = True
+                        ok_initial = True
+                        if diagnostic_stock_io_cli:
                             print(
-                                json.dumps(
-                                    {
-                                        "responseCode": _rh0.get("responseCode"),
-                                        "customerMessage": _rh0.get(
-                                            "customerMessage"
-                                        ),
-                                        "debugMessage": _rh0.get("debugMessage"),
-                                    },
-                                    indent=2,
-                                    ensure_ascii=False,
-                                )
+                                "\ncurrent_stock_balance="
+                                f"{pin_blob.get('current_stock_balance')!r}"
                             )
-                    log_api_result_summary(
-                        _io_log, resp, parsed_io, result_cd_io
+                            _rh0 = (
+                                parsed_io.get("responseHeader")
+                                if isinstance(parsed_io, dict)
+                                else None
+                            )
+                            if isinstance(_rh0, dict):
+                                print(
+                                    json.dumps(
+                                        {
+                                            "responseCode": _rh0.get("responseCode"),
+                                            "customerMessage": _rh0.get(
+                                                "customerMessage"
+                                            ),
+                                            "debugMessage": _rh0.get("debugMessage"),
+                                        },
+                                        indent=2,
+                                        ensure_ascii=False,
+                                    )
+                                )
+                        log_api_result_summary(
+                            _io_log, resp, parsed_io, result_cd_io
+                        )
+                        save_test_state(state_root)
+                        time.sleep(2)
+                        flush_progress(
+                            stock_progress_key,
+                            mark_endpoint_complete=True,
+                        )
+                        break
+                    exp_sar = kra_expected_next_sar_no_from_message(
+                        kra_save_item_error_text(parsed_io)
                     )
-                    save_test_state(state_root)
-                    time.sleep(2)
-                    flush_progress(
-                        stock_progress_key,
-                        mark_endpoint_complete=True,
+                    if exp_sar is not None:
+                        pin_blob["stock_io_next_sar_no"] = exp_sar
+                        save_test_state(state_root)
+                        print(
+                            "NOTE: insertStockIOInitial SAR resync from KRA — "
+                            f"will POST sarNo={exp_sar} (attempt {_sar_try + 1}/8)."
+                        )
+                        time.sleep(1)
+                        continue
+                    raise SystemExit(
+                        "FATAL: insertStockIOInitial failed. This PIN is now unusable."
                     )
-                    continue
-                raise SystemExit(
-                    "FATAL: insertStockIOInitial failed. This PIN is now unusable."
-                )
+                if not ok_initial:
+                    raise SystemExit(
+                        "FATAL: insertStockIOInitial failed after SAR resync retries."
+                    )
+                continue
 
             else:
                 parsed_io = None
@@ -2820,27 +3119,35 @@ def main():
                     org_sar_tries: list[int | None] = [org_sar_primary, None]
                     resync_sar = False
                     for outer_attempt, org_sar_val in enumerate(org_sar_tries):
-                        # Paybill/KRA StockIOSaveReq shape (not stockInOutList / per-line ioTyCd).
+                        # Paybill/KRA StockIOSaveReq shape; per-line ioTyCd required on SBX.
+                        # SBX: use sarTyCd "01" (same as insertStockIOInitial). sarTyCd 11 can invert
+                        # IN vs OUT vs saveStockMaster (rsdQty Expected: -N vs found +N on reconciliation).
                         reg_ty = "M"
-                        sar_ty = SAR_TY_CD_STOCK_IN
+                        sar_ty = "01"
                         icd = (item_cls_dynamic.get("itemClsCd") or "1010000000").strip()
-                        tty = (item_cls_dynamic.get("taxTyCd") or "A").strip()
+                        tty = tty_io
+                        _sply2, _tb2, _tx2, _tot2 = stock_io_line_amounts_for_tax_ty(
+                            unit_prc=unit_prc_io,
+                            qty=line_qty_f,
+                            tax_ty_cd=tty_io,
+                        )
                         stock_line = {
                             "itemSeq": 1,
                             "itemCd": item_cd,
+                            "ioTyCd": "1",  # SBX: missing ioTyCd defaults to OUT; "1" = stock IN
                             "itemClsCd": icd,
-                            "itemNm": "TEST ITEM",
+                            "itemNm": _nm_io,
                             "pkgUnitCd": pkg_unit_cd,
                             "pkg": line_qty_f,
                             "qtyUnitCd": qty_unit_cd,
                             "qty": line_qty_f,
-                            "prc": float(prc),
-                            "splyAmt": line_sply,
+                            "prc": float(unit_prc_io),
+                            "splyAmt": _sply2,
                             "totDcAmt": 0.0,
-                            "taxblAmt": line_sply,
+                            "taxblAmt": _tb2,
                             "taxTyCd": tty,
-                            "taxAmt": 0.0,
-                            "totAmt": line_sply,
+                            "taxAmt": _tx2,
+                            "totAmt": _tot2,
                         }
                         io_root = {
                             "sarNo": sar_no_used,
@@ -2849,9 +3156,9 @@ def main():
                             "sarTyCd": sar_ty,
                             "ocrnDt": io_ocrn_8,
                             "totItemCnt": 1,
-                            "totTaxblAmt": line_sply,
-                            "totTaxAmt": 0.0,
-                            "totAmt": line_sply,
+                            "totTaxblAmt": _tb2,
+                            "totTaxAmt": _tx2,
+                            "totAmt": _tot2,
                             "regrId": "system",
                             "regrNm": "system",
                             "modrId": "system",
@@ -2900,9 +3207,7 @@ def main():
                             succeeded = True
                             pin_blob["stock_io_next_sar_no"] = sar_no_used + 1
                             _prev = float(pin_blob.get("current_stock_balance") or 0.0)
-                            pin_blob["current_stock_balance"] = _prev + stock_balance_delta_for_sar_line(
-                                sar_ty, line_qty_f
-                            )
+                            pin_blob["current_stock_balance"] = _prev + line_qty_f
                             final_parent_insert_io_just_ran = True
                             ran_insert_stock_io_parent_this_run = True
                             log_api_result_summary(
@@ -3144,9 +3449,27 @@ def main():
                     persist_item_cd_suffix_map(pin_blob, item_cd)
                     pin_blob["item_cd"] = item_cd
                     pin_blob["canonical_item_cd"] = item_cd
+                    pin_blob.pop("item_cd_suffix_last_digit", None)
+                    pin_blob.pop("item_cd_suffix_tail_mod", None)
+                    pin_blob.pop("item_cd_suffix_tail_res", None)
+                    try:
+                        pin_blob["item_dft_prc"] = float(payload.get("dftPrc"))
+                    except (TypeError, ValueError):
+                        pin_blob["item_dft_prc"] = float(prc)
+                    pin_blob["item_nm_stock"] = str(
+                        payload.get("itemNm") or "TEST ITEM"
+                    ).strip() or "TEST ITEM"
                     save_test_state(state_root)
                     print(f"CONTINUE: {endpoint_name} OK (state={result_cd})")
                     break
+                _sufc = kra_parse_item_cd_suffix_constraint(
+                    kra_save_item_error_text(parsed)
+                )
+                if _sufc is not None:
+                    _m, _r = _sufc
+                    pin_blob["item_cd_suffix_tail_mod"] = _m
+                    pin_blob["item_cd_suffix_tail_res"] = _r
+                    pin_blob.pop("item_cd_suffix_last_digit", None)
                 if attempt == 3:
                     print_save_item_http_debug(resp, headers, payload)
                     ge = f", {gate_err}" if gate_err else ""
@@ -3218,6 +3541,8 @@ def main():
                     + (f", {ge_co}" if ge_co else "")
                 )
             pin_blob["component_item_cd"] = comp_cd
+            pin_blob["component_item_cls_cd"] = icd
+            pin_blob["component_item_tax_ty_cd"] = tty
             pin_blob.pop("stocked_component_for_composition", None)
             pin_blob.pop("stock_io_component_pending_rsd_qty", None)
             pin_blob.pop("component_stock_balance", None)
@@ -3364,15 +3689,81 @@ def main():
             _cap_attempts = 1
         elif endpoint_name == "saveStockMaster":
             _cap_attempts = 2
+        elif endpoint_name == "saveItemComposition":
+            _cap_attempts = 4
         _req_timeout = 120 if endpoint_name in _SELECT_STOCK_MOVE_ENDPOINTS else 60
+        if endpoint_name == "saveItemComposition":
+            time.sleep(COMPOSITION_DELAY)
+            _comp_cd_probe = (pin_blob.get("component_item_cd") or "").strip()
+            try:
+                _cpst_need = float(payload.get("cpstQty") or 1.0)
+            except (TypeError, ValueError):
+                _cpst_need = 1.0
+            _rsd_pre, _, _ = composition_probe_select_stock_move_for_item(
+                base_url=BASE_URL,
+                headers=headers,
+                tin=effective_tin,
+                bhf_id=branch_id,
+                component_item_cd=_comp_cd_probe,
+                label="before first saveItemComposition POST",
+            )
+            if _rsd_pre is not None and _rsd_pre < _cpst_need:
+                print(
+                    f"WARNING: component rsdQty best-effort ({_rsd_pre:g}) < cpstQty ({_cpst_need:g}) — "
+                    "saveItemComposition may still fail with Insufficient Stock."
+                )
         for attempt in range(_cap_attempts):
+            if endpoint_name == "saveItemComposition" and attempt > 0:
+                _delay_comp = [2, 4, 6][attempt - 1]
+                print(
+                    f"\nCOMPOSITION: waiting {_delay_comp}s before Insufficient-Stock retry "
+                    f"(probe + POST {attempt + 1}/{_cap_attempts}) …"
+                )
+                time.sleep(_delay_comp)
+                _cc_retry = (pin_blob.get("component_item_cd") or "").strip()
+                try:
+                    _cpst_r = float(payload.get("cpstQty") or 1.0)
+                except (TypeError, ValueError):
+                    _cpst_r = 1.0
+                composition_probe_select_stock_move_for_item(
+                    base_url=BASE_URL,
+                    headers=headers,
+                    tin=effective_tin,
+                    bhf_id=branch_id,
+                    component_item_cd=_cc_retry,
+                    label=f"after {_delay_comp}s delay (retry {attempt})",
+                )
             if endpoint_name == "selectItemListPostSave":
-                payload["lastReqDt"] = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                # Delta query (UTC-now) can return 001 when saveItem was skipped in this run — no
+                # "recent" updates. Fall back to baseline lastReqDt (same as selectItemList) so the
+                # full catalog includes the saved itemCd for GavaConnect / certification resume.
+                if attempt < 4:
+                    payload["lastReqDt"] = datetime.now(timezone.utc).strftime(
+                        "%Y%m%d%H%M%S"
+                    )
+                else:
+                    payload["lastReqDt"] = "20100101000000"
+                    if attempt == 4:
+                        print(
+                            "NOTE: selectItemListPostSave — retrying with baseline lastReqDt=20100101000000 "
+                            "(SBX returned 001 for delta query; e.g. saveItem skipped or no new update)."
+                        )
+            if endpoint_name == "saveItemComposition":
+                print("\n=== saveItemComposition REQUEST (full JSON) ===")
+                print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
             resp = requests.post(url, headers=headers, json=payload, timeout=_req_timeout)
+            if endpoint_name == "saveItemComposition":
+                print("\n=== saveItemComposition RESPONSE (full JSON) ===")
             parsed = print_full_response_json(resp, endpoint_name)
             result_cd = extract_result_cd(parsed)
             log_api_result_summary(endpoint_name, resp, parsed, result_cd)
             gate_err = kra_top_level_error_detail(parsed)
+            if endpoint_name in ("saveStockMaster", "saveStockMasterInitial"):
+                sm_strict = save_stock_master_strict_failure_reason(parsed)
+                if sm_strict:
+                    gate_err = (
+                        f"{gate_err} | {sm_strict}" if gate_err else sm_strict
+                    )
             if (
                 not gate_err
                 and endpoint_accepts_result_cd(endpoint_name, result_cd)
@@ -3394,6 +3785,30 @@ def main():
                         "saveItem). Check branch/tin and SBX latency."
                     )
                 break
+            if endpoint_name == "saveItemComposition" and gate_err:
+                if not save_item_composition_insufficient_stock(parsed):
+                    parts_ic = [
+                        "STOP: saveItemComposition failed",
+                        f"HTTP={resp.status_code}",
+                        f"resultCd={result_cd!r}",
+                    ]
+                    if gate_err:
+                        parts_ic.append(str(gate_err))
+                    raise SystemExit(" | ".join(parts_ic))
+                if attempt < _cap_attempts - 1:
+                    print(
+                        "RETRY: saveItemComposition — Insufficient Stock "
+                        f"(attempt {attempt + 1}/{_cap_attempts}) …"
+                    )
+                    continue
+                parts_ic = [
+                    "STOP: saveItemComposition failed after Insufficient Stock retries",
+                    f"HTTP={resp.status_code}",
+                    f"resultCd={result_cd!r}",
+                ]
+                if gate_err:
+                    parts_ic.append(str(gate_err))
+                raise SystemExit(" | ".join(parts_ic))
             _last_att = attempt >= _cap_attempts - 1
             if _last_att:
                 if endpoint_name == "saveStockMasterInitial":
