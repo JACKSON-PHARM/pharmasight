@@ -318,15 +318,17 @@ if stripe_webhooks_router:
 app.include_router(admin_auth_router, prefix="/api", tags=["Admin Authentication"])
 app.include_router(auth_router, prefix="/api", tags=["Authentication"])
 
-# Serve frontend static files and SPA
+# Serve frontend static files (must NOT depend on backend/uploads — Render often has no uploads dir on first deploy).
 if _FRONTEND_DIR.is_dir():
     app.mount("/css", StaticFiles(directory=str(_FRONTEND_DIR / "css")), name="css")
-    
-# Serve uploaded files (logos, etc.)
+    app.mount("/js", StaticFiles(directory=str(_FRONTEND_DIR / "js")), name="js")
+
+# Uploaded files (logos, etc.) — register before SPA catch-all so /uploads/* is not served as index.html
 _UPLOADS_DIR = _BACKEND / "uploads"
 if _UPLOADS_DIR.is_dir():
     app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
-    app.mount("/js", StaticFiles(directory=str(_FRONTEND_DIR / "js")), name="js")
+
+if _FRONTEND_DIR.is_dir():
     _index_path = _FRONTEND_DIR / "index.html"
     _admin_path = _FRONTEND_DIR / "admin.html"
 
