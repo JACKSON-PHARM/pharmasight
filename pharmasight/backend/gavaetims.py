@@ -2695,7 +2695,6 @@ def main():
                     sar_no_used = 1
                 org_sar_primary = 0 if sar_no_used == 1 else sar_no_used - 1
                 reg_ty = "M"
-                # insertStockIOInitial: diagnostic — testing sarTyCd "01" vs SBX Stock IO / saveStockMaster rsdQty.
                 sar_ty = "01"
                 icd = (item_cls_dynamic.get("itemClsCd") or "1010000000").strip()
                 tty = (item_cls_dynamic.get("taxTyCd") or "A").strip()
@@ -2739,21 +2738,9 @@ def main():
                     f"regTy={reg_ty},sarTy={sar_ty}"
                 )
                 if diagnostic_stock_io_cli:
-                    print(
-                        "\n"
-                        + "=" * 78
-                        + "\nDIAGNOSTIC insertStockIOInitial — FULL PAYLOAD (before POST)\n"
-                        + f"RUNNING {_io_log} [{label}]\n"
-                        + "=" * 78
-                    )
+                    print(f"\nRUNNING {_io_log} [{label}]")
+                    print("\n--- INSERT STOCK IO PAYLOAD ---")
                     print(json.dumps(io_root, indent=2, ensure_ascii=False))
-                    print(
-                        "=" * 78
-                        + f"\nExpect after success (HTTP OK, resultCd 000): "
-                        f"current_stock_balance = {line_qty_f:g}\n"
-                        + "=" * 78
-                        + "\n"
-                    )
                 else:
                     print(f"RUNNING {_io_log} [{label}]")
                     print(
@@ -2780,9 +2767,28 @@ def main():
                     initial_insert_io_just_ran = True
                     if diagnostic_stock_io_cli:
                         print(
-                            "\nDIAGNOSTIC: after insertStockIOInitial success — "
-                            f"current_stock_balance={pin_blob.get('current_stock_balance')!r}\n"
+                            "\ncurrent_stock_balance="
+                            f"{pin_blob.get('current_stock_balance')!r}"
                         )
+                        _rh0 = (
+                            parsed_io.get("responseHeader")
+                            if isinstance(parsed_io, dict)
+                            else None
+                        )
+                        if isinstance(_rh0, dict):
+                            print(
+                                json.dumps(
+                                    {
+                                        "responseCode": _rh0.get("responseCode"),
+                                        "customerMessage": _rh0.get(
+                                            "customerMessage"
+                                        ),
+                                        "debugMessage": _rh0.get("debugMessage"),
+                                    },
+                                    indent=2,
+                                    ensure_ascii=False,
+                                )
+                            )
                     log_api_result_summary(
                         _io_log, resp, parsed_io, result_cd_io
                     )
@@ -3337,20 +3343,8 @@ def main():
             )
             print(f"{endpoint_name} rsdQty={payload['rsdQty']!r}")
             if endpoint_name == "saveStockMasterInitial" and diagnostic_stock_io_cli:
-                print(
-                    "\n"
-                    + "=" * 78
-                    + "\nDIAGNOSTIC saveStockMasterInitial — FULL PAYLOAD (before POST)\n"
-                    + "=" * 78
-                )
+                print("\n--- SAVE STOCK MASTER PAYLOAD ---")
                 print(json.dumps(payload, indent=2, ensure_ascii=False))
-                print(
-                    "=" * 78
-                    + "\nExpect rsdQty = 1 when diagnostic reset ran with line qty 1 (balance from 0).\n"
-                    "If KRA returns Expected: -1 vs your rsdQty, SBX internal sign may disagree with this balance.\n"
-                    + "=" * 78
-                    + "\n"
-                )
 
         if endpoint_name == "saveInvoice":
             il = payload.get("itemList")
@@ -3403,6 +3397,13 @@ def main():
             _last_att = attempt >= _cap_attempts - 1
             if _last_att:
                 if endpoint_name == "saveStockMasterInitial":
+                    if diagnostic_stock_io_cli and isinstance(parsed, dict):
+                        print("\n--- RESPONSE ---")
+                        print(
+                            json.dumps(
+                                parsed, indent=2, ensure_ascii=False, default=str
+                            )
+                        )
                     parts_sm_i = [
                         "STOP: saveStockMasterInitial failed after retry",
                         f"HTTP={resp.status_code}",
@@ -3570,6 +3571,12 @@ def main():
         ):
             pin_blob["stock_io_pending_rsd_qty"] = 0.0
             save_test_state(state_root)
+            if diagnostic_stock_io_cli and endpoint_name == "saveStockMasterInitial":
+                print("\n--- RESPONSE ---")
+                print(
+                    json.dumps(parsed, indent=2, ensure_ascii=False, default=str)
+                )
+                raise SystemExit(0)
 
     print("\nDONE: validation sequence completed successfully.")
     try:

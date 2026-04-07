@@ -1,0 +1,1 @@
+Validation failed and stdin is not a TTY; fix credentials in test_pins.csv or run interactively.

@@ -636,6 +636,8 @@ def _path_allowed_for_expired_trial(path: str, method: str) -> bool:
         return True
     if p == "/api/setup/status" and m == "GET":
         return True
+    if p == "/api/startup/status" and m == "GET":
+        return True
     if p == "/api/company/modules" and m == "GET":
         return True
     if p == "/api/modules/me" and m == "GET":

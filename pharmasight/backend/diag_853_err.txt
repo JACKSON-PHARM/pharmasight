@@ -1,0 +1,1 @@
+STOP: saveItem failed after 4 attempts (HTTP=400, resultCd=None, responseHeader.responseCode=400 | ref=a7a3da71-407b-4756-8496-9e9f7e833a84 | Ensure you use a valid item classification code from the Get Item Classification List endpoint under Data Management.)

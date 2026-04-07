@@ -77,6 +77,9 @@ class AuthMeResponse(BaseModel):
     tenant_status: Optional[str] = None
     trial_ends_at: Optional[datetime] = None
     trial_days_remaining: Optional[int] = None
+    # Which master `tenants` row was used (debug: compare local vs Render if behavior differs)
+    subscription_tenant_subdomain: Optional[str] = None
+    subscription_used_default_tenant_fallback: Optional[bool] = None
 
 
 # When user is found only in default/legacy DB (no tenant DB), reset token uses this subdomain.
@@ -154,10 +157,12 @@ def auth_me(
     token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
     payload = decode_internal_token(token) if token else None
     tenant = None
+    used_default_fallback = False
     if payload:
         tenant = _tenant_from_token_or_header(request, master_db, payload)
     if tenant is None:
         tenant = _get_default_tenant(master_db)
+        used_default_fallback = tenant is not None
     state = compute_subscription_billing_state(tenant)
     return {
         "user_id": str(user.id),
@@ -166,6 +171,8 @@ def auth_me(
         "tenant_status": state.get("tenant_status"),
         "trial_ends_at": state.get("trial_ends_at"),
         "trial_days_remaining": state.get("trial_days_remaining"),
+        "subscription_tenant_subdomain": getattr(tenant, "subdomain", None) if tenant else None,
+        "subscription_used_default_tenant_fallback": used_default_fallback,
     }
 
 

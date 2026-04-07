@@ -1,0 +1,25 @@
+VALIDATION: OAuth (client_credentials)...
+VALIDATION: OAuth OK (Bearer wPgs9jnVI93E…jrIZMuFi, len=28)
+VALIDATION: Calling selectInitOsdcInfo...
+Payload: {
+  "tin": "P600002872A",
+  "bhfId": "00",
+  "dvcSrlNo": "CND11061Y7"
+}
+{
+  "responseHeader": {
+    "responseCode": 200,
+    "responseRefID": "34b1914b-cd92-4667-b8e8-49cc2a38388d",
+    "customerMessage": "Check request body and try again",
+    "debugMessage": "It is not valid device"
+  },
+  "responseBody": {
+    "resultCd": "901",
+    "resultMsg": "It is not valid device",
+    "resultDt": "20260407092905",
+    "data": null
+  }
+}
+responseBody.resultCd: '901'  [selectInitOsdcInfo (validation)]
+VALIDATION: HTTP 400 from selectInitOsdcInfo
+The provided consumer credentials do not match this Application Test PIN. Please re-enter.
