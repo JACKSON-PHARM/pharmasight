@@ -45,20 +45,27 @@ items for the branch). That is separate from ``/selectItemClsList`` (HS/class co
 script calls ``selectItemList`` before ``saveItem`` (empty catalog ``resultCd=001`` is normal),
 then **``selectItemListPostSave``** (same route with ``lastReqDt=now``) so GavaConnect sees the
 saved product and typically gets ``resultCd=000``.
+**saveItem itemTyCd 2 (standard goods):** ``itemCd`` uses ``alloc_monotonic_item_cd_suffix`` (7-digit
+suffix per prefix, persisted in ``kra_item_cd_suffix_by_prefix``); KRA rejections such as
+``Expected sequence ending with ********3`` set modulus/residue for the next attempt. itemTyCd 1
+(Paybill-style) classification and the fourth hardcoded attempt are **disabled** unless
+``SAVE_ITEM_ALLOW_TY1_FALLBACK`` is set true in this file or ``--allow-save-item-ty1-fallback`` is passed.
 **Portal testcase names ↔ this script (same API order):**
 ``SAVE ITEM COMPOSITION`` → ``saveItemComposition``; ``UPDATE IMPORTED ITEMS`` → ``updateImportItem``
 (after ``selectImportItemList``); ``SAVE SALES TRANSACTION`` → ``saveInvoice`` (POST
 ``/saveTrnsSalesOsdc``); ``LOOK UP PURCHASES-SALES LIST`` → ``selectTrnsPurchaseSalesList``;
 ``SAVE PURCHASES INFORMATION`` → ``insertTrnsPurchase``.
-**``saveStockMaster`` appears twice in flow:** (1) ``saveStockMasterInitial`` right after the first
-parent ``insertStockIOInitial`` — *before* composition, import, sales, and purchases — so the parent
-item has on-hand qty for the later sale; (2) ``saveStockMaster`` after ``insertTrnsPurchase`` and the
-final ``insertStockIO`` + ``selectStockMoveList``. Skipping later steps does **not** explain
-``saveStockMasterInitial`` failing with rsdQty vs Stock IO mismatch; that pattern is often sandbox
-**stacked stock IO / SAR** (clear OSCU stock for the PIN, then ``--reset-stock``).
+**``saveStockMaster`` appears twice in flow:** (1) ``saveStockMasterInitial`` after ``saveItemComposition``
+(parent ``insertStockIOInitial`` + ``selectStockMoveListInitial`` + ``saveStockMasterInitial``) so the
+parent item has on-hand qty for the later sale — parent stock stays **zero** until composition succeeds;
+(2) ``saveStockMaster`` after ``insertTrnsPurchase`` and the final ``insertStockIO`` +
+``selectStockMoveList``. Skipping later steps does **not** explain ``saveStockMasterInitial`` failing
+with rsdQty vs Stock IO mismatch; that pattern is often sandbox **stacked stock IO / SAR** (clear OSCU
+stock for the PIN, then ``--reset-stock``).
 **Hybrid order (SBX + GavaConnect):** ``selectItemList`` → ``saveItem`` → ``selectItemListPostSave`` →
-**initial** ``insertStockIOInitial`` + ``selectStockMoveListInitial`` + ``saveStockMasterInitial`` (minimal parent stock so sales can succeed) →
-``saveComponentItem`` / ``saveItemComposition`` → import steps → ``saveInvoice`` (``/saveTrnsSalesOsdc``) →
+``saveComponentItem`` → ``saveItemComposition`` (component stock prelude only; parent rsdQty 0) →
+**initial** ``insertStockIOInitial`` + ``selectStockMoveListInitial`` + ``saveStockMasterInitial`` →
+import steps → ``saveInvoice`` (``/saveTrnsSalesOsdc``) →
 ``selectTrnsPurchaseSalesList`` + ``insertTrnsPurchase`` → **final** ``insertStockIO`` + ``selectStockMoveList`` +
 ``saveStockMaster`` (reconciliation). Use ``--clean-run`` to drop stale ``item_cd`` / completed steps;
 ``--reset-stock`` only clears stock-step keys.
@@ -79,9 +86,12 @@ no imported-item rows (result not ``000`` → logged and skipped).
 **``saveItemComposition``** requires **on-hand stock** for ``cpstItemCd``. In this order it runs
 right after ``saveComponentItem``; the runner’s **composition prelude** posts component-only
 ``insertStockIO`` + ``selectStockMoveList`` (baseline ``lastReqDt``) + ``saveStockMaster`` so SBX
-matches the parent **initial stock** triple and inventory is visible to composition. **Parent** stock IO
-and ``saveStockMaster`` run later (after purchases). If SBX stacks unreconciled component IOs, clear
-``component_stock_balance`` in ``.test_state.json`` or reset stock on the OSCU portal.
+matches the parent **initial stock** triple and inventory is visible to composition. Each POST uses
+``canonical_item_cd`` and ``component_item_cd`` from ``pin_blob``; probes use fresh ``lastReqDt``.
+Up to four attempts log ``responseRefID``, ``resultCd``, and ``resultMsg``; if all fail, the runner
+**continues** the certification sequence (import, sales, purchases, final stock, lookups) so the next
+failing endpoint can be identified. **Parent** stock IO and ``saveStockMaster`` run later (after purchases).
+If SBX stacks unreconciled component IOs, clear ``component_stock_balance`` in ``.test_state.json`` or reset stock on the OSCU portal.
 **Quantity unit:** sandbox ``saveItem`` rejects ``qtyUnitCd`` values that are not on KRA’s allow-list
 (e.g. ``XU`` → HTTP 400 “Invalid Quantity Unit Code”). Use a listed code such as ``TU`` (unit /
 standard measure); ``itemCd`` embeds the same 2-letter segment for type-1 items.
@@ -166,8 +176,16 @@ INITIAL_SAVE_STOCKMASTER_SAR_BACKLOG_DIRTY = 3
 # After component stock prelude, wait before ``saveItemComposition`` so SBX inventory can settle.
 COMPOSITION_DELAY = 5
 
+# Parent item: quantity for ``insertStockIOInitial`` (runs *after* ``saveItemComposition``) and
+# ``saveStockMasterInitial``. Parent stock is not loaded until that triple runs.
+INITIAL_PARENT_STOCK_QTY = 100.0
+
 # Stock IOSaveReq: ``sarTyCd`` 11 is treated as STOCK IN (increases on-hand qty) per OSCU testcase.
 SAR_TY_CD_STOCK_IN = "11"
+
+# When False (default), saveItem stays on itemTyCd 2 (standard goods) with monotonic KE2… suffixes only.
+# Set True or pass ``--allow-save-item-ty1-fallback`` to allow Paybill-style itemTyCd 1 + last-resort body.
+SAVE_ITEM_ALLOW_TY1_FALLBACK = False
 
 
 # Endpoint ``name`` keys matching the ``sequence`` tuples (for resume skips).
@@ -183,11 +201,11 @@ SEQUENCE_STEP_NAMES = (
     "selectItemList",
     "saveItem",
     "selectItemListPostSave",
+    "saveComponentItem",
+    "saveItemComposition",
     "insertStockIOInitial",
     "selectStockMoveListInitial",
     "saveStockMasterInitial",
-    "saveComponentItem",
-    "saveItemComposition",
     "selectImportItemList",
     "updateImportItem",
     "selectInvoiceType",
@@ -317,6 +335,13 @@ def reset_pin_clean_run(pin_blob: dict) -> None:
         "item_nm_stock",
         "component_item_cls_cd",
         "component_item_tax_ty_cd",
+        "save_item_ty_cd",
+        "saveItemComposition_resultCd",
+        "saveItemComposition_resultMsg",
+        "saveItemComposition_responseRefId",
+        "saveItemComposition_last_resultCd",
+        "saveItemComposition_last_resultMsg",
+        "saveItemComposition_last_responseRefId",
     ):
         pin_blob.pop(k, None)
     pin_blob["stock_io_pending_rsd_qty"] = 0.0
@@ -537,8 +562,8 @@ def input_line(label: str, default: str) -> str:
     return s or d
 
 
-def cli_pin_and_flags() -> tuple[str, bool, bool, bool, frozenset[str] | None, bool]:
-    """PIN + ``--reset-stock`` + ``--clean-run`` + ``--force-stock-replay`` + optional ``--only`` + ``--diagnostic-stock-io``."""
+def cli_pin_and_flags() -> tuple[str, bool, bool, bool, frozenset[str] | None, bool, bool]:
+    """PIN + ``--reset-stock`` + ``--clean-run`` + ``--force-stock-replay`` + optional ``--only`` + ``--diagnostic-stock-io`` + ``--allow-save-item-ty1-fallback``."""
     raw = [str(x).strip() for x in sys.argv[1:] if str(x).strip()]
     only_steps: frozenset[str] | None = None
     rest: list[str] = []
@@ -570,11 +595,20 @@ def cli_pin_and_flags() -> tuple[str, bool, bool, bool, frozenset[str] | None, b
     clean_run = "--clean-run" in flags
     force_stock_replay = "--force-stock-replay" in flags
     diagnostic_stock_io = "--diagnostic-stock-io" in flags
-    return pin, reset_stock, clean_run, force_stock_replay, only_steps, diagnostic_stock_io
+    allow_save_item_ty1_fallback = "--allow-save-item-ty1-fallback" in flags
+    return (
+        pin,
+        reset_stock,
+        clean_run,
+        force_stock_replay,
+        only_steps,
+        diagnostic_stock_io,
+        allow_save_item_ty1_fallback,
+    )
 
 
 def prompt_app_pin() -> str:
-    pin, _, _, _, _, _ = cli_pin_and_flags()
+    pin, _, _, _, _, _, _ = cli_pin_and_flags()
     if pin:
         return pin
     print(
@@ -586,6 +620,8 @@ def prompt_app_pin() -> str:
         "To replay only insertStockIOInitial+saveStockMasterInitial: python gavaetims.py <PIN> --force-stock-replay\n"
         "SBX stock direction diagnostic (clean portal stock + local reset): "
         "python gavaetims.py <PIN> --diagnostic-stock-io\n"
+        "Optional: enable itemTyCd 1 Paybill fallback (off by default): "
+        "python gavaetims.py <PIN> --allow-save-item-ty1-fallback\n"
     )
     s = input("Enter Application Test PIN: ").strip()
     if not s:
@@ -1013,10 +1049,10 @@ def mask_cmc_preview(s: str) -> str:
 
 def item_cd_numeric_suffix(*, item_ty_cd: str) -> str:
     """
-    KRA OSCU saveItem (sandbox): itemCd must not be \"reused\" and the numeric suffix must end
-    with digit 1 (error text: Expected sequence ending with ********1). Applies to itemTyCd 1 and 2.
+    Random 7-digit suffix (legacy). **itemTyCd 2** should use ``alloc_provisional_item_cd_monotonic``
+    instead of this helper.
     """
-    _ = item_ty_cd  # prefix KE{ty}… is set by caller; suffix rule is the same in SBX runs observed
+    _ = item_ty_cd
     n = random.randint(0, 999_999) * 10 + 1
     return f"{n:07d}"
 
@@ -1097,9 +1133,8 @@ def alloc_monotonic_item_cd_suffix(
             stored = 0
     api_max = max_numeric_suffix_for_prefix(select_item_parsed, prefix)
     base_floor = max(api_max, stored)
-    cur = attempt_hw.get(prefix)
-    if cur is None:
-        cur = base_floor
+    # Monotonic chain: never go below catalog/state floor; merge last attempt_hw with base_floor.
+    cur = max(base_floor, int(attempt_hw.get(prefix) or 0))
     tm = pin_blob.get("item_cd_suffix_tail_mod")
     tr = pin_blob.get("item_cd_suffix_tail_res")
     if isinstance(tm, int) and isinstance(tr, int):
@@ -1117,6 +1152,28 @@ def alloc_monotonic_item_cd_suffix(
         nxt = next_suffix_int_after(cur, ld)
     attempt_hw[prefix] = nxt
     return f"{nxt:07d}"
+
+
+def alloc_provisional_item_cd_monotonic(
+    item_ty_cd: str,
+    pkg_unit_cd: str,
+    qty_unit_cd: str,
+    pin_blob: dict,
+    select_item_parsed: dict | None,
+) -> str:
+    """
+    Provisional ``itemCd`` for sequence templates before ``saveItem``. itemTyCd **2** uses
+    ``alloc_monotonic_item_cd_suffix`` (7 digits, per-prefix state); other types keep random suffix.
+    """
+    ty = (item_ty_cd or "").strip()
+    prefix = f"KE{ty}{pkg_unit_cd}{qty_unit_cd}"
+    if ty != "2":
+        return f"{prefix}{item_cd_numeric_suffix(item_ty_cd=item_ty_cd)}"
+    hw: dict[str, int] = {}
+    suf = alloc_monotonic_item_cd_suffix(
+        prefix, select_item_parsed, pin_blob, hw
+    )
+    return f"{prefix}{suf}"
 
 
 def next_item_cd_for_composition_branch(
@@ -1207,6 +1264,26 @@ def kra_expected_next_sar_no_from_message(msg: str | None) -> int | None:
         return None
 
 
+def kra_extract_response_ref_id(parsed: dict | None) -> str:
+    """``responseHeader.responseRefID`` from a KRA JSON response."""
+    if not isinstance(parsed, dict):
+        return ""
+    rh = parsed.get("responseHeader")
+    if isinstance(rh, dict) and rh.get("responseRefID") is not None:
+        return str(rh.get("responseRefID") or "").strip()
+    return ""
+
+
+def kra_extract_response_body_result_msg(parsed: dict | None) -> str:
+    """``responseBody.resultMsg`` when present (may be empty if ``responseBody`` is null)."""
+    if not isinstance(parsed, dict):
+        return ""
+    rb = parsed.get("responseBody")
+    if isinstance(rb, dict) and rb.get("resultMsg") is not None:
+        return str(rb.get("resultMsg") or "").strip()
+    return ""
+
+
 def kra_save_item_error_text(parsed: dict | None) -> str:
     """Join KRA saveItem failure messages (HTTP 400 gate) for parsing."""
     if not isinstance(parsed, dict):
@@ -1229,15 +1306,22 @@ def kra_parse_item_cd_suffix_constraint(msg: str | None) -> tuple[int, int] | No
     """
     if not msg:
         return None
-    m = re.search(
+    patterns = (
         r"Expected sequence ending with[:\s]*\*+(\d+)",
-        msg,
-        re.IGNORECASE,
+        r"Expected sequence ending with\s*\*+(\d+)",
+        r"ending with[:\s]*\*+(\d+)",
+        r"sequence ending with[:\s]*\*+(\d+)",
     )
-    if not m:
+    tail_s: str | None = None
+    for pat in patterns:
+        m = re.search(pat, msg, re.IGNORECASE)
+        if m:
+            tail_s = m.group(1)
+            break
+    if tail_s is None:
         return None
     try:
-        tail = int(m.group(1))
+        tail = int(tail_s)
     except ValueError:
         return None
     if tail < 10:
@@ -1249,6 +1333,31 @@ def kra_parse_item_cd_suffix_constraint(msg: str | None) -> tuple[int, int] | No
     if tail < 10000:
         return (10_000, tail)
     return None
+
+
+def bump_kra_item_cd_suffix_floor_from_failed_item_cd(pin_blob: dict, item_cd: str) -> None:
+    """
+    After saveItem rejects an itemCd (reused / not incremented), raise the per-prefix floor so the
+    next alloc_monotonic call must propose a strictly higher suffix than the failed POST.
+    """
+    ic = (item_cd or "").strip()
+    if len(ic) < 8 or not ic[-7:].isdigit():
+        return
+    pfx = ic[:-7]
+    try:
+        suf = int(ic[-7:])
+    except ValueError:
+        return
+    pin_blob.setdefault("kra_item_cd_suffix_by_prefix", {})
+    if not isinstance(pin_blob["kra_item_cd_suffix_by_prefix"], dict):
+        pin_blob["kra_item_cd_suffix_by_prefix"] = {}
+    prev = 0
+    if pfx in pin_blob["kra_item_cd_suffix_by_prefix"]:
+        try:
+            prev = int(pin_blob["kra_item_cd_suffix_by_prefix"][pfx])
+        except (TypeError, ValueError):
+            prev = 0
+    pin_blob["kra_item_cd_suffix_by_prefix"][pfx] = max(prev, suf)
 
 
 def stock_io_line_amounts_for_tax_ty(
@@ -1765,7 +1874,11 @@ def main():
         force_stock_replay_cli,
         only_steps_cli,
         diagnostic_stock_io_cli,
+        save_item_allow_ty1_fallback_cli,
     ) = cli_pin_and_flags()
+    save_item_allow_ty1_fallback = (
+        SAVE_ITEM_ALLOW_TY1_FALLBACK or save_item_allow_ty1_fallback_cli
+    )
     if clean_run_cli:
         reset_pin_clean_run(pin_blob)
         save_test_state(state_root)
@@ -1915,8 +2028,8 @@ def main():
             + "=" * 78
             + "\nDIAGNOSTIC SBX STOCK IO (--diagnostic-stock-io)\n"
             "  • Resume disabled for insertStockIOInitial / selectStockMoveListInitial / saveStockMasterInitial\n"
-            "  • Single SAR: stock_io_next_sar_no=1 → first IO uses sarNo=1, orgSarNo=0; "
-            "current_stock_balance=0 before POST\n"
+            "  • SAR: component composition prelude may use the first sarNo; parent insertStockIOInitial "
+            "uses the next free sarNo; current_stock_balance=0 before parent POST\n"
             "  • initial_parent_stock_qty forced to 1 (line qty)\n"
             "  • insertStockIOInitial: one POST only (no retry loop). saveStockMasterInitial: _cap_attempts=1\n"
             "  • If KRA says Expected: -1, sarTyCd=11 may be OUT for SBX (direction mismatch).\n"
@@ -1992,7 +2105,9 @@ def main():
     if completed_list and (pin_blob.get("item_cd") or "").strip():
         item_cd = str(pin_blob.get("item_cd") or "").strip()
         if not item_cd.startswith(f"KE{item_ty_cd}"):
-            item_cd = f"KE{item_ty_cd}{pkg_unit_cd}{qty_unit_cd}{item_cd_numeric_suffix(item_ty_cd=item_ty_cd)}"
+            item_cd = alloc_provisional_item_cd_monotonic(
+                item_ty_cd, pkg_unit_cd, qty_unit_cd, pin_blob, None
+            )
             pin_blob["item_cd"] = item_cd
             save_test_state(state_root)
             print(
@@ -2028,7 +2143,9 @@ def main():
                 f"Note: {STATE_FILE.name} lists completed steps but no saved item_cd; "
                 "generating new item/invoice data (later steps may fail if earlier steps used another item)."
             )
-        item_cd = f"KE{item_ty_cd}{pkg_unit_cd}{qty_unit_cd}{item_cd_numeric_suffix(item_ty_cd=item_ty_cd)}"
+        item_cd = alloc_provisional_item_cd_monotonic(
+            item_ty_cd, pkg_unit_cd, qty_unit_cd, pin_blob, None
+        )
         item_cls_dynamic = {"itemClsCd": "1010000000", "taxTyCd": "A"}
         sales_dt = now.strftime("%Y%m%d")
         cfm_dt = now.strftime("%Y%m%d%H%M%S")
@@ -2049,7 +2166,7 @@ def main():
         purchase_invc_no = (_invc_base + 7) % 999_999_999
 
     item_cd = reconcile_item_cd_with_pin_state(pin_blob, item_cd)
-    initial_parent_stock_qty = 1.0
+    initial_parent_stock_qty = float(INITIAL_PARENT_STOCK_QTY)
     if diagnostic_stock_io_cli:
         initial_parent_stock_qty = 1.0
         stock_qty = 1
@@ -2189,6 +2306,20 @@ def main():
                 "lastReqDt": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
             },
         ),
+        ("saveComponentItem", "/saveItem", {}),
+        (
+            "saveItemComposition",
+            "/saveItemComposition",
+            {
+                "itemCd": item_cd,
+                "cpstItemCd": "",
+                "cpstQty": 1.0,
+                "regrId": "system",
+                "regrNm": "system",
+                "modrId": "system",
+                "modrNm": "system",
+            },
+        ),
         (
             "insertStockIOInitial",
             "/insertStockIO",
@@ -2225,20 +2356,6 @@ def main():
             {
                 "itemCd": item_cd,
                 "rsdQty": stock_qty,
-                "regrId": "system",
-                "regrNm": "system",
-                "modrId": "system",
-                "modrNm": "system",
-            },
-        ),
-        ("saveComponentItem", "/saveItem", {}),
-        (
-            "saveItemComposition",
-            "/saveItemComposition",
-            {
-                "itemCd": item_cd,
-                "cpstItemCd": "",
-                "cpstQty": 1.0,
                 "regrId": "system",
                 "regrNm": "system",
                 "modrId": "system",
@@ -2746,8 +2863,8 @@ def main():
             if not succeeded:
                 raise SystemExit("STOP: composition prelude insertStockIO did not succeed.")
             time.sleep(2)
-            # Mirror parent triple: insertStockIOInitial → selectStockMoveListInitial →
-            # saveStockMasterInitial. Without a move-list read, SBX often returns resultCd 001 on
+            # Mirror IO → move list → saveStockMaster for the *component* (parent initial stock runs
+            # after saveItemComposition). Without a move-list read, SBX often returns resultCd 001 on
             # probes and saveItemComposition may still see "Insufficient Stock" even when
             # saveStockMaster would accept rsdQty.
             _sml_url = f"{BASE_URL.rstrip('/')}/selectStockMoveList"
@@ -3279,7 +3396,9 @@ def main():
                 "lastReqDt": "20100101000000",
             }
 
-            def load_save_item_classification(*, label: str) -> tuple[str, str, str]:
+            def load_save_item_classification(
+                *, label: str, allow_ty1_fallback: bool
+            ) -> tuple[str, str, str]:
                 """Returns (itemClsCd, taxTyCd, itemTyCd for itemCd prefix)."""
                 print(f"RUNNING selectItemClsList ({label})")
                 resp_cls = requests.post(
@@ -3336,7 +3455,7 @@ def main():
                     )
                     return icd, tty, "2"
                 b_row = pick_save_item_tax_b_leaf(lst)
-                if b_row:
+                if b_row and allow_ty1_fallback:
                     icd, tty = b_row
                     print(
                         f"saveItem: itemClsCd={icd} taxTyCd={tty} itemTyCd=1 "
@@ -3355,13 +3474,15 @@ def main():
                 return "9901200300", "C", "2"
 
             item_cls_cd, tax_ty_cd, save_item_ty = load_save_item_classification(
-                label="saveItem preflight"
+                label="saveItem preflight",
+                allow_ty1_fallback=save_item_allow_ty1_fallback,
             )
             persist_cls_cd, persist_tax_cd = item_cls_cd, tax_ty_cd
             item_cd_attempt_hw: dict[str, int] = {}
             result_cd: str | None = None
             for attempt in range(4):
-                if attempt == 3:
+                use_paybill_last = save_item_allow_ty1_fallback and attempt == 3
+                if use_paybill_last:
                     item_cd = f"KE1{pkg_unit_cd}TU{alloc_monotonic_item_cd_suffix(f'KE1{pkg_unit_cd}TU', select_item_list_parsed, pin_blob, item_cd_attempt_hw)}"
                     payload = {
                         "itemCd": item_cd,
@@ -3388,7 +3509,8 @@ def main():
                     if attempt >= 1:
                         print("RETRY: saveItem — refresh selectItemClsList, re-pick class …")
                         item_cls_cd, tax_ty_cd, save_item_ty = load_save_item_classification(
-                            label=f"saveItem retry {attempt}"
+                            label=f"saveItem retry {attempt}",
+                            allow_ty1_fallback=save_item_allow_ty1_fallback,
                         )
                     q_seg = "TU" if save_item_ty == "1" else qty_unit_cd
                     ic_prefix = f"KE{save_item_ty}{pkg_unit_cd}{q_seg}"
@@ -3433,7 +3555,7 @@ def main():
                 print(f"RUNNING {endpoint_name}")
                 normalize_save_item_payload_fields(payload)
                 payload = save_item_payload_omit_nulls(payload)
-                if attempt != 3:
+                if not use_paybill_last:
                     print(f"Using itemClsCd={item_cls_cd}, taxTyCd={tax_ty_cd}")
                 print("SAVE ITEM PAYLOAD:")
                 print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
@@ -3449,6 +3571,9 @@ def main():
                     persist_item_cd_suffix_map(pin_blob, item_cd)
                     pin_blob["item_cd"] = item_cd
                     pin_blob["canonical_item_cd"] = item_cd
+                    pin_blob["save_item_ty_cd"] = str(
+                        payload.get("itemTyCd") or ""
+                    ).strip()
                     pin_blob.pop("item_cd_suffix_last_digit", None)
                     pin_blob.pop("item_cd_suffix_tail_mod", None)
                     pin_blob.pop("item_cd_suffix_tail_res", None)
@@ -3462,6 +3587,9 @@ def main():
                     save_test_state(state_root)
                     print(f"CONTINUE: {endpoint_name} OK (state={result_cd})")
                     break
+                bump_kra_item_cd_suffix_floor_from_failed_item_cd(
+                    pin_blob, str(payload.get("itemCd") or item_cd or "").strip()
+                )
                 _sufc = kra_parse_item_cd_suffix_constraint(
                     kra_save_item_error_text(parsed)
                 )
@@ -3495,60 +3623,96 @@ def main():
                     f"STOP: {endpoint_name} requires a saved item_cd from saveItem "
                     f"(see {STATE_FILE.name})."
                 )
-            save_ty = item_ty_cd
-            mo = re.search(r"^KE(\d)", main_ic)
-            if mo and mo.group(1).isdigit():
-                save_ty = mo.group(1)
-            q_seg = "TU" if save_ty == "1" else qty_unit_cd
-            try:
-                comp_cd = next_item_cd_for_composition_branch(
-                    main_ic, select_item_list_parsed
+            if len(main_ic) < 8 or not main_ic[-7:].isdigit():
+                raise SystemExit(
+                    f"STOP: saveComponentItem — expected itemCd with 7-digit suffix, got {main_ic!r}"
                 )
+            pfx = main_ic[:-7]
+            try:
+                mx_main = int(main_ic[-7:])
             except ValueError as e:
                 raise SystemExit(f"STOP: saveComponentItem — {e}") from e
+            api_mx = max_numeric_suffix_for_prefix(select_item_list_parsed, pfx)
+            comp_hw: dict[str, int] = {pfx: max(mx_main, api_mx)}
             icd = item_cls_dynamic["itemClsCd"]
             tty = item_cls_dynamic["taxTyCd"]
-            co_payload: dict = {
-                "itemCd": comp_cd,
-                "itemClsCd": icd,
-                "itemTyCd": str(save_ty),
-                "itemNm": "COMPONENT ITEM",
-                "orgnNatCd": "KE",
-                "pkgUnitCd": pkg_unit_cd,
-                "qtyUnitCd": q_seg,
-                "taxTyCd": tty,
-                "dftPrc": 10,
-                "isrcAplcbYn": "N",
-                "useYn": "Y",
-                "regrId": "system",
-                "regrNm": "system",
-                "modrId": "system",
-                "modrNm": "system",
-            }
-            normalize_save_item_payload_fields(co_payload)
-            co_payload = save_item_payload_omit_nulls(co_payload)
+            main_ty = (pin_blob.get("save_item_ty_cd") or "").strip()
+            if main_ty == "2":
+                comp_item_ty = "2"
+                q_seg = qty_unit_cd
+            elif main_ty == "1":
+                comp_item_ty = "1"
+                q_seg = "TU"
+            else:
+                mo_ty = re.search(r"^KE(\d)", main_ic)
+                comp_item_ty = mo_ty.group(1) if mo_ty else "2"
+                q_seg = "TU" if comp_item_ty == "1" else qty_unit_cd
             surl = f"{BASE_URL.rstrip('/')}/saveItem"
-            print(f"RUNNING {endpoint_name} (POST /saveItem) itemCd={comp_cd}")
-            print(json.dumps(co_payload, indent=2, ensure_ascii=False))
-            resp_co = requests.post(surl, headers=headers, json=co_payload, timeout=60)
-            parsed_co = print_full_response_json(resp_co, "saveComponentItem")
-            rc_co = extract_result_cd(parsed_co)
-            ge_co = kra_top_level_error_detail(parsed_co)
-            ok_co = resp_co.status_code < 400 and not ge_co and rc_co == "000"
-            if not ok_co:
-                raise SystemExit(
-                    f"STOP: saveComponentItem failed HTTP={resp_co.status_code} resultCd={rc_co!r}"
-                    + (f", {ge_co}" if ge_co else "")
+            rc_co: str | None = None
+            for comp_attempt in range(4):
+                suf = alloc_monotonic_item_cd_suffix(
+                    pfx, select_item_list_parsed, pin_blob, comp_hw
                 )
-            pin_blob["component_item_cd"] = comp_cd
-            pin_blob["component_item_cls_cd"] = icd
-            pin_blob["component_item_tax_ty_cd"] = tty
-            pin_blob.pop("stocked_component_for_composition", None)
-            pin_blob.pop("stock_io_component_pending_rsd_qty", None)
-            pin_blob.pop("component_stock_balance", None)
-            persist_item_cd_suffix_map(pin_blob, comp_cd)
-            save_test_state(state_root)
-            flush_progress("saveComponentItem", mark_endpoint_complete=True)
+                comp_cd = f"{pfx}{suf}"
+                co_payload: dict = {
+                    "itemCd": comp_cd,
+                    "itemClsCd": icd,
+                    "itemTyCd": comp_item_ty,
+                    "itemNm": "COMPONENT ITEM",
+                    "orgnNatCd": "KE",
+                    "pkgUnitCd": pkg_unit_cd,
+                    "qtyUnitCd": q_seg,
+                    "taxTyCd": tty,
+                    "dftPrc": 10,
+                    "isrcAplcbYn": "N",
+                    "useYn": "Y",
+                    "regrId": "system",
+                    "regrNm": "system",
+                    "modrId": "system",
+                    "modrNm": "system",
+                }
+                normalize_save_item_payload_fields(co_payload)
+                co_payload = save_item_payload_omit_nulls(co_payload)
+                print(
+                    f"RUNNING {endpoint_name} (POST /saveItem) attempt {comp_attempt + 1}/4 "
+                    f"itemCd={comp_cd} itemTyCd={co_payload.get('itemTyCd')!r}"
+                )
+                print(json.dumps(co_payload, indent=2, ensure_ascii=False))
+                resp_co = requests.post(surl, headers=headers, json=co_payload, timeout=60)
+                parsed_co = print_full_response_json(resp_co, "saveComponentItem")
+                rc_co = extract_result_cd(parsed_co)
+                ge_co = kra_top_level_error_detail(parsed_co)
+                ok_co = resp_co.status_code < 400 and not ge_co and rc_co == "000"
+                if ok_co:
+                    pin_blob["component_item_cd"] = comp_cd
+                    pin_blob["component_item_cls_cd"] = icd
+                    pin_blob["component_item_tax_ty_cd"] = tty
+                    pin_blob.pop("stocked_component_for_composition", None)
+                    pin_blob.pop("stock_io_component_pending_rsd_qty", None)
+                    pin_blob.pop("component_stock_balance", None)
+                    persist_item_cd_suffix_map(pin_blob, comp_cd)
+                    pin_blob.pop("item_cd_suffix_tail_mod", None)
+                    pin_blob.pop("item_cd_suffix_tail_res", None)
+                    save_test_state(state_root)
+                    flush_progress("saveComponentItem", mark_endpoint_complete=True)
+                    break
+                _sufc_co = kra_parse_item_cd_suffix_constraint(
+                    kra_save_item_error_text(parsed_co)
+                )
+                if _sufc_co is not None:
+                    _m_c, _r_c = _sufc_co
+                    pin_blob["item_cd_suffix_tail_mod"] = _m_c
+                    pin_blob["item_cd_suffix_tail_res"] = _r_c
+                    pin_blob.pop("item_cd_suffix_last_digit", None)
+                if comp_attempt >= 3:
+                    raise SystemExit(
+                        "STOP: saveComponentItem failed after 4 attempts "
+                        f"HTTP={resp_co.status_code} resultCd={rc_co!r}"
+                        + (f", {ge_co}" if ge_co else "")
+                    )
+                print(
+                    f"RETRY: saveComponentItem (HTTP={resp_co.status_code}, resultCd={rc_co!r}) …"
+                )
             continue
 
         if endpoint_name == "saveItemComposition":
@@ -3585,7 +3749,7 @@ def main():
             time.sleep(8)
         payload = deep_override_keys(deepcopy(payload_template), payload_overrides)
 
-        # Sequence dicts are built before saveItem using a provisional item_cd (random suffix).
+        # Sequence dicts are built before saveItem using a provisional item_cd (monotonic for itemTyCd 2).
         # saveItem then allocates a monotonic itemCd and stores it in pin_blob; sync payloads that
         # still carry the stale template value (SBX: "itemCd … does not exist in your inventory").
         _live_item_cd = (pin_blob.get("item_cd") or item_cd or "").strip()
@@ -3692,46 +3856,75 @@ def main():
         elif endpoint_name == "saveItemComposition":
             _cap_attempts = 4
         _req_timeout = 120 if endpoint_name in _SELECT_STOCK_MOVE_ENDPOINTS else 60
+        _save_ic_ok = True
+        _canon_parent_ic = ""
+        _comp_ic = ""
         if endpoint_name == "saveItemComposition":
+            _save_ic_ok = False
+            _canon_parent_ic = (
+                (pin_blob.get("canonical_item_cd") or pin_blob.get("item_cd") or "").strip()
+            )
+            _comp_ic = (pin_blob.get("component_item_cd") or "").strip()
             time.sleep(COMPOSITION_DELAY)
-            _comp_cd_probe = (pin_blob.get("component_item_cd") or "").strip()
-            try:
-                _cpst_need = float(payload.get("cpstQty") or 1.0)
-            except (TypeError, ValueError):
-                _cpst_need = 1.0
-            _rsd_pre, _, _ = composition_probe_select_stock_move_for_item(
+            payload["itemCd"] = _canon_parent_ic
+            payload["cpstItemCd"] = _comp_ic
+            item_cd = _canon_parent_ic
+            print(
+                "NOTE: saveItemComposition — using pin_blob canonical itemCd="
+                f"{_canon_parent_ic!r} cpstItemCd={_comp_ic!r}"
+            )
+            composition_probe_select_stock_move_for_item(
                 base_url=BASE_URL,
                 headers=headers,
                 tin=effective_tin,
                 bhf_id=branch_id,
-                component_item_cd=_comp_cd_probe,
-                label="before first saveItemComposition POST",
+                component_item_cd=_canon_parent_ic,
+                label="pre saveItemComposition (parent stock moves, fresh lastReqDt)",
             )
-            if _rsd_pre is not None and _rsd_pre < _cpst_need:
+            _rsd_comp_pre, _, _ = composition_probe_select_stock_move_for_item(
+                base_url=BASE_URL,
+                headers=headers,
+                tin=effective_tin,
+                bhf_id=branch_id,
+                component_item_cd=_comp_ic,
+                label="pre saveItemComposition (component stock moves, fresh lastReqDt)",
+            )
+            try:
+                _cpst_need = float(payload.get("cpstQty") or 1.0)
+            except (TypeError, ValueError):
+                _cpst_need = 1.0
+            if _rsd_comp_pre is not None and _rsd_comp_pre < _cpst_need:
                 print(
-                    f"WARNING: component rsdQty best-effort ({_rsd_pre:g}) < cpstQty ({_cpst_need:g}) — "
+                    f"WARNING: component rsdQty best-effort ({_rsd_comp_pre:g}) < cpstQty ({_cpst_need:g}) — "
                     "saveItemComposition may still fail with Insufficient Stock."
                 )
         for attempt in range(_cap_attempts):
             if endpoint_name == "saveItemComposition" and attempt > 0:
                 _delay_comp = [2, 4, 6][attempt - 1]
                 print(
-                    f"\nCOMPOSITION: waiting {_delay_comp}s before Insufficient-Stock retry "
-                    f"(probe + POST {attempt + 1}/{_cap_attempts}) …"
+                    f"\n=== saveItemComposition RETRY {attempt}/{_cap_attempts - 1} "
+                    f"(fresh lastReqDt probes; full request/response below) ==="
+                )
+                print(
+                    f"COMPOSITION: waiting {_delay_comp}s before retry POST "
+                    f"({attempt + 1}/{_cap_attempts}) …"
                 )
                 time.sleep(_delay_comp)
-                _cc_retry = (pin_blob.get("component_item_cd") or "").strip()
-                try:
-                    _cpst_r = float(payload.get("cpstQty") or 1.0)
-                except (TypeError, ValueError):
-                    _cpst_r = 1.0
                 composition_probe_select_stock_move_for_item(
                     base_url=BASE_URL,
                     headers=headers,
                     tin=effective_tin,
                     bhf_id=branch_id,
-                    component_item_cd=_cc_retry,
-                    label=f"after {_delay_comp}s delay (retry {attempt})",
+                    component_item_cd=_canon_parent_ic,
+                    label=f"retry {attempt} parent (fresh lastReqDt)",
+                )
+                composition_probe_select_stock_move_for_item(
+                    base_url=BASE_URL,
+                    headers=headers,
+                    tin=effective_tin,
+                    bhf_id=branch_id,
+                    component_item_cd=_comp_ic,
+                    label=f"retry {attempt} component (fresh lastReqDt)",
                 )
             if endpoint_name == "selectItemListPostSave":
                 # Delta query (UTC-now) can return 001 when saveItem was skipped in this run — no
@@ -3749,6 +3942,9 @@ def main():
                             "(SBX returned 001 for delta query; e.g. saveItem skipped or no new update)."
                         )
             if endpoint_name == "saveItemComposition":
+                payload["itemCd"] = _canon_parent_ic
+                payload["cpstItemCd"] = _comp_ic
+                item_cd = _canon_parent_ic
                 print("\n=== saveItemComposition REQUEST (full JSON) ===")
                 print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
             resp = requests.post(url, headers=headers, json=payload, timeout=_req_timeout)
@@ -3764,8 +3960,48 @@ def main():
                     gate_err = (
                         f"{gate_err} | {sm_strict}" if gate_err else sm_strict
                     )
+            if endpoint_name == "saveItemComposition":
+                _ref_ic = kra_extract_response_ref_id(parsed)
+                _msg_ic = kra_extract_response_body_result_msg(parsed)
+                if not _msg_ic:
+                    _msg_ic = kra_save_item_error_text(parsed) or ""
+                print(f"saveItemComposition responseRefID={_ref_ic!r}")
+                _ok_ic = (
+                    not gate_err
+                    and endpoint_accepts_result_cd(endpoint_name, result_cd)
+                    and endpoint_http_ok_for_kra(endpoint_name, resp, result_cd)
+                )
+                if _ok_ic:
+                    _save_ic_ok = True
+                    pin_blob["saveItemComposition_resultCd"] = result_cd or "000"
+                    pin_blob["saveItemComposition_resultMsg"] = (
+                        kra_extract_response_body_result_msg(parsed) or "Successful"
+                    )
+                    pin_blob["saveItemComposition_responseRefId"] = _ref_ic
+                    pin_blob.pop("saveItemComposition_last_resultCd", None)
+                    pin_blob.pop("saveItemComposition_last_resultMsg", None)
+                    pin_blob.pop("saveItemComposition_last_responseRefId", None)
+                    save_test_state(state_root)
+                    print(
+                        "LOG saveItemComposition: "
+                        f"resultCd={result_cd!r} resultMsg={pin_blob['saveItemComposition_resultMsg']!r} "
+                        f"responseRefID={_ref_ic!r}"
+                    )
+                    break
+                pin_blob["saveItemComposition_last_resultCd"] = result_cd
+                pin_blob["saveItemComposition_last_resultMsg"] = _msg_ic
+                pin_blob["saveItemComposition_last_responseRefId"] = _ref_ic
+                print(
+                    f"LOG saveItemComposition attempt {attempt + 1}/{_cap_attempts}: "
+                    f"resultCd={result_cd!r} resultMsg={_msg_ic!r} responseRefID={_ref_ic!r}"
+                )
+                if attempt < _cap_attempts - 1:
+                    continue
+                _save_ic_ok = False
+                break
             if (
-                not gate_err
+                endpoint_name != "saveItemComposition"
+                and not gate_err
                 and endpoint_accepts_result_cd(endpoint_name, result_cd)
                 and endpoint_http_ok_for_kra(endpoint_name, resp, result_cd)
             ):
@@ -3785,30 +4021,6 @@ def main():
                         "saveItem). Check branch/tin and SBX latency."
                     )
                 break
-            if endpoint_name == "saveItemComposition" and gate_err:
-                if not save_item_composition_insufficient_stock(parsed):
-                    parts_ic = [
-                        "STOP: saveItemComposition failed",
-                        f"HTTP={resp.status_code}",
-                        f"resultCd={result_cd!r}",
-                    ]
-                    if gate_err:
-                        parts_ic.append(str(gate_err))
-                    raise SystemExit(" | ".join(parts_ic))
-                if attempt < _cap_attempts - 1:
-                    print(
-                        "RETRY: saveItemComposition — Insufficient Stock "
-                        f"(attempt {attempt + 1}/{_cap_attempts}) …"
-                    )
-                    continue
-                parts_ic = [
-                    "STOP: saveItemComposition failed after Insufficient Stock retries",
-                    f"HTTP={resp.status_code}",
-                    f"resultCd={result_cd!r}",
-                ]
-                if gate_err:
-                    parts_ic.append(str(gate_err))
-                raise SystemExit(" | ".join(parts_ic))
             _last_att = attempt >= _cap_attempts - 1
             if _last_att:
                 if endpoint_name == "saveStockMasterInitial":
@@ -3850,6 +4062,8 @@ def main():
                         "(optional without customs import rows). Continuing."
                     )
                     break
+                if endpoint_name == "saveItemComposition":
+                    break
                 parts = [
                     f"STOP: {endpoint_name} failed after retry",
                     f"HTTP={resp.status_code}",
@@ -3874,6 +4088,25 @@ def main():
                 print(
                     f"RETRY: {endpoint_name} (HTTP={resp.status_code}, resultCd={result_cd!r}) …"
                 )
+
+        if endpoint_name == "saveItemComposition" and not _save_ic_ok:
+            _rc_fin = pin_blob.get("saveItemComposition_last_resultCd")
+            _msg_fin = pin_blob.get("saveItemComposition_last_resultMsg") or ""
+            _ref_fin = pin_blob.get("saveItemComposition_last_responseRefId") or ""
+            print(
+                "NOTE: saveItemComposition did not succeed after all attempts; "
+                "continuing certification sequence …"
+            )
+            print(
+                f"LOG saveItemComposition (final): resultCd={_rc_fin!r} resultMsg={_msg_fin!r} "
+                f"responseRefID={_ref_fin!r}"
+            )
+            pin_blob["saveItemComposition_resultCd"] = _rc_fin
+            pin_blob["saveItemComposition_resultMsg"] = _msg_fin
+            pin_blob["saveItemComposition_responseRefId"] = _ref_fin
+            save_test_state(state_root)
+            flush_progress(endpoint_name, mark_endpoint_complete=False)
+            continue
 
         if apigee_skipped:
             flush_progress(endpoint_name, mark_endpoint_complete=False)
