@@ -1,0 +1,197 @@
+Subject: OSCU Sandbox (GavaConnect) — insertTrnsPurchase fails with requestedInvcNo null (HTTP 400) despite payload / query / headers
+
+--------------------------------------------------------------------------------
+TO: [KRA eTIMS / OSCU support OR your integrator contact — replace]
+CC: [optional]
+--------------------------------------------------------------------------------
+
+Dear Support Team,
+
+We are integrating with the Kenya Revenue Authority eTIMS **OSCU** sandbox
+(`https://sbx.kra.go.ke/etims-oscu/api/v1`) as part of **GavaConnect** developer
+certification. We are blocked on **SAVE PURCHASES INFORMATION** (`POST /insertTrnsPurchase`)
+and downstream steps (**SAVE ITEM COMPOSITION**, **SAVE SALES TRANSACTION**), and need
+your guidance on the **correct contract** for `requestedInvcNo` on OSCU SBX.
+
+Please find below what we have implemented, what we have already tried, and **exact**
+sample payloads and error responses (including `responseRefID`).
+
+
+1. ENVIRONMENT
+--------------------------------------------------------------------------------
+• Base URL: https://sbx.kra.go.ke/etims-oscu/api/v1
+• OAuth: GET https://sbx.kra.go.ke/v1/token/generate (client_credentials)
+• Device: registered via POST /selectInitOsdcInfo (we receive resultCd 902 “device installed”
+  and use stored cmcKey where applicable)
+• Application Test PIN (TIN): [REDACT IF REQUIRED — e.g. P600002906A]
+• Branch (bhfId): [e.g. 00]
+
+
+2. WHAT WE HAVE ALREADY COMPLETED (GavaConnect / OSCU)
+--------------------------------------------------------------------------------
+Our automation script successfully completes earlier certification steps, including
+(among others): code lists, branch lists, item save, component item, stock
+move list, stock master in several variants, and import list lookups where data
+exists. We are **not** asking for help on OAuth or generic connectivity — the
+failure is **specific to purchase posting** and the **`requestedInvcNo`** handling.
+
+
+3. PRIMARY FAILURE — POST /insertTrnsPurchase
+--------------------------------------------------------------------------------
+Symptom: HTTP **400** with a message equivalent to:
+
+  “Cannot invoke \"String.equals(Object)\" because \"requestedInvcNo\" is null”
+
+We have attempted **all** of the following (still **no** success):
+
+  (a) Sending `invcNo` and `requestedInvcNo` in the **JSON body** (string and integer forms).
+
+  (b) Sending `invcNo` and `requestedInvcNo` as **query parameters** on the POST URL,
+      e.g. `?invcNo=...&requestedInvcNo=...` (values as strings).
+
+  (c) Adding a HTTP **header** `requestedInvcNo` with the same value.
+
+  (d) combinations of (a)+(b)+(c).
+
+  (e) Calling `selectTrnsPurchaseSalesList` first and binding supplier invoice references
+      (`spplrInvcNo`, `spplrTin`) where rows exist for our taxpayer; where no row exists
+      for our TIN we fall back to using the same numeric invoice reference as `invcNo`.
+
+Despite the client sending values, the server-side error still indicates
+**`requestedInvcNo` is null** in Java, so we suspect either:
+  • a **required binding** we have not satisfied (e.g. prerequisite transaction in SBX), or
+  • a **gateway / parameter mapping** issue on OSCU SBX (Apigee vs backend), or
+  • **documentation mismatch** between what the OSCU portal expects and what the API reads.
+
+We need the **authoritative** answer for OSCU SBX:
+  • Is `requestedInvcNo` read from **body**, **query**, **header**, or **only** from a
+    prior `selectTrnsPurchaseSalesList` workflow?
+  • Are **required** field names exactly `requestedInvcNo` and `invcNo` (case-sensitive)?
+
+
+4. SECONDARY ERROR (RESOLVED ON OUR SIDE) — JSON TYPES
+--------------------------------------------------------------------------------
+We also saw HTTP 400 when numeric line fields were serialized as **strings** (e.g.
+`"pkg": "100.0"` instead of a JSON number). KRA’s error referenced Java `Integer`
+deserialization. We fixed this by ensuring **amounts and quantities are JSON numbers**
+in `itemList`. This is noted in case it helps other integrators; our **remaining** blocker
+is the `requestedInvcNo` null issue above.
+
+
+5. EXAMPLE — REQUEST (REPRESENTATIVE)
+--------------------------------------------------------------------------------
+POST https://sbx.kra.go.ke/etims-oscu/api/v1/insertTrnsPurchase?invcNo=991888777&requestedInvcNo=991888777
+
+Headers (representative):
+  Authorization: Bearer [REDACTED]
+  Content-Type: application/json
+  tin: [APPLICATION TEST PIN]
+  bhfId: [e.g. 00]
+  apigee_app_id: [REDACTED]
+  dvcSrlNo: [DEVICE SERIAL]
+  cmcKey: [REDACTED]
+  requestedInvcNo: 991888777
+
+Body (JSON, representative — field names as sent):
+{
+  "spplrTin": "[P600002906A]",
+  "invcNo": 991888777,
+  "orgInvcNo": 0,
+  "spplrBhfId": "00",
+  "spplrNm": "Test Supplier",
+  "regTyCd": "M",
+  "pchsTyCd": "1",
+  "rcptTyCd": "P",
+  "pmtTyCd": "01",
+  "pchsSttsCd": "02",
+  "cfmDt": "20260409124030",
+  "pchsDt": "20260409",
+  "totItemCnt": 1,
+  "taxblAmtA": 1000,
+  "taxblAmtB": 0,
+  "taxblAmtC": 0,
+  "taxblAmtD": 0,
+  "taxblAmtE": 0,
+  "taxRtA": 0,
+  "taxRtB": 0,
+  "taxRtC": 0,
+  "taxRtD": 0,
+  "taxRtE": 0,
+  "taxAmtA": 0,
+  "taxAmtB": 0,
+  "taxAmtC": 0,
+  "taxAmtD": 0,
+  "taxAmtE": 0,
+  "totTaxblAmt": 1000,
+  "totTaxAmt": 0,
+  "totAmt": 1000,
+  "regrId": "system",
+  "regrNm": "system",
+  "modrId": "system",
+  "modrNm": "system",
+  "itemList": [
+    {
+      "itemSeq": 1,
+      "itemCd": "[EXISTING ITEM CD FROM SBX]",
+      "itemClsCd": "1010000000",
+      "itemNm": "COMPONENT ITEM",
+      "pkgUnitCd": "NT",
+      "pkg": 100,
+      "qtyUnitCd": "TU",
+      "qty": 100,
+      "prc": 10,
+      "splyAmt": 1000,
+      "dcRt": 0,
+      "dcAmt": 0,
+      "taxblAmt": 1000,
+      "taxTyCd": "A",
+      "taxAmt": 0,
+      "totAmt": 1000
+    }
+  ],
+  "requestedInvcNo": "991888777"
+}
+
+
+6. EXAMPLE — RESPONSE (ACTUAL SHAPE FROM SBX)
+--------------------------------------------------------------------------------
+HTTP 400
+
+{
+  "responseHeader": {
+    "responseCode": 400,
+    "responseRefID": "7ac48e00-3bed-478d-90dc-8bfaf527209c",
+    "customerMessage": "Expected a value but found null. Check your payload and try again",
+    "debugMessage": "Expected a value but found null. Possible cause: Cannot invoke \"String.equals(Object)\" because \"requestedInvcNo\" is null"
+  },
+  "responseBody": null
+}
+
+(We can provide additional `responseRefID` values from other attempts if useful.)
+
+
+7. WHAT WE ARE ASKING YOU TO CONFIRM
+--------------------------------------------------------------------------------
+1. For OSCU SBX `POST /insertTrnsPurchase`, what is the **exact** source of truth for
+   `requestedInvcNo` (body field name, query parameter name, header name, or derived
+   only from a prior list call)?
+
+2. Is there a **mandatory prerequisite** in SBX (e.g. an existing supplier sale visible
+   in `selectTrnsPurchaseSalesList`) before we can post a purchase?
+
+3. Can you confirm whether our `responseRefID` above corresponds to a known gateway
+   or backend mapping issue on SBX?
+
+4. If the contract differs between **OSCU** (`etims-oscu`) and other KRA APIs
+   (e.g. `etims-api`), please point us to the **OSCU-specific** integration guide.
+
+We would appreciate a **sample minimal request** (headers + body + query if any) that
+returns **resultCd 000** for `insertTrnsPurchase` on SBX, or a short call to
+clarify the binding.
+
+Thank you for your time.
+
+Kind regards,
+[YOUR NAME]
+[COMPANY]
+[PHONE / EMAIL]

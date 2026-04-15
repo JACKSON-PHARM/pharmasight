@@ -1,0 +1,10 @@
+{
+  "P600002946A": {
+    "parent_item_cd": "KE2NTTU9180815",
+    "comp_item_cd": "KE1NTTU9180815",
+    "completed_endpoints": [
+      "SELECT CODE LIST",
+      "INITIALIZE"
+    ]
+  }
+}
