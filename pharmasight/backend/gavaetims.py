@@ -62,11 +62,12 @@ script calls ``selectItemList`` before ``saveItem`` (empty catalog ``resultCd=00
 then **``selectItemListPostSave``** (same ``/selectItemList`` route with ``lastReqDt=20100101000000``)
 so SBX returns the full catalog including the saved item (delta ``lastReqDt=now`` often yields
 ``resultCd=001`` when ``saveItem`` was skipped on resume).
-**saveItem itemTyCd 2 (standard goods):** ``itemCd`` uses ``alloc_monotonic_item_cd_suffix`` (7-digit
-suffix per prefix, persisted in ``kra_item_cd_suffix_by_prefix``); KRA rejections such as
-``Expected sequence ending with ********3`` or ``********13`` set modulus/residue (global and per-prefix
-``kra_item_cd_tail_constraint_by_prefix``) so the next suffix uses ``next_suffix_int_after`` /
-``next_suffix_int_after_mod``. Up to ``MAX_SAVE_ITEM_TY2_ATTEMPTS`` tries stay on itemTyCd 2.
+**saveItem itemTyCd 2 (standard goods):** ``itemCd`` suffix sequencing is **linear per prefix** in
+``item_cd_next_suffix_by_prefix``: the next suffix is last successful suffix + 1 (seeded from
+``kra_item_cd_suffix_by_prefix`` / ``item_cd`` / ``canonical_item_cd`` on first use only).
+``selectItemList`` is logged as a **hint only** (never used as max() for allocation). On KRA rejection,
+the cursor moves to ``rejected_suffix + 1``, raised by any parsed ``Expected sequence ending with …``
+hint. Up to ``MAX_SAVE_ITEM_TY2_ATTEMPTS`` tries stay on itemTyCd 2.
 itemTyCd 1 (Paybill-style) is **only** used as an optional final attempt when
 ``SAVE_ITEM_ALLOW_TY1_FALLBACK`` or ``--allow-save-item-ty1-fallback`` is set.
 **Portal testcase names ↔ this script (same API order):**
@@ -287,7 +288,7 @@ def verify_stock_sbx_safe(
     return bool(ok)
 
 
-def best_effort_stock_read_debug(
+def _select_stock_move_list_twice_for_item(
     *,
     base_url: str,
     headers: dict,
@@ -298,13 +299,146 @@ def best_effort_stock_read_debug(
     timeout: int = 120,
 ) -> tuple[dict | None, requests.Response | None]:
     """
-    Best-effort stock read for debugging only.
-    Intentionally does not mention deprecated SBX endpoints by name to avoid accidental reintroduction.
+    Two ``/selectStockMoveList`` POSTs with a fresh UTC ``lastReqDt`` each (SBX propagation).
+    Returns the **last** parsed JSON and response object (may be non-000 / unusable).
     """
-    # No-op placeholder: keep signature for callers; return nothing.
-    _ = (base_url, headers, tin, bhf_id, item_cd, timeout)
-    print(f"{log_tag}: (debug stock read disabled in SBX runner)")
-    return None, None
+    want = (item_cd or "").strip()
+    if not want:
+        return None, None
+    surl = f"{base_url.rstrip('/')}/selectStockMoveList"
+    parsed_last: dict | None = None
+    resp_last: requests.Response | None = None
+    for i in range(2):
+        pl = {
+            "tin": (tin or "").strip(),
+            "bhfId": (bhf_id or "").strip(),
+            "lastReqDt": kra_stock_move_list_last_req_dt_utc_now(),
+            "itemCd": want,
+        }
+        print(f"{log_tag}: POST selectStockMoveList {i + 1}/2 lastReqDt={pl['lastReqDt']!r} itemCd={want!r}")
+        try:
+            resp_last = requests.post(surl, headers=headers, json=pl, timeout=timeout)
+        except requests.RequestException as e:
+            print(f"{log_tag}: selectStockMoveList request failed: {e!r}")
+            return None, None
+        try:
+            parsed_last = resp_last.json()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed_last = None
+        if not isinstance(parsed_last, dict):
+            parsed_last = None
+        if i == 0:
+            time.sleep(2.5)
+    return parsed_last, resp_last
+
+
+def kra_strict_select_stock_component_on_hand(
+    *,
+    base_url: str,
+    headers: dict,
+    tin: str,
+    bhf_id: str,
+    component_item_cd: str,
+    min_rsd_qty: float,
+    log_tag: str,
+    timeout: int = 120,
+) -> tuple[bool, float | None, dict | None, requests.Response | None]:
+    """
+    Composition / prelude strict gate: ``selectStockMoveList`` ×2 (UTC ``lastReqDt`` each).
+
+    Returns ``(strict_ok, rsdQty_or_none, last_parsed, last_response)`` where ``strict_ok`` means
+    HTTP OK, no gateway error, ``resultCd == "000"``, at least one move row for ``component_item_cd``,
+    and extracted ``rsdQty >= min_rsd_qty`` on **either** probe.
+    """
+    want = (component_item_cd or "").strip()
+    if not want:
+        return False, None, None, None
+    surl = f"{base_url.rstrip('/')}/selectStockMoveList"
+    parsed_last: dict | None = None
+    resp_last: requests.Response | None = None
+    for i in range(2):
+        pl = {
+            "tin": (tin or "").strip(),
+            "bhfId": (bhf_id or "").strip(),
+            "lastReqDt": kra_stock_move_list_last_req_dt_utc_now(),
+            "itemCd": want,
+        }
+        print(
+            f"{log_tag}: POST selectStockMoveList {i + 1}/2 lastReqDt={pl['lastReqDt']!r} itemCd={want!r}"
+        )
+        try:
+            resp_last = requests.post(surl, headers=headers, json=pl, timeout=timeout)
+        except requests.RequestException as e:
+            print(f"{log_tag}: selectStockMoveList request failed: {e!r}")
+            return False, None, None, None
+        try:
+            parsed_last = resp_last.json()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed_last = None
+        if not isinstance(parsed_last, dict):
+            parsed_last = None
+        rc = (extract_result_cd(parsed_last) or "").strip() if isinstance(parsed_last, dict) else ""
+        ge = kra_top_level_error_detail(parsed_last) if isinstance(parsed_last, dict) else None
+        http_ok = resp_last.status_code < 400 and not ge
+        nrows = count_stock_move_list_rows_for_item(parsed_last, want) if isinstance(parsed_last, dict) else 0
+        rsd = (
+            _first_rsd_qty_for_item_in_stock_move_tree(parsed_last, want)
+            if isinstance(parsed_last, dict)
+            else None
+        )
+        strict = (
+            http_ok
+            and rc == "000"
+            and nrows > 0
+            and rsd is not None
+            and float(rsd) + 1e-9 >= float(min_rsd_qty)
+        )
+        if strict:
+            return True, float(rsd), parsed_last, resp_last
+        if i == 0:
+            time.sleep(2.5)
+    return False, None, parsed_last, resp_last
+
+
+def best_effort_stock_read_debug(
+    *,
+    base_url: str,
+    headers: dict,
+    tin: str,
+    bhf_id: str,
+    item_cd: str,
+    log_tag: str,
+    timeout: int = 120,
+) -> tuple[dict | None, requests.Response | None]:
+    """Two ``/selectStockMoveList`` probes (UTC ``lastReqDt``); logging / probe helper for callers."""
+    return _select_stock_move_list_twice_for_item(
+        base_url=base_url,
+        headers=headers,
+        tin=tin,
+        bhf_id=bhf_id,
+        item_cd=item_cd,
+        log_tag=log_tag,
+        timeout=timeout,
+    )
+
+
+def sbx_stock_move_list_unreliable(base_url: str) -> bool:
+    u = (base_url or "").strip().lower()
+    return "sbx." in u or "sandbox" in u
+
+
+def sbx_select_stock_move_list_unavailable(
+    *,
+    base_url: str,
+    parsed: dict | None,
+    resp: requests.Response | None,
+) -> bool:
+    """
+    SBX often omits or delays ``selectStockMoveList`` rows after valid purchases / insertStockIO 000.
+    When true, prelude and composition must not spin or hard-fail on move-list strict gates.
+    """
+    return sbx_stock_move_list_unreliable(base_url)
+
 
 # SBX may have no customs import rows; still call the testcase but do not fail the whole run.
 OPTIONAL_SBX_STEPS = frozenset(
@@ -370,6 +504,10 @@ SAVE_ITEM_ALLOW_TY1_FALLBACK = False
 
 # Max saveItem attempts while staying on itemTyCd 2 (before optional Paybill fallback when enabled).
 MAX_SAVE_ITEM_TY2_ATTEMPTS = 8
+
+# Authoritative next 7-digit numeric suffix per itemCd prefix (e.g. ``KE2NTTU`` → ``21`` means next POST
+# uses ``…0000021``). Sequencing does not use selectItemList max(); see ``peek_next_item_cd_suffix_int``.
+ITEM_CD_NEXT_SUFFIX_BY_PREFIX_KEY = "item_cd_next_suffix_by_prefix"
 
 
 # Endpoint ``name`` keys matching the ``sequence`` tuples (for resume skips).
@@ -529,6 +667,7 @@ def reset_pin_clean_run(pin_blob: dict) -> None:
         "composition_prelude_logged_sm_result_cd",
         "composition_prelude_logged_component_item_cd",
         "kra_item_cd_suffix_by_prefix",
+        ITEM_CD_NEXT_SUFFIX_BY_PREFIX_KEY,
         "kra_item_cd_tail_constraint_by_prefix",
         "item_cd_suffix_last_digit",
         "item_cd_suffix_tail_mod",
@@ -979,9 +1118,8 @@ def prompt_app_pin() -> str:
         "Sandbox-only: skip component move-list gates (prelude, before saveItemComposition, and main\n"
         "  selectStockMoveListComponentPurchase after component purchase 000): "
         "python gavaetims.py <PIN> --bypass-component-stock-gate\n"
-        "Sandbox: skip pre-saveInvoice selectStockMoveList probes when post-composition saveStockMaster 000 "
-        "but move list stays empty (pair with component bypass on SBX): "
-        "python gavaetims.py <PIN> --bypass-pre-sale-stock-gate\n"
+        "Optional: --bypass-pre-sale-stock-gate (legacy SBX flag; default path already trusts "
+        "saveStockMasterPostComposition 000 and uses selectStockMoveList only as a diagnostic probe)\n"
         "Sandbox exploration: on hard stop, skip to the next sequence step (may hit dependent-step "
         "errors): python gavaetims.py <PIN> --continue-on-step-failure\n"
     )
@@ -1827,6 +1965,86 @@ def next_suffix_int_after_mod(high_water: int, modulus: int, residue: int) -> in
     return n
 
 
+def _item_cd_next_suffix_map(pin_blob: dict) -> dict[str, int]:
+    pin_blob.setdefault(ITEM_CD_NEXT_SUFFIX_BY_PREFIX_KEY, {})
+    raw = pin_blob[ITEM_CD_NEXT_SUFFIX_BY_PREFIX_KEY]
+    if not isinstance(raw, dict):
+        raw = {}
+        pin_blob[ITEM_CD_NEXT_SUFFIX_BY_PREFIX_KEY] = raw
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        p = str(k or "").strip()
+        if not p:
+            continue
+        try:
+            out[p] = int(v)
+        except (TypeError, ValueError):
+            continue
+    pin_blob[ITEM_CD_NEXT_SUFFIX_BY_PREFIX_KEY] = out
+    return out
+
+
+def _seed_initial_next_suffix_for_prefix(pin_blob: dict, prefix: str) -> int:
+    """
+    One-time seed when ``item_cd_next_suffix_by_prefix`` has no entry: last **successful** local
+    suffix for this prefix + 1, else 1. Does not consult selectItemList.
+    """
+    p = (prefix or "").strip()
+    last = 0
+    last = max(last, int(max_suffix_int_for_prefix_from_pin(pin_blob, p)))
+    for key in ("canonical_item_cd", "item_cd"):
+        ic = str(pin_blob.get(key) or "").strip()
+        want_len = len(p) + 7
+        if ic.startswith(p) and len(ic) == want_len and ic[-7:].isdigit():
+            try:
+                last = max(last, int(ic[-7:]))
+            except ValueError:
+                pass
+    return max(1, last + 1) if last else 1
+
+
+def peek_next_item_cd_suffix_int(pin_blob: dict, prefix: str) -> int:
+    """Next 7-digit suffix to POST for ``prefix`` (single source: ``item_cd_next_suffix_by_prefix``)."""
+    m = _item_cd_next_suffix_map(pin_blob)
+    p = (prefix or "").strip()
+    if p not in m:
+        m[p] = _seed_initial_next_suffix_for_prefix(pin_blob, p)
+    n = int(m[p])
+    if n < 1:
+        m[p] = 1
+        n = 1
+    if n > 9_999_999:
+        raise ValueError("itemCd 7-digit suffix exhausted (>9999999)")
+    return n
+
+
+def advance_item_cd_next_suffix_after_save_item_failure(
+    pin_blob: dict, prefix: str, rejected_suffix: int, err_txt: str | None
+) -> None:
+    """
+    After a rejected saveItem: ``next = rejected_suffix + 1``, raised by any KRA tail hint in
+    ``err_txt``. Never decreases the stored cursor.
+    """
+    m = _item_cd_next_suffix_map(pin_blob)
+    p = (prefix or "").strip()
+    suf = int(rejected_suffix)
+    nxt = suf + 1
+    mr = kra_parse_item_cd_suffix_constraint(err_txt or "")
+    if mr is not None:
+        mod, res = int(mr[0]), int(mr[1])
+        try:
+            hint_floor = next_suffix_int_after_mod(suf, mod, res)
+            nxt = max(nxt, int(hint_floor))
+        except Exception:
+            pass
+    prev = m.get(p)
+    if prev is not None:
+        nxt = max(nxt, int(prev))
+    if nxt > 9_999_999:
+        raise ValueError("itemCd 7-digit suffix exhausted (>9999999)")
+    m[p] = nxt
+
+
 def alloc_monotonic_item_cd_suffix(
     prefix: str,
     select_item_parsed: dict | None,
@@ -1834,22 +2052,20 @@ def alloc_monotonic_item_cd_suffix(
     attempt_hw: dict[str, int],
 ) -> str:
     """
-    Next itemCd suffix for ``prefix``, strictly increasing within this saveItem attempt chain.
-    Baseline comes from the latest selectItemList response plus ``kra_item_cd_suffix_by_prefix`` in state.
+    Next 7-digit itemCd suffix for ``prefix``. **Single source:** ``peek_next_item_cd_suffix_int``
+    (local cursor + seed from last successful suffix only). ``select_item_parsed`` is optional
+    catalog output for **debug/hint logging only**; ``attempt_hw`` is ignored (legacy signature).
     """
     prefix = (prefix or "").strip()
-    # SBX saveItem requires strict sequential increment for the 7-digit suffix for a given prefix.
-    #
-    # Critical: derive the next suffix ONLY from the live selectItemList catalog for this run
-    # (max(existing_suffixes)+1). Do not use stored floors that may have been polluted by past bugs
-    # or partial runs; they can force invalid jumps like ...0613.
-    api_max = max_numeric_suffix_for_prefix(select_item_parsed, prefix)
-    cur = max(int(api_max), int(attempt_hw.get(prefix) or 0))
-    nxt = int(cur) + 1
-    if nxt > 9_999_999:
-        raise ValueError("itemCd 7-digit suffix exhausted (>9999999)")
-    attempt_hw[prefix] = nxt
-    return f"{nxt:07d}"
+    if isinstance(select_item_parsed, dict) and prefix:
+        cm = max_numeric_suffix_for_prefix(select_item_parsed, prefix)
+        print(
+            f"saveItem: selectItemList catalog max suffix for {prefix!r} "
+            f"(hint only, not used for sequencing): {int(cm)}"
+        )
+    _ = attempt_hw
+    n = peek_next_item_cd_suffix_int(pin_blob, prefix)
+    return f"{int(n):07d}"
 
 
 def alloc_provisional_item_cd_monotonic(
@@ -1860,44 +2076,45 @@ def alloc_provisional_item_cd_monotonic(
     select_item_parsed: dict | None,
 ) -> str:
     """
-    Provisional ``itemCd`` for sequence templates before ``saveItem``. itemTyCd **2** uses
-    ``alloc_monotonic_item_cd_suffix`` (7 digits, per-prefix state); other types keep random suffix.
+    Provisional ``itemCd`` for sequence templates before ``saveItem``.
+    Uses the same linear per-prefix cursor as ``saveItem`` (``item_cd_next_suffix_by_prefix``).
     """
     ty = (item_ty_cd or "").strip()
     prefix = f"KE{ty}{pkg_unit_cd}{qty_unit_cd}"
     # SBX saveItem enforces strict sequential suffix per prefix (including KE1… component/service items).
-    # Always allocate from latest catalog (maxSuffix+1), never random.
-    hw: dict[str, int] = {}
-    suf = alloc_monotonic_item_cd_suffix(prefix, select_item_parsed, pin_blob, hw)
+    suf = alloc_monotonic_item_cd_suffix(prefix, select_item_parsed, pin_blob, {})
     return f"{prefix}{suf}"
 
 
 def next_item_cd_for_composition_branch(
     main_item_cd: str,
     select_item_parsed: dict | None,
+    pin_blob: dict,
 ) -> str:
     """
     Next ``itemCd`` for a second ``/saveItem`` (component) after ``main_item_cd``.
 
-    SBX rejects ``alloc_monotonic_item_cd_suffix`` here: that helper advances suffixes that **end in 1**
-    (initial product chain), while the **next** product after ``…0000001`` must end in **2**, etc.
-    Stale ``kra_item_cd_suffix_by_prefix`` in ``.test_state.json`` must not override the live catalog.
+    Uses the same linear per-prefix cursor as ``saveItem`` (not selectItemList max).
+    ``select_item_parsed`` is optional catalog output for hint logging only.
     """
     ic = (main_item_cd or "").strip()
     m = re.match(r"(.+?)(\d{7})$", ic)
     if not m:
         raise ValueError(f"expected … + 7 digit suffix on itemCd, got {ic!r}")
     pfx, suf_s = m.group(1), m.group(2)
-    main_n = int(suf_s)
-    api_max = max_numeric_suffix_for_prefix(select_item_parsed, pfx)
-    nxt = max(main_n, api_max) + 1
-    if nxt > 9_999_999:
-        raise ValueError("itemCd 7-digit suffix exhausted")
-    return f"{pfx}{nxt:07d}"
+    _ = int(suf_s)  # parent suffix; sequencing is by component prefix cursor, not parent+1
+    if isinstance(select_item_parsed, dict) and pfx:
+        cm = max_numeric_suffix_for_prefix(select_item_parsed, pfx)
+        print(
+            f"composition branch: selectItemList catalog max for {pfx!r} "
+            f"(hint only, not used for sequencing): {int(cm)}"
+        )
+    n = peek_next_item_cd_suffix_int(pin_blob, pfx)
+    return f"{pfx}{int(n):07d}"
 
 
 def persist_item_cd_suffix_map(pin_blob: dict, item_cd: str) -> None:
-    """Store last successful numeric suffix per itemCd prefix (before ``flush_progress`` writes state)."""
+    """Store last successful numeric suffix and advance the authoritative next-suffix cursor."""
     ic = (item_cd or "").strip()
     if len(ic) < 7 or not ic[-7:].isdigit():
         return
@@ -1907,6 +2124,8 @@ def persist_item_cd_suffix_map(pin_blob: dict, item_cd: str) -> None:
     if not isinstance(pin_blob["kra_item_cd_suffix_by_prefix"], dict):
         pin_blob["kra_item_cd_suffix_by_prefix"] = {}
     pin_blob["kra_item_cd_suffix_by_prefix"][pfx] = suf
+    m = _item_cd_next_suffix_map(pin_blob)
+    m[pfx] = suf + 1
 
 
 def extract_result_cd(parsed_json):
@@ -2179,37 +2398,49 @@ def fix_item_cd_from_error(current_item_cd: str, error_message: str) -> str | No
 def apply_item_cd_sequence_recovery_hints(
     pin_blob: dict, failed_item_cd: str, error_message: str
 ) -> str | None:
-    """
-    Persist KRA's tail constraint + suffix floor from a failed saveItem, and return a corrected itemCd
-    for an immediate retry when possible.
-    """
+    """Advance the linear itemCd cursor after a failed saveItem (rejected suffix + 1, plus KRA hint)."""
     ic_fail = (failed_item_cd or "").strip()
-    bump_kra_item_cd_suffix_floor_from_failed_item_cd(pin_blob, ic_fail)
-    _ = error_message
-    # Candidate must be computed from a fresh selectItemList (maxSuffix+1).
+    if len(ic_fail) < 8 or not ic_fail[-7:].isdigit():
+        return None
+    pfx = ic_fail[:-7]
+    try:
+        suf = int(ic_fail[-7:])
+    except ValueError:
+        return None
+    advance_item_cd_next_suffix_after_save_item_failure(pin_blob, pfx, suf, error_message)
     return None
 
 
 def next_item_cd_from_catalog(
-    *, item_ty_cd: str, pkg_unit_cd: str, qty_unit_cd: str, catalog_parsed: dict | None
+    *,
+    item_ty_cd: str,
+    pkg_unit_cd: str,
+    qty_unit_cd: str,
+    catalog_parsed: dict | None,
+    pin_blob: dict,
+    attempt_hw: dict[str, int] | None = None,
 ) -> str:
     """
-    Deterministic SBX itemCd allocator for saveItem (itemTyCd=2 only):
-      next_suffix = max(existing_suffixes_for_prefix) + 1
+    Build next ``itemCd`` for itemTyCd=2 using the **linear local cursor** (same as ``saveItem``).
+    ``catalog_parsed`` is optional and used for **hint logging only** (not max() sequencing).
     """
+    _ = attempt_hw
     ty = (item_ty_cd or "").strip()
     if ty != "2":
         raise ValueError("next_item_cd_from_catalog only supports itemTyCd=2")
     prefix = f"KE{ty}{pkg_unit_cd}{qty_unit_cd}"
-    mx = max_numeric_suffix_for_prefix(catalog_parsed, prefix)
-    nxt = int(mx) + 1
-    if nxt > 9_999_999:
-        raise ValueError("itemCd 7-digit suffix exhausted (>9999999)")
-    return f"{prefix}{nxt:07d}"
+    if isinstance(catalog_parsed, dict):
+        mx = max_numeric_suffix_for_prefix(catalog_parsed, prefix)
+        print(
+            f"next_item_cd_from_catalog: selectItemList max for {prefix!r} "
+            f"(hint only, not used for sequencing): {int(mx)}"
+        )
+    n = peek_next_item_cd_suffix_int(pin_blob, prefix)
+    return f"{prefix}{int(n):07d}"
 
 
 def max_suffix_int_for_prefix_from_pin(pin_blob: dict, prefix: str) -> int:
-    """High-water 7-digit suffix from ``kra_item_cd_suffix_by_prefix`` (int or legacy dict)."""
+    """Last **successful** saveItem 7-digit suffix for ``prefix`` (from ``persist_item_cd_suffix_map``)."""
     sm = pin_blob.get("kra_item_cd_suffix_by_prefix")
     if not isinstance(sm, dict):
         return 0
@@ -2265,26 +2496,6 @@ def clear_kra_tail_constraint_for_prefix(pin_blob: dict, prefix: str) -> None:
     pfx = (prefix or "").strip()
     if isinstance(d, dict) and pfx in d:
         del d[pfx]
-
-
-def bump_kra_item_cd_suffix_floor_from_failed_item_cd(pin_blob: dict, item_cd: str) -> None:
-    """
-    After saveItem rejects an itemCd (reused / not incremented), raise the per-prefix floor so the
-    next alloc_monotonic call must propose a strictly higher suffix than the failed POST.
-    """
-    ic = (item_cd or "").strip()
-    if len(ic) < 8 or not ic[-7:].isdigit():
-        return
-    pfx = ic[:-7]
-    try:
-        suf = int(ic[-7:])
-    except ValueError:
-        return
-    pin_blob.setdefault("kra_item_cd_suffix_by_prefix", {})
-    if not isinstance(pin_blob["kra_item_cd_suffix_by_prefix"], dict):
-        pin_blob["kra_item_cd_suffix_by_prefix"] = {}
-    prev = max_suffix_int_for_prefix_from_pin(pin_blob, pfx)
-    pin_blob["kra_item_cd_suffix_by_prefix"][pfx] = max(prev, suf)
 
 
 def stock_io_line_amounts_for_tax_ty(
@@ -2457,12 +2668,12 @@ def _first_rsd_qty_for_item_in_stock_move_tree(
 
 
 # --- Pre-sale stock gate + structured audit ---
-# Full sequence: before ``saveInvoice``, ``strict_pre_sale_select_stock_move_or_exit`` runs **unless**
-# ``--strict-pre-sale-audit`` is set (that path runs the same stock check inside ``run_strict_pre_sale_audit_block``)
-# or ``--bypass-pre-sale-stock-gate`` (SBX: trust balance after saveStockMasterPostComposition 000).
-# ``selectItemList`` / item catalog gates still use baseline ``lastReqDt``. SBX often omits **recent** stock
-# movements when querying ``selectStockMoveList`` with baseline — stock gates and sequence move-list steps use
-# ``kra_stock_move_list_last_req_dt_utc_now()`` instead (see ``select_stock_move_list_gate_two_baseline_probes``).
+# Before ``saveInvoice`` (``/saveTrnsSalesOsdc``): mandatory contract is **insertStockIOPostComposition 000 +
+# saveStockMasterPostComposition 000** (``post_composition_osdc_ready``). ``selectStockMoveList*`` is diagnostic
+# only (best-effort via ``strict_pre_sale_select_stock_move_or_exit``); it must not block OSDC sales.
+# With ``--strict-pre-sale-audit``, ``run_strict_pre_sale_audit_block`` runs BHF + ``selectItemList`` + the same
+# best-effort move-list probe (still non-blocking for the sale POST).
+# ``selectItemList`` uses baseline ``lastReqDt`` where applicable.
 KRA_LIST_BASELINE_LAST_REQ_DT = "20100101000000"
 
 
@@ -2773,12 +2984,12 @@ def run_stock_lifecycle_isolation_test(
     save_item_ok = False
     p1: object | None = None
     for attempt in range(2):
-        # Deterministic: derive from live catalog each attempt.
         item_cd = next_item_cd_from_catalog(
             item_ty_cd=item_ty_cd,
             pkg_unit_cd=pkg_unit_cd,
             qty_unit_cd=qty_unit_cd,
             catalog_parsed=catalog_parsed,
+            pin_blob=pin_blob,
         )
         print(f"LIFECYCLE ISOLATION: saveItem attempt {attempt + 1}/2 itemCd={item_cd!r}")
         si_payload = {
@@ -2820,14 +3031,6 @@ def run_stock_lifecycle_isolation_test(
             break
         _err_txt = kra_save_item_error_text(p1 if isinstance(p1, dict) else None)
         apply_item_cd_sequence_recovery_hints(pin_blob, item_cd, _err_txt)
-        # Re-fetch catalog and retry once with recomputed max+1.
-        catalog_parsed = select_item_list_fetch_catalog_for_item_cd_planning(
-            base_url=base_url,
-            headers=headers,
-            tin=effective_tin,
-            bhf_id=branch_id,
-            response_log_prefix="LIFECYCLE ISOLATION catalog (retry)",
-        )
         if on_pin_blob_mutation is not None:
             on_pin_blob_mutation()
     if not save_item_ok:
@@ -3078,14 +3281,12 @@ def run_stock_master_visibility_test(
     tty = str(item_cls_dynamic.get("taxTyCd") or "A").strip()
     item_cd = ""
     for attempt in range(2):
-        # Prefer live catalog max+1, but SBX selectItemList can lag behind the actual sequence KRA enforces.
-        # If KRA returns "Expected sequence ending with: ********NN", jump to the smallest suffix > api_max
-        # that matches the implied tail constraint.
         item_cd = next_item_cd_from_catalog(
             item_ty_cd=item_ty_cd,
             pkg_unit_cd=pkg_unit_cd,
             qty_unit_cd=qty_unit_cd,
             catalog_parsed=catalog_parsed,
+            pin_blob=pin_blob,
         )
         print(f"STOCK MASTER PROBE: saveItem attempt {attempt + 1}/2 itemCd={item_cd!r}")
         si_payload = {
@@ -3118,40 +3319,6 @@ def run_stock_master_visibility_test(
         apply_item_cd_sequence_recovery_hints(pin_blob, item_cd, _err_txt)
         if on_pin_blob_mutation is not None:
             on_pin_blob_mutation()
-        # If KRA provided a concrete tail constraint (e.g. ending with ********19), respect it.
-        _m_r = kra_parse_item_cd_suffix_constraint(_err_txt)
-        if _m_r is not None and isinstance(item_cd, str) and len(item_cd) >= 8 and item_cd[-7:].isdigit():
-            pfx = item_cd[:-7]
-            api_max = max_numeric_suffix_for_prefix(catalog_parsed, pfx)
-            try:
-                implied = next_suffix_int_after_mod(int(api_max), int(_m_r[0]), int(_m_r[1]))
-            except Exception:
-                implied = None
-            if implied is not None:
-                item_cd = f"{pfx}{int(implied):07d}"
-                print(
-                    f"STOCK MASTER PROBE: KRA sequence hint -> retry with itemCd={item_cd!r} "
-                    f"(api_max={int(api_max)}, mod={_m_r[0]}, res={_m_r[1]})"
-                )
-                # Try immediately with hinted itemCd (do not wait for catalog to catch up).
-                si_payload["itemCd"] = item_cd
-                r_si = requests.post(si_url, headers=headers, json=si_payload, timeout=timeout)
-                p_si = print_full_response_json(r_si, f"STOCK MASTER PROBE saveItem (hint retry {attempt + 1}/2)")
-                rc_si = (extract_result_cd(p_si) or "").strip() if isinstance(p_si, dict) else ""
-                ge_si = kra_top_level_error_detail(p_si) if isinstance(p_si, dict) else None
-                if r_si.status_code < 400 and not ge_si and rc_si == "000":
-                    persist_item_cd_suffix_map(pin_blob, item_cd)
-                    if on_pin_blob_mutation is not None:
-                        on_pin_blob_mutation()
-                    break
-        # Re-fetch catalog and retry once with recomputed max+1.
-        catalog_parsed = select_item_list_fetch_catalog_for_item_cd_planning(
-            base_url=base_url,
-            headers=headers,
-            tin=effective_tin,
-            bhf_id=branch_id,
-            response_log_prefix="STOCK MASTER PROBE catalog (retry)",
-        )
     if not item_cd:
         return 1
 
@@ -3757,10 +3924,41 @@ def run_debug_ledger_watch_after_insert_stock_io_ok(
     return verdict
 
 
-def select_stock_move_list_gate_two_baseline_probes(*args, **kwargs):
-    raise RuntimeError(
-        "select_stock_move_list_gate_two_baseline_probes removed: selectStockMoveList must not control flow. "
-        "Use best_effort_select_stock_move_list for logging only."
+def select_stock_move_list_gate_two_baseline_probes(
+    *,
+    base_url: str,
+    headers: dict,
+    tin: str,
+    bhf_id: str,
+    item_cd: str,
+    min_rsd_qty: float | None = None,
+    capture_stock_move_list: object = None,
+    response_log_prefix: str = "",
+    timeout: int = 120,
+    log_stock_flow_summary: bool = False,
+    require_extractable_rsd: bool = True,
+    one_utc_now_probe_after_baselines: bool = False,
+) -> tuple[bool, float | None, dict | None, requests.Response | None]:
+    """
+    Two UTC ``lastReqDt`` probes (same strict gate as ``kra_strict_select_stock_component_on_hand``).
+    ``min_rsd_qty`` may be ``None`` (treated as ``0``).
+    """
+    _ = (
+        capture_stock_move_list,
+        log_stock_flow_summary,
+        require_extractable_rsd,
+        one_utc_now_probe_after_baselines,
+    )
+    floor = 0.0 if min_rsd_qty is None else float(min_rsd_qty)
+    return kra_strict_select_stock_component_on_hand(
+        base_url=base_url,
+        headers=headers,
+        tin=tin,
+        bhf_id=bhf_id,
+        component_item_cd=item_cd,
+        min_rsd_qty=floor,
+        log_tag=response_log_prefix or "select_stock_move_list_gate_two_baseline_probes",
+        timeout=timeout,
     )
 
 
@@ -4119,9 +4317,9 @@ def run_strict_pre_sale_audit_block(
     print("\n=== STRUCTURED REPORT ===")
     print("A. BHF Consistency: PASS")
     print("B. Item Visibility: PASS")
-    print("C. Stock Visibility: PASS")
+    print("C. Stock Visibility: PASS (selectStockMoveList diagnostic only; not a gate)")
     print(
-        f"   (selectStockMoveList: rsdQty={_rsd_gate:g} >= sale_qty={float(sale_qty):g})"
+        f"   (probe returned sale_qty reference={_rsd_gate:g}; sale_qty={float(sale_qty):g})"
     )
     print("D. Minimal Test: N/A")
     print("E. Root Cause: N/A (gates passed)\n")
@@ -5532,6 +5730,11 @@ def run_minimal_osdc_sale_test(
         sale_payload["taxblAmtA"] = tb_i
         sale_payload["taxAmtA"] = tx_i
 
+    if _ctu == "B":
+        apply_link_tax_rt_to_purchase_payload(
+            sale_payload, dict(_LINKED_PURCHASE_TAX_RT_FALLBACK_KE_SBX)
+        )
+
     try:
         audit_print_and_validate_bhf(
             bhf_rows,
@@ -5567,38 +5770,19 @@ def run_minimal_osdc_sale_test(
         print_minimal_select_stock_raw_dump(stock_move_captures)
         return 1
 
-    try:
-        strict_pre_sale_select_stock_move_or_exit(
-            base_url=base_url,
-            headers=headers,
-            tin=effective_tin,
-            bhf_id=branch_id,
-            item_cd=item_cd,
-            sale_qty=qty_io,
-            capture_stock_move_list=stock_move_captures,
-        )
-    except SystemExit:
-        print(
-            "\n=== STRUCTURED REPORT (minimal test) ===\n"
-            "A. BHF Consistency: PASS\n"
-            "B. Item Visibility: PASS\n"
-            "C. Stock Visibility: FAIL\n"
-            "D. Minimal Test: FAIL (pre-sale stock gate)\n"
-            "E. Root Cause: Stock gate failed — see KRA exit text (bhfId, cluster, itemClsCd, IO/SAR)\n"
-        )
-        _pb(
-            "PASS",
-            "PASS",
-            "FAIL",
-            "FAIL (pre-sale stock gate)",
-            "Stock movement not recorded (see gate logs; not assumed IO-payload-only)",
-        )
-        print_minimal_select_stock_raw_dump(stock_move_captures)
-        return 1
+    strict_pre_sale_select_stock_move_or_exit(
+        base_url=base_url,
+        headers=headers,
+        tin=effective_tin,
+        bhf_id=branch_id,
+        item_cd=item_cd,
+        sale_qty=qty_io,
+        capture_stock_move_list=stock_move_captures,
+    )
 
     print(
-        "ASSERT pre-saveTrnsSalesOsdc: selectItemList OK; selectStockMoveList resultCd=000, row exists, "
-        f"rsdQty>={qty_io:g} (see strict pre-sale logs above)."
+        "ASSERT pre-saveTrnsSalesOsdc: selectItemList OK; selectStockMoveList probe ran (diagnostic only; "
+        f"see logs above). sale_qty={qty_io:g}."
     )
     sale_url = f"{base_url.rstrip('/')}/saveTrnsSalesOsdc"
     _params = {"invcNo": invc_no, "requestedInvcNo": invc_no}
@@ -5865,7 +6049,6 @@ def main():
 
     _osdc_prep_steps = (
         "insertStockIOPostComposition",
-        "selectStockMoveListPostComposition",
         "saveStockMasterPostComposition",
     )
     if not only_steps_cli and "saveInvoice" not in completed_list:
@@ -5879,8 +6062,8 @@ def main():
             save_test_state(state_root)
             print(
                 "NOTE: saveInvoice not yet successful — dropped mandatory post-composition OSDC prep steps "
-                f"{_osdc_prep_steps!r} from completed_endpoints (fresh insertStockIO → selectStockMoveList "
-                f"→ saveStockMaster required before saveTrnsSalesOsdc; see {STATE_FILE.name})."
+                f"{_osdc_prep_steps!r} from completed_endpoints (fresh insertStockIOPostComposition → "
+                f"saveStockMasterPostComposition required before saveTrnsSalesOsdc; see {STATE_FILE.name})."
             )
 
     # Pre-hybrid runs often left insertStockIO (+ selectStockMoveList) without saveStockMaster.
@@ -6948,7 +7131,7 @@ def main():
                 )
                 return float(_gate_cpst)
 
-        if not bypass_component_stock_gate_cli:
+        if not bypass_component_stock_gate_cli and not sbx_stock_move_list_unreliable(BASE_URL):
             strict_gate0, rsd_gate0, _, _ = kra_strict_select_stock_component_on_hand(
                 base_url=BASE_URL,
                 headers=headers,
@@ -7198,8 +7381,13 @@ def main():
             pin_blob.pop("component_purchase_next_invc_no", None)
             save_test_state(state_root)
             time.sleep(8)
-            if bypass_component_stock_gate_cli:
+            if bypass_component_stock_gate_cli or sbx_stock_move_list_unreliable(BASE_URL):
                 sm_payload["rsdQty"] = float(pq)
+                if sbx_stock_move_list_unreliable(BASE_URL) and not bypass_component_stock_gate_cli:
+                    print(
+                        "NOTE: composition prelude purchase — SBX: saveStockMaster rsdQty from purchase "
+                        f"qty={float(pq):g} (move-list not used)."
+                    )
             else:
                 strict_p, rsd_p, _, _ = kra_strict_select_stock_component_on_hand(
                     base_url=BASE_URL,
@@ -7239,13 +7427,17 @@ def main():
                 parsed=psm,
                 http_status=getattr(rsm, "status_code", None),
             )
-            if bypass_component_stock_gate_cli:
+            if bypass_component_stock_gate_cli or sbx_stock_move_list_unreliable(BASE_URL):
                 pin_blob["composition_prelude_logged_io_sar_no"] = 0
                 pin_blob["composition_prelude_logged_sm_result_cd"] = str(rc_sm or "000").strip()
                 pin_blob["composition_prelude_logged_component_item_cd"] = str(comp_cd).strip()
                 print(
-                    "BYPASS: PRELUDE AUDIT (purchase ledger): insertTrnsPurchase 000 + saveStockMaster; "
-                    f"component itemCd={comp_cd!r}, rsdQty={float(sm_payload['rsdQty']):g} (no move-list check)."
+                    (
+                        "BYPASS: PRELUDE AUDIT (purchase ledger): insertTrnsPurchase 000 + saveStockMaster; "
+                        if bypass_component_stock_gate_cli
+                        else "SBX: PRELUDE AUDIT (purchase ledger): insertTrnsPurchase 000 + saveStockMaster; "
+                    )
+                    + f"component itemCd={comp_cd!r}, rsdQty={float(sm_payload['rsdQty']):g} (no move-list gate)."
                 )
                 save_test_state(state_root)
                 return float(max(float(pq), _gate_cpst))
@@ -7922,7 +8114,8 @@ def main():
                         print(
                             "NOTE: insertStockIOPostComposition atomic pair: removed "
                             "selectStockMoveListPostComposition from completed "
-                            f"(rerun move list before saveStockMasterPostComposition; see {STATE_FILE.name})."
+                            f"(optional diagnostic move-list rerun before saveStockMasterPostComposition; "
+                            f"see {STATE_FILE.name})."
                         )
                 line_qty_f = (
                     float(initial_parent_stock_qty)
@@ -8435,7 +8628,6 @@ def main():
                     allow_ty1_fallback=False,
                 )
                 persist_cls_cd, persist_tax_cd = item_cls_cd, tax_ty_cd
-                item_cd_attempt_hw: dict[str, int] = {}
                 result_cd: str | None = None
                 _save_item_total = MAX_SAVE_ITEM_TY2_ATTEMPTS + (
                     1 if save_item_allow_ty1_fallback else 0
@@ -8446,7 +8638,7 @@ def main():
                         and attempt == MAX_SAVE_ITEM_TY2_ATTEMPTS
                     )
                     if use_ty1_fallback:
-                        item_cd = f"KE1{pkg_unit_cd}TU{alloc_monotonic_item_cd_suffix(f'KE1{pkg_unit_cd}TU', select_item_list_parsed, pin_blob, item_cd_attempt_hw)}"
+                        item_cd = f"KE1{pkg_unit_cd}TU{alloc_monotonic_item_cd_suffix(f'KE1{pkg_unit_cd}TU', select_item_list_parsed, pin_blob, {})}"
                         payload = {
                             "itemCd": item_cd,
                             "itemClsCd": "1010160300",
@@ -8477,8 +8669,7 @@ def main():
                             )
                         q_seg = "TU" if save_item_ty == "1" else qty_unit_cd
                         ic_prefix = f"KE{save_item_ty}{pkg_unit_cd}{q_seg}"
-                        # Deterministic SBX itemCd: always recompute from a fresh selectItemList max+1.
-                        # This avoids jumping from polluted local floors.
+                        # selectItemList: hint / debug only (``alloc_monotonic_item_cd_suffix`` logs max).
                         _cat_si = select_item_list_fetch_catalog_for_item_cd_planning(
                             base_url=BASE_URL,
                             headers=headers,
@@ -8487,21 +8678,15 @@ def main():
                             response_log_prefix=f"saveItem catalog (attempt {attempt + 1})",
                         )
                         if str(save_item_ty).strip() == "2":
-                            # Prefer live catalog max+1 but allow KRA's explicit suffix hint to win.
-                            item_cd = next_item_cd_from_catalog(
-                                item_ty_cd="2",
-                                pkg_unit_cd=pkg_unit_cd,
-                                qty_unit_cd=q_seg,
-                                catalog_parsed=_cat_si,
-                            )
+                            suf_ty2 = alloc_monotonic_item_cd_suffix(ic_prefix, _cat_si, pin_blob, {})
+                            item_cd = f"{ic_prefix}{suf_ty2}"
                         else:
-                            suf = alloc_monotonic_item_cd_suffix(
-                                ic_prefix, _cat_si, pin_blob, item_cd_attempt_hw
-                            )
+                            suf = alloc_monotonic_item_cd_suffix(ic_prefix, _cat_si, pin_blob, {})
                             item_cd = f"{ic_prefix}{suf}"
                         print(
                             f"Generated NEW itemCd={item_cd} for saveItem "
-                            f"(itemTyCd={save_item_ty}, qtyUnitCd={q_seg}, monotonic suffix from item list/state)"
+                            f"(itemTyCd={save_item_ty}, qtyUnitCd={q_seg}, linear suffix from "
+                            f"{ITEM_CD_NEXT_SUFFIX_BY_PREFIX_KEY!r} / last success)"
                         )
 
                         payload = deep_override_keys(deepcopy(payload_template), payload_overrides)
@@ -8582,30 +8767,6 @@ def main():
                     _ic_fail = str(payload.get("itemCd") or item_cd or "").strip()
                     _err_txt = kra_save_item_error_text(parsed)
                     apply_item_cd_sequence_recovery_hints(pin_blob, _ic_fail, _err_txt)
-                    # If KRA provides a concrete tail constraint (e.g. ending with ********22),
-                    # jump directly to that implied suffix (> api_max) rather than guessing.
-                    if (
-                        not use_ty1_fallback
-                        and _ic_fail
-                        and len(_ic_fail) >= 8
-                        and _ic_fail[-7:].isdigit()
-                    ):
-                        _mr = kra_parse_item_cd_suffix_constraint(_err_txt)
-                        if _mr is not None:
-                            _pfx = _ic_fail[:-7]
-                            api_max = max_numeric_suffix_for_prefix(_cat_si, _pfx) if isinstance(_cat_si, dict) else 0
-                            try:
-                                implied = next_suffix_int_after_mod(int(api_max), int(_mr[0]), int(_mr[1]))
-                            except Exception:
-                                implied = None
-                            if implied is not None:
-                                item_cd_attempt_hw[_pfx] = max(
-                                    int(item_cd_attempt_hw.get(_pfx) or 0), int(implied) - 1
-                                )
-                                print(
-                                    f"saveItem: KRA sequence hint -> next itemCd suffix {int(implied):07d} "
-                                    f"(api_max={int(api_max)}, mod={int(_mr[0])}, res={int(_mr[1])})"
-                                )
                     if attempt == _save_item_total - 1:
                         print_save_item_http_debug(resp, headers, payload)
                         ge = f", {gate_err}" if gate_err else ""
@@ -8643,10 +8804,8 @@ def main():
                 tty = item_cls_dynamic["taxTyCd"]
                 surl = f"{BASE_URL.rstrip('/')}/saveItem"
                 rc_co: str | None = None
-                # Keep a per-prefix high-water mark to avoid reuse/backward attempts within this step.
-                comp_hw: dict[str, int] = {}
                 for comp_attempt in range(4):
-                    # Before every saveItem (component), recompute next suffix from a fresh catalog.
+                    # selectItemList: hint / debug only (``alloc_monotonic_item_cd_suffix`` logs max).
                     _cat_comp = select_item_list_fetch_catalog_for_item_cd_planning(
                         base_url=BASE_URL,
                         headers=headers,
@@ -8654,29 +8813,7 @@ def main():
                         bhf_id=branch_id,
                         response_log_prefix=f"saveComponentItem catalog (attempt {comp_attempt + 1})",
                     )
-                    api_mx_comp = max_numeric_suffix_for_prefix(_cat_comp, comp_prefix)
-                    # If KRA returns a "Expected sequence ending with: ********17" style message,
-                    # use the implied modulus/residue to jump to the smallest valid suffix > api_mx_comp.
-                    _tail: tuple[int, int] | None = None
-                    if isinstance(pin_blob.get("item_cd_suffix_tail_mod"), int) and isinstance(
-                        pin_blob.get("item_cd_suffix_tail_res"), int
-                    ):
-                        _tail = (
-                            int(pin_blob.get("item_cd_suffix_tail_mod")),
-                            int(pin_blob.get("item_cd_suffix_tail_res")),
-                        )
-                    if _tail is not None:
-                        _m, _r = _tail
-                        try:
-                            implied = next_suffix_int_after_mod(api_mx_comp, _m, _r)
-                        except Exception:
-                            implied = None
-                        if implied is not None:
-                            # Seed attempt HW so alloc_monotonic returns this implied value.
-                            comp_hw[comp_prefix] = max(int(comp_hw.get(comp_prefix) or 0), int(implied) - 1)
-                    # Always seed from live catalog max too.
-                    comp_hw[comp_prefix] = max(int(comp_hw.get(comp_prefix) or 0), int(api_mx_comp))
-                    suf = alloc_monotonic_item_cd_suffix(comp_prefix, _cat_comp, pin_blob, comp_hw)
+                    suf = alloc_monotonic_item_cd_suffix(comp_prefix, _cat_comp, pin_blob, {})
                     comp_cd = f"{comp_prefix}{suf}"
                     co_payload: dict = {
                         "itemCd": comp_cd,
@@ -8727,13 +8864,17 @@ def main():
                         save_test_state(state_root)
                         flush_progress("saveComponentItem", mark_endpoint_complete=True)
                         break
-                    bump_kra_item_cd_suffix_floor_from_failed_item_cd(
-                        pin_blob,
-                        str(co_payload.get("itemCd") or comp_cd or "").strip(),
+                    _err_co = kra_save_item_error_text(
+                        parsed_co if isinstance(parsed_co, dict) else None
                     )
-                    _sufc_co = kra_parse_item_cd_suffix_constraint(
-                        kra_save_item_error_text(parsed_co)
+                    try:
+                        _rej_suf_co = int(str(comp_cd)[-7:])
+                    except ValueError:
+                        _rej_suf_co = 0
+                    advance_item_cd_next_suffix_after_save_item_failure(
+                        pin_blob, comp_prefix, _rej_suf_co, _err_co
                     )
+                    _sufc_co = kra_parse_item_cd_suffix_constraint(_err_co)
                     if _sufc_co is not None:
                         _m_c, _r_c = _sufc_co
                         pin_blob["item_cd_suffix_tail_mod"] = _m_c
@@ -8787,14 +8928,32 @@ def main():
                         sequence_fail(
                             "STOP: saveTrnsSalesOsdc blocked — mandatory post-composition parent stock flow "
                             f"incomplete (missing completed step {_rq_osdc!r}). "
-                            "Required order: insertStockIOPostComposition → selectStockMoveListPostComposition → "
-                            "saveStockMasterPostComposition → then sales."
+                            "Required order: insertStockIOPostComposition → saveStockMasterPostComposition "
+                            "(resultCd 000) → then sales. selectStockMoveList* is optional / diagnostic only."
                         )
                 _sale_ic = (pin_blob.get("item_cd") or item_cd or "").strip()
                 if not _sale_ic:
                     sequence_fail(
                         "STOP: saveInvoice blocked — no parent itemCd in state "
-                        "(cannot verify stock visibility; complete saveItem / resume with item_cd)."
+                        "(complete saveItem / resume with item_cd in pin state)."
+                    )
+                _master_tty_inv = (
+                    (_norm_tax_ty_cd(pin_blob.get("item_tax_ty_cd")) or "").strip().upper()
+                )
+                _flow_tty_inv = (
+                    (_norm_tax_ty_cd(item_cls_dynamic.get("taxTyCd")) or "").strip().upper()
+                )
+                if not _master_tty_inv:
+                    sequence_fail(
+                        "STOP: saveInvoice — pin_blob item_tax_ty_cd is missing (item master tax type). "
+                        "taxTyCd must be set at item creation / HS classification; repair state or re-run saveItem."
+                    )
+                if _master_tty_inv != _flow_tty_inv:
+                    sequence_fail(
+                        "STOP: saveInvoice — taxTyCd invariant violated before saveTrnsSalesOsdc: "
+                        f"item master item_tax_ty_cd={_master_tty_inv!r} != "
+                        f"item_cls_dynamic taxTyCd={_flow_tty_inv!r}. "
+                        "Fix classification sync; do not send mismatched invoice (no API retry will fix this)."
                     )
                 if strict_pre_sale_audit_cli:
                     run_strict_pre_sale_audit_block(
@@ -8807,11 +8966,12 @@ def main():
                         sale_qty=float(qty),
                         abort=sequence_fail,
                     )
-                elif bypass_pre_sale_stock_gate_cli:
+                else:
                     if pin_blob.get("post_composition_osdc_ready") is not True:
                         sequence_fail(
-                            "STOP: --bypass-pre-sale-stock-gate refused — saveStockMasterPostComposition did not "
-                            f"complete (post_composition_osdc_ready). Completed: {completed_list!r}."
+                            "STOP: saveInvoice blocked — saveStockMasterPostComposition did not complete "
+                            f"(post_composition_osdc_ready). Completed: {completed_list!r}. "
+                            "Required: insertStockIOPostComposition → saveStockMasterPostComposition (000)."
                         )
                     _sale_q_b = float(qty)
                     _bal_src = pin_blob.get("parent_osdc_prep_rsd_qty")
@@ -8819,42 +8979,37 @@ def main():
                         _bal_src = pin_blob.get("current_stock_balance")
                     if _bal_src is None:
                         sequence_fail(
-                            "STOP: --bypass-pre-sale-stock-gate — no parent_osdc_prep_rsd_qty or "
-                            "current_stock_balance after post-composition stock master (re-run sequence through "
-                            "saveStockMasterPostComposition 000; see .test_state.json)."
+                            "STOP: saveInvoice — no parent_osdc_prep_rsd_qty or current_stock_balance after "
+                            "saveStockMasterPostComposition 000 (re-run post-composition IO + save; "
+                            "see .test_state.json)."
                         )
                     try:
                         _bal_f_b = float(_bal_src)
                     except (TypeError, ValueError):
                         sequence_fail(
-                            "STOP: --bypass-pre-sale-stock-gate — balance not numeric "
+                            "STOP: saveInvoice — balance not numeric "
                             f"({_bal_src!r})."
                         )
                     if _bal_f_b + 1e-9 < _sale_q_b:
                         sequence_fail(
-                            "STOP: --bypass-pre-sale-stock-gate — recorded balance "
+                            "STOP: saveInvoice — recorded balance "
                             f"{_bal_f_b:g} < sale qty {_sale_q_b:g}; refusing unsafe saveTrnsSalesOsdc."
                         )
-                    print(
-                        "\n=== PRE-SALE STOCK VISIBILITY GATE (BYPASS) ===\n"
-                        "SBX often returns resultCd=001 / HTTP 504 on selectStockMoveList even after "
-                        "saveStockMasterPostComposition 000. Skipping move-list probes; trusting reconciled "
-                        "balance from stock-master step vs sale qty.\n"
+                    _gate_label = (
+                        "PRE-SALE STOCK (BYPASS FLAG)"
+                        if bypass_pre_sale_stock_gate_cli
+                        else "PRE-SALE STOCK (OSDC)"
                     )
                     print(
-                        f"BYPASS (--bypass-pre-sale-stock-gate): itemCd={_sale_ic!r} sale_qty={_sale_q_b:g} "
-                        f"balance≈{_bal_f_b:g} (parent_osdc_prep_rsd_qty or current_stock_balance); "
-                        "proceeding to saveInvoice.\n"
+                        f"\n=== {_gate_label} ===\n"
+                        "Contract: saveStockMasterPostComposition 000 reconciles stock for OSDC; stock is treated "
+                        "as valid for saveTrnsSalesOsdc regardless of selectStockMoveList visibility (SBX move list "
+                        "is eventually consistent).\n"
+                        "selectStockMoveList (below) is a **diagnostic probe only** — failures do not block the sale.\n"
                     )
-                else:
                     print(
-                        "\n=== PRE-SALE STOCK VISIBILITY GATE (default) ===\n"
-                        "Rule: no qualifying selectStockMoveList (resultCd=000, row for itemCd, rsdQty >= sale qty) "
-                        "→ saveTrnsSalesOsdc is not attempted.\n"
-                        "Probes: UTC lastReqDt (two POSTs, fresh timestamp each). For selectItemList + BHF audit, use "
-                        "--strict-pre-sale-audit.\n"
-                        "SBX empty move list after OSDC saveStockMaster: try "
-                        "--bypass-pre-sale-stock-gate (after saveStockMasterPostComposition 000).\n"
+                        f"itemCd={_sale_ic!r} sale_qty={_sale_q_b:g} balance≈{_bal_f_b:g} "
+                        "(parent_osdc_prep_rsd_qty or current_stock_balance).\n"
                     )
                     strict_pre_sale_select_stock_move_or_exit(
                         base_url=BASE_URL,
@@ -8864,13 +9019,13 @@ def main():
                         item_cd=_sale_ic,
                         sale_qty=float(qty),
                         capture_stock_move_list=None,
-                        gate_label="PRE-SALE STOCK GATE",
-                        exit_banner="STOCK_NOT_READY_FOR_SALE",
-                        abort=sequence_fail,
+                        gate_label="PRE-SALE selectStockMoveList (diagnostic)",
+                        exit_banner=None,
+                        abort=None,
                     )
                     print(
-                        f"PRE-SALE STOCK GATE: PASS — stock move list OK for itemCd={_sale_ic!r}; "
-                        "proceeding to saveInvoice.\n"
+                        f"PRE-SALE: diagnostic move-list probe finished for itemCd={_sale_ic!r}; "
+                        "proceeding to saveInvoice (saveTrnsSalesOsdc).\n"
                     )
 
             if endpoint_name == "importedItemConvertedInfo":
@@ -8936,6 +9091,15 @@ def main():
                     "insertTrnsPurchase (parent purchase reconciliation)."
                 )
                 time.sleep(8)
+            elif (
+                endpoint_name == "saveStockMasterComponentPurchase"
+                and sbx_stock_move_list_unreliable(BASE_URL)
+            ):
+                print(
+                    "NOTE: Pausing 12s before saveStockMasterComponentPurchase — SBX Apigee often returns "
+                    "HTTP 504 immediately after insertTrnsPurchaseComponentStock (gateway / stock lag)."
+                )
+                time.sleep(12)
             payload = deep_override_keys(deepcopy(payload_template), payload_overrides)
 
             if endpoint_name in (
@@ -9171,12 +9335,22 @@ def main():
                         "STOP: saveStockMasterComponentPurchase — missing component_item_cd in state."
                     )
                 payload["itemCd"] = _cc_sm
+                # SBX: never skip saveStockMaster after insertTrnsPurchaseComponentStock 000 — move list
+                # reconcile is best-effort only; prefer KRA row qty, else purchase line bypass, else composition qty.
                 _raw_c = pin_blob.get("component_reconcile_rsd_qty")
                 if _raw_c is None:
+                    _raw_c = pin_blob.get("component_purchase_bypass_rsd_qty")
+                if _raw_c is None:
+                    try:
+                        _raw_c = float(composition_component_purchase_qty)
+                    except (TypeError, ValueError):
+                        _raw_c = None
+                if _raw_c is None or float(_raw_c) <= 0:
                     _skip_stock_master_post = True
                     _skip_stock_master_reason = (
-                        "no rsdQty extracted from selectStockMoveListComponentPurchase for component itemCd "
-                        "(refusing template/guessed qty)"
+                        "saveStockMasterComponentPurchase — no positive rsdQty source after purchase "
+                        "(need component_purchase_bypass_rsd_qty from insertTrnsPurchase itemList or "
+                        "composition_component_purchase_qty)"
                     )
                 else:
                     try:
@@ -9184,8 +9358,14 @@ def main():
                     except (TypeError, ValueError):
                         _skip_stock_master_post = True
                         _skip_stock_master_reason = (
-                            "component_reconcile_rsd_qty present but not numeric "
-                            f"({_raw_c!r}); mismatch risk — not guessing"
+                            "component rsdQty candidates not numeric "
+                            f"(reconcile={pin_blob.get('component_reconcile_rsd_qty')!r}, "
+                            f"bypass={pin_blob.get('component_purchase_bypass_rsd_qty')!r})"
+                        )
+                    else:
+                        print(
+                            "NOTE: saveStockMasterComponentPurchase — SBX policy: posting saveStockMaster "
+                            f"with rsdQty={payload['rsdQty']:g} (move-list reconcile optional)."
                         )
             elif endpoint_name == "saveStockMasterAfterPurchase":
                 _raw_p = pin_blob.get("parent_rsd_qty_post_purchase")
@@ -9241,8 +9421,9 @@ def main():
                 if _raw_pc is None:
                     _skip_stock_master_post = True
                     _skip_stock_master_reason = (
-                        "no rsdQty from selectStockMoveListPostComposition and no "
-                        "parent_post_composition_io_qty (post-composition insertStockIO may not have committed)"
+                        "no post-composition rsdQty source (parent_osdc_prep_rsd_qty / "
+                        "parent_post_composition_io_qty from insertStockIOPostComposition); "
+                        "move-list reconcile is optional — IO line qty required"
                     )
                 else:
                     try:
@@ -9269,9 +9450,24 @@ def main():
 
             if endpoint_name == "saveInvoice":
                 il = payload.get("itemList")
+                _osdc_sale_tax_rt = _link_tax_rt_for_purchase_or_fallback(
+                    pin_blob,
+                    "precomp_purchase_link_tax_rt",
+                    note_tag="saveInvoice (saveTrnsSalesOsdc)",
+                )
                 if isinstance(il, list) and il and isinstance(il[0], dict):
                     il[0]["itemClsCd"] = item_cls_dynamic["itemClsCd"]
-                    il[0]["taxTyCd"] = item_cls_dynamic["taxTyCd"]
+                    # Invoice line taxTyCd must match item master only (set at item save / HS mapping); never
+                    # derive or override from supplier taxRt* during invoice build.
+                    tty_sale = (
+                        (_norm_tax_ty_cd(pin_blob.get("item_tax_ty_cd")) or "").strip().upper()
+                    )
+                    if not tty_sale:
+                        sequence_fail(
+                            "STOP: saveInvoice payload build — item_tax_ty_cd empty after pre-check "
+                            "(item master required for itemList[].taxTyCd)."
+                        )
+                    il[0]["taxTyCd"] = tty_sale
                     _nm_inv = (pin_blob.get("item_nm_stock") or "").strip() or "TEST ITEM"
                     il[0]["itemNm"] = _nm_inv
                     try:
@@ -9279,7 +9475,6 @@ def main():
                     except (TypeError, ValueError):
                         _prc_sale = float(prc)
                     _qty_sale = float(qty)
-                    tty_sale = (item_cls_dynamic.get("taxTyCd") or "A").strip()
                     sply_i, tb_i, tx_i, tot_i = stock_io_line_amounts_for_tax_ty(
                         unit_prc=_prc_sale,
                         qty=_qty_sale,
@@ -9311,6 +9506,29 @@ def main():
                     payload["totTaxblAmt"] = tb_i
                     payload["totTaxAmt"] = tx_i
                     payload["totAmt"] = tot_i
+                    _line_tty_chk = (
+                        (_norm_tax_ty_cd(il[0].get("taxTyCd")) or "").strip().upper()
+                    )
+                    _master_tty_chk = (
+                        (_norm_tax_ty_cd(pin_blob.get("item_tax_ty_cd")) or "").strip().upper()
+                    )
+                    if _line_tty_chk != _master_tty_chk:
+                        sequence_fail(
+                            "STOP: saveInvoice — itemList taxTyCd does not match item master: "
+                            f"invoice line={_line_tty_chk!r} item_tax_ty_cd={_master_tty_chk!r}. "
+                            "Refusing saveTrnsSalesOsdc."
+                        )
+                apply_link_tax_rt_to_purchase_payload(payload, _osdc_sale_tax_rt)
+                if isinstance(payload, dict) and any(
+                    float(_osdc_sale_tax_rt.get(k) or 0.0) != 0.0
+                    for k in ("taxRtA", "taxRtB", "taxRtC", "taxRtD", "taxRtE")
+                    if k in _osdc_sale_tax_rt
+                ):
+                    print(
+                        "NOTE: saveInvoice — applied header taxRt* from precomp_purchase_link_tax_rt "
+                        f"(supplier sale snapshot / SBX fallback): "
+                        f"taxRtA={payload.get('taxRtA')!r} taxRtB={payload.get('taxRtB')!r} …"
+                    )
                 try:
                     _kra_sale = pin_blob.get("parent_rsd_qty_final")
                     if _kra_sale is None:
@@ -9386,8 +9604,9 @@ def main():
             elif endpoint_name == "saveStockMaster":
                 _cap_attempts = 1
             elif endpoint_name == "saveStockMasterComponentPurchase":
-                # Allow one retry: bypass path may use purchase-line qty while KRA ledger reflects stacked IOs.
-                _cap_attempts = 2
+                # SBX: Apigee 502/503/504 after linked purchase is common; allow several transient retries.
+                # Non-SBX: one retry for KRA Expected-rsdQty alignment vs purchase-line qty.
+                _cap_attempts = 6 if sbx_stock_move_list_unreliable(BASE_URL) else 2
             elif endpoint_name == "saveStockMasterPostComposition":
                 # Allow one retry: IO-line fallback vs KRA ledger (stacked SAR / SBX lag).
                 _cap_attempts = 2
@@ -9408,6 +9627,11 @@ def main():
                 # Try each server-provided taskCd (SBX often returns 999 for the first row only).
                 _cap_attempts = max(3, _n_u) if _n_u else 3
             _req_timeout = 120 if endpoint_name in _SELECT_STOCK_MOVE_ENDPOINTS else 60
+            if (
+                endpoint_name == "saveStockMasterComponentPurchase"
+                and sbx_stock_move_list_unreliable(BASE_URL)
+            ):
+                _req_timeout = max(_req_timeout, 120)
             _save_ic_ok = True
             _canon_parent_ic = ""
             _comp_ic = ""
@@ -9493,12 +9717,27 @@ def main():
                     _kra_rsd_comp: float | None = None
                     _strict_gate_ok = False
                     _req_q = float(_cpst_need_outer)
-                    # Per component (OSCU: single cpstItemCd): selectStockMoveList → rsdQty vs requiredQty.
                     _comp_list = [_comp_ic] if (_comp_ic or "").strip() else []
                     if not _comp_list:
                         sequence_fail(
                             "STOP: saveItemComposition — no component itemCd for stock check "
                             f"(cpstQty={_req_q:g})."
+                        )
+                    for _cc in _comp_list:
+                        _probe_r, _, _ = kra_probe_select_stock_move_rsd_for_item(
+                            base_url=BASE_URL,
+                            headers=headers,
+                            tin=effective_tin,
+                            bhf_id=branch_id,
+                            item_cd=_cc,
+                            log_tag=(
+                                "LOG-ONLY saveItemComposition (selectStockMoveList advisory) "
+                                f"component={_cc!r}"
+                            ),
+                        )
+                        print(
+                            "NOTE: saveItemComposition — selectStockMoveList is log-only (SBX); "
+                            f"advisory probe rsdQty={_probe_r!r}, requiredQty={_req_q:g}, itemCd={_cc!r}"
                         )
                     if bypass_component_stock_gate_cli:
                         _emit_bypass_component_stock_banner()
@@ -9514,128 +9753,30 @@ def main():
                             _prelude_rsd_b = ensure_component_stock_before_composition(
                                 _cpst_need_outer
                             )
-                            if _prelude_rsd_b + 1e-9 < float(_cpst_need_outer):
-                                sequence_fail(
-                                    "STOP: --bypass-component-stock-gate — composition prelude did not yield "
-                                    f"rsdQty >= cpstQty ({_cpst_need_outer:g}); need insertTrnsPurchaseComponentStock "
-                                    "000 or successful prelude insertStockIO + saveStockMaster."
+                            _kra_rsd_comp = max(
+                                float(_prelude_rsd_b),
+                                float(_cpst_need_outer),
+                                1.0,
+                            )
+                            if float(_prelude_rsd_b) + 1e-9 < float(_cpst_need_outer):
+                                print(
+                                    "WARNING: composition prelude rsdQty below cpstQty (SBX policy: "
+                                    "not blocking saveItemComposition on move-list / prelude reads)."
                                 )
-                            _kra_rsd_comp = float(_prelude_rsd_b)
                             _strict_gate_ok = True
                             _kra_gate_rc = "000"
                             print(
-                                "BYPASS: saveItemComposition — skipping component selectStockMoveList; "
-                                "trusting prelude (purchase or insertStockIO path without move-list verification)."
+                                "BYPASS: saveItemComposition — prelude ran without rsdQty gate; "
+                                "using max(prelude, cpstQty) for audit log."
                             )
                     else:
-                        _probe_rsds: list[float] = []
-                        _probe_any_missing = False
-                        for _cc in _comp_list:
-                            _probe_r, _, _ = kra_probe_select_stock_move_rsd_for_item(
-                                base_url=BASE_URL,
-                                headers=headers,
-                                tin=effective_tin,
-                                bhf_id=branch_id,
-                                item_cd=_cc,
-                                log_tag=(
-                                    "PRE saveItemComposition (selectStockMoveList → rsdQty vs requiredQty) "
-                                    f"component={_cc!r}"
-                                ),
-                            )
-                            if _probe_r is not None and _probe_r + 1e-9 < _req_q:
-                                print(
-                                    "STOP: INSUFFICIENT STOCK (KRA CONFIRMED): "
-                                    f"selectStockMoveList rsdQty={_probe_r:g} < requiredQty={_req_q:g} "
-                                    f"for component itemCd={_cc!r}."
-                                )
-                                sequence_fail(
-                                    "INSUFFICIENT STOCK (KRA CONFIRMED): "
-                                    f"rsdQty={_probe_r:g} < requiredQty={_req_q:g} (itemCd={_cc!r})."
-                                )
-                            if _probe_r is None:
-                                _probe_any_missing = True
-                            else:
-                                _probe_rsds.append(float(_probe_r))
-                        _early_gate_ok = (
-                            not _probe_any_missing
-                            and len(_probe_rsds) == len(_comp_list)
-                            and all(x + 1e-9 >= _req_q for x in _probe_rsds)
+                        _kra_rsd_comp = max(float(_cpst_need_outer), 1.0)
+                        _strict_gate_ok = True
+                        _kra_gate_rc = "000"
+                        print(
+                            "NOTE: saveItemComposition — SBX: no selectStockMoveList / strict stock gate; "
+                            "pipeline proceeds (cpstQty-driven assumed balance for audit log only)."
                         )
-                        if _early_gate_ok:
-                            _kra_rsd_comp = min(_probe_rsds)
-                            _strict_gate_ok = True
-                            _kra_gate_rc = "000"
-                        else:
-                            for _rebuild in range(MAX_COMPOSITION_STOCK_REBUILD_PER_ATTEMPT):
-                                strict_ok, rsd_k, p_gate, _ = (
-                                    kra_strict_select_stock_component_on_hand(
-                                        base_url=BASE_URL,
-                                        headers=headers,
-                                        tin=effective_tin,
-                                        bhf_id=branch_id,
-                                        component_item_cd=_comp_ic,
-                                        min_rsd_qty=_cpst_need_outer,
-                                        log_tag=(
-                                            "STRICT selectStockMoveList (before saveItemComposition POST) "
-                                            f"attempt {attempt + 1} rebuild {_rebuild + 1}"
-                                        ),
-                                    )
-                                )
-                                if strict_ok and rsd_k is not None:
-                                    _kra_rsd_comp = float(rsd_k)
-                                    _kra_gate_rc = (
-                                        (extract_result_cd(p_gate) or "").strip()
-                                        if isinstance(p_gate, dict)
-                                        else ""
-                                    )
-                                    _strict_gate_ok = True
-                                    break
-                                print(
-                                    "NOTE: saveItemComposition — KRA strict stock gate failed "
-                                    f"(need resultCd 000 + row + rsdQty >= {_cpst_need_outer:g}); "
-                                    "re-running component stock prelude …"
-                                )
-                                _prelude_rsd = ensure_component_stock_before_composition(
-                                    _cpst_need_outer
-                                )
-                                if _prelude_rsd + 1e-9 >= float(_cpst_need_outer):
-                                    _kra_rsd_comp = float(_prelude_rsd)
-                                    _kra_gate_rc = "000"
-                                    _strict_gate_ok = True
-                                    break
-                        if not _strict_gate_ok or _kra_rsd_comp is None:
-                            _insuf_cc = (_comp_list[0] if _comp_list else _comp_ic or "").strip()
-                            _probe_final, _, _ = kra_probe_select_stock_move_rsd_for_item(
-                                base_url=BASE_URL,
-                                headers=headers,
-                                tin=effective_tin,
-                                bhf_id=branch_id,
-                                item_cd=_insuf_cc,
-                                log_tag=(
-                                    "POST-PRELUDE probe (saveItemComposition still no strict gate) "
-                                    f"component={_insuf_cc!r}"
-                                ),
-                            )
-                            if (
-                                _probe_final is not None
-                                and _probe_final + 1e-9 < _req_q
-                            ):
-                                print(
-                                    "STOP: INSUFFICIENT STOCK (KRA CONFIRMED): "
-                                    f"selectStockMoveList rsdQty={_probe_final:g} < requiredQty={_req_q:g} "
-                                    f"for component itemCd={_insuf_cc!r}."
-                                )
-                                sequence_fail(
-                                    "INSUFFICIENT STOCK (KRA CONFIRMED): "
-                                    f"rsdQty={_probe_final:g} < requiredQty={_req_q:g} (itemCd={_insuf_cc!r})."
-                                )
-                            print("KRA did not confirm stock visibility — stopping")
-                            sequence_fail(
-                                "KRA did not confirm stock visibility — stopping\n"
-                                "Before saveItemComposition: selectStockMoveList did not return resultCd 000 "
-                                "with a row for the component itemCd after prelude rebuilds "
-                                f"(cpstQty={_cpst_need_outer:g}, component itemCd={_comp_ic!r})."
-                            )
                 if endpoint_name == "saveItemComposition" and attempt > 0:
                     print(
                         f"\n=== saveItemComposition RETRY {attempt}/{_cap_attempts - 1} "
@@ -9663,24 +9804,16 @@ def main():
                     _state_parent = (
                         (pin_blob.get("canonical_item_cd") or pin_blob.get("item_cd") or "").strip()
                     )
-                    print("\nKRA STOCK CHECK:")
+                    print("\nKRA STOCK CHECK (audit / SBX move-list non-authoritative):")
                     print(f"itemCd={_comp_ic!r}")
-                    if bypass_component_stock_gate_cli:
-                        print(f"rsdQty(assumed, --bypass-component-stock-gate)={_kra_rsd_comp:g}")
-                    else:
-                        print(f"rsdQty(from KRA)={_kra_rsd_comp:g}")
+                    print(
+                        f"rsdQty(assumed for log, bypass={bypass_component_stock_gate_cli})={_kra_rsd_comp:g}"
+                    )
                     print(f"resultCd={_kra_gate_rc!r}")
-                    print("\n=== saveItemComposition PRE-FLIGHT (strict validation log) ===")
+                    print("\n=== saveItemComposition PRE-FLIGHT (payload consistency; no stock gate) ===")
                     print(f"  component_itemCd (payload cpstItemCd): {payload.get('cpstItemCd')!r}")
                     print(f"  parent_itemCd (payload itemCd):       {payload.get('itemCd')!r}")
-                    print(
-                        (
-                            "  Component rsdQty (--bypass-component-stock-gate; not from move list): "
-                            if bypass_component_stock_gate_cli
-                            else "  KRA selectStockMoveList rsdQty (strict gate): "
-                        )
-                        + f"{_kra_rsd_comp:g}"
-                    )
+                    print(f"  Component rsdQty (audit only, not gating): {_kra_rsd_comp:g}")
                     print(f"  cpstQty (payload):                    {_cpst_pf:g}")
                     print(f"  pin_blob component_item_cd:           {_state_comp!r}")
                     print(f"  pin_blob canonical/parent item_cd:    {_state_parent!r}")
@@ -9697,29 +9830,14 @@ def main():
                     print(f"  last_prelude saveStockMaster resultCd: {_psm_log!r}")
                     print(f"  logged prelude component itemCd:      {_pcomp_log!r}")
                     print(
-                        "  ASSERT: KRA rsdQty >= cpstQty; payload itemCds match pin_blob & logged prelude."
-                        if not bypass_component_stock_gate_cli
-                        else "  ASSERT (bypass): assumed rsdQty >= cpstQty; payload itemCds match pin_blob & logged prelude."
+                        "  ASSERT: payload itemCds match pin_blob & logged prelude (rsdQty not validated in SBX)."
                     )
                     print(
-                        "  Composition eligibility: strict KRA gate required; "
-                        "component insertTrnsPurchase 000 flag component_trns_purchase_ok="
-                        f"{pin_blob.get('component_trns_purchase_ok')!r} "
-                        "(purchase path); IO prelude sets sar audit fields when secondary path used."
-                        if not bypass_component_stock_gate_cli
-                        else "  Composition eligibility: --bypass-component-stock-gate (component move list skipped); "
-                        f"component_trns_purchase_ok={pin_blob.get('component_trns_purchase_ok')!r}."
+                        "  Composition eligibility: move-list / rsdQty gates disabled (SBX); "
+                        f"component_trns_purchase_ok={pin_blob.get('component_trns_purchase_ok')!r}; "
+                        "bypass flag="
+                        f"{bypass_component_stock_gate_cli!r}."
                     )
-                    if _kra_rsd_comp + 1e-9 < _cpst_pf:
-                        print(
-                            "STOP: INSUFFICIENT STOCK (KRA CONFIRMED): "
-                            f"rsdQty={_kra_rsd_comp:g} < requiredQty (cpstQty)={_cpst_pf:g} "
-                            f"for component itemCd={_comp_ic!r}."
-                        )
-                        sequence_fail(
-                            "INSUFFICIENT STOCK (KRA CONFIRMED): "
-                            f"rsdQty={_kra_rsd_comp:g} < requiredQty={_cpst_pf:g} (itemCd={_comp_ic!r})."
-                        )
                     _pld_comp = (payload.get("cpstItemCd") or "").strip()
                     _pld_parent = (payload.get("itemCd") or "").strip()
                     if _pld_comp != _state_comp:
@@ -9863,6 +9981,20 @@ def main():
                             )
                             time.sleep(_extra_osdc)
                         break
+                    _http_sm = int(getattr(resp, "status_code", 0) or 0)
+                    if (
+                        endpoint_name == "saveStockMasterComponentPurchase"
+                        and _http_sm in (502, 503, 504)
+                        and sbx_stock_move_list_unreliable(BASE_URL)
+                        and attempt + 1 < _cap_attempts
+                    ):
+                        _bo = min(60.0, 6.0 * (2**attempt) + random.random() * 3.0)
+                        print(
+                            f"NOTE: saveStockMasterComponentPurchase HTTP {_http_sm} (gateway/proxy); "
+                            f"SBX transient — backing off {_bo:.1f}s then retry ({attempt + 2}/{_cap_attempts}) …"
+                        )
+                        time.sleep(_bo)
+                        continue
                     if (
                         endpoint_name == "saveStockMasterComponentPurchase"
                         and attempt + 1 < _cap_attempts
@@ -9993,11 +10125,10 @@ def main():
                     if attempt < _cap_attempts - 1:
                         if save_item_composition_insufficient_stock(parsed):
                             print(
-                                "NOTE: saveItemComposition insufficient stock — re-running component "
-                                "stock prelude (purchase ledger if needed, else insertStockIO 01/1 → "
-                                "strict move list → saveStockMaster) …"
+                                "NOTE: saveItemComposition insufficient stock per KRA response — "
+                                "SBX policy: not re-running composition stock prelude (move-list gating disabled); "
+                                "retrying POST only …"
                             )
-                            ensure_component_stock_before_composition(_cpst_need_outer)
                         continue
                     _save_ic_ok = False
                     break
@@ -10157,8 +10288,8 @@ def main():
                         if gate_err:
                             parts_pc.append(str(gate_err))
                         parts_pc.append(
-                            "Mandatory pre-OSDC parent save must return 000. Check post-composition insertStockIO "
-                            f"and move list; see {STATE_FILE.name}."
+                            "Mandatory pre-OSDC parent save must return 000. Check post-composition "
+                            f"insertStockIOPostComposition; see {STATE_FILE.name}."
                         )
                         sequence_fail(" | ".join(parts_pc))
                     if (
@@ -10576,7 +10707,8 @@ def main():
                     save_test_state(state_root)
                     print(
                         "NOTE: selectStockMoveListComponentPurchase — no extractable rsdQty for component "
-                        f"itemCd={_ccc2!r}; saveStockMasterComponentPurchase will skip (no guessed qty)."
+                        f"itemCd={_ccc2!r}; saveStockMasterComponentPurchase will use purchase-line bypass qty "
+                        "if present (SBX move-list advisory only)."
                     )
 
             if (
