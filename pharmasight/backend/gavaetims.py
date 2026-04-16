@@ -5670,6 +5670,7 @@ def run_minimal_osdc_sale_test(
         "salesSttsCd": "02",
         "cfmDt": cfm_dt,
         "salesDt": sales_dt,
+        "stockRlsDt": cfm_dt,
         "totItemCnt": 1,
         "taxblAmtA": 0.0,
         "taxblAmtB": 0.0,
@@ -6738,8 +6739,6 @@ def main():
                 "tin": effective_tin,
                 "bhfId": branch_id,
                 "regTyCd": "M",
-                "custTin": effective_tin,
-                "custNm": "Test Customer",
                 "salesTyCd": "N",
                 "rcptTyCd": "S",
                 "pmtTyCd": "01",
@@ -6749,6 +6748,8 @@ def main():
                 "salesSttsCd": "02",
                 "cfmDt": cfm_dt,
                 "salesDt": sales_dt,
+                # OSDC (saveTrnsSalesOsdc): KRA rejects when missing — stock release timestamp (14-digit).
+                "stockRlsDt": cfm_dt,
                 "totItemCnt": 1,
                 "taxblAmtA": taxbl,
                 "taxblAmtB": 0.0,
@@ -9455,6 +9456,32 @@ def main():
                     "precomp_purchase_link_tax_rt",
                     note_tag="saveInvoice (saveTrnsSalesOsdc)",
                 )
+                # OSDC (saveTrnsSalesOsdc): KRA enforces customer TIN consistency between the root payload and
+                # the nested receipt block. Contract:
+                # - If no verified customer TIN is provided: custTin/custNm MUST NOT exist anywhere.
+                # - If custTin exists: it MUST exist in receipt and match exactly.
+                if isinstance(payload, dict):
+                    _r = payload.get("receipt")
+                    if not isinstance(_r, dict):
+                        _r = {}
+                        payload["receipt"] = _r
+                    _cust_tin = (payload.get("custTin") or "").strip()
+                    if not _cust_tin:
+                        payload.pop("custTin", None)
+                        payload.pop("custNm", None)
+                        _r.pop("custTin", None)
+                        _r.pop("custNm", None)
+                    else:
+                        _r["custTin"] = _cust_tin
+                        if "custNm" in payload and payload.get("custNm") is not None:
+                            _r["custNm"] = payload.get("custNm")
+                        elif "custNm" in _r:
+                            _r.pop("custNm", None)
+                        if (_r.get("custTin") or "").strip() != _cust_tin:
+                            sequence_fail(
+                                "STOP: saveInvoice — custTin invariant violated: "
+                                f"payload.custTin={_cust_tin!r} receipt.custTin={(_r.get('custTin') or '').strip()!r}"
+                            )
                 if isinstance(il, list) and il and isinstance(il[0], dict):
                     il[0]["itemClsCd"] = item_cls_dynamic["itemClsCd"]
                     # Invoice line taxTyCd must match item master only (set at item save / HS mapping); never
@@ -9529,6 +9556,17 @@ def main():
                         f"(supplier sale snapshot / SBX fallback): "
                         f"taxRtA={payload.get('taxRtA')!r} taxRtB={payload.get('taxRtB')!r} …"
                     )
+                if isinstance(payload, dict):
+                    _srd = (
+                        (payload.get("stockRlsDt") or payload.get("cfmDt") or "").strip()
+                        or (pin_blob.get("cfm_dt") or "").strip()
+                        or (cfm_dt or "").strip()
+                    )
+                    if len(_srd) < 14 or not _srd.isdigit():
+                        _srd = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                    else:
+                        _srd = _srd[:14]
+                    payload["stockRlsDt"] = _srd
                 try:
                     _kra_sale = pin_blob.get("parent_rsd_qty_final")
                     if _kra_sale is None:
