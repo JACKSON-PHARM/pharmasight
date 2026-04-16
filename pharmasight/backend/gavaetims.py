@@ -100,6 +100,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+class SkipToNextSequenceStep(Exception):
+    """Raised when ``--continue-on-step-failure`` is set and a sequence step hits a hard stop."""
+
 # Windows terminals often use cp1252; runtime log_tag strings use Unicode arrows/dashes.
 if sys.platform == "win32":
     for _stream in (sys.stdout, sys.stderr):
@@ -661,6 +664,35 @@ def reset_pin_initial_stock_atomic_pair(pin_blob: dict) -> None:
     pin_blob.pop("_stock_move_list_initial_io_fallback", None)
 
 
+def apply_diagnostic_stock_io_reset(
+    pin_blob: dict,
+    state_root: dict | None = None,
+    tin: str | None = None,
+    bhf_id: str | None = None,
+) -> None:
+    """Single SBX check: drop local resume for the initial IO → move list → save triple; SAR 1; balance 0."""
+    ce = list(pin_blob.get("completed_endpoints") or [])
+    drop = {
+        "insertStockIOInitial",
+        "saveStockMasterInitial",
+    }
+    pin_blob["completed_endpoints"] = [x for x in ce if x not in drop]
+    pin_blob["stock_io_next_sar_no"] = 1
+    pin_blob["current_stock_balance"] = 0.0
+    pin_blob["stock_io_pending_rsd_qty"] = 0.0
+    pin_blob.pop("parent_initial_insert_stock_qty", None)
+    pin_blob.pop("parent_initial_save_rsd_qty_from_kra", None)
+    pin_blob.pop("_stock_move_list_initial_io_fallback", None)
+    if (
+        state_root is not None
+        and (tin or "").strip()
+        and (bhf_id or "").strip()
+    ):
+        clear_insert_stock_sar_sequence_for_tin_bhf(
+            state_root, str(tin).strip(), str(bhf_id).strip()
+        )
+
+
 def reconcile_item_cd_with_pin_state(pin_blob: dict, run_item_cd: str) -> str:
     """Single canonical itemCd from state; log if run variable drifts."""
     saved = (
@@ -817,61 +849,141 @@ def input_line(label: str, default: str) -> str:
     return s or d
 
 
-def cli_pin_and_mode() -> tuple[str, str]:
-    """
-    Minimal CLI.
-
-    Positional:
-      - <PIN> (optional; if omitted we prompt)
-
-    Flags:
-      - --mode normal (default): production flow
-      - --mode diagnostic: verbose logging only (no flow changes)
-      - --mode reset: clears local state for this PIN then exits
-    """
+def cli_pin_and_flags() -> tuple[
+    str,
+    bool,
+    bool,
+    bool,
+    frozenset[str] | None,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+]:
+    """PIN + reset/clean/replay flags, ``--only``, diagnostics, minimal/matrix, ledger debug, harnesses."""
     raw = [str(x).strip() for x in sys.argv[1:] if str(x).strip()]
-    pin = ""
-    mode = "normal"
+    only_steps: frozenset[str] | None = None
+    rest: list[str] = []
     i = 0
     while i < len(raw):
         x = raw[i]
-        if x == "--mode":
-            if i + 1 >= len(raw):
-                raise SystemExit("--mode requires one of: normal, diagnostic, reset")
-            mode = str(raw[i + 1]).strip().lower()
-            i += 2
-            continue
-        if x.startswith("--mode="):
-            mode = str(x.split("=", 1)[1]).strip().lower()
-            i += 1
-            continue
-        if x.startswith("--"):
-            raise SystemExit(f"Unknown flag {x!r}. Allowed: --mode normal|diagnostic|reset")
-        if not pin:
-            pin = x
-        else:
-            raise SystemExit(
-                f"Unexpected extra argument {x!r}. Usage: python gavaetims.py <PIN> [--mode ...]"
+        if x.startswith("--only="):
+            only_steps = frozenset(
+                s.strip() for s in x.split("=", 1)[1].split(",") if s.strip()
             )
-        i += 1
-    if mode not in ("normal", "diagnostic", "reset"):
-        raise SystemExit("--mode must be one of: normal, diagnostic, reset")
-    return pin, mode
+            i += 1
+        elif x == "--only":
+            if i + 1 >= len(raw) or raw[i + 1].startswith("--"):
+                raise SystemExit(
+                    "--only requires a comma-separated list of endpoint step names "
+                    "(e.g. --only selectCustomerList,selectTaxpayerInfo)."
+                )
+            only_steps = frozenset(
+                s.strip() for s in raw[i + 1].split(",") if s.strip()
+            )
+            i += 2
+        else:
+            rest.append(x)
+            i += 1
+    flags = {x for x in rest if x.startswith("--")}
+    positionals = [x for x in rest if not x.startswith("--")]
+    pin = positionals[0] if positionals else ""
+    reset_stock = "--reset-stock" in flags
+    clean_run = "--clean-run" in flags
+    force_stock_replay = "--force-stock-replay" in flags
+    diagnostic_stock_io = "--diagnostic-stock-io" in flags
+    allow_save_item_ty1_fallback = "--allow-save-item-ty1-fallback" in flags
+    strict_pre_sale_audit = "--strict-pre-sale-audit" in flags
+    minimal_osdc_sale_test = "--minimal-osdc-sale-test" in flags
+    minimal_osdc_pasteback = "--minimal-osdc-pasteback" in flags
+    minimal_stock_ledger_matrix = "--minimal-stock-ledger-matrix" in flags
+    debug_ledger_after_io = "--debug-ledger-after-io" in flags
+    ledger_contract_test = "--ledger-contract-test" in flags
+    stock_lifecycle_isolation_test = "--stock-lifecycle-isolation-test" in flags
+    stock_master_visibility_test = "--stock-master-visibility-test" in flags
+    sbx_finished_good_ledger_probe = "--sbx-finished-good-ledger-probe" in flags
+    portal_checklist_mode = "--portal-checklist-mode" in flags
+    bypass_component_stock_gate = "--bypass-component-stock-gate" in flags
+    bypass_pre_sale_stock_gate = "--bypass-pre-sale-stock-gate" in flags
+    continue_on_step_failure = "--continue-on-step-failure" in flags
+    return (
+        pin,
+        reset_stock,
+        clean_run,
+        force_stock_replay,
+        only_steps,
+        diagnostic_stock_io,
+        allow_save_item_ty1_fallback,
+        strict_pre_sale_audit,
+        minimal_osdc_sale_test,
+        minimal_osdc_pasteback,
+        minimal_stock_ledger_matrix,
+        debug_ledger_after_io,
+        ledger_contract_test,
+        stock_lifecycle_isolation_test,
+        stock_master_visibility_test,
+        sbx_finished_good_ledger_probe,
+        portal_checklist_mode,
+        bypass_component_stock_gate,
+        bypass_pre_sale_stock_gate,
+        continue_on_step_failure,
+    )
 
 
 def prompt_app_pin() -> str:
-    pin = cli_pin_and_mode()[0]
+    pin = cli_pin_and_flags()[0]
     if pin:
         return pin
     print(
         "\nEnter the Application Test PIN for this run (not read from .env).\n"
         "Tip: Ctrl+V or right-click to paste; input is visible.\n"
-        "Usage:\n"
-        "  python gavaetims.py <PIN> [--mode normal|diagnostic|reset]\n"
-        "Modes:\n"
-        "  --mode normal      production flow (default)\n"
-        "  --mode diagnostic  verbose logging only (no flow changes)\n"
-        "  --mode reset       clear local state for this PIN then exit\n"
+        "Or pass as first argument: python gavaetims.py <PIN>\n"
+        "After resetting stock/SAR on the OSCU portal: python gavaetims.py <PIN> --reset-stock\n"
+        "To drop stale item/stock state: python gavaetims.py <PIN> --clean-run\n"
+        "To replay only insertStockIOInitial+saveStockMasterInitial: python gavaetims.py <PIN> --force-stock-replay\n"
+        "SBX stock direction diagnostic (clean portal stock + local reset): "
+        "python gavaetims.py <PIN> --diagnostic-stock-io\n"
+        "Optional: enable itemTyCd 1 Paybill fallback (off by default): "
+        "python gavaetims.py <PIN> --allow-save-item-ty1-fallback\n"
+        "Structured audit before saveTrnsSalesOsdc: python gavaetims.py <PIN> --strict-pre-sale-audit\n"
+        "Minimal no-composition sale probe: python gavaetims.py <PIN> --minimal-osdc-sale-test "
+        "[--clean-run] [--minimal-osdc-pasteback]\n"
+        "  (pre-saveItem selectItemList catalog + KRA sequence retries; optional .env "
+        "GAVAETIMS_MINIMAL_ITEM_CD or pin minimal_osdc_item_cd_override in .test_state.json)\n"
+        "Stock ledger payload matrix (after minimal saveItem+item gate): "
+        "python gavaetims.py <PIN> --minimal-stock-ledger-matrix "
+        "(or with --minimal-osdc-sale-test)\n"
+        "Ledger delay vs missing-row probe (timed selects + optional selectStockMaster; ~17s sleeps): "
+        "add --debug-ledger-after-io to minimal/matrix/full-sequence insertStockIO success paths\n"
+        "Ledger contract harness (frozen case, literal sarNo=1, no SAR state; 20s sleeps; 4-line stdout): "
+        "python gavaetims.py <PIN> --ledger-contract-test\n"
+        "Stock lifecycle isolation (saveItem → IO → move list → saveStockMaster → move list; no composition/sales): "
+        "python gavaetims.py <PIN> --stock-lifecycle-isolation-test\n"
+        "Portal checklist parity (run /selectStockMoveList but never gate on it): "
+        "python gavaetims.py <PIN> --portal-checklist-mode\n"
+        "Stock master visibility probe (saveItem → IO → saveStockMaster → selectStockMaster): "
+        "python gavaetims.py <PIN> --stock-master-visibility-test\n"
+        "SBX finished-good ledger probe (itemTyCd=2: saveItem → IO → saveStockMaster → 10s → baseline×2 + UTC): "
+        "python gavaetims.py <PIN> --sbx-finished-good-ledger-probe\n"
+        "Sandbox-only: skip component move-list gates (prelude, before saveItemComposition, and main\n"
+        "  selectStockMoveListComponentPurchase after component purchase 000): "
+        "python gavaetims.py <PIN> --bypass-component-stock-gate\n"
+        "Sandbox: skip pre-saveInvoice selectStockMoveList probes when post-composition saveStockMaster 000 "
+        "but move list stays empty (pair with component bypass on SBX): "
+        "python gavaetims.py <PIN> --bypass-pre-sale-stock-gate\n"
+        "Sandbox exploration: on hard stop, skip to the next sequence step (may hit dependent-step "
+        "errors): python gavaetims.py <PIN> --continue-on-step-failure\n"
     )
     s = input("Enter Application Test PIN: ").strip()
     if not s:
@@ -2376,6 +2488,195 @@ DEBUG_LEDGER_VERDICT_EVENTUAL = "LEDGER_EVENTUAL_CONSISTENCY"
 DEBUG_LEDGER_VERDICT_NO_POSTING = "NO_LEDGER_POSTING"
 DEBUG_LEDGER_VERDICT_READ_INVALID = "READ_ENDPOINT_INVALID"
 DEBUG_LEDGER_VERDICT_SKIPPED = "SKIPPED_NO_ITEMCD"
+
+# --- Ledger contract validation harness (``--ledger-contract-test``) ---
+# Isolated IO→move-list probe; **not** a substitute for judging SBX ledger behavior from the full runner.
+# Contract scope: only the keys in ``BASE_LEDGER_TEST_CASE`` populate the stock line. No cls/nm/prc/tax
+# reconstruction. Literal ``sarNo=1``, ``orgSarNo=0`` — no SAR reads/writes. Edit source to change repro.
+BASE_LEDGER_TEST_CASE: dict[str, object] = {
+    "tin": "P600002923A",
+    "bhfId": "00",
+    "itemCd": "KE2NTTU0000005",
+    "ioTyCd": "1",
+    "qty": 1,
+    "pkgUnitCd": "NT",
+    "qtyUnitCd": "TU",
+    "taxTyCd": "A",
+}
+
+LEDGER_CONTRACT_VERDICT_POSTED = "LEDGER_POSTED"
+LEDGER_CONTRACT_VERDICT_NOT_POSTED = "LEDGER_NOT_POSTED"
+LEDGER_CONTRACT_VERDICT_READ_FAILURE = "LEDGER_READ_FAILURE"
+
+
+def run_ledger_contract_test(
+    *,
+    base_url: str,
+    headers: dict,
+    sales_dt_hint: str,
+    timeout: int = 120,
+) -> str:
+    """
+    Single frozen IO POST + three move-list probes. Stdout: exactly four lines under
+    ``=== LEDGER CONTRACT RESULT ===``. No cluster helpers, no SAR persistence, no line enrichment beyond
+    ``BASE_LEDGER_TEST_CASE``. **Not** for inferring overall SBX ledger support — use the full sequence runner
+    (real IO payloads) for that.
+    """
+    tin = str(BASE_LEDGER_TEST_CASE["tin"]).strip()
+    bhf_id = str(BASE_LEDGER_TEST_CASE["bhfId"]).strip()
+    item_cd = str(BASE_LEDGER_TEST_CASE["itemCd"]).strip()
+    io_ty = str(BASE_LEDGER_TEST_CASE["ioTyCd"]).strip()
+    qty = float(BASE_LEDGER_TEST_CASE["qty"])
+    pkg_u = str(BASE_LEDGER_TEST_CASE["pkgUnitCd"]).strip()
+    qty_u = str(BASE_LEDGER_TEST_CASE["qtyUnitCd"]).strip()
+    tty = str(BASE_LEDGER_TEST_CASE["taxTyCd"]).strip()
+
+    if (
+        get_optional_env("GAVAETIMS_LEDGER_CONTRACT_DIAGNOSTIC_ONLY_PRECHECK", "")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "y")
+    ):
+        sm_url = f"{base_url.rstrip('/')}/selectStockMaster"
+        sm_pl = {
+            "tin": tin,
+            "bhfId": bhf_id,
+            "itemCd": item_cd,
+            "lastReqDt": KRA_LIST_BASELINE_LAST_REQ_DT,
+        }
+        try:
+            r_pre = requests.post(sm_url, headers=headers, json=sm_pl, timeout=timeout)
+            h = getattr(r_pre, "status_code", None)
+            try:
+                p_pre = r_pre.json()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                p_pre = None
+            rc = (extract_result_cd(p_pre) or "").strip() if isinstance(p_pre, dict) else ""
+            ref = kra_extract_response_ref_id(p_pre if isinstance(p_pre, dict) else None)
+            print(
+                f"diagnostic_only_precheck: HTTP={h!r} resultCd={rc!r} responseRefID={ref!r}",
+                file=sys.stderr,
+            )
+        except requests.RequestException as e:
+            print(f"diagnostic_only_precheck: request_error={e!r}", file=sys.stderr)
+
+    io_ocrn_8 = (sales_dt_hint or "").strip()[:8]
+    if len(io_ocrn_8) != 8:
+        io_ocrn_8 = datetime.now(timezone.utc).strftime("%Y%m%d")
+
+    stock_line: dict[str, object] = {
+        "itemCd": item_cd,
+        "ioTyCd": io_ty,
+        "pkgUnitCd": pkg_u,
+        "pkg": qty,
+        "qtyUnitCd": qty_u,
+        "qty": qty,
+        "taxTyCd": tty,
+    }
+    io_root: dict[str, object] = {
+        "sarNo": 1,
+        "regTyCd": "M",
+        "custTin": tin,
+        "sarTyCd": "01",
+        "ocrnDt": io_ocrn_8,
+        "totItemCnt": 1,
+        "totTaxblAmt": 0.0,
+        "totTaxAmt": 0.0,
+        "totAmt": 0.0,
+        "orgSarNo": 0,
+        "regrId": "system",
+        "regrNm": "system",
+        "modrId": "system",
+        "modrNm": "system",
+        "itemList": [stock_line],
+    }
+    io_url = f"{base_url.rstrip('/')}/insertStockIO"
+    ins_rc = ""
+    ins_ref = ""
+    ins_parsed: dict | None = None
+    r_io: requests.Response | None = None
+    try:
+        r_io = requests.post(io_url, headers=headers, json=io_root, timeout=timeout)
+        try:
+            ins_parsed = r_io.json()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            ins_parsed = None
+        if isinstance(ins_parsed, dict):
+            ins_rc = (extract_result_cd(ins_parsed) or "").strip()
+            ins_ref = kra_extract_response_ref_id(ins_parsed)
+    except requests.RequestException:
+        ins_parsed = None
+
+    insert_ok = (
+        r_io is not None
+        and getattr(r_io, "status_code", 999) < 400
+        and isinstance(ins_parsed, dict)
+        and not kra_top_level_error_detail(ins_parsed)
+        and ins_rc == "000"
+    )
+
+    surl = f"{base_url.rstrip('/')}/selectStockMoveList"
+    pl_mv = {
+        "tin": tin,
+        "bhfId": bhf_id,
+        "lastReqDt": KRA_LIST_BASELINE_LAST_REQ_DT,
+        "itemCd": item_cd,
+    }
+    move_rows: list[dict[str, object]] = []
+    read_failed = False
+    schedule: tuple[tuple[int, str], ...] = (
+        (0, "0s"),
+        (5, "5s"),
+        (15, "15s"),
+    )
+    for pause_sec, tlabel in schedule:
+        if pause_sec > 0:
+            time.sleep(float(pause_sec))
+        entry: dict[str, object] = {"t": tlabel}
+        try:
+            r_mv = requests.post(surl, headers=headers, json=pl_mv, timeout=timeout)
+            entry["http"] = getattr(r_mv, "status_code", None)
+            if r_mv.status_code >= 400:
+                read_failed = True
+            try:
+                p_mv = r_mv.json()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                p_mv = None
+            if not isinstance(p_mv, dict):
+                if r_mv.status_code < 400:
+                    read_failed = True
+                entry["resultCd"] = ""
+                entry["rows"] = 0
+            else:
+                entry["resultCd"] = (extract_result_cd(p_mv) or "").strip()
+                nrows = count_stock_move_list_rows_for_item(p_mv, item_cd)
+                entry["rows"] = int(nrows)
+        except requests.RequestException:
+            read_failed = True
+            entry["http"] = None
+            entry["resultCd"] = ""
+            entry["rows"] = 0
+        move_rows.append(entry)
+
+    any_rows = any(int(m.get("rows") or 0) > 0 for m in move_rows)
+    if read_failed:
+        verdict = LEDGER_CONTRACT_VERDICT_READ_FAILURE
+    elif any_rows:
+        verdict = LEDGER_CONTRACT_VERDICT_POSTED
+    elif insert_ok:
+        verdict = LEDGER_CONTRACT_VERDICT_NOT_POSTED
+    else:
+        verdict = LEDGER_CONTRACT_VERDICT_READ_FAILURE
+
+    print(
+        "\n=== LEDGER CONTRACT RESULT ===\n"
+        f"insert_resultCd: {ins_rc!r}\n"
+        f"insert_responseRefID: {ins_ref!r}\n"
+        f"move_probe_results: {json.dumps(move_rows, ensure_ascii=False)}\n"
+        f"verdict: {verdict}\n"
+    )
+    return verdict
+
 
 def _stock_lifecycle_isolation_move_list_probe(
     *,
@@ -5357,11 +5658,17 @@ def main():
     _argv_help = [str(a).strip() for a in sys.argv[1:]]
     if "--help" in _argv_help or "-h" in _argv_help:
         print(
-            "Usage: python gavaetims.py <PIN> [--mode normal|diagnostic|reset]\n"
-            "Modes:\n"
-            "  --mode normal      production flow (default)\n"
-            "  --mode diagnostic  verbose logging only (no flow changes)\n"
-            "  --mode reset       clear local state for this PIN then exit\n"
+            "Usage: python gavaetims.py <PIN> [flags]\n"
+            "Common flags: --clean-run, --reset-stock, --only endpoint1,endpoint2\n"
+            "Exploration: --continue-on-step-failure (log hard stops and run remaining sequence steps; "
+            "unsafe for cert — dependent steps often fail).\n"
+            "Composition (sandbox): --bypass-component-stock-gate\n"
+            "  Skips selectStockMoveList verification for component stock in the composition prelude, before\n"
+            "  saveItemComposition, and (after insertTrnsPurchaseComponentStock resultCd=000) the main\n"
+            "  selectStockMoveListComponentPurchase step—so gateway timeouts / empty move lists do not block\n"
+            "  saveStockMasterComponentPurchase. Also trusts a successful prelude insertStockIO. Parent stock\n"
+            "  gates are not affected.\n"
+            "See module docstring at top of gavaetims.py for full flag list."
         )
         return 0
 
@@ -5456,39 +5763,112 @@ def main():
     state_root[pin_key] = pin_blob
     completed_list: list[str] = list(pin_blob.get("completed_endpoints") or [])
 
-    _, run_mode = cli_pin_and_mode()
-    if run_mode == "reset":
-        reset_pin_clean_run(pin_blob)
-        save_test_state(state_root)
-        print(f"Local state reset for PIN {pin!r} ({STATE_FILE.name}).")
-        return 0
+    (
+        _,
+        reset_stock_cli,
+        clean_run_cli,
+        force_stock_replay_cli,
+        only_steps_cli,
+        diagnostic_stock_io_cli,
+        save_item_allow_ty1_fallback_cli,
+        strict_pre_sale_audit_cli,
+        minimal_osdc_sale_test_cli,
+        minimal_osdc_pasteback_cli,
+        minimal_stock_ledger_matrix_cli,
+        debug_ledger_after_io_cli,
+        ledger_contract_test_cli,
+        stock_lifecycle_isolation_test_cli,
+        stock_master_visibility_test_cli,
+        sbx_finished_good_ledger_probe_cli,
+        portal_checklist_mode_cli,
+        bypass_component_stock_gate_cli,
+        bypass_pre_sale_stock_gate_cli,
+        continue_on_step_failure_cli,
+    ) = cli_pin_and_flags()
 
-    # diagnostic mode may increase verbosity but must never alter control flow.
-    diagnostic_mode = run_mode == "diagnostic"
-    # Legacy flag variables removed from CLI; kept as fixed values during refactor cleanup.
-    diagnostic_stock_io_cli = False
-    strict_pre_sale_audit_cli = False
-    bypass_component_stock_gate_cli = False
-    bypass_pre_sale_stock_gate_cli = False
-    stock_lifecycle_isolation_test_cli = False
-    stock_master_visibility_test_cli = False
-    sbx_finished_good_ledger_probe_cli = False
-    ledger_contract_test_cli = False
-    minimal_osdc_sale_test_cli = False
-    minimal_stock_ledger_matrix_cli = False
-    debug_ledger_after_io_cli = False
-    only_steps_cli = None
-    portal_checklist_mode_cli = False
+    def _argv_has_any_run_mode_flags() -> bool:
+        # If the user already supplied flags, don't override their intent with a menu.
+        raw = [str(x).strip() for x in sys.argv[1:] if str(x).strip()]
+        for x in raw:
+            if x.startswith("--"):
+                return True
+        return False
+
+    if sys.stdin.isatty() and not _argv_has_any_run_mode_flags():
+        print("\nSelect run mode:")
+        print("  1) Normal run (resume saved state; strict gates)")
+        print("  2) Clean run (clear saved state for this PIN)")
+        print("  3) Reset stock only (clear stock-related progress)")
+        print("  4) Sandbox continue (bypass gates + keep going even on failures)")
+        print("     - enables: --bypass-component-stock-gate --bypass-pre-sale-stock-gate --continue-on-step-failure")
+        choice = input("Enter 1, 2, 3, or 4: ").strip()
+        if choice == "2":
+            clean_run_cli = True
+        elif choice == "3":
+            reset_stock_cli = True
+        elif choice == "4":
+            # Make it easy to reach later checklist calls even when SBX is flaky.
+            bypass_component_stock_gate_cli = True
+            bypass_pre_sale_stock_gate_cli = True
+            continue_on_step_failure_cli = True
+            # Commonly needed with SBX stacked state.
+            reset_stock_cli = True
+        else:
+            # Default to "1" (normal strict run).
+            pass
+
+    save_item_allow_ty1_fallback = (
+        SAVE_ITEM_ALLOW_TY1_FALLBACK or save_item_allow_ty1_fallback_cli
+    )
 
     def sequence_fail(msg: str) -> None:
+        if continue_on_step_failure_cli:
+            raise SkipToNextSequenceStep(msg)
         raise SystemExit(msg)
+
+    _continue_step_notes: list[tuple[str, str]] = []
+    if continue_on_step_failure_cli:
+        print(
+            "\nNOTE: --continue-on-step-failure enabled — hard stops skip to the next sequence step "
+            "(ledger/order may break; exit code 1 if any step was skipped).\n"
+        )
+    if clean_run_cli:
+        reset_pin_clean_run(pin_blob)
+        save_test_state(state_root)
+        completed_list = list(pin_blob.get("completed_endpoints") or [])
+        print(
+            "NOTE: --clean-run applied: cleared item_cd / canonical_item_cd / composition / stock / "
+            f"import / sales / purchase steps for this PIN (see {STATE_FILE.name}). "
+            f"Root {SAR_NO_BY_TIN_BHF_KEY!r} (insertStockIO SAR sequence) is unchanged."
+        )
+    if reset_stock_cli:
+        reset_pin_stock_progress(pin_blob)
+        save_test_state(state_root)
+        completed_list = list(pin_blob.get("completed_endpoints") or [])
+        print(
+            "NOTE: --reset-stock applied: removed stock-related steps from completed_endpoints, cleared "
+            "stock_io_next_sar_no (next insert defaults to 1; KRA may respond with Expected: N — the "
+            "runner will sync), stock_io_pending_rsd_qty=0, current_stock_balance cleared. "
+            "If KRA still holds an old SAR sequence, the first insertStockIO may self-correct; "
+            "otherwise clear backlog on the OSCU portal or use a fresh test PIN "
+            f"(see {STATE_FILE.name})."
+        )
+    if force_stock_replay_cli:
+        reset_pin_initial_stock_atomic_pair(pin_blob)
+        save_test_state(state_root)
+        completed_list = list(pin_blob.get("completed_endpoints") or [])
+        print(
+            "NOTE: --force-stock-replay applied: dropped insertStockIOInitial / saveStockMasterInitial "
+            f"from completed_endpoints; stock_io_pending_rsd_qty=0; cleared stock_io_next_sar_no and "
+            f"current_stock_balance (see {STATE_FILE.name})."
+        )
 
     _osdc_prep_steps = (
         "insertStockIOPostComposition",
         "selectStockMoveListPostComposition",
         "saveStockMasterPostComposition",
     )
-    if "saveInvoice" not in completed_list:
+    if not only_steps_cli and "saveInvoice" not in completed_list:
         _ce_prev = list(completed_list)
         completed_list = [x for x in completed_list if x not in _osdc_prep_steps]
         if len(completed_list) != len(_ce_prev):
@@ -5506,7 +5886,11 @@ def main():
     # Pre-hybrid runs often left insertStockIO (+ selectStockMoveList) without saveStockMaster.
     # Local completion markers then misaligned server backlog vs insertStockIOInitial; strip and reset
     # keys so hybrid initial pair can run (still clear OSCU stock if saveStockMaster* keeps failing).
-    if "insertStockIO" in completed_list and "saveStockMaster" not in completed_list:
+    if (
+        not only_steps_cli
+        and "insertStockIO" in completed_list
+        and "saveStockMaster" not in completed_list
+    ):
         print(
             "NOTE: Hybrid migration — dropping legacy insertStockIO / selectStockMoveList "
             "(saveStockMaster never completed). Reset stock_io_pending_rsd_qty=0; clearing "
@@ -5536,7 +5920,11 @@ def main():
     _parent_io_done_tags = frozenset({"insertStockIO", "insertStockIOInitial"})
     _any_parent_insert_done = bool(_parent_io_done_tags.intersection(completed_list))
 
-    if _any_parent_insert_done and pin_blob.get("stock_io_next_sar_no") is None:
+    if (
+        not only_steps_cli
+        and _any_parent_insert_done
+        and pin_blob.get("stock_io_next_sar_no") is None
+    ):
         pin_blob["stock_io_next_sar_no"] = 2
         save_test_state(state_root)
         print(
@@ -5550,7 +5938,8 @@ def main():
 
     # Wedged resume: final parent insertStockIO + selectStockMoveList done but saveStockMaster not.
     if (
-        "insertStockIO" in completed_list
+        not only_steps_cli
+        and "insertStockIO" in completed_list
         and "selectStockMoveList" in completed_list
         and "saveStockMaster" not in completed_list
     ):
@@ -5582,7 +5971,8 @@ def main():
 
     # Final IO recorded but move-list + saveStockMaster never ran (crashed between steps).
     if (
-        "insertStockIO" in completed_list
+        not only_steps_cli
+        and "insertStockIO" in completed_list
         and "selectStockMoveList" not in completed_list
         and "saveStockMaster" not in completed_list
     ):
@@ -5594,7 +5984,14 @@ def main():
         pin_blob["completed_endpoints"] = list(completed_list)
         save_test_state(state_root)
 
-    # No diagnostic/experimental flow-altering flags.
+    if diagnostic_stock_io_cli:
+        apply_diagnostic_stock_io_reset(
+            pin_blob,
+            state_root,
+            app_pin.strip(),
+            str(entry.get("branch_id") or "").strip(),
+        )
+        completed_list = list(pin_blob.get("completed_endpoints") or [])
         save_test_state(state_root)
         print(
             "\n"
@@ -5611,7 +6008,18 @@ def main():
             + "\n"
         )
 
-    if set(SEQUENCE_STEP_NAMES).issubset(set(completed_list)):
+    if only_steps_cli:
+        if set(only_steps_cli).issubset(set(completed_list)):
+            print(
+                f"\nAll --only steps already marked complete for this PIN ({STATE_FILE.name}).\n"
+                "Remove those names from completed_endpoints to re-run, or omit --only for the full sequence."
+            )
+            return 0
+    elif set(SEQUENCE_STEP_NAMES).issubset(set(completed_list)) and not (
+        ledger_contract_test_cli
+        or stock_lifecycle_isolation_test_cli
+        or sbx_finished_good_ledger_probe_cli
+    ):
         print(
             f"\nAll sequence endpoints already completed for this PIN ({STATE_FILE.name}).\n"
             "Nothing to run. Remove or edit completed_endpoints for this PIN to run the sequence again."
@@ -5748,6 +6156,9 @@ def main():
 
     item_cd = reconcile_item_cd_with_pin_state(pin_blob, item_cd)
     initial_parent_stock_qty = float(INITIAL_PARENT_STOCK_QTY)
+    if diagnostic_stock_io_cli:
+        initial_parent_stock_qty = 1.0
+        stock_qty = 1
 
     qty = 1.0
     prc = 100.0
@@ -6358,7 +6769,39 @@ def main():
         ),
     ]
 
-    # Always run the full deterministic sequence (no partial-run flags).
+    if portal_checklist_mode_cli:
+        # Portal parity: run the same /selectStockMoveList call the portal checklist expects.
+        # This must never gate success/failure of the runner.
+        sequence.insert(
+            2,
+            (
+                "portalSelectStockMoveList",
+                "/selectStockMoveList",
+                {
+                    "tin": effective_tin,
+                    "bhfId": branch_id,
+                    "lastReqDt": kra_stock_move_list_last_req_dt_utc_now(),
+                },
+            ),
+        )
+
+    if only_steps_cli:
+        unknown = set(only_steps_cli) - set(SEQUENCE_STEP_NAMES)
+        if unknown:
+            raise SystemExit(
+                "Unknown --only step name(s): "
+                + ", ".join(sorted(unknown))
+                + f". Valid names are SEQUENCE_STEP_NAMES in {Path(__file__).name}."
+            )
+        seq_order = {n: i for i, n in enumerate(SEQUENCE_STEP_NAMES)}
+        sequence = [t for t in sequence if t[0] in only_steps_cli]
+        sequence.sort(key=lambda t: seq_order.get(t[0], 10_000))
+        if not sequence:
+            raise SystemExit("--only matched no steps (internal error).")
+        print(
+            "\nNOTE: --only mode (skips item/stock/sales steps): "
+            + ", ".join(t[0] for t in sequence)
+        )
 
     if manual_cmc:
         new_cmc = manual_cmc
@@ -6460,12 +6903,25 @@ def main():
     ran_insert_stock_io_post_composition_this_run = False
     bhf_audit_rows: list[dict[str, str]] = []
 
+    _comp_bypass_banner_done = False
+
+    def _emit_bypass_component_stock_banner() -> None:
+        nonlocal _comp_bypass_banner_done
+        if not bypass_component_stock_gate_cli or _comp_bypass_banner_done:
+            return
+        print(
+            "\nCOMPONENT STOCK GATE BYPASSED (--bypass-component-stock-gate) - assuming component stock "
+            "is sufficient after successful insertTrnsPurchaseComponentStock or insertStockIO.\n"
+        )
+        _comp_bypass_banner_done = True
+
     def ensure_component_stock_before_composition(cpst_qty_required: float) -> float:
         """
-        Component on-hand for ``saveItemComposition``.
-
-        Stock verification is handled by the unified stock contract elsewhere; do not gate composition
-        on stock-move-list reads.
+        Component on-hand for ``saveItemComposition``: **primary** purchase ledger
+        (``insertTrnsPurchase`` → strict ``selectStockMoveList`` → ``saveStockMaster`` on the component);
+        **secondary** manual ``insertStockIO`` prelude if purchase path does not satisfy the strict gate.
+        With ``--bypass-component-stock-gate``, skip ``selectStockMoveList`` checks; trust
+        ``insertTrnsPurchaseComponentStock`` 000 or prelude ``insertStockIO`` 000 (see runner banner).
         """
         comp_cd = (pin_blob.get("component_item_cd") or "").strip()
         if not comp_cd:
@@ -6478,8 +6934,32 @@ def main():
             _gate_cpst = 1.0
         _gate_cpst = max(_gate_cpst, 1.0)
 
-        # No bypass / strict stock gates here — continue with the flow.
-        return float(_gate_cpst)
+        if bypass_component_stock_gate_cli:
+            _emit_bypass_component_stock_banner()
+            if pin_blob.get("component_trns_purchase_ok"):
+                pin_blob["composition_prelude_logged_io_sar_no"] = 0
+                if not str(pin_blob.get("composition_prelude_logged_sm_result_cd") or "").strip():
+                    pin_blob["composition_prelude_logged_sm_result_cd"] = "000"
+                pin_blob["composition_prelude_logged_component_item_cd"] = str(comp_cd).strip()
+                save_test_state(state_root)
+                print(
+                    "BYPASS: composition prelude — component stock assumed from insertTrnsPurchaseComponentStock "
+                    "000; skipping selectStockMoveList."
+                )
+                return float(_gate_cpst)
+
+        if not bypass_component_stock_gate_cli:
+            strict_gate0, rsd_gate0, _, _ = kra_strict_select_stock_component_on_hand(
+                base_url=BASE_URL,
+                headers=headers,
+                tin=effective_tin,
+                bhf_id=branch_id,
+                component_item_cd=comp_cd,
+                min_rsd_qty=_gate_cpst,
+                log_tag="STRICT selectStockMoveList (composition — early gate before rebuild)",
+            )
+            if strict_gate0 and rsd_gate0 is not None:
+                return float(rsd_gate0)
 
         qty_f = max(
             float(composition_component_purchase_qty),
@@ -6718,8 +7198,25 @@ def main():
             pin_blob.pop("component_purchase_next_invc_no", None)
             save_test_state(state_root)
             time.sleep(8)
-            # Do not gate on stock-move-list reads; proceed using the purchase quantity.
-            sm_payload["rsdQty"] = float(pq)
+            if bypass_component_stock_gate_cli:
+                sm_payload["rsdQty"] = float(pq)
+            else:
+                strict_p, rsd_p, _, _ = kra_strict_select_stock_component_on_hand(
+                    base_url=BASE_URL,
+                    headers=headers,
+                    tin=effective_tin,
+                    bhf_id=branch_id,
+                    component_item_cd=comp_cd,
+                    min_rsd_qty=_gate_cpst,
+                    log_tag="STRICT selectStockMoveList (after composition prelude purchase)",
+                )
+                if not strict_p or rsd_p is None:
+                    print(
+                        "NOTE: purchase posted but strict move list still not satisfied; "
+                        "may fall back to insertStockIO prelude."
+                    )
+                    return None
+                sm_payload["rsdQty"] = float(rsd_p)
             tag_sm = "saveStockMaster (composition prelude after purchase)"
             print(
                 f"PRELUDE saveStockMaster (component, post-purchase) itemCd={comp_cd} "
@@ -7204,9 +7701,88 @@ def main():
             f"rsdQty >= cpstQty ({_gate_cpst:g})."
         )
 
-    # Diagnostic/experimental runners removed.
+    if stock_lifecycle_isolation_test_cli and not only_steps_cli:
+        _rc_iso = run_stock_lifecycle_isolation_test(
+            base_url=BASE_URL,
+            headers=dict(headers),
+            effective_tin=effective_tin,
+            branch_id=branch_id,
+            state_root=state_root,
+            pin_blob=pin_blob,
+            sales_dt=sales_dt,
+            item_cls_dynamic=dict(item_cls_dynamic),
+            item_ty_cd=item_ty_cd,
+            pkg_unit_cd=pkg_unit_cd,
+            qty_unit_cd=qty_unit_cd,
+            on_pin_blob_mutation=lambda: save_test_state(state_root),
+        )
+        save_test_state(state_root)
+        return _rc_iso
 
-    # Diagnostic/experimental single-purpose runners removed.
+    if stock_master_visibility_test_cli and not only_steps_cli:
+        _rc_sm = run_stock_master_visibility_test(
+            base_url=BASE_URL,
+            headers=dict(headers),
+            effective_tin=effective_tin,
+            branch_id=branch_id,
+            state_root=state_root,
+            pin_blob=pin_blob,
+            sales_dt=sales_dt,
+            item_cls_dynamic=dict(item_cls_dynamic),
+            item_ty_cd=item_ty_cd,
+            pkg_unit_cd=pkg_unit_cd,
+            qty_unit_cd=qty_unit_cd,
+            on_pin_blob_mutation=lambda: save_test_state(state_root),
+        )
+        save_test_state(state_root)
+        return _rc_sm
+
+    if sbx_finished_good_ledger_probe_cli and not only_steps_cli:
+        _rc_fg = run_sbx_finished_good_ledger_probe(
+            base_url=BASE_URL,
+            headers=dict(headers),
+            effective_tin=effective_tin,
+            branch_id=branch_id,
+            state_root=state_root,
+            pin_blob=pin_blob,
+            sales_dt=sales_dt,
+            item_cls_dynamic=dict(item_cls_dynamic),
+            pkg_unit_cd=pkg_unit_cd,
+            qty_unit_cd=qty_unit_cd,
+            on_pin_blob_mutation=lambda: save_test_state(state_root),
+        )
+        save_test_state(state_root)
+        return _rc_fg
+
+    if ledger_contract_test_cli and not only_steps_cli:
+        _v = run_ledger_contract_test(
+            base_url=BASE_URL,
+            headers=dict(headers),
+            sales_dt_hint=sales_dt,
+        )
+        return 0 if _v == LEDGER_CONTRACT_VERDICT_POSTED else 1
+
+    if (minimal_osdc_sale_test_cli or minimal_stock_ledger_matrix_cli) and not only_steps_cli:
+        _rc_min = run_minimal_osdc_sale_test(
+            base_url=BASE_URL,
+            headers=dict(headers),
+            effective_tin=effective_tin,
+            branch_id=branch_id,
+            item_cls_dynamic=dict(item_cls_dynamic),
+            sales_dt=sales_dt,
+            cfm_dt=cfm_dt,
+            pkg_unit_cd=pkg_unit_cd,
+            qty_unit_cd=qty_unit_cd,
+            item_ty_cd=item_ty_cd,
+            pin_blob=pin_blob,
+            pasteback=minimal_osdc_pasteback_cli,
+            on_pin_blob_mutation=lambda: save_test_state(state_root),
+            state_root=state_root,
+            stock_ledger_matrix=minimal_stock_ledger_matrix_cli,
+            debug_ledger_after_io=debug_ledger_after_io_cli,
+        )
+        save_test_state(state_root)
+        return _rc_min
 
     reset_insert_stock_io_cluster_url()
     for endpoint_name, endpoint_path, payload_template in sequence:
@@ -7372,7 +7948,7 @@ def main():
 
                 if is_initial_parent_io:
                     ok_initial = False
-                    _init_try_max = 6
+                    _init_try_max = 1 if diagnostic_stock_io_cli else 6
                     _initial_sar_kra_resync_used = False
                     for _sar_try in range(_init_try_max):
                         sar_no_used = resolve_next_insert_stock_sar_no(
@@ -7424,11 +8000,25 @@ def main():
                             f"sarNo={sar_no_used},orgSarNo={org_lbl},"
                             f"regTy={reg_ty},sarTy={sar_ty}"
                         )
-                        print(f"RUNNING {_io_log} [{label}]")
-                        print(
-                            "Request JSON:",
-                            json.dumps(io_root, indent=2, ensure_ascii=False),
-                        )
+                        if diagnostic_stock_io_cli:
+                            print(f"\nRUNNING {_io_log} [{label}]")
+                            print("\n--- INSERT STOCK IO PAYLOAD ---")
+                            print(json.dumps(io_root, indent=2, ensure_ascii=False))
+                        else:
+                            print(f"RUNNING {_io_log} [{label}]")
+                            print(
+                                "Request JSON:",
+                                json.dumps(io_root, indent=2, ensure_ascii=False),
+                            )
+                        if strict_pre_sale_audit_cli:
+                            audit_append_osdc_bhf_row(
+                                bhf_audit_rows,
+                                step_name=endpoint_name,
+                                payload=io_root,
+                                headers=headers,
+                                fallback_tin=effective_tin,
+                                fallback_bhf=branch_id,
+                            )
                         register_insert_stock_io_request_url(url)
                         resp = requests.post(
                             url, headers=headers, json=io_root, timeout=60
@@ -10192,19 +10782,38 @@ def main():
             ):
                 pin_blob["stock_io_pending_rsd_qty"] = 0.0
                 save_test_state(state_root)
-                # No diagnostic/experimental early-exit behavior.
+                if diagnostic_stock_io_cli and endpoint_name == "saveStockMasterInitial":
+                    print("\n--- RESPONSE ---")
+                    print(
+                        json.dumps(parsed, indent=2, ensure_ascii=False, default=str)
+                    )
+                    raise SystemExit(0)
 
-        except Exception:
-            # Fail fast on unexpected errors (no skip/continue modes).
-            raise
+        except SkipToNextSequenceStep as _skip_step:
+            _continue_step_notes.append((endpoint_name, str(_skip_step)))
+            print(
+                f"\nNOTE (--continue-on-step-failure): step {endpoint_name!r} aborted: {_skip_step}"
+            )
+            print(
+                "WARNING: Sandbox ledger/state may be inconsistent; later steps may fail. "
+                "Re-run without this flag for strict certification order."
+            )
+            save_test_state(state_root)
+            continue
 
-    print("\nDONE: validation sequence completed successfully.")
+    if _continue_step_notes:
+        print(
+            f"\nDONE: sequence finished with {len(_continue_step_notes)} skipped step(s) "
+            "(--continue-on-step-failure); see NOTE lines above."
+        )
+    else:
+        print("\nDONE: validation sequence completed successfully.")
     try:
         persist(rows, entry)
         print(f"Saved profile state to {CSV_FILE.name}.")
     except OSError as e:
         print(f"Note: could not write {CSV_FILE.name}: {e}")
-    return 0
+    return 1 if _continue_step_notes else 0
 
 
 if __name__ == "__main__":
