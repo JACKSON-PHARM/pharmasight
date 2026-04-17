@@ -1,48 +1,23 @@
 """
-Plan context helper for tenant limits and demo configuration.
+Plan / limit context for SaaS enforcement.
 
-This module intentionally does not perform any additional database queries.
-It only reads fields that are already present on the provided Tenant instance.
+Option B: all product limits and demo-style caps are read from `companies` only.
+Re-exports helpers from ``company_plan_limits``; do not add Tenant-based helpers here.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from app.utils.company_plan_limits import (  # noqa: F401
+    company_is_demo_plan,
+    company_product_limit,
+    company_branch_limit,
+    company_user_limit,
+    count_distinct_company_users,
+)
 
-
-def get_tenant_plan_context(tenant: Any) -> Dict[str, Any]:
-    """
-    Return a lightweight plan context for the given tenant.
-
-    The function relies solely on attributes already loaded on the tenant object
-    and MUST NOT perform any additional database queries. This keeps it safe
-    to call from performance‑sensitive paths (e.g. per‑request enforcement).
-
-    Returned keys:
-      - plan_type
-      - product_limit
-      - branch_limit
-      - user_limit
-      - demo_expires_at
-    """
-    if tenant is None:
-        return {
-            "plan_type": None,
-            "product_limit": None,
-            "branch_limit": None,
-            "user_limit": None,
-            "demo_expires_at": None,
-        }
-
-    # Use getattr with defaults so this works even if some fields
-    # are not present on older Tenant instances in long‑running processes.
-    return {
-        "plan_type": getattr(tenant, "plan_type", None),
-        "product_limit": getattr(tenant, "product_limit", None),
-        "branch_limit": getattr(tenant, "branch_limit", None),
-        "user_limit": getattr(tenant, "user_limit", None),
-        "demo_expires_at": getattr(tenant, "demo_expires_at", None),
-    }
-
-
-__all__ = ["get_tenant_plan_context"]
-
+__all__ = [
+    "company_is_demo_plan",
+    "company_product_limit",
+    "company_branch_limit",
+    "company_user_limit",
+    "count_distinct_company_users",
+]

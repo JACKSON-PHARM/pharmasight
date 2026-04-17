@@ -32,12 +32,15 @@ from app.dependencies import (
 )
 from app.utils.auth_internal import (
     CLAIM_COMPANY_ID,
+    CLAIM_EMAIL,
     CLAIM_EXP,
     CLAIM_JTI,
     CLAIM_SUB,
     CLAIM_TENANT_SUBDOMAIN,
+    create_signup_handoff_token,
     decode_internal_token,
     decode_internal_token_or_reason,
+    decode_signup_handoff_token,
     revoke_token_in_db,
     insert_refresh_token,
     get_active_refresh_token_by_jti,
@@ -51,19 +54,16 @@ from app.models.user import User
 from app.services.email_service import EmailService
 from app.utils.public_url import get_public_base_url
 from app.utils.auth_internal import (
-    CLAIM_SUB,
     CLAIM_TENANT_SUBDOMAIN,
     TYPE_REFRESH,
     TYPE_RESET,
     create_access_token,
     create_refresh_token,
     create_reset_token,
-    decode_internal_token,
     hash_password,
     validate_new_password,
     verify_password,
 )
-from app.services.plan_context import get_tenant_plan_context
 from app.services.demo_signup_service import create_demo_tenant
 from app.utils.company_access import get_company_access, company_access_to_subscription_access
 
@@ -76,6 +76,7 @@ class AuthMeResponse(BaseModel):
     subscription_access: Optional[str] = None
     # Backward-compatible fields (used by existing SPA). Values are derived from `companies` only.
     tenant_status: Optional[str] = None
+    subscription_plan: Optional[str] = None
     trial_ends_at: Optional[datetime] = None
     trial_days_remaining: Optional[int] = None
     subscription_tenant_subdomain: Optional[str] = None
@@ -88,11 +89,39 @@ class AuthMeResponse(BaseModel):
 LEGACY_TENANT_SUBDOMAIN = "__default__"
 
 
-def _tenant_access_blocked(tenant: Optional[Tenant]) -> bool:
-    """True if tenant is suspended or cancelled (no access to app). None = legacy DB, not blocked."""
-    if tenant is None:
-        return False
-    return (tenant.status or "").lower() in ("suspended", "cancelled")
+def _enforce_login_company_access(db: Session, user: User) -> None:
+    """
+    Access control for password login uses companies only (see get_company_access).
+    Blocks inactive companies; blocks expired self-service demos (subscription_plan == demo).
+    """
+    from app.models.company import Company
+
+    company_id = get_effective_company_id_for_user(db, user)
+    company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
+    access = get_company_access(company)
+    if access == "blocked":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This organization is no longer active. Please contact your administrator or support "
+                "if you need access."
+            ),
+        )
+    plan = (getattr(company, "subscription_plan", None) or "").strip().lower()
+    if plan == "demo" and access == "expired":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your PharmaSight demo has expired. Please upgrade to continue using the system.",
+        )
+
+
+def _company_blocked_for_user(db: Session, user: User) -> bool:
+    """True if the user's effective company is inactive (operators should not receive reset email / reset password)."""
+    from app.models.company import Company
+
+    company_id = get_effective_company_id_for_user(db, user)
+    company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
+    return get_company_access(company) == "blocked"
 
 
 class UsernameLoginRequest(BaseModel):
@@ -134,6 +163,40 @@ class StartDemoResponse(BaseModel):
     access_token: str
     refresh_token: str
     tenant_id: str
+    tenant_subdomain: Optional[str] = None
+    username: Optional[str] = None
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+    signup_handoff_token: Optional[str] = None
+
+
+class ExchangeSignupHandoffRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=16000)
+
+
+def start_demo_api_response(result: dict, request_email: str) -> StartDemoResponse:
+    """Build API response including a short-lived handoff JWT for marketing → ERP on a different origin."""
+    pl = decode_internal_token(result["access_token"], verify_exp=True) or {}
+    user_id = str(result.get("user_id") or pl.get(CLAIM_SUB) or "")
+    email = (result.get("email") or pl.get(CLAIM_EMAIL) or request_email or "").strip()
+    handoff = create_signup_handoff_token(
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        user_id=user_id,
+        email=email,
+        username=result.get("username"),
+        tenant_subdomain=result.get("tenant_subdomain"),
+    )
+    return StartDemoResponse(
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        tenant_id=result["tenant_id"],
+        tenant_subdomain=result.get("tenant_subdomain"),
+        username=result.get("username"),
+        user_id=user_id or None,
+        email=email or None,
+        signup_handoff_token=handoff,
+    )
 
 
 @router.get("/auth/me", response_model=AuthMeResponse)
@@ -189,13 +252,25 @@ def auth_me(
     company_access = get_company_access(company)
     subscription_access = company_access_to_subscription_access(company_access)
     trial_expires_at = getattr(company, "trial_expires_at", None) if company else None
+    trial_days_remaining: Optional[int] = None
+    if trial_expires_at is not None:
+        n = datetime.now(timezone.utc)
+        end = trial_expires_at
+        if getattr(end, "tzinfo", None) is None:
+            end = end.replace(tzinfo=timezone.utc)
+        delta_days = (end - n).days
+        if company_access == "trial":
+            trial_days_remaining = max(0, delta_days)
+        elif company_access == "expired":
+            trial_days_remaining = 0
     return {
         "user_id": str(user.id),
         "roles": roles,
         "subscription_access": subscription_access,
         "tenant_status": getattr(company, "subscription_status", None) if company else None,
+        "subscription_plan": getattr(company, "subscription_plan", None) if company else None,
         "trial_ends_at": trial_expires_at,
-        "trial_days_remaining": None,
+        "trial_days_remaining": trial_days_remaining,
         "subscription_tenant_subdomain": None,
         "subscription_used_default_tenant_fallback": False,
         "company_id": str(company_id) if company_id else None,
@@ -276,14 +351,11 @@ def _find_user_in_all_tenants(
     Returns list of (tenant, user); tenant may be None for legacy-only (caller handles).
     """
     default_url = _normalize_db_url(settings.database_connection_string)
-    tenants = master_db.query(Tenant).filter(
-        Tenant.database_url.isnot(None),
-        ~Tenant.status.in_(["cancelled", "suspended"]),
-    ).limit(MAX_TENANTS_TO_SEARCH).all()
+    tenants = master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).limit(MAX_TENANTS_TO_SEARCH).all()
     subdomains = [t.subdomain for t in tenants]
-    logger.info("Tenant discovery: %d tenant(s) with database_url and active status (subdomains: %s)", len(tenants), subdomains)
+    logger.info("Tenant discovery: %d tenant(s) with database_url (subdomains: %s)", len(tenants), subdomains)
     if not tenants:
-        logger.warning("No tenants with database_url set and status not cancelled/suspended. Check public.tenants: set database_url and status for Harte (and other tenant rows).")
+        logger.warning("No tenants with database_url set. Check public.tenants.database_url for multi-DB setups.")
     found: List[Tuple[Optional[Tenant], User]] = []
     for tenant in tenants:
         try:
@@ -351,6 +423,7 @@ def username_login(
         user = _find_user_in_db(legacy_db, normalized_username, check_email)
         if user:
             _require_password_if_internal(user, body.password)
+            _enforce_login_company_access(legacy_db, user)
             resp = _build_login_response(user, None, body.password, db=legacy_db)
             if resp.refresh_token:
                 _persist_refresh_token_on_login(None, str(user.id), resp.refresh_token)
@@ -366,19 +439,32 @@ def username_login(
         tenant_hint = (body.tenant or "").strip().lower() or None
         if tenant_hint:
             hinted = master_db.query(Tenant).filter(func.lower(Tenant.subdomain) == tenant_hint).first()
-            if hinted and (hinted.status or "").lower() in ("cancelled", "suspended"):
-                logger.info(
-                    "User not found; hinted tenant %s is %s (deleted/deactivated org)",
-                    tenant_hint,
-                    hinted.status,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=(
-                        "This organization is no longer active. Your account was part of an organization that has been deactivated. "
-                        "Please contact your administrator or support if you need access."
-                    ),
-                )
+            if hinted:
+                hn = (hinted.name or "").strip()
+                if hn:
+                    hinted_co_db = SessionLocal()
+                    try:
+                        from app.models.company import Company
+
+                        co = (
+                            hinted_co_db.query(Company)
+                            .filter(func.lower(func.trim(Company.name)) == hn.lower())
+                            .first()
+                        )
+                        if co and get_company_access(co) == "blocked":
+                            logger.info(
+                                "User not found; hinted tenant %s matches inactive company",
+                                tenant_hint,
+                            )
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                detail=(
+                                    "This organization is no longer active. Your account was part of an organization that has been deactivated. "
+                                    "Please contact your administrator or support if you need access."
+                                ),
+                            )
+                    finally:
+                        hinted_co_db.close()
         logger.warning(
             "User not found in legacy DB or any tenant DB (username=%s). "
             "Ensure tenant DBs are reachable and public.tenants have database_url set.",
@@ -391,42 +477,26 @@ def username_login(
         )
     if len(found_list) == 1:
         tenant, user = found_list[0]
-        if _tenant_access_blocked(tenant):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account suspended. Please contact support.",
-            )
-        # Expired trials may still sign in; the app restricts features until they upgrade.
-        # Demo expiry enforcement: block login for expired demo tenants before issuing tokens
-        if tenant is not None:
-            plan_ctx = get_tenant_plan_context(tenant)
-            if plan_ctx.get("plan_type") == "demo":
-                demo_expires_at = plan_ctx.get("demo_expires_at")
-                if demo_expires_at is not None:
-                    end = demo_expires_at
-                    if end.tzinfo is None:
-                        end = end.replace(tzinfo=timezone.utc)
-                    if end < datetime.now(timezone.utc):
-                        raise HTTPException(
-                            status_code=status.HTTP_403_FORBIDDEN,
-                            detail="Your PharmaSight demo has expired. Please upgrade to continue using the system.",
-                        )
+        # Expired non-demo trials may still sign in; the app restricts features until they upgrade.
         _require_password_if_internal(user, body.password)
         # User found in legacy/app DB (tenant is None) or in a tenant DB (use app DB if tenant DB unreachable)
         if tenant is None:
             db = SessionLocal()
             try:
+                _enforce_login_company_access(db, user)
                 resp = _build_login_response(user, tenant, body.password, db=db)
             finally:
                 db.close()
         else:
             try:
                 with tenant_db_session(tenant) as tenant_db:
+                    _enforce_login_company_access(tenant_db, user)
                     resp = _build_login_response(user, tenant, body.password, db=tenant_db)
             except OperationalError as e:
                 if "Tenant or user not found" in str(e) or "FATAL:" in str(e).upper():
                     db = SessionLocal()
                     try:
+                        _enforce_login_company_access(db, user)
                         resp = _build_login_response(user, tenant, body.password, db=db)
                     finally:
                         db.close()
@@ -492,12 +562,40 @@ def auth_start_demo(request: Request, body: StartDemoRequest):
             detail="Could not create your account right now. Please try again later.",
         )
 
-    return StartDemoResponse(
-        access_token=result["access_token"],
-        refresh_token=result["refresh_token"],
-        tenant_id=result["tenant_id"],
-        tenant_subdomain=result["tenant_subdomain"],
-        username=result["username"],
+    return start_demo_api_response(result, str(body.email))
+
+
+@router.post("/auth/exchange-signup-handoff", response_model=UsernameLoginResponse)
+@limiter.limit("30/minute")
+def auth_exchange_signup_handoff(
+    request: Request,
+    body: ExchangeSignupHandoffRequest,
+    master_db: Session = Depends(get_master_db),
+):
+    """
+    Exchange a short-lived signup handoff JWT (from public marketing signup) for the same payload
+    as username-login: access + refresh tokens. Persists refresh token like a normal login.
+    """
+    parsed = decode_signup_handoff_token((body.token or "").strip())
+    if not parsed:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired handoff token.",
+        )
+    subd = parsed.get("tenant_subdomain")
+    tenant = None
+    if subd:
+        tenant = master_db.query(Tenant).filter(Tenant.subdomain == subd).first()
+    if parsed.get("refresh_token"):
+        _persist_refresh_token_on_login(tenant, parsed["user_id"], parsed["refresh_token"])
+    return UsernameLoginResponse(
+        email=parsed["email"],
+        user_id=parsed["user_id"],
+        username=parsed.get("username"),
+        tenant_subdomain=subd,
+        access_token=parsed["access_token"],
+        refresh_token=parsed["refresh_token"],
+        must_change_password=False,
     )
 
 
@@ -757,8 +855,20 @@ def auth_request_reset(
         print("[request-reset] No user found for this email; no email sent. (Use an email that exists in your tenant DB.)")
         return {"message": "If an account exists, you will receive a reset link.", "email_sent": False}
     tenant, user = found_list[0]
-    if _tenant_access_blocked(tenant):
-        return {"message": "If an account exists, you will receive a reset link.", "email_sent": False}
+    try:
+        if tenant is None:
+            db_chk = SessionLocal()
+            try:
+                if _company_blocked_for_user(db_chk, user):
+                    return {"message": "If an account exists, you will receive a reset link.", "email_sent": False}
+            finally:
+                db_chk.close()
+        else:
+            with tenant_db_session(tenant) as db_chk:
+                if _company_blocked_for_user(db_chk, user):
+                    return {"message": "If an account exists, you will receive a reset link.", "email_sent": False}
+    except Exception:
+        logger.debug("[request-reset] company access check skipped due to DB error", exc_info=True)
     subdomain_for_token = tenant.subdomain if tenant else LEGACY_TENANT_SUBDOMAIN
     logger.info("[request-reset] User found, queuing reset email to %s (tenant=%s)", user.email, subdomain_for_token)
     reset_token = create_reset_token(str(user.id), subdomain_for_token)
@@ -865,6 +975,8 @@ def auth_reset_password(
             user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
             if not user:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            if _company_blocked_for_user(db, user):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This organization is no longer active.")
             pw_error = validate_new_password(body.new_password)
             if pw_error:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pw_error)
@@ -878,12 +990,12 @@ def auth_reset_password(
     tenant = master_db.query(Tenant).filter(Tenant.subdomain == tenant_subdomain).first()
     if not tenant or not tenant.database_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
-    if (tenant.status or "").lower() in ("suspended", "cancelled"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
     with tenant_db_session(tenant) as db:
         user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        if _company_blocked_for_user(db, user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This organization is no longer active.")
         pw_error = validate_new_password(body.new_password)
         if pw_error:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pw_error)

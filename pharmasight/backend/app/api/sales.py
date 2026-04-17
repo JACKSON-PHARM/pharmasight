@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime, time as dt_time, timedelta, timezone
@@ -31,7 +31,6 @@ from app.models import (
     CreditNote, CreditNoteItem,
 )
 from app.models.company import Company, Branch
-from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.permission import Permission, RolePermission
 from app.schemas.sale import (
@@ -390,7 +389,7 @@ def get_sales_invoice_pdf(
     invoice_id: UUID,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Generate and return sales invoice as PDF (Download PDF). On-demand only.
@@ -465,7 +464,7 @@ def _get_sales_invoice_response(
     user: User,
     *,
     request: Optional[Request] = None,
-    tenant: Optional[Tenant] = None,
+    tenant: Optional[Any] = None,
 ):
     """Build sales invoice response (load, enrich, return). Optional request for timings; optional tenant for logo URL."""
     t0 = time.perf_counter()
@@ -608,7 +607,7 @@ def get_sales_invoice(
     invoice_id: UUID,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Get sales invoice by ID with full item details. Works without tenant (no tenant-assets logo URL)."""
@@ -622,7 +621,7 @@ def add_sales_invoice_item(
     item_data: SalesInvoiceItemCreate,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """

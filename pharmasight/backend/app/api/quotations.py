@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 from decimal import Decimal
 from datetime import date, datetime
@@ -18,7 +18,6 @@ from app.models import (
     Quotation, QuotationItem, SalesInvoice, SalesInvoiceItem,
     Item, InventoryLedger, Company, Branch, User,
 )
-from app.models.tenant import Tenant
 from app.schemas.sale import (
     QuotationCreate, QuotationResponse, QuotationUpdate,
     QuotationItemCreate, QuotationItemResponse,
@@ -157,7 +156,7 @@ def get_quotation_pdf(
     quotation_id: UUID,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Generate and return quotation as PDF (Download PDF). Logo right, company left; footer: prepared/printed/served."""
@@ -231,7 +230,7 @@ def get_quotation(
     quotation_id: UUID,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Get quotation by ID with full item details, margin, and print header (company/branch/user)"""
@@ -425,7 +424,7 @@ def add_quotation_item(
     item_data: QuotationItemCreate,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ):
     """Add one line to an existing draft quotation. Rejects duplicate item_id. O(1) w.r.t. line count; single load with joinedload/selectinload."""

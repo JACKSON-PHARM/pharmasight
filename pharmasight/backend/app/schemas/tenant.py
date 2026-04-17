@@ -71,6 +71,7 @@ class TenantResponse(TenantBase):
     """Schema for tenant response. admin_email is str so DB values like dev@localhost are accepted."""
     admin_email: str  # Override EmailStr to allow dev/localhost emails from DB
     id: UUID
+    company_id: UUID
     subdomain: str
     custom_domain: Optional[str] = None
     status: str

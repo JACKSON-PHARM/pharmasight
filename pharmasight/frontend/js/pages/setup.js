@@ -11,7 +11,7 @@ async function loadSetup() {
     console.log('Loading setup wizard...');
     console.log('Current CONFIG:', { COMPANY_ID: CONFIG.COMPANY_ID, BRANCH_ID: CONFIG.BRANCH_ID });
     
-    // Check authentication - user must be logged in (use AuthBootstrap for tenant + legacy)
+    // Check authentication - user must be logged in (AuthBootstrap: company-scoped session; legacy org hint optional)
     const user = (typeof AuthBootstrap !== 'undefined' && AuthBootstrap.getCurrentUser) ? AuthBootstrap.getCurrentUser() : (typeof Auth !== 'undefined' && Auth.getCurrentUser) ? await Auth.getCurrentUser() : null;
     if (!user) {
         console.log('User not authenticated, redirecting to login');

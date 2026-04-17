@@ -11,8 +11,10 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 import subprocess
 import sys
 
+from app.database import SessionLocal
 from app.database_master import get_master_db, MasterSessionLocal
-from app.models.tenant import Tenant, TenantInvite, TenantSubscription, TenantModule, SubscriptionPlan
+from app.models.tenant import Tenant, TenantInvite
+from app.services.company_provisioning_service import create_company_with_hq_branch_and_registry
 from app.config import settings
 
 # Note: For Supabase Management API, you'll need to install:
@@ -41,18 +43,32 @@ class OnboardingService:
         if existing:
             raise ValueError(f"Tenant with email {email} already exists")
         
-        # Create tenant record
-        tenant = Tenant(
-            name=company_name,
-            subdomain=subdomain,
-            admin_email=email,
-            status='trial',
-            trial_ends_at=datetime.utcnow() + timedelta(days=14)
-        )
-        
-        db.add(tenant)
-        db.flush()  # Get tenant.id
-        
+        # Company + HQ branch (app DB) + infra tenant row in one orchestrated path (Option B).
+        app_db = SessionLocal()
+        try:
+            company, _branch, tenant = create_company_with_hq_branch_and_registry(
+                app_db,
+                db,
+                company_kwargs={
+                    "name": company_name,
+                    "currency": "KES",
+                    "timezone": "Africa/Nairobi",
+                    "is_active": True,
+                },
+                admin_email=email,
+                tenant_subdomain=subdomain,
+            )
+            tenant_id = tenant.id
+        except Exception:
+            app_db.rollback()
+            raise
+        finally:
+            app_db.close()
+
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if not tenant:
+            raise RuntimeError("Onboarding: tenant registry row missing after provisioning")
+
         # Create Supabase database (or use existing connection for now)
         # TODO: Implement Supabase Management API integration
         # For now, we'll use the same database but different schema approach
@@ -76,31 +92,6 @@ class OnboardingService:
         )
         
         tenant.admin_user_id = admin_user_id
-        
-        # Create trial subscription
-        starter_plan = db.query(SubscriptionPlan).filter(
-            SubscriptionPlan.name == 'Starter'
-        ).first()
-        
-        if starter_plan:
-            subscription = TenantSubscription(
-                tenant_id=tenant.id,
-                plan_id=starter_plan.id,
-                status='trial',
-                current_period_start=datetime.utcnow(),
-                current_period_end=datetime.utcnow() + timedelta(days=14)
-            )
-            db.add(subscription)
-            
-            # Enable modules from plan
-            if starter_plan.included_modules:
-                for module_name in starter_plan.included_modules:
-                    module = TenantModule(
-                        tenant_id=tenant.id,
-                        module_name=module_name,
-                        is_enabled=True
-                    )
-                    db.add(module)
         
         # Generate invite token
         invite = OnboardingService._create_invite(tenant.id, db)

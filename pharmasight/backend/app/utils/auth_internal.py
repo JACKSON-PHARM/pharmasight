@@ -3,7 +3,7 @@ Internal authentication: password hashing (bcrypt) and JWT (access, refresh, res
 Uses bcrypt directly to avoid passlib/bcrypt 4.x compatibility issues.
 """
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from uuid import uuid4
 
 import bcrypt
@@ -35,6 +35,7 @@ CLAIM_IMPERSONATED_BY = "impersonated_by"
 TYPE_ACCESS = "access"
 TYPE_REFRESH = "refresh"
 TYPE_RESET = "reset"
+TYPE_SIGNUP_HANDOFF = "signup_handoff"
 ISSUER_INTERNAL = "pharmasight-internal"
 
 
@@ -143,6 +144,58 @@ def create_reset_token(user_id: str, tenant_subdomain: str) -> str:
         delta,
         token_type=TYPE_RESET,
     )
+
+
+def create_signup_handoff_token(
+    *,
+    access_token: str,
+    refresh_token: str,
+    user_id: str,
+    email: str,
+    username: Optional[str],
+    tenant_subdomain: Optional[str],
+    expires_minutes: int = 15,
+) -> str:
+    """
+    Short-lived JWT carrying access + refresh tokens for cross-origin marketing → ERP handoff.
+    Client sends this once to POST /api/auth/exchange-signup-handoff; prefer URL hash (not sent to server).
+    """
+    payload: Dict[str, Any] = {
+        CLAIM_SUB: str(user_id),
+        CLAIM_EMAIL: (email or "").strip(),
+        "h_at": access_token,
+        "h_rt": refresh_token,
+        "uname": (username or "") or "",
+    }
+    if tenant_subdomain is not None:
+        payload[CLAIM_TENANT_SUBDOMAIN] = tenant_subdomain
+    return _internal_encode(
+        payload,
+        timedelta(minutes=expires_minutes),
+        token_type=TYPE_SIGNUP_HANDOFF,
+    )
+
+
+def decode_signup_handoff_token(token: str) -> Optional[dict]:
+    """Decode a signup handoff JWT. Returns dict with access_token, refresh_token, user_id, email, username, tenant_subdomain or None."""
+    pl = decode_internal_token(token, verify_exp=True)
+    if not pl:
+        return None
+    if (pl.get(CLAIM_TYPE) or "").strip() != TYPE_SIGNUP_HANDOFF:
+        return None
+    at = pl.get("h_at")
+    rt = pl.get("h_rt")
+    uid = pl.get(CLAIM_SUB)
+    if not at or not rt or not uid:
+        return None
+    return {
+        "access_token": at,
+        "refresh_token": rt,
+        "user_id": str(uid),
+        "email": (pl.get(CLAIM_EMAIL) or "").strip(),
+        "username": ((pl.get("uname") or "") or "").strip() or None,
+        "tenant_subdomain": ((pl.get(CLAIM_TENANT_SUBDOMAIN) or "") or "").strip() or None,
+    }
 
 
 # Short expiry for impersonation (no refresh; admin must re-impersonate to extend)

@@ -3,10 +3,11 @@
  *
  * Manages global app state and logout functionality.
  * Ensures full cleanup on logout and on 401 (expired/revoked token): no memory of
- * session, tenant, or user so the next login never sees another user's or tenant's data.
+ * session, org hint, or user so the next login never sees another account's data.
+ * (Storage key `pharmasight_tenant_subdomain` is a legacy name: optional org subdomain for invite URLs, not "the company".)
  */
 
-/** Session-related keys we always remove on logout / 401 (explicit so tenant is never left behind). */
+/** Session-related keys we always remove on logout / 401 (including legacy org-subdomain hint). */
 const SESSION_KEYS_TO_CLEAR = [
     'pharmasight_tenant_subdomain',
     'pharmasight_username',
@@ -17,7 +18,7 @@ const SESSION_KEYS_TO_CLEAR = [
 ];
 
 /**
- * Clear all app state (used on logout and on 401). Removes tenant, user, tokens, and config
+ * Clear all app state (used on logout and on 401). Removes org hint, user, tokens, and config
  * so there is no memory of the session.
  */
 async function clearAppState() {
@@ -36,7 +37,7 @@ async function clearAppState() {
         }
     }
 
-    // Explicitly remove session keys (tenant, user, tokens) so we never leave another tenant in storage
+    // Explicitly remove session keys (org hint, user, tokens) so we never leave another account in storage
     try {
         SESSION_KEYS_TO_CLEAR.forEach(function (key) {
             try {
@@ -76,8 +77,8 @@ async function clearAppState() {
 }
 
 /**
- * Build login URL without any tenant query param so the next user can sign in to any tenant.
- * Prevents "invalid token" when a user from another tenant opens the same browser.
+ * Build login URL without any ?tenant= query param so the next user can sign in to any organization.
+ * Prevents "invalid token" when a different user opens the same browser.
  */
 function getCleanLoginUrl() {
     const origin = typeof window !== 'undefined' && window.location.origin ? window.location.origin : '';
@@ -89,7 +90,7 @@ function getCleanLoginUrl() {
 /**
  * Global logout function
  * Forces immediate redirect to login, then signs out and clears state.
- * Resets URL to a tenant-free login URL so the next user can sign in to any tenant.
+ * Resets URL to a clean login URL so the next user can sign in to any organization.
  */
 /**
  * Call backend to terminate session (revoke token server-side).

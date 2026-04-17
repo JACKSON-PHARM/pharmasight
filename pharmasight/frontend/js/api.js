@@ -81,7 +81,9 @@ function _pharmasightEndpointAuthFlags(endpoint) {
         ep.indexOf('/api/auth/username-login') !== -1 ||
         ep.indexOf('/api/auth/refresh') !== -1 ||
         ep.indexOf('/api/auth/request-reset') !== -1 ||
-        ep.indexOf('/api/auth/reset-password') !== -1;
+        ep.indexOf('/api/auth/reset-password') !== -1 ||
+        ep.indexOf('/api/auth/exchange-signup-handoff') !== -1 ||
+        ep.indexOf('/api/public/signup') !== -1;
     const isAdminRoute = ep.indexOf('/api/admin/') === 0;
     const isAdminLogin = ep.indexOf('/api/admin/auth/login') !== -1;
     return { isAuthEndpoint, isAdminRoute, isAdminLogin };

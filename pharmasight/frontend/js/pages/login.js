@@ -827,16 +827,16 @@ async function loadLogin() {
                         const detailStr = typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || '';
                         const is503Unreachable = usernameResponse.status === 503 && (detailStr.toLowerCase().includes('unreachable') || detailStr.toLowerCase().includes('temporarily'));
                         if (is503Unreachable && errorDiv) {
-                            errorDiv.innerHTML = '<span>' + String(detailStr || 'Tenant database is temporarily unreachable.').replace(/</g, '&lt;') + '</span>' +
+                            errorDiv.innerHTML = '<span>' + String(detailStr || 'The database for this organization is temporarily unreachable.').replace(/</g, '&lt;') + '</span>' +
                                 '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">If you belong to a <strong>different organization</strong>, clear the URL (remove <code>?tenant=...</code>) and sign in again so we can look up your organization. Or use the link from your invite email.</p>';
                             errorDiv.style.display = 'block';
                             return;
                         }
                         if (is503Unreachable && !errorDiv) {
-                            showToast(detailStr || 'Tenant database temporarily unreachable. Try without ?tenant= in the URL.', 'error');
+                            showToast(detailStr || 'Organization database temporarily unreachable. Try without ?tenant= in the URL.', 'error');
                             return;
                         }
-                        // Same username in more than one tenant: show picker
+                        // Same username in more than one organization (legacy subdomain routing): show picker
                         if (usernameResponse.status === 409 && errorData.detail && typeof errorData.detail === 'object' && errorData.detail.code === 'multiple_tenants') {
                             const msg = errorData.detail.message || 'This username exists in more than one organization.';
                             const tenants = errorData.detail.tenants || [];

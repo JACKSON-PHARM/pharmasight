@@ -4,13 +4,11 @@ Demo signup service.
 This service will be responsible for self‑service demo onboarding from the public
 login page without going through the existing admin‑driven onboarding flow.
 
-The core responsibilities of create_demo_tenant (to be implemented in later phases):
-  - create a tenant record with plan_type='demo'
-  - set demo_expires_at based on configured demo duration
-  - provision the tenant database using the existing provisioning services
-  - create a Company for the pharmacy
-  - create a single HQ Branch for that company
-  - create the first admin user for the tenant and issue authentication tokens
+create_demo_tenant:
+  - create a minimal master ``Tenant`` row (subdomain + routing metadata only; Option B)
+  - create a ``Company`` with trial, limits, and ``subscription_plan='demo'`` (entitlement)
+  - provision the shared app database using the existing migration pipeline
+  - create HQ ``Branch``, admin ``User``, and issue authentication tokens
 """
 from __future__ import annotations
 
@@ -34,6 +32,7 @@ from app.services.migration_service import run_migrations_for_url
 from app.services.email_service import EmailService
 from app.utils.username_generator import generate_username_from_name
 from app.utils.auth_internal import hash_password, create_access_token, create_refresh_token
+from app.services.tenant_registry_service import create_and_commit_registry_tenant
 
 # Demo signup uses the shared application DB. Running the full migrations pipeline per request is
 # expensive and can be abused for resource exhaustion. We guard migrations so we only run them
@@ -70,8 +69,8 @@ def create_demo_tenant(
 
     Behaviour:
       - Validate basic input (non-empty organization name, full name, email, password).
-      - Create a new Tenant in the master database with plan_type='demo' and demo limits.
-      - Provision the tenant database (using existing migration pipeline).
+      - Create a minimal master ``Tenant`` row (infra) and a ``Company`` row (entitlement + limits).
+      - Provision the shared application database (using existing migration pipeline).
       - In the tenant database, create:
           * a Company representing the organization,
           * a single HQ Branch marked as HQ,
@@ -103,7 +102,7 @@ def create_demo_tenant(
         org_norm_lc = org_norm.lower()
         # Recovery mode: sometimes we may already have the Company/User in the shared app DB
         # (because an earlier attempt partially succeeded), but the master DB `tenants` row is
-        # missing—so the tenant won't appear in the admin "Tenant list" page.
+        # missing—recovery below recreates the master row and setup invite.
         recover_existing_app_user = False
         recover_company_id: uuid.UUID | None = None
         recover_admin_user_id: uuid.UUID | None = None
@@ -253,12 +252,16 @@ def create_demo_tenant(
                 max_demo_signups_per_hour = None
         if max_demo_signups_per_hour and max_demo_signups_per_hour > 0:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
-            recent_demo_count = (
-                master_db.query(Tenant)
-                .filter(Tenant.plan_type == "demo")
-                .filter(Tenant.created_at >= cutoff)
-                .count()
-            )
+            app_db_count: Session = SessionLocal()
+            try:
+                recent_demo_count = (
+                    app_db_count.query(Company)
+                    .filter(func.lower(func.trim(Company.subscription_plan)) == "demo")
+                    .filter(Company.created_at >= cutoff)
+                    .count()
+                )
+            finally:
+                app_db_count.close()
             if recent_demo_count >= max_demo_signups_per_hour:
                 raise ValueError("Too many demo signups. Please try again later.")
 
@@ -275,23 +278,6 @@ def create_demo_tenant(
         now = datetime.now(timezone.utc)
         demo_expires_at = now + timedelta(days=demo_duration_days)
 
-        tenant = Tenant(
-            name=org_norm,
-            subdomain=subdomain,
-            admin_email=email,
-            admin_full_name=full_name,
-            phone=phone,
-            status="trial",
-            trial_ends_at=demo_expires_at,
-            plan_type="demo",
-            demo_expires_at=demo_expires_at,
-            product_limit=demo_product_limit,
-            branch_limit=1,
-            user_limit=demo_user_limit,
-        )
-        master_db.add(tenant)
-        master_db.flush()  # assign tenant.id
-
         # For demo tenants, we reuse the main application database URL and run migrations once if needed.
         database_url = settings.database_connection_string
         if not database_url:
@@ -301,15 +287,7 @@ def create_demo_tenant(
         # that helper only allows an empty database; demo uses the shared app DB which is already initialized.
         _ensure_shared_db_migrated_once(database_url)
 
-        now_prov = datetime.now(timezone.utc)
-        dbname = f"pharmasight_{_sanitize_db_name(tenant.subdomain)}"
-        tenant.database_name = dbname
-        tenant.database_url = database_url
-        tenant.is_provisioned = True
-        tenant.provisioned_at = now_prov
-        master_db.flush()
-
-        # Now create Company, HQ Branch, and Admin User inside the tenant/app DB.
+        # Now create Company, HQ Branch, and Admin User inside the tenant/app DB (company_id before master Tenant).
         tenant_db: Session = SessionLocal()
         company_id: uuid.UUID | None = None
         admin_user_id: uuid.UUID | None = None
@@ -391,11 +369,26 @@ def create_demo_tenant(
                         )
                     )
 
+                if company.trial_expires_at is None or company.trial_expires_at < demo_expires_at:
+                    company.trial_expires_at = demo_expires_at
+                if not (company.subscription_plan or "").strip():
+                    company.subscription_plan = "demo"
+                company.subscription_status = None
+                company.product_limit = demo_product_limit
+                company.branch_limit = 1
+                company.user_limit = demo_user_limit
                 tenant_db.commit()
             else:
                 company = Company(
                     name=org_norm,
                     phone=phone,
+                    trial_expires_at=demo_expires_at,
+                    subscription_plan="demo",
+                    subscription_status=None,
+                    is_active=True,
+                    product_limit=demo_product_limit,
+                    branch_limit=1,
+                    user_limit=demo_user_limit,
                 )
                 tenant_db.add(company)
                 tenant_db.flush()
@@ -461,26 +454,38 @@ def create_demo_tenant(
         finally:
             tenant_db.close()
 
-        # Keep tenant record consistent for admin views (tenant.admin_user_id is used in several places).
+        if company_id is None:
+            raise RuntimeError("Demo signup: company_id was not captured before creating tenant registry row.")
+
+        now_prov = datetime.now(timezone.utc)
+        dbname = f"pharmasight_{_sanitize_db_name(subdomain)}"
         if not admin_user_id:
             raise RuntimeError("Demo signup: admin_user_id was not set.")
         if not admin_username:
             raise RuntimeError("Demo signup: admin_username was not set.")
-        tenant.admin_user_id = admin_user_id
-        master_db.flush()
+        tenant = create_and_commit_registry_tenant(
+            master_db,
+            company_id=company_id,
+            company_name=org_norm,
+            admin_email=email,
+            subdomain=subdomain,
+            database_url=database_url,
+            database_name=dbname,
+            admin_full_name=full_name,
+            phone=phone,
+            admin_user_id=admin_user_id,
+            is_provisioned=True,
+            provisioned_at=now_prov,
+        )
 
         # Send setup invite email so the user has a clear "complete setup" direction
         # and so the invite can be re-sent later from the tenant admin page.
         _create_setup_invite_and_send(tenant, to_email=email, username=admin_username)
 
         # Issue authentication tokens (demo tenants use the app DB, so company_id from company we just created)
-        if company_id is None:
-            raise RuntimeError("Demo signup: company_id was not captured before session close.")
         company_id_str = str(company_id)
         access_token = create_access_token(str(admin_user_id), email, tenant_subdomain=subdomain, company_id=company_id_str)
         refresh_token = create_refresh_token(str(admin_user_id), email, tenant_subdomain=subdomain, company_id=company_id_str)
-
-        master_db.commit()
 
         return {
             "access_token": access_token,
@@ -488,6 +493,8 @@ def create_demo_tenant(
             "tenant_id": str(tenant.id),
             "tenant_subdomain": tenant.subdomain,
             "username": admin_username,
+            "user_id": str(admin_user_id),
+            "email": email,
         }
     except Exception:
         master_db.rollback()

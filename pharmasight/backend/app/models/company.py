@@ -1,7 +1,7 @@
 """
 Company and Branch models
 """
-from sqlalchemy import Column, String, Boolean, Text, Date, ForeignKey, Numeric
+from sqlalchemy import Column, String, Boolean, Text, Date, ForeignKey, Numeric, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -30,6 +30,13 @@ class Company(Base):
     subscription_status = Column(Text, nullable=True)
     trial_expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+    # Optional SaaS caps (enforced from companies only; never read from Tenant)
+    product_limit = Column(Integer, nullable=True)
+    branch_limit = Column(Integer, nullable=True)
+    user_limit = Column(Integer, nullable=True)
+    # Stripe (Phase 2 — company-scoped; never mirrored on tenants)
+    stripe_customer_id = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

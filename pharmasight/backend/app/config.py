@@ -112,7 +112,11 @@ class Settings(BaseSettings):
     
     # CORS - parse from comma-separated string or use default
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8000,http://127.0.0.1:5500,http://127.0.0.1:3000"
-    
+    # Comma-separated extra browser origins allowed to call the API (e.g. Netlify marketing site).
+    MARKETING_CORS_ORIGINS: str = os.getenv("MARKETING_CORS_ORIGINS", "").strip()
+    # ERP SPA URL for signup handoff redirects. Defaults to APP_PUBLIC_URL when empty (see effective_erp_app_url).
+    ERP_APP_URL: str = os.getenv("ERP_APP_URL", "").strip()
+
     # Dev origins we always include so local frontend (different port) works even if CORS_ORIGINS is overridden
     _DEV_ORIGINS: List[str] = [
         "http://localhost:3000",
@@ -126,15 +130,20 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> List[str]:
         """Get CORS origins as a list. Always includes common dev origins so frontend on :3000 works."""
+        marketing_extra = [
+            o.strip()
+            for o in (self.MARKETING_CORS_ORIGINS or "").split(",")
+            if o.strip()
+        ]
         if not self.CORS_ORIGINS:
-            return list(dict.fromkeys(self._DEV_ORIGINS))  # dedupe, preserve order
+            return list(dict.fromkeys(self._DEV_ORIGINS + marketing_extra))
         # Split by comma and strip whitespace
         origins = [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
         # If "*" is in the list, we still can't use it with allow_credentials=True; use explicit list instead
         if "*" in origins:
-            return list(dict.fromkeys(self._DEV_ORIGINS))
+            return list(dict.fromkeys(self._DEV_ORIGINS + marketing_extra))
         # Always merge in dev origins so localhost:3000 is never blocked
-        merged = list(dict.fromkeys(origins + self._DEV_ORIGINS))
+        merged = list(dict.fromkeys(origins + self._DEV_ORIGINS + marketing_extra))
         return merged if merged else list(dict.fromkeys(self._DEV_ORIGINS))
     
     # Email (tenant invites via SMTP)
@@ -146,6 +155,14 @@ class Settings(BaseSettings):
     # Base URL for invite/password-reset links. Set to your public frontend URL (e.g. https://app.pharmasight.com)
     # so links work for recipients; if unset or localhost, links will point to localhost and fail for external users.
     APP_PUBLIC_URL: str = os.getenv("APP_PUBLIC_URL", "http://localhost:3000")
+
+    @property
+    def effective_erp_app_url(self) -> str:
+        """Public ERP SPA base URL (trailing slashes stripped). Used for marketing → app redirects."""
+        u = (self.ERP_APP_URL or "").strip().rstrip("/")
+        if u:
+            return u
+        return (self.APP_PUBLIC_URL or "").strip().rstrip("/") or "http://localhost:8000"
 
     # Single-DB mode: when no tenant row exists for DATABASE_URL, use this UUID for storage paths
     # (logo, stamp, signatures, PO PDFs). Set to a fixed UUID so logo/stamp upload works without

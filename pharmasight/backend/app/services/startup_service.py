@@ -7,6 +7,7 @@ Handles the complete company setup flow (single-DB multi-company):
 - If companies exist and user has no branch role: create a new company and assign user (multi-company).
 """
 from typing import Optional
+import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from uuid import UUID, uuid4
@@ -18,6 +19,23 @@ from app.models import (
     CompanyPricingDefault, DocumentSequence
 )
 from app.services.branch_settings_service import ensure_default_branch_settings
+
+logger = logging.getLogger(__name__)
+
+
+def _ensure_master_registry_for_company(company_id: UUID) -> None:
+    """Ensure master ``tenants`` has a row for this ``company_id`` (Option B)."""
+    from app.database_master import MasterSessionLocal
+    from app.services.tenant_registry_service import ensure_tenant_row_for_company
+
+    master = MasterSessionLocal()
+    try:
+        ensure_tenant_row_for_company(master, company_id)
+    except Exception:
+        logger.exception("Failed to sync master tenant registry for company_id=%s", company_id)
+        raise
+    finally:
+        master.close()
 
 
 class StartupService:
@@ -176,6 +194,7 @@ class StartupService:
             db.commit()
             db.refresh(company)
             db.refresh(branch)
+            _ensure_master_registry_for_company(company.id)
             return {
                 'company_id': str(company.id),
                 'user_id': str(admin_user.id),
@@ -308,7 +327,8 @@ class StartupService:
             db.refresh(company)
             db.refresh(admin_user)
             db.refresh(branch)
-            
+            _ensure_master_registry_for_company(company.id)
+
             return {
                 'company_id': str(company.id),
                 'user_id': str(admin_user.id),

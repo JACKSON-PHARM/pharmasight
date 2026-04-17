@@ -154,9 +154,73 @@ function initializeAppShell() {
     }
 }
 
+/**
+ * Marketing site → ERP: consume signup handoff JWT from URL hash, exchange for session, then strip hash.
+ */
+async function tryConsumeSignupHandoffFromHash() {
+    try {
+        const rawHash = window.location.hash || '';
+        if (!rawHash || rawHash.indexOf('handoff_token=') === -1) return false;
+        let token = null;
+        const hashBody = rawHash.replace(/^#/, '');
+        const qIdx = hashBody.indexOf('?');
+        const qs = qIdx >= 0 ? hashBody.slice(qIdx + 1) : hashBody;
+        const params = new URLSearchParams(qs);
+        token = params.get('handoff_token');
+        if (!token) {
+            const m = rawHash.match(/handoff_token=([^&]+)/);
+            if (m) token = decodeURIComponent(m[1]);
+        }
+        if (!token) return false;
+        const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null) ? CONFIG.API_BASE_URL : '';
+        const resp = await fetch(base + '/api/auth/exchange-signup-handoff', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: token })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.access_token) {
+            return false;
+        }
+        const u = new URL(window.location.href);
+        const tenantHint = u.searchParams.get('tenant');
+        if (tenantHint) {
+            try {
+                sessionStorage.setItem('pharmasight_tenant_subdomain', tenantHint);
+                localStorage.setItem('pharmasight_tenant_subdomain', tenantHint);
+            } catch (_) {}
+        }
+        try {
+            if (data.refresh_token) localStorage.setItem('pharmasight_refresh_token', data.refresh_token);
+            localStorage.setItem('pharmasight_username', data.username || data.email || '');
+            if (data.tenant_subdomain) {
+                localStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain);
+                sessionStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain);
+            }
+            if (data.user_id) localStorage.setItem('pharmasight_user_id', data.user_id);
+            if (data.email) localStorage.setItem('pharmasight_user_email', data.email);
+        } catch (_) {}
+        try {
+            if (typeof window !== 'undefined' && window.API && typeof window.API.setInternalAccessToken === 'function') {
+                window.API.setInternalAccessToken(data.access_token);
+            } else {
+                localStorage.setItem('pharmasight_access_token', data.access_token);
+            }
+        } catch (_) {}
+        const path = window.location.pathname || '/';
+        const search = tenantHint ? ('?tenant=' + encodeURIComponent(tenantHint)) : (window.location.search || '');
+        window.history.replaceState(null, '', path + search + '#branch-select');
+        window.location.hash = '#branch-select';
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 // Initialize app - AUTH GATE FIRST
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('✅ DOM Content Loaded - Initializing app...');
+    await tryConsumeSignupHandoffFromHash();
     
     // Keep loading indicator visible until appReady (set after auth + branch settle and first page is determined)
     // Do NOT hide appLoading here – prevents flicker before layout is decided

@@ -3,8 +3,6 @@ Stripe Webhook Handler
 Receives and processes Stripe webhook events
 """
 from fastapi import APIRouter, Request, HTTPException, status, Header
-from fastapi.responses import Response
-import json
 
 # Optional Stripe import - app can run without it
 try:
@@ -16,12 +14,12 @@ except ImportError:
 
 # Optional Stripe service import
 try:
-    from app.services.stripe_service import StripeService, verify_webhook_signature
+    from app.services.stripe_service import StripeService, parse_verified_stripe_event
     STRIPE_SERVICE_AVAILABLE = True
 except ImportError:
     STRIPE_SERVICE_AVAILABLE = False
     StripeService = None
-    verify_webhook_signature = None
+    parse_verified_stripe_event = None
 
 router = APIRouter()
 
@@ -42,7 +40,7 @@ async def stripe_webhook(
     - invoice.payment_succeeded
     - invoice.payment_failed
     """
-    if not STRIPE_AVAILABLE or not STRIPE_SERVICE_AVAILABLE:
+    if not STRIPE_AVAILABLE or not STRIPE_SERVICE_AVAILABLE or parse_verified_stripe_event is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Stripe integration not available. Please install stripe package: pip install stripe"
@@ -57,20 +55,11 @@ async def stripe_webhook(
     # Get raw body
     body = await request.body()
     
-    # Verify webhook signature
-    if not verify_webhook_signature(body, stripe_signature):
+    event = parse_verified_stripe_event(body, stripe_signature)
+    if event is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid webhook signature"
-        )
-    
-    # Parse event
-    try:
-        event = json.loads(body.decode('utf-8'))
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid JSON"
+            detail="Invalid webhook signature or payload",
         )
     
     # Handle event

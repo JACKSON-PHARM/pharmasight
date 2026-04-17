@@ -15,12 +15,15 @@ logger = logging.getLogger(__name__)
 
 from app.database_master import get_master_db
 from app.dependencies import tenant_or_app_db_session, get_current_admin, is_tenant_ready_for_invite
-from app.models.tenant import Tenant, TenantInvite, SubscriptionPlan, TenantSubscription, TenantModule
+from app.database import SessionLocal
+from app.models.company import Branch, Company
+from app.models.tenant import Tenant, TenantInvite, SubscriptionPlan
+from app.services.company_provisioning_service import HQBranchSpec, create_company_with_hq_branch_and_registry
 from app.schemas.tenant import (
     TenantCreate, TenantResponse, TenantUpdate, TenantListResponse,
     TenantInviteCreate, TenantInviteResponse, TenantProvisionRequest,
     TenantInitializeRequest,
-    SubscriptionPlanResponse, TenantSubscriptionResponse, TenantModuleResponse,
+    SubscriptionPlanResponse,
 )
 from app.utils.username_generator import generate_username_from_name
 from app.utils.public_url import get_public_base_url
@@ -45,14 +48,12 @@ def list_tenants(
     _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
-    """List all tenants with pagination and filtering. By default excludes deleted (cancelled) tenants."""
+    """List infra tenant registry rows (Option B: no subscription/status filtering on Tenant)."""
     try:
         query = db.query(Tenant)
-        # By default exclude soft-deleted (cancelled) tenants so they disappear from the list
         if status_filter:
-            query = query.filter(Tenant.status == status_filter)
-        else:
-            query = query.filter(Tenant.status != 'cancelled')
+            # Deprecated query param: ignored — use Licensing (companies) for lifecycle.
+            _ = status_filter
         
         # Apply search
         
@@ -134,21 +135,29 @@ def create_tenant(
             detail="This email is the Supabase project/account owner. Use a different email for the tenant admin to avoid sign-in conflicts."
         )
 
-    # Create tenant
-    tenant = Tenant(
-        name=tenant_data.name,
-        subdomain=subdomain,
-        admin_email=tenant_data.admin_email,
-        admin_full_name=tenant_data.admin_full_name,
-        phone=tenant_data.phone,
-        status='trial',
-        trial_ends_at=datetime.utcnow() + timedelta(days=14)
-    )
-    
-    db.add(tenant)
-    db.commit()
-    db.refresh(tenant)
-    
+    app_db = SessionLocal()
+    try:
+        _company, _branch, tenant = create_company_with_hq_branch_and_registry(
+            app_db,
+            db,
+            company_kwargs={
+                "name": tenant_data.name,
+                "currency": "KES",
+                "timezone": "Africa/Nairobi",
+                "is_active": True,
+            },
+            admin_email=tenant_data.admin_email,
+            hq=HQBranchSpec(name="Head Office", code="HQ"),
+            admin_full_name=tenant_data.admin_full_name,
+            tenant_phone=tenant_data.phone,
+            tenant_subdomain=subdomain,
+        )
+    except Exception:
+        app_db.rollback()
+        raise
+    finally:
+        app_db.close()
+
     return _tenant_to_response(tenant)
 
 
@@ -261,16 +270,14 @@ def delete_tenant(
     _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_master_db),
 ):
-    """Delete a tenant (soft delete by setting status to cancelled)"""
+    """Soft-delete infra row (legacy column update without using it for product access — prefer Licensing)."""
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tenant not found"
         )
-    
-    # Soft delete
-    tenant.status = 'cancelled'
+    setattr(tenant, "status", "cancelled")
     db.commit()
     
     return None
@@ -450,48 +457,6 @@ def list_plans(
     ).order_by(SubscriptionPlan.price_monthly.asc()).all()
     
     return [SubscriptionPlanResponse.model_validate(p) for p in plans]
-
-
-# =====================================================
-# TENANT SUBSCRIPTIONS
-# =====================================================
-
-@router.get("/tenants/{tenant_id}/subscription", response_model=TenantSubscriptionResponse)
-def get_subscription(
-    tenant_id: UUID,
-    _admin: None = Depends(get_current_admin),
-    db: Session = Depends(get_master_db),
-):
-    """Get tenant's current subscription"""
-    subscription = db.query(TenantSubscription).filter(
-        TenantSubscription.tenant_id == tenant_id
-    ).order_by(TenantSubscription.created_at.desc()).first()
-    
-    if not subscription:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No subscription found for this tenant"
-        )
-    
-    return TenantSubscriptionResponse.model_validate(subscription)
-
-
-# =====================================================
-# TENANT MODULES
-# =====================================================
-
-@router.get("/tenants/{tenant_id}/modules", response_model=List[TenantModuleResponse])
-def list_modules(
-    tenant_id: UUID,
-    _admin: None = Depends(get_current_admin),
-    db: Session = Depends(get_master_db),
-):
-    """List all modules for a tenant"""
-    modules = db.query(TenantModule).filter(
-        TenantModule.tenant_id == tenant_id
-    ).all()
-    
-    return [TenantModuleResponse.model_validate(m) for m in modules]
 
 
 # =====================================================

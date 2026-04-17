@@ -11,7 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from app.config import settings
 from app.rate_limit import limiter
@@ -59,6 +59,7 @@ class RequestTimingMiddleware(BaseHTTPMiddleware):
 _BACKEND_APP = Path(__file__).resolve().parent
 _BACKEND = _BACKEND_APP.parent
 _FRONTEND_DIR = _BACKEND.parent / "frontend"
+_MARKETING_DIR = _BACKEND.parent / "marketing"
 
 # Create FastAPI app
 app = FastAPI(
@@ -179,7 +180,7 @@ def run_tenant_migrations():
             print(f"  [Migrations] Target DB: {db_target}")
             print("  [Migrations] Default/master DB...")
             try:
-                # Master public.tenants must match Tenant ORM before MigrationService queries it (plan_type, limits, etc.)
+                # Master public.tenants must match Tenant ORM before MigrationService queries it (schema drift guard).
                 from app.services.migration_service import ensure_master_tenant_storage_columns
                 ensure_master_tenant_storage_columns(default_url)
                 ran_default = run_migrations_for_url(default_url)
@@ -275,6 +276,8 @@ except ImportError:
     stripe_webhooks_router = None
 from app.api.admin_auth import router as admin_auth_router
 from app.api.auth import router as auth_router
+from app.api.public_marketing import router as public_marketing_router
+from app.api.company_billing import router as company_billing_router
 from app.api.reports import router as reports_router
 from app.api.impersonation import router as impersonation_router
 from app.api.admin_metrics import router as admin_metrics_router
@@ -316,6 +319,8 @@ if migrations_router:
 if stripe_webhooks_router:
     app.include_router(stripe_webhooks_router, prefix="/api", tags=["Stripe Webhooks"])
 app.include_router(admin_auth_router, prefix="/api", tags=["Admin Authentication"])
+app.include_router(public_marketing_router, prefix="/api", tags=["Public marketing"])
+app.include_router(company_billing_router, prefix="/api", tags=["Billing"])
 app.include_router(auth_router, prefix="/api", tags=["Authentication"])
 
 # Serve frontend static files (must NOT depend on backend/uploads — Render often has no uploads dir on first deploy).
@@ -331,6 +336,17 @@ if _UPLOADS_DIR.is_dir():
 if _FRONTEND_DIR.is_dir():
     _index_path = _FRONTEND_DIR / "index.html"
     _admin_path = _FRONTEND_DIR / "admin.html"
+
+    if _MARKETING_DIR.is_dir():
+        @app.get("/marketing")
+        async def marketing_redirect():
+            return RedirectResponse(url="/marketing/", status_code=302)
+
+        app.mount(
+            "/marketing",
+            StaticFiles(directory=str(_MARKETING_DIR), html=True),
+            name="marketing",
+        )
 
     @app.get("/")
     async def root():

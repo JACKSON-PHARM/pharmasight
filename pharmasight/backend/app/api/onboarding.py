@@ -14,7 +14,9 @@ from app.database_master import get_master_db
 from app.database import SessionLocal
 from app.dependencies import tenant_or_app_db_session
 from app.schemas.tenant import OnboardingSignupRequest, OnboardingSignupResponse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+from app.config import settings
 
 from app.services.onboarding_service import OnboardingService
 from app.rate_limit import limiter
@@ -39,10 +41,23 @@ def _ensure_company_and_branch_for_tenant(tenant_db: Session, tenant) -> None:
     """
     company = tenant_db.query(Company).filter(Company.name == tenant.name).first()
     if not company:
+        trial_days = getattr(settings, "DEFAULT_COMPANY_TRIAL_DAYS", None) or getattr(
+            settings, "DEMO_DURATION_DAYS", None
+        )
+        try:
+            trial_days = int(trial_days) if trial_days is not None else 14
+        except (TypeError, ValueError):
+            trial_days = 14
+        if trial_days < 1:
+            trial_days = 14
+        trial_end = datetime.now(timezone.utc) + timedelta(days=trial_days)
         company = Company(
             name=tenant.name,
             currency="KES",
             timezone="Africa/Nairobi",
+            subscription_status=None,
+            trial_expires_at=trial_end,
+            is_active=True,
         )
         tenant_db.add(company)
         tenant_db.flush()
@@ -58,6 +73,19 @@ def _ensure_company_and_branch_for_tenant(tenant_db: Session, tenant) -> None:
         tenant_db.add(branch)
         tenant_db.flush()
         ensure_default_branch_settings(tenant_db, branch.id)
+
+
+def _sync_master_tenant_company_id(master_db: Session, tenant, tenant_db: Session, user_id) -> None:
+    """Persist tenants.company_id from the user's branch assignment (Option B)."""
+    link = (
+        tenant_db.query(Branch.company_id)
+        .join(UserBranchRole, UserBranchRole.branch_id == Branch.id)
+        .filter(UserBranchRole.user_id == user_id)
+        .first()
+    )
+    if link and link[0] is not None:
+        tenant.company_id = link[0]
+        master_db.flush()
 
 
 def _ensure_user_branch_role_for_tenant(tenant_db: Session, user_id, tenant) -> None:
@@ -207,6 +235,7 @@ def _complete_invite_with_session(
     if existing_by_id:
         _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
         tenant_db.commit()
+        _sync_master_tenant_company_id(master_db, tenant, tenant_db, uid)
         OnboardingService.mark_invite_used(body.token, uid, master_db)
         return {
             "success": True,
@@ -234,6 +263,7 @@ def _complete_invite_with_session(
     tenant_db.flush()
     _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
     tenant_db.commit()
+    _sync_master_tenant_company_id(master_db, tenant, tenant_db, uid)
     OnboardingService.mark_invite_used(body.token, uid, master_db)
     return {
         "success": True,

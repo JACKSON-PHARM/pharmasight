@@ -38,6 +38,12 @@ from app.utils.auth_internal import (
     decode_internal_token_or_reason,
 )
 from app.utils.company_access import get_company_access
+from app.utils.auth_guards import (
+    assert_effective_company_matches_tenant,
+    assert_jwt_company_claim_matches_tenant,
+    assert_tenant_company_link,
+)
+from app.services.tenant_registry_service import ensure_tenant_row_for_company
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +131,8 @@ _pool_lock = threading.Lock()
 # In-process cache for default tenant (key=url, value=(tenant, expiry_ts)); TTL 10 minutes
 _default_tenant_cache: dict = {}
 
-# Auth resolution cache: (jti, str(sub)) -> (user_id, company_id, tenant_database_url, expiry_ts)
-# Populated after full resolve. Long TTL so item search (and other requests) skip ~2s master+tenant resolution.
-# Without this, every cache miss pays: master DB (tenant lookup) + tenant DB connection + user lookup.
+# Auth resolution cache: (jti, str(sub)) -> (user_id, company_id, tenant_database_url, tenant_company_id, expiry_ts)
+# tenant_company_id mirrors tenants.company_id at cache fill; must match company_id or cache entry is invalid.
 _auth_resolution_cache: dict = {}
 _auth_resolution_cache_ttl_seconds = 300.0  # 5 minutes: keep item search fast for whole POS session
 
@@ -344,12 +349,8 @@ def get_tenant_from_header(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tenant not found",
         )
-    # Allow tenant with no database_url (single-DB / re-invited); get_tenant_db will use app DB
-    if (tenant.status or "").lower() in ("suspended", "cancelled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account suspended. Please contact support.",
-        )
+    # Allow tenant with no database_url (single-DB / re-invited); get_tenant_db will use app DB.
+    # Company access (inactive / trial) is enforced in get_current_user via get_company_access.
     return tenant
 
 
@@ -600,6 +601,48 @@ def _log_user_auth_failure(db: Session, sub: UUID, jti: Optional[str], context: 
     )
 
 
+def _resolve_tenant_for_auth(request: Request, master_db: Session, payload: dict) -> Tenant:
+    """
+    Resolve the infra tenant row for this token. Option B: every resolved tenant must carry company_id.
+    Order: JWT subdomain → else company_id claim → else default tenant for DATABASE_URL.
+    """
+    company_id_claim = (payload.get(CLAIM_COMPANY_ID) or "").strip()
+    tenant_sub_raw = (payload.get(CLAIM_TENANT_SUBDOMAIN) or "").strip()
+    tenant_sub_norm = "" if tenant_sub_raw.lower() in ("", "__default__") else tenant_sub_raw
+
+    tenant: Optional[Tenant] = None
+    if tenant_sub_norm:
+        tenant = _tenant_from_token_or_header(request, master_db, payload)
+        if tenant is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unknown tenant",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    elif company_id_claim:
+        try:
+            cid = UUID(str(company_id_claim))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        tenant = master_db.query(Tenant).filter(Tenant.company_id == cid).first()
+        if tenant is None:
+            tenant = ensure_tenant_row_for_company(master_db, cid)
+    else:
+        tenant = _get_default_tenant(master_db)
+        if tenant is None:
+            raise RuntimeError(
+                "Missing tenant resolution: no tenant_subdomain, no company_id claim, and no default tenant row"
+            )
+
+    assert_tenant_company_link(tenant)
+    assert_jwt_company_claim_matches_tenant(tenant, company_id_claim)
+    return tenant
+
+
 def _resolve_user_and_db_for_request(
     request: Request,
     master_db: Session,
@@ -607,44 +650,20 @@ def _resolve_user_and_db_for_request(
     sub: UUID,
 ) -> Tuple[User, Session, Optional[Tenant]]:
     """
-    Resolve (user, db) for a valid token. Uses tenant DB when available and reachable;
-    falls back to app DB for legacy/re-invited users (no tenant or tenant DB unreachable).
-    Caller must close db. Raises HTTPException on auth failure.
+    Resolve (user, db, tenant) for a valid token. Tenant is always resolved for Option B guards.
+    Caller must close db. Raises HTTPException on auth failure; RuntimeError on registry desync.
     """
-    tenant = _tenant_from_token_or_header(request, master_db, payload)
-    company_id_claim = (payload.get(CLAIM_COMPANY_ID) or "").strip()
-    tenant_sub_raw = (payload.get(CLAIM_TENANT_SUBDOMAIN) or "").strip()
-    tenant_sub_norm = "" if tenant_sub_raw.lower() in ("", "__default__") else tenant_sub_raw
+    tenant = _resolve_tenant_for_auth(request, master_db, payload)
 
     def _lookup_in_db(db: Session) -> Optional[User]:
         return _lookup_user_if_not_revoked(db, sub, payload.get(CLAIM_JTI))
 
-    # Internal tokens with company_id and no real tenant subdomain: user + revoked_tokens live in
-    # the shared app DB only. Do not follow master.tenants "default" database_url — it may still
-    # point at a legacy per-tenant host and would 401 every route while /auth/refresh still works.
-    if company_id_claim and not tenant_sub_norm:
+    if not tenant.database_url or not str(tenant.database_url).strip():
         db = SessionLocal()
         user = _lookup_in_db(db)
         if user:
-            return (user, db, None)
-        _log_user_auth_failure(db, sub, payload.get(CLAIM_JTI), "app_db_company_scoped")
-        db.close()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if tenant is None:
-        tenant = _get_default_tenant(master_db)
-    if tenant and (tenant.status or "").lower() in ("suspended", "cancelled"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
-
-    # Prefer app DB when no tenant or tenant has no database_url (single-DB / re-invited legacy)
-    if not tenant or not (tenant.database_url and tenant.database_url.strip()):
-        db = SessionLocal()
-        user = _lookup_in_db(db)
-        if user:
+            eff = get_effective_company_id_for_user(db, user)
+            assert_effective_company_matches_tenant(tenant, eff)
             return (user, db, tenant)
         _log_user_auth_failure(db, sub, payload.get(CLAIM_JTI), "app_db_lookup")
         db.close()
@@ -654,12 +673,13 @@ def _resolve_user_and_db_for_request(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Try tenant DB; on unreachable (e.g. deleted project), fall back to app DB
     try:
         factory = _session_factory_for_url(tenant.database_url)
         db = factory()
         user = _lookup_in_db(db)
         if user:
+            eff = get_effective_company_id_for_user(db, user)
+            assert_effective_company_matches_tenant(tenant, eff)
             return (user, db, tenant)
         _log_user_auth_failure(db, sub, payload.get(CLAIM_JTI), "tenant_db_no_matching_user")
         db.close()
@@ -669,6 +689,8 @@ def _resolve_user_and_db_for_request(
             db = SessionLocal()
             user = _lookup_in_db(db)
             if user:
+                eff = get_effective_company_id_for_user(db, user)
+                assert_effective_company_matches_tenant(tenant, eff)
                 return (user, db, tenant)
             _log_user_auth_failure(db, sub, payload.get(CLAIM_JTI), "app_db_after_tenant_unreachable")
             db.close()
@@ -684,18 +706,10 @@ def _resolve_user_and_db_for_request(
     )
 
 
-def _tenant_for_subscription_check(request: Request, master_db: Session, payload: dict) -> Optional[Tenant]:
-    """Master tenant row for trial/subscription (same resolution as authenticated API routing)."""
-    tenant = _tenant_from_token_or_header(request, master_db, payload)
-    if tenant is None:
-        tenant = _get_default_tenant(master_db)
-    return tenant
-
-
 def _path_allowed_for_expired_trial(path: str, method: str) -> bool:
     """
-    When tenant trial_ends_at has passed (status still trial), allow auth/session + read-only shell
-    (companies/branches/modules) so the client can show dashboard + upgrade messaging.
+    When company trial_expires_at has passed (get_company_access == expired), allow auth/session
+    + read-only shell (companies/branches/modules) so the client can show dashboard + upgrade messaging.
     """
     p = (path or "").strip().rstrip("/") or "/"
     m = (method or "GET").upper()
@@ -729,6 +743,8 @@ def _path_allowed_for_expired_trial(path: str, method: str) -> bool:
         return True
     if m == "GET" and re.match(r"^/api/branches/[0-9a-fA-F-]{36}/settings$", p):
         return True
+    if p == "/api/billing/stripe/checkout-session" and m == "POST":
+        return True
     return False
 
 
@@ -745,6 +761,8 @@ def _path_allowed_for_blocked_company(path: str, method: str) -> bool:
     if p == "/api/auth/refresh" and m == "POST":
         return True
     if p in ("/api/auth/change-password", "/api/users/change-password-first-time") and m == "POST":
+        return True
+    if p == "/api/billing/stripe/checkout-session" and m == "POST":
         return True
     return False
 
@@ -812,16 +830,27 @@ def get_current_user(
     with _pool_lock:
         entry = _auth_resolution_cache.get(cache_key)
         if entry:
-            user_id, company_id, tenant_url, expiry = entry
+            if len(entry) == 4:
+                user_id, company_id, tenant_url, expiry = entry
+                t_link_cid = None
+            else:
+                user_id, company_id, tenant_url, t_link_cid, expiry = entry
             if expiry > _time.monotonic():
-                cached = (user_id, company_id, tenant_url)
+                cached = (user_id, company_id, tenant_url, t_link_cid)
             else:
                 _auth_resolution_cache.pop(cache_key, None)
 
     db = None
     try:
         if cached:
-            user_id, company_id, tenant_url = cached
+            user_id, company_id, tenant_url, t_link_cid = cached
+            if t_link_cid is not None and company_id is not None and str(t_link_cid) != str(company_id):
+                with _pool_lock:
+                    _auth_resolution_cache.pop(cache_key, None)
+                raise RuntimeError(
+                    "AUTH DESYNC: cached tenant-company mismatch "
+                    f"tenant.company_id={t_link_cid} effective_company_id={company_id}"
+                )
             path = (request.url.path or "").strip().rstrip("/")
             is_items_search = path == "/api/items/search"
             # Fast path for item search: no SET LOCAL, no user fetch — one round-trip (search query only)
@@ -924,6 +953,7 @@ def get_current_user(
                 user.id,
                 company_id,
                 getattr(tenant, "database_url", None) if tenant else None,
+                getattr(tenant, "company_id", None) if tenant else None,
                 _time.monotonic() + _auth_resolution_cache_ttl_seconds,
             )
         # Company access enforcement (single source of truth: companies table)
@@ -1035,11 +1065,6 @@ def get_tenant_or_default(
         return tenant
     default_tenant = _get_default_tenant(master_db)
     if default_tenant is not None:
-        if (default_tenant.status or "").lower() in ("suspended", "cancelled"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account suspended. Please contact support.",
-            )
         return default_tenant
     # No tenant row for this DB: use synthetic default so storage works (single-DB, company-identified)
     sid = getattr(settings, "DEFAULT_STORAGE_TENANT_ID", None) or ""
@@ -1051,6 +1076,7 @@ def get_tenant_or_default(
         uid = _SYNTHETIC_DEFAULT_TENANT_UUID
     return SimpleNamespace(
         id=uid,
+        company_id=None,
         status="active",
         supabase_storage_url=None,
         supabase_storage_service_role_key=None,
@@ -1068,13 +1094,9 @@ def get_tenant_optional(
     """
     tenant = get_tenant_from_header(request, master_db)
     if tenant is not None:
-        if (tenant.status or "").lower() in ("suspended", "cancelled"):
-            return None
         return tenant
     default_tenant = _get_default_tenant(master_db)
     if default_tenant is None:
-        return None
-    if (default_tenant.status or "").lower() in ("suspended", "cancelled"):
         return None
     return default_tenant
 

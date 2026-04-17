@@ -916,7 +916,7 @@ def get_supplier_invoice_pdf(
     invoice_id: UUID,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
     master_db: Session = Depends(get_master_db),
 ):
@@ -2264,7 +2264,7 @@ def get_purchase_order(
     order_id: UUID,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
     master_db: Session = Depends(get_master_db),
 ):
@@ -2316,7 +2316,7 @@ def add_purchase_order_item(
     item_data: PurchaseOrderItemCreate,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
     master_db: Session = Depends(get_master_db),
 ):
@@ -2538,7 +2538,7 @@ def update_purchase_order(
     return db_order
 
 
-def _tenant_for_stored_path(master_db: Session, stored_path: Optional[str]) -> Optional[Tenant]:
+def _tenant_for_stored_path(master_db: Session, stored_path: Optional[str]) -> Optional[Any]:
     """Resolve Tenant for stored_path (tenant-assets/{tenant_id}/...) for legacy asset access."""
     if not stored_path or not str(stored_path).startswith("tenant-assets/"):
         return None
@@ -2648,7 +2648,7 @@ def _resolve_signed_url(
 @router.patch("/order/{order_id}/approve", response_model=PurchaseOrderResponse)
 def approve_purchase_order(
     order_id: UUID,
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Any = Depends(get_tenant_or_default),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
     master_db: Session = Depends(get_master_db),
@@ -2769,7 +2769,7 @@ def get_purchase_order_pdf_url(
     order_id: UUID,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
     master_db: Session = Depends(get_master_db),
 ):
@@ -2812,7 +2812,7 @@ def get_purchase_order_pdf_url(
 def regenerate_purchase_order_pdf(
     order_id: UUID,
     request: Request,
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Any = Depends(get_tenant_or_default),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
     master_db: Session = Depends(get_master_db),

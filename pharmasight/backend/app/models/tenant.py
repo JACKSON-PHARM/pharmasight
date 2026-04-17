@@ -15,6 +15,8 @@ class Tenant(Base):
     __tablename__ = "tenants"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # App DB companies.id this tenant row routes to (Option B — required for auth guards).
+    company_id = Column(UUID(as_uuid=True), nullable=False)
     name = Column(String(255), nullable=False)
     subdomain = Column(String(100), unique=True, nullable=False)
     custom_domain = Column(String(255), nullable=True)

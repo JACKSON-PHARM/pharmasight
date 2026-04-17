@@ -249,11 +249,12 @@ def ensure_master_tenant_storage_columns(database_url: str) -> bool:
                 ADD COLUMN IF NOT EXISTS demo_expires_at TIMESTAMPTZ NULL,
                 ADD COLUMN IF NOT EXISTS product_limit INT NULL,
                 ADD COLUMN IF NOT EXISTS branch_limit INT NULL,
-                ADD COLUMN IF NOT EXISTS user_limit INT NULL
+                ADD COLUMN IF NOT EXISTS user_limit INT NULL,
+                ADD COLUMN IF NOT EXISTS company_id UUID
         """)
         cur.close()
         conn.close()
-        logger.info("Master DB: ensured tenants ORM columns (storage, plan_type, limits, demo)")
+        logger.info("Master DB: ensured tenants ORM columns (storage + legacy SaaS columns if missing)")
         return True
     except Exception as e:
         logger.warning("ensure_master_tenant_storage_columns failed: %s", e)
@@ -275,16 +276,18 @@ class MigrationService:
             db.close()
 
     def get_all_tenants(self, db, status_filter: Optional[str] = None) -> List[Tenant]:
-        """Get all active tenants"""
-        query = db.query(Tenant)
-        
-        if status_filter:
-            query = query.filter(Tenant.status == status_filter)
-        else:
-            # Only migrate active tenants (not suspended/cancelled)
-            query = query.filter(Tenant.status.in_(['trial', 'active']))
-        
-        return query.all()
+        """
+        Tenants with a configured database URL (infra enumeration only).
+
+        Option B: do not filter by the master status column — migration targets are routing/registry rows only.
+        ``status_filter`` is ignored (kept for call-site compatibility).
+        """
+        _ = status_filter  # deprecated; not used for entitlement
+        return (
+            db.query(Tenant)
+            .filter(Tenant.database_url.isnot(None), Tenant.database_url != "")
+            .all()
+        )
     
     def get_tenant_schema_version(self, database_url: str) -> Optional[str]:
         """Get current schema version from tenant database"""
@@ -331,14 +334,13 @@ class MigrationService:
     def run_migrations_all_tenant_dbs(self) -> Dict:
         """
         Apply missing migrations for ALL tenants with database_url (startup/deploy).
-        Only runs for tenants with status trial or active (respects subscription/cancelled).
+        Option B: enumerates infra rows only; no status-column gating on master registry.
         Returns { "applied": { tenant_id: [versions] }, "errors": { tenant_id: str } }.
         """
         applied: Dict[str, List[str]] = {}
         errors: Dict[str, str] = {}
         tenants_with_db = self.get_all_tenants_with_db()
-        # Only migrate active tenants (trial, active); skip suspended/cancelled
-        tenants_to_migrate = [t for t in tenants_with_db if (t.status or "").lower() in ("trial", "active")]
+        tenants_to_migrate = list(tenants_with_db)
         for t in tenants_to_migrate:
             try:
                 ran = run_migrations_for_url(t.database_url)

@@ -41,6 +41,9 @@ class PlatformCompanyResponse(BaseModel):
     subscription_plan: Optional[str] = None
     subscription_status: Optional[str] = None
     trial_expires_at: Optional[datetime] = None
+    product_limit: Optional[int] = None
+    branch_limit: Optional[int] = None
+    user_limit: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -59,6 +62,9 @@ class PatchCompanySubscriptionRequest(BaseModel):
     subscription_plan: Optional[str] = None
     subscription_status: Optional[str] = None
     trial_expires_at: Optional[datetime] = None
+    product_limit: Optional[int] = None
+    branch_limit: Optional[int] = None
+    user_limit: Optional[int] = None
 
 
 class PatchCompanyStatusRequest(BaseModel):
@@ -203,9 +209,10 @@ def patch_company_subscription(
     c = db.query(Company).filter(Company.id == company_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Company not found")
-    c.subscription_plan = body.subscription_plan
-    c.subscription_status = body.subscription_status
-    c.trial_expires_at = body.trial_expires_at
+    upd = body.model_dump(exclude_unset=True)
+    for key in ("subscription_plan", "subscription_status", "trial_expires_at", "product_limit", "branch_limit", "user_limit"):
+        if key in upd:
+            setattr(c, key, upd[key])
     db.commit()
     db.refresh(c)
     return c

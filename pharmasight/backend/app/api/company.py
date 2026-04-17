@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from pathlib import Path
 from pydantic import BaseModel
+from app.database_master import get_master_db
 from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, require_settings_edit, get_current_user, get_effective_company_id_for_user
-from app.models.tenant import Tenant
 from app.models.company import Company, Branch, BranchSetting
 from app.models.company_module import CompanyModule
 from app.models.settings import CompanySetting
@@ -21,6 +21,7 @@ from app.schemas.company import (
 )
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.branch_settings_service import ensure_default_branch_settings
+from app.services.company_provisioning_service import create_company_with_hq_branch_and_registry, HQBranchSpec
 from app.services.tenant_storage_service import (
     upload_stamp,
     upload_logo,
@@ -30,7 +31,7 @@ from app.services.tenant_storage_service import (
     MAX_IMAGE_BYTES,
     SIGNED_URL_EXPIRY_SECONDS,
 )
-from app.services.plan_context import get_tenant_plan_context
+from app.utils.company_plan_limits import company_is_demo_plan, company_branch_limit
 
 router = APIRouter()
 
@@ -65,6 +66,7 @@ def create_company(
     company: CompanyCreate,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     """
     Create a new company
@@ -83,6 +85,7 @@ def create_company(
         )
     
     try:
+        user, _db_unused = current_user_and_db
         # Use model_dump() for Pydantic v2, fallback to dict() for v1
         if hasattr(company, 'model_dump'):
             company_data = company.model_dump(exclude_none=False)
@@ -93,14 +96,15 @@ def create_company(
         if 'fiscal_start_date' in company_data and company_data['fiscal_start_date'] == '':
             company_data['fiscal_start_date'] = None
         
-        # Create company with the data
-        db_company = Company(**company_data)
-        db.add(db_company)
-        db.flush()  # Get the ID before commit
-        db.commit()
-        db.refresh(db_company)
-        
-        # Return the database model directly - FastAPI will serialize it using the response_model
+        admin_email = (getattr(user, "email", None) or "").strip() or "noreply@localhost"
+        db_company, _branch, _tenant = create_company_with_hq_branch_and_registry(
+            db,
+            master_db,
+            company_kwargs=company_data,
+            admin_email=admin_email,
+            hq=HQBranchSpec(name="Head Office", code="HQ"),
+            admin_full_name=getattr(user, "full_name", None),
+        )
         return db_company
         
     except HTTPException:
@@ -215,7 +219,7 @@ def get_company_logo_url(
     company_id: UUID,
     request: Request,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Any = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """Return a viewable URL for the company logo (signed for tenant-assets, or absolute for /uploads)."""
@@ -282,7 +286,7 @@ def get_company_settings(
     company_id: UUID,
     key: Optional[str] = Query(None, description="Setting key, e.g. 'print_config'. Omit to get all."),
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
     db: Session = Depends(get_tenant_db),
 ) -> Dict[str, Any]:
     """Get company-level settings. User may only access settings of their effective company. print_config and other keys work without tenant; tenant is only used for document_branding signed URLs."""
@@ -387,7 +391,7 @@ async def upload_company_stamp(
     company_id: UUID,
     file: UploadFile = File(...),
     auth: tuple = Depends(require_settings_edit),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Any = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ) -> Dict[str, Any]:
     """
@@ -458,7 +462,7 @@ async def upload_company_logo(
     company_id: UUID,
     file: UploadFile = File(...),
     auth: tuple = Depends(require_settings_edit),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Any = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -520,7 +524,6 @@ async def upload_company_logo(
 def create_branch(
     branch: BranchCreate,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -530,11 +533,9 @@ def create_branch(
     Format for invoice numbers: {BRANCH_CODE}-INV-YYYY-000001
     """
     try:
-        # Enforce demo branch limits (demo tenants cannot exceed branch_limit for a company)
-        plan_ctx = get_tenant_plan_context(tenant)
-        if plan_ctx.get("plan_type") == "demo":
-            branch_limit = plan_ctx.get("branch_limit")
-            # Only enforce when a positive limit is configured; None or <=0 means "no explicit limit".
+        company = db.query(Company).filter(Company.id == branch.company_id).first()
+        if company and company_is_demo_plan(company):
+            branch_limit = company_branch_limit(company)
             if branch_limit is not None and branch_limit > 0:
                 existing_count = (
                     db.query(Branch)
@@ -548,7 +549,6 @@ def create_branch(
                     )
 
         # Verify company exists
-        company = db.query(Company).filter(Company.id == branch.company_id).first()
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
         

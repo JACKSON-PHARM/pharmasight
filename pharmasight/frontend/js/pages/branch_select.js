@@ -115,7 +115,7 @@ async function loadBranches() {
             throw new Error('User not authenticated');
         }
         
-        // Get user's company (must exist in this tenant). Prefer list() so we only use companies that exist.
+        // Resolve the user's company from the API (single shared DB; company = organization).
         let companyId = null;
         try {
             const companies = normalizeCompanies(await API.company.list());
@@ -129,7 +129,7 @@ async function loadBranches() {
         }
         
         if (!companyId) {
-            // Try startup status (may return stale id from another tenant - we'll validate)
+            // Try startup status (may return a stale company_id from an old session — validate with GET company)
             try {
                 const status = await API.startup.status();
                 if (status.initialized && status.company_id) {
@@ -150,13 +150,13 @@ async function loadBranches() {
         }
         
         if (!companyId && CONFIG.COMPANY_ID) {
-            // Validate persisted CONFIG company (may be from different tenant)
+            // Validate persisted CONFIG company (may be from a different account or old browser data)
             try {
                 await API.company.get(CONFIG.COMPANY_ID);
                 companyId = CONFIG.COMPANY_ID;
             } catch (e) {
                 if (e.status === 404 || (e.data && e.data.detail === 'Company not found')) {
-                    console.log('[BRANCH SELECT] CONFIG company not found in this tenant, clearing');
+                    console.log('[BRANCH SELECT] CONFIG company not found for this account, clearing');
                     CONFIG.COMPANY_ID = null;
                     saveConfig();
                 }
@@ -174,7 +174,7 @@ async function loadBranches() {
                         <h2>Select Branch</h2>
                         <div class="error-message" style="display: block; margin: 1rem 0;">
                             <i class="fas fa-exclamation-triangle"></i> 
-                            No company is configured for this tenant. Please complete setup first.
+                            No company is linked to your account yet. Finish organization setup first, or sign out and sign in again if you switched organization or device.
                         </div>
                     </div>
                 </div>

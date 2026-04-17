@@ -9,14 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status, Query, U
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 import secrets
 import hashlib
 from datetime import datetime, timezone
-from app.dependencies import get_tenant_db, get_tenant_or_default, get_tenant_optional, get_current_user, get_effective_company_id_for_user, invalidate_auth_cache_for_user
+from app.dependencies import get_tenant_db, get_tenant_or_default, get_current_user, get_effective_company_id_for_user, invalidate_auth_cache_for_user
 from sqlalchemy import text
-from app.models.tenant import Tenant
+from app.models.company import Company
 from app.models.user import User, UserRole, UserBranchRole
 from app.services.tenant_storage_service import (
     upload_user_signature as upload_signature_to_storage,
@@ -35,7 +35,11 @@ from app.schemas.user import (
 from app.utils.auth_internal import hash_password, verify_password, validate_new_password
 from app.services.invite_service import InviteService
 from app.utils.username_generator import generate_username_from_name
-from app.services.plan_context import get_tenant_plan_context
+from app.utils.company_plan_limits import (
+    company_is_demo_plan,
+    company_user_limit,
+    count_distinct_company_users,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -391,7 +395,7 @@ def get_user(
 async def upload_user_signature(
     user_id: UUID,
     file: UploadFile = File(...),
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Any = Depends(get_tenant_or_default),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -446,7 +450,7 @@ async def upload_user_signature(
 @router.get("/users/{user_id}/signature-preview-url")
 def get_user_signature_preview_url(
     user_id: UUID,
-    tenant: Tenant = Depends(get_tenant_or_default),
+    tenant: Any = Depends(get_tenant_or_default),
     user_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -524,7 +528,6 @@ def get_user_permissions(
 def create_user(
     user_data: UserCreate,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -540,23 +543,18 @@ def create_user(
     """
     current_user, _ = current_user_and_db
 
-    # Enforce demo user limits (demo tenants cannot exceed user_limit)
-    plan_ctx = get_tenant_plan_context(tenant)
-    if plan_ctx.get("plan_type") == "demo":
-        user_limit = plan_ctx.get("user_limit")
-        # Only enforce when a positive limit is configured; None or <=0 means "no explicit limit".
-        if user_limit is not None and user_limit > 0:
-            # Count active (non-deleted) users in this tenant DB
-            existing_users_count = (
-                db.query(User)
-                .filter(User.deleted_at.is_(None))
-                .count()
-            )
-            if existing_users_count >= user_limit:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Demo accounts have a limited number of users. Upgrade to add more.",
-                )
+    effective_company_id = get_effective_company_id_for_user(db, current_user)
+    if effective_company_id:
+        company_row = db.query(Company).filter(Company.id == effective_company_id).first()
+        if company_row and company_is_demo_plan(company_row):
+            user_limit = company_user_limit(company_row)
+            if user_limit is not None and user_limit > 0:
+                existing_users_count = count_distinct_company_users(db, effective_company_id)
+                if existing_users_count >= user_limit:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Demo accounts have a limited number of users. Upgrade to add more.",
+                    )
     # Normalize email (lowercase, trim)
     normalized_email = user_data.email.lower().strip()
     if not normalized_email:
@@ -747,7 +745,6 @@ def admin_create_user(
     body: AdminCreateUserRequest,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
-    tenant: Optional[Tenant] = Depends(get_tenant_optional),
 ):
     """
     Create a user directly (no email invitation). Only owner or admin role.
@@ -756,21 +753,18 @@ def admin_create_user(
     Returns a temporary password once; user must log in and change password.
     """
     current_user, _ = current_user_and_db
-    # Enforce demo user limits (demo tenants cannot exceed user_limit) when tenant context is available
-    plan_ctx = get_tenant_plan_context(tenant)
-    if plan_ctx.get("plan_type") == "demo":
-        user_limit = plan_ctx.get("user_limit")
-        if user_limit is not None and user_limit > 0:
-            existing_users_count = (
-                db.query(User)
-                .filter(User.deleted_at.is_(None))
-                .count()
-            )
-            if existing_users_count >= user_limit:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Demo accounts have a limited number of users. Upgrade to add more.",
-                )
+    effective_company_id = get_effective_company_id_for_user(db, current_user)
+    if effective_company_id:
+        company_row = db.query(Company).filter(Company.id == effective_company_id).first()
+        if company_row and company_is_demo_plan(company_row):
+            user_limit = company_user_limit(company_row)
+            if user_limit is not None and user_limit > 0:
+                existing_users_count = count_distinct_company_users(db, effective_company_id)
+                if existing_users_count >= user_limit:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Demo accounts have a limited number of users. Upgrade to add more.",
+                    )
     # Role check uses db (tenant DB from auth context); same tenant as current_user
     if not _user_has_owner_or_admin_role(db, current_user.id):
         raise HTTPException(

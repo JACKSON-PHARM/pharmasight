@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PharmaSight — Pharmacy, clinic & agrovet operations</title>
+  <link rel="stylesheet" href="site.css">
+  <script src="config.js"></script>
+</head>
+<body>
+  <header>
+    <a class="logo" href="index.html">PharmaSight</a>
+    <nav>
+      <a href="pricing.html">Pricing</a>
+      <a href="help.html">Help</a>
+      <a href="portal.html">Account</a>
+      <a href="signup.html">Start free trial</a>
+    </nav>
+  </header>
+  <main>
+    <section class="hero">
+      <h1>Run your dispensary, clinic, or agrovet in one place</h1>
+      <p>PharmaSight is a focused operations platform for inventory, sales, purchases, and compliance-ready workflows — without the noise of a generic ERP.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="signup.html">Start free trial</a>
+        <a class="btn btn-secondary" id="signInErp" href="#">Sign in to app</a>
+      </div>
+    </section>
+    <section class="grid-3">
+      <div class="card">
+        <h2>Pharmacy</h2>
+        <p>Stock, margins, sales, and branch-aware inventory tuned for retail pharmacy.</p>
+      </div>
+      <div class="card">
+        <h2>Clinic</h2>
+        <p>OPD-friendly flows alongside your core stock and billing discipline.</p>
+      </div>
+      <div class="card">
+        <h2>Agrovet</h2>
+        <p>Manage veterinary retail and agronomy SKUs with the same reliable ledger.</p>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <a id="waFooter" href="#">WhatsApp support</a>
+    · <a href="help.html">Help</a>
+    · PharmaSight
+  </footer>
+  <script>
+    (function () {
+      var cfg = window.MARKETING_CONFIG || {};
+      var erp = (cfg.ERP_APP_URL || window.location.origin).replace(/\/$/, '');
+      var si = document.getElementById('signInErp');
+      if (si) si.href = erp + '/#login';
+      var wa = 'https://wa.me/' + (cfg.WHATSAPP_E164 || '254700000000') + '?text=' + encodeURIComponent('Hi PharmaSight — I have a question about the product.');
+      var wf = document.getElementById('waFooter');
+      if (wf) wf.href = wa;
+    })();
+  </script>
+</body>
+</html>

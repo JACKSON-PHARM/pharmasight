@@ -9,6 +9,169 @@ const LIC_SEARCH_STORAGE_KEY = 'pharmasight_admin_lic_search';
 /** Prevents stale list responses (e.g. initial full list finishing after a search) from overwriting the table. */
 let _licListLoadSeq = 0;
 
+/**
+ * Predefined SaaS tiers (slug = companies.subscription_plan).
+ * Limits map to company caps (null = no numeric cap / “unlimited” in enforcement).
+ * Pricing is indicative for ops UI; Stripe checkout still uses configured Price IDs.
+ */
+const SAAS_TIERS = [
+    {
+        slug: 'demo',
+        title: 'Demo',
+        subtitle: 'Self-service evaluation & trials',
+        price: '$0',
+        users: 1,
+        branches: 1,
+        products: 100,
+        modules: 'Core + demo scope (tight caps)',
+    },
+    {
+        slug: 'clinic_starter',
+        title: 'Clinic Starter',
+        subtitle: 'Solo practice & small outpatient clinics',
+        price: 'Contact for pricing',
+        users: 3,
+        branches: 1,
+        products: 800,
+        modules: 'POS, stock, dispensing, patient register, basic reporting',
+    },
+    {
+        slug: 'pharmacy_growth',
+        title: 'Pharmacy Growth',
+        subtitle: 'Growing retail & hospital outpatient pharmacy',
+        price: 'Contact for pricing',
+        users: 10,
+        branches: 4,
+        products: 8000,
+        modules: 'Starter + branch ops, purchasing, eTIMS-ready, extended reports',
+    },
+    {
+        slug: 'health_network',
+        title: 'Health Network',
+        subtitle: 'Multi-site groups & small chains',
+        price: 'Contact for pricing',
+        users: 40,
+        branches: 15,
+        products: 50000,
+        modules: 'Growth + clinic modules, finance add-ons, higher throughput',
+    },
+    {
+        slug: 'enterprise',
+        title: 'Enterprise',
+        subtitle: 'Hospital systems, large chains, custom integrations',
+        price: 'Custom',
+        users: null,
+        branches: null,
+        products: null,
+        modules: 'All licensed modules · priority support · SLAs (contract-driven)',
+    },
+];
+
+function _tierBySlug(slug) {
+    const s = (slug || '').trim().toLowerCase();
+    return SAAS_TIERS.find((t) => t.slug === s) || null;
+}
+
+function _licFormatCap(n) {
+    if (n == null) return 'Unlimited';
+    return String(n);
+}
+
+function publicDemoSignupSectionHtml() {
+    return `
+            <div class="public-demo-qr" style="margin-bottom: 16px; padding: 14px; border: 1px dashed #cbd5e1; border-radius: 12px; background: #f8fafc;">
+                <h3 style="margin: 0 0 8px 0; font-size: 1rem;">Free Demo Signup (Public)</h3>
+                <p style="margin: 0 0 10px 0; color: #475569; font-size: 0.9rem; line-height: 1.35;">
+                    Copy this link for posters. Scanning the QR code opens the signup form. Trial length is enforced on each company record (see Manage).
+                </p>
+                <div style="display:flex; gap: 14px; align-items: flex-start; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 280px;">
+                        <label style="display:block; font-weight: 600; margin-bottom: 6px;">Signup link</label>
+                        <div style="display:flex; gap: 8px; align-items:center;">
+                            <input id="public-demo-signup-link" type="text" readonly style="flex:1; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; font-family: monospace; font-size: 12px; background: white;">
+                            <button id="copy-public-demo-signup-link-btn" type="button" class="btn btn-secondary">Copy</button>
+                        </div>
+                        <div style="color:#64748b; font-size: 0.85rem; margin-top: 8px;">
+                            Example: <code>/</code>#<code>login?demo=1</code>
+                        </div>
+                    </div>
+                    <div style="width: 240px; flex: 0 0 auto;">
+                        <label style="display:block; font-weight: 600; margin-bottom: 6px;">QR code</label>
+                        <div id="public-demo-qr" style="background: white; border-radius: 10px; padding: 10px; border: 1px solid #e2e8f0; display:flex; align-items:center; justify-content:center;">
+                            <span style="color:#94a3b8; font-size: 0.9rem;">Generating…</span>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+}
+
+async function setupPublicDemoSignupQr() {
+    try {
+        const savedPublic = (() => {
+            try {
+                return (localStorage.getItem('pharmasight_app_public_url') || '').trim().replace(/\/+$/, '');
+            } catch (_) {
+                return '';
+            }
+        })();
+        const base = savedPublic || window.location.origin;
+        const link = `${base}/#login?demo=1`;
+        const input = document.getElementById('public-demo-signup-link');
+        const copyBtn = document.getElementById('copy-public-demo-signup-link-btn');
+        const qrContainer = document.getElementById('public-demo-qr');
+
+        if (!input || !copyBtn || !qrContainer) return;
+
+        input.value = link;
+
+        copyBtn.onclick = async () => {
+            try {
+                await navigator.clipboard.writeText(link);
+                if (window.showNotification) window.showNotification('Demo signup link copied', 'success');
+                else alert('Demo signup link copied');
+            } catch (e) {
+                if (window.showNotification) window.showNotification('Could not copy link', 'error');
+                else alert('Could not copy link');
+            }
+        };
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 220;
+        canvas.height = 220;
+        qrContainer.innerHTML = '';
+        qrContainer.appendChild(canvas);
+
+        const qrOpts = { width: 220, margin: 1, errorCorrectionLevel: 'M' };
+
+        const tryGenerate = async (qrLib) => {
+            const toCanvas = qrLib?.toCanvas;
+            if (typeof toCanvas !== 'function') return false;
+            try {
+                await toCanvas(canvas, link, qrOpts);
+                return true;
+            } catch (_) {
+                return false;
+            }
+        };
+
+        let ok = await tryGenerate(window.QRCode);
+        if (!ok) {
+            const deadline = Date.now() + 3500;
+            while (!ok && Date.now() < deadline) {
+                await new Promise((r) => setTimeout(r, 150));
+                ok = await tryGenerate(window.QRCode);
+            }
+        }
+
+        if (!ok) {
+            qrContainer.innerHTML =
+                '<span style="color:#94a3b8; font-size:0.9rem;">QR generation failed (local QR script not ready)</span>';
+        }
+    } catch (e) {
+        console.warn('Public demo QR setup failed:', e);
+    }
+}
+
 function readLastLicSearch() {
     try {
         return (sessionStorage.getItem(LIC_SEARCH_STORAGE_KEY) || '').trim();
@@ -26,13 +189,6 @@ function saveLastLicSearch(q) {
 export async function init() {
     const mount = document.getElementById('platform-licensing-mount');
     if (!mount) return;
-
-    mount.innerHTML = `
-        <div class="card" style="padding:16px;">
-            <h2 style="margin:0 0 8px 0;">Licensing</h2>
-            <p style="margin:0; color:#666;">Loading…</p>
-        </div>
-    `;
 
     const esc = (s) => {
         const d = document.createElement('div');
@@ -63,6 +219,7 @@ export async function init() {
 
         mount.innerHTML = `
             <div class="card" style="padding:16px;">
+                ${publicDemoSignupSectionHtml()}
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
                     <div>
                         <h2 style="margin:0;">Licensing · Companies</h2>
@@ -94,6 +251,7 @@ export async function init() {
         `;
 
         const tbody = document.getElementById('lic-tbody');
+        void setupPublicDemoSignupQr();
         try {
             const listRaw = await api.companies(qNorm ? { q: qNorm } : {}, { _skipDedupe: true });
             if (seq !== _licListLoadSeq) return;
@@ -296,14 +454,61 @@ export async function init() {
                     </div>
 
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; margin-top:16px;">
-                        <div style="border:1px solid #e2e8f0; border-radius:10px; padding:12px;">
-                            <h3 style="margin:0 0 10px 0;">Subscription</h3>
-                            <label style="display:block; font-weight:600; margin-bottom:6px;">Plan</label>
-                            <input id="lic-plan" value="${esc(c.subscription_plan || '')}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
-                            <label style="display:block; font-weight:600; margin:10px 0 6px 0;">Status</label>
-                            <input id="lic-status" value="${esc(c.subscription_status || '')}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                        <div style="border:1px solid #e2e8f0; border-radius:10px; padding:12px; grid-column: 1 / -1;">
+                            <h3 style="margin:0 0 6px 0;">Subscription &amp; plan</h3>
+                            <p style="margin:0 0 12px 0; color:#64748b; font-size:0.88rem; line-height:1.4;">
+                                Choose a predefined healthcare SaaS tier. Caps apply to users, branches, and catalog size (empty cap = unlimited). Billing integration still uses your Stripe price configuration per tier slug.
+                            </p>
+                            <div id="lic-tier-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap:10px;">
+                                ${SAAS_TIERS.map((t) => {
+                                    const cur = ((c.subscription_plan || '').trim().toLowerCase() === t.slug);
+                                    const b = cur ? '#6366f1' : '#e2e8f0';
+                                    const bg = cur ? '#f5f3ff' : '#fff';
+                                    return `
+                                <button type="button" class="lic-tier-card" data-tier-slug="${esc(t.slug)}" style="cursor:pointer; text-align:left; border:2px solid ${b}; background:${bg}; border-radius:10px; padding:10px 12px; font:inherit;">
+                                    <div style="font-weight:700; font-size:0.95rem;">${esc(t.title)}</div>
+                                    <div style="color:#64748b; font-size:0.78rem; margin:4px 0 6px;">${esc(t.subtitle)}</div>
+                                    <div style="font-weight:600; color:#4338ca; font-size:0.85rem;">${esc(t.price)}</div>
+                                    <ul style="margin:8px 0 0; padding-left:18px; color:#475569; font-size:0.78rem; line-height:1.35;">
+                                        <li>Users: ${_licFormatCap(t.users)}</li>
+                                        <li>Branches: ${_licFormatCap(t.branches)}</li>
+                                        <li>Products: ${_licFormatCap(t.products)}</li>
+                                    </ul>
+                                    <div style="margin-top:8px; color:#64748b; font-size:0.72rem;">${esc(t.modules)}</div>
+                                    ${cur ? '<div style="margin-top:8px;"><span style="font-size:0.72rem; background:#e0e7ff; color:#3730a3; padding:2px 8px; border-radius:999px;">Current</span></div>' : ''}
+                                </button>`;
+                                }).join('')}
+                            </div>
+                            <details style="margin-top:12px;">
+                                <summary style="cursor:pointer; color:#475569; font-size:0.88rem;">Advanced · raw plan slug</summary>
+                                <label style="display:block; font-weight:600; margin:8px 0 4px;">subscription_plan (stored value)</label>
+                                <input id="lic-plan-slug-adv" value="${esc(c.subscription_plan || '')}" placeholder="e.g. clinic_starter" style="width:100%; max-width:420px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px; font-family:monospace; font-size:12px;">
+                            </details>
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-top:12px;">
+                                <div>
+                                    <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">User cap</label>
+                                    <input id="lic-cap-users" type="number" min="1" placeholder="empty = unlimited" value="${c.user_limit != null ? esc(String(c.user_limit)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                </div>
+                                <div>
+                                    <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Branch cap</label>
+                                    <input id="lic-cap-branches" type="number" min="1" placeholder="empty = unlimited" value="${c.branch_limit != null ? esc(String(c.branch_limit)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                </div>
+                                <div>
+                                    <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Product cap</label>
+                                    <input id="lic-cap-products" type="number" min="1" placeholder="empty = unlimited" value="${c.product_limit != null ? esc(String(c.product_limit)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                </div>
+                            </div>
+                            <label style="display:block; font-weight:600; margin:12px 0 6px 0;">Status</label>
+                            <select id="lic-status" style="width:100%; max-width:320px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                ${['', 'active', 'trialing', 'past_due', 'canceled', 'suspended', 'incomplete', 'demo'].map((v) => {
+                                    const curSt = (c.subscription_status || '').trim().toLowerCase();
+                                    const selected = v === '' ? !curSt : curSt === v.toLowerCase();
+                                    const lab = v === '' ? '(not set)' : v;
+                                    return `<option value="${esc(v)}" ${selected ? 'selected' : ''}>${esc(lab)}</option>`;
+                                }).join('')}
+                            </select>
                             <label style="display:block; font-weight:600; margin:10px 0 6px 0;">Trial expires</label>
-                            <input id="lic-trial" type="datetime-local" value="${esc(toLocalDatetimeValue(c.trial_expires_at))}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                            <input id="lic-trial" type="datetime-local" value="${esc(toLocalDatetimeValue(c.trial_expires_at))}" style="width:100%; max-width:320px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                             <button id="lic-save-sub" class="btn btn-primary" style="margin-top:12px;">Save subscription</button>
                         </div>
 
@@ -426,6 +631,31 @@ export async function init() {
 
             document.getElementById('lic-back')?.addEventListener('click', () => void loadCompanies());
 
+            const licApplyTierToForm = (slug) => {
+                const t = _tierBySlug(slug);
+                const adv = document.getElementById('lic-plan-slug-adv');
+                if (adv) adv.value = slug || '';
+                if (!t) return;
+                const u = document.getElementById('lic-cap-users');
+                const br = document.getElementById('lic-cap-branches');
+                const pr = document.getElementById('lic-cap-products');
+                if (u) u.value = t.users != null ? String(t.users) : '';
+                if (br) br.value = t.branches != null ? String(t.branches) : '';
+                if (pr) pr.value = t.products != null ? String(t.products) : '';
+                mount.querySelectorAll('.lic-tier-card').forEach((btn) => {
+                    const on = (btn.getAttribute('data-tier-slug') || '') === slug;
+                    btn.style.borderColor = on ? '#6366f1' : '#e2e8f0';
+                    btn.style.background = on ? '#f5f3ff' : '#fff';
+                });
+            };
+
+            mount.querySelectorAll('.lic-tier-card').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const slug = btn.getAttribute('data-tier-slug');
+                    if (slug) licApplyTierToForm(slug);
+                });
+            });
+
             document.getElementById('lic-etims-save-pin')?.addEventListener('click', async () => {
                 try {
                     const pin = (document.getElementById('lic-etims-pin')?.value || '').trim() || null;
@@ -481,13 +711,32 @@ export async function init() {
                 });
             });
 
+            const _readCap = (id) => {
+                const el = document.getElementById(id);
+                const v = (el?.value || '').trim();
+                if (v === '') return null;
+                const n = parseInt(v, 10);
+                return Number.isFinite(n) ? n : null;
+            };
+
             document.getElementById('lic-save-sub')?.addEventListener('click', async () => {
                 try {
-                    const subscription_plan = (document.getElementById('lic-plan')?.value || '').trim() || null;
+                    const subscription_plan = (document.getElementById('lic-plan-slug-adv')?.value || '').trim() || null;
                     const subscription_status = (document.getElementById('lic-status')?.value || '').trim() || null;
                     const trial_expires_at = fromLocalDatetimeValue(document.getElementById('lic-trial')?.value || '');
-                    await api.patchSubscription(companyId, { subscription_plan, subscription_status, trial_expires_at });
+                    const user_limit = _readCap('lic-cap-users');
+                    const branch_limit = _readCap('lic-cap-branches');
+                    const product_limit = _readCap('lic-cap-products');
+                    await api.patchSubscription(companyId, {
+                        subscription_plan,
+                        subscription_status,
+                        trial_expires_at,
+                        user_limit,
+                        branch_limit,
+                        product_limit,
+                    });
                     toast('Saved subscription', 'success');
+                    await loadCompanyDetail(companyId);
                 } catch (e) {
                     toast(e.message || 'Failed', 'error');
                 }

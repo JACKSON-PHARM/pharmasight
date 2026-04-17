@@ -20,7 +20,6 @@ from app.dependencies import (
     get_current_user,
     get_effective_company_id_for_user,
     _user_has_permission,
-    get_tenant_or_default,
     ensure_user_has_branch_access,
 )
 from app.module_enforcement import require_module
@@ -74,8 +73,8 @@ from app.utils.vat import vat_rate_to_percent
 from app.schemas.reports import ItemBatchesResponse
 from app.services.item_movement_report_service import get_item_batches
 from pydantic import BaseModel, Field
-from app.models.tenant import Tenant
-from app.services.plan_context import get_tenant_plan_context
+from app.models.company import Company
+from app.utils.company_plan_limits import company_is_demo_plan, company_product_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
@@ -296,7 +295,6 @@ def generate_sku(company_id: UUID, db: Session) -> str:
 def create_item(
     item: ItemCreate,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -314,13 +312,11 @@ def create_item(
     if not _user_has_permission(db, user.id, "inventory.manage"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
-    # Enforce demo product limits (demo tenants cannot exceed product_limit)
-    plan_ctx = get_tenant_plan_context(tenant)
-    if plan_ctx.get("plan_type") == "demo":
-        product_limit = plan_ctx.get("product_limit")
-        # Only enforce when a positive limit is configured; None or <=0 means "no explicit limit".
+    # Enforce product limits from companies only (Option B)
+    company_row = db.query(Company).filter(Company.id == item.company_id).first()
+    if company_row and company_is_demo_plan(company_row):
+        product_limit = company_product_limit(company_row)
         if product_limit is not None and product_limit > 0:
-            # Count items for this company (company-scoped product limit)
             company_id = item.company_id
             existing_products_count = (
                 db.query(Item)
@@ -1626,7 +1622,6 @@ def delete_item(
 def bulk_create_items(
     bulk_data: ItemsBulkCreate,
     current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Tenant = Depends(get_tenant_or_default),
     db: Session = Depends(get_tenant_db),
 ):
     """
@@ -1654,12 +1649,10 @@ def bulk_create_items(
     if not _user_has_permission(db, user.id, "inventory.manage"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     
-    # Enforce demo product limits (demo tenants cannot exceed product_limit via bulk import)
-    plan_ctx = get_tenant_plan_context(tenant)
-    if plan_ctx.get("plan_type") == "demo":
-        product_limit = plan_ctx.get("product_limit")
+    company_row = db.query(Company).filter(Company.id == bulk_data.company_id).first()
+    if company_row and company_is_demo_plan(company_row):
+        product_limit = company_product_limit(company_row)
         if product_limit is not None and product_limit > 0:
-            # Count existing items for this company
             existing_products = (
                 db.query(Item)
                 .filter(Item.company_id == bulk_data.company_id)
