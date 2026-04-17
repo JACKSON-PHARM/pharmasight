@@ -171,7 +171,8 @@ def _supabase_project_ref_from_url(url: str) -> Optional[str]:
         # Direct: db.REF.supabase.co
         host = parsed.hostname or ""
         if host.startswith("db.") and host.endswith(".supabase.co"):
-            return host[3:-14]
+            # ".supabase.co" is 11 chars; keep full project ref between "db." and ".supabase.co"
+            return host[3 : -len(".supabase.co")]
     except Exception:
         pass
     return None
