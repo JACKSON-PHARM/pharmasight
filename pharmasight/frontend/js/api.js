@@ -1,5 +1,51 @@
 // API Client for PharmaSight
 
+// Serialize internal JWT refresh: many endpoints firing right after login can all get 401
+// (short-lived access token) and each would POST /api/auth/refresh with the same refresh_token.
+// The backend rotates refresh tokens, so the "loser" gets 401 and triggers globalLogout — a logout loop.
+let _pharmasightInternalRefreshInFlight = null;
+
+async function _performPharmasightInternalTokenRefresh(baseURL) {
+    let rt = null;
+    try {
+        if (typeof localStorage !== 'undefined') {
+            rt = localStorage.getItem('pharmasight_refresh_token');
+        }
+    } catch (_) {}
+    if (!rt) {
+        return { ok: false };
+    }
+    const refreshResp = await fetch(baseURL + '/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: rt }),
+    });
+    const refreshData = refreshResp.ok ? await refreshResp.json().catch(() => null) : null;
+    if (refreshResp.ok && refreshData && refreshData.access_token) {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                localStorage.setItem('pharmasight_access_token', refreshData.access_token);
+                if (refreshData.refresh_token) {
+                    localStorage.setItem('pharmasight_refresh_token', refreshData.refresh_token);
+                }
+            }
+        } catch (_) {}
+        return { ok: true };
+    }
+    return { ok: false };
+}
+
+function _getOrStartPharmasightInternalRefreshFlight(baseURL) {
+    if (_pharmasightInternalRefreshInFlight) {
+        return _pharmasightInternalRefreshInFlight;
+    }
+    const p = _performPharmasightInternalTokenRefresh(baseURL).finally(() => {
+        _pharmasightInternalRefreshInFlight = null;
+    });
+    _pharmasightInternalRefreshInFlight = p;
+    return p;
+}
+
 class APIClient {
     constructor(baseURL) {
         this.baseURL = baseURL;
@@ -166,15 +212,8 @@ class APIClient {
                     } catch (_) {}
                     if (isInternalAuth && !alreadyRetried) {
                         try {
-                            var refreshResp = await fetch(this.baseURL + '/api/auth/refresh', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ refresh_token: localStorage.getItem('pharmasight_refresh_token') }),
-                            });
-                            var refreshData = refreshResp.ok ? (await refreshResp.json().catch(function() { return null; })) : null;
-                            if (refreshResp.ok && refreshData && refreshData.access_token) {
-                                localStorage.setItem('pharmasight_access_token', refreshData.access_token);
-                                if (refreshData.refresh_token) localStorage.setItem('pharmasight_refresh_token', refreshData.refresh_token);
+                            var refreshResult = await _getOrStartPharmasightInternalRefreshFlight(this.baseURL);
+                            if (refreshResult && refreshResult.ok) {
                                 // Must skip dedupe on retry: the original request is still registered as
                                 // in-flight, so reusing the same key would return that promise and deadlock.
                                 var retryOpts = { ...options, _retried401: true, _skipDedupe: true };

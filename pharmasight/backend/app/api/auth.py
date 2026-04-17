@@ -571,6 +571,13 @@ def auth_refresh(
     tenant = None
     if tenant_subdomain and (tenant_subdomain or "").strip() and (tenant_subdomain or "").strip() != "__default__":
         tenant = master_db.query(Tenant).filter(Tenant.subdomain == (tenant_subdomain or "").strip()).first()
+    # Single shared app DB: login persists refresh_tokens via SessionLocal when tenant is None or when
+    # tenant DB is unreachable. If public.tenants.database_url still points at the same physical DB,
+    # using tenant_db_session can split refresh state (row visible in one pool, not the other) and
+    # cause 401 on refresh + immediate client logout loops after login.
+    if tenant and (tenant.database_url or "").strip():
+        if _normalize_db_url(tenant.database_url) == _normalize_db_url(settings.database_connection_string):
+            tenant = None
     if not tenant or not tenant.database_url:
         session = SessionLocal()
         try:
@@ -631,7 +638,13 @@ def _persist_refresh_token_on_login(tenant: Optional[Tenant], user_id: str, refr
     if not refresh_token_jwt:
         return
     try:
-        if tenant and tenant.database_url:
+        use_isolated_tenant_db = bool(
+            tenant
+            and (tenant.database_url or "").strip()
+            and _normalize_db_url(tenant.database_url)
+            != _normalize_db_url(settings.database_connection_string)
+        )
+        if use_isolated_tenant_db:
             with tenant_db_session(tenant) as session:
                 _persist_refresh_token(session, tenant, user_id, refresh_token_jwt, device_info=None)
                 revoke_oldest_refresh_tokens_over_limit(session, user_id, MAX_ACTIVE_REFRESH_TOKENS_PER_USER)
