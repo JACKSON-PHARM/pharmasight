@@ -80,6 +80,10 @@ class AuthMeResponse(BaseModel):
     # Which master `tenants` row was used (debug: compare local vs Render if behavior differs)
     subscription_tenant_subdomain: Optional[str] = None
     subscription_used_default_tenant_fallback: Optional[bool] = None
+    # Debug (safe: no secrets). Helps compare Render vs local when subscription differs.
+    debug_db_project_ref: Optional[str] = None
+    debug_master_db_project_ref: Optional[str] = None
+    debug_master_tenants_with_database_url: Optional[int] = None
 
 
 # When user is found only in default/legacy DB (no tenant DB), reset token uses this subdomain.
@@ -164,6 +168,27 @@ def auth_me(
         tenant = _get_default_tenant(master_db)
         used_default_fallback = tenant is not None
     state = compute_subscription_billing_state(tenant)
+
+    # Safe debug: only return Supabase project refs (no passwords/URLs).
+    debug_db_ref = None
+    debug_master_ref = None
+    debug_tenants_with_db_url = None
+    try:
+        from app.dependencies import _supabase_project_ref_from_url
+        from app.database_master import MASTER_DATABASE_URL
+
+        debug_db_ref = _supabase_project_ref_from_url(getattr(settings, "database_connection_string", "") or "")
+        debug_master_ref = _supabase_project_ref_from_url(MASTER_DATABASE_URL or "")
+        try:
+            debug_tenants_with_db_url = (
+                master_db.query(Tenant)
+                .filter(Tenant.database_url.isnot(None))
+                .count()
+            )
+        except Exception:
+            debug_tenants_with_db_url = None
+    except Exception:
+        pass
     return {
         "user_id": str(user.id),
         "roles": roles,
@@ -173,6 +198,9 @@ def auth_me(
         "trial_days_remaining": state.get("trial_days_remaining"),
         "subscription_tenant_subdomain": getattr(tenant, "subdomain", None) if tenant else None,
         "subscription_used_default_tenant_fallback": used_default_fallback,
+        "debug_db_project_ref": debug_db_ref,
+        "debug_master_db_project_ref": debug_master_ref,
+        "debug_master_tenants_with_database_url": debug_tenants_with_db_url,
     }
 
 
