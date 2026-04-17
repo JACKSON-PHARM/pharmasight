@@ -483,7 +483,13 @@ def _get_default_tenant(master_db: Session) -> Optional[Tenant]:
             if expiry > now:
                 return cached_tenant
             _default_tenant_cache.pop(default_url, None)
-    tenants = master_db.query(Tenant).filter(Tenant.database_url.isnot(None)).all()
+    # Some environments may have database_url='' (non-null but unusable). Ignore those.
+    tenants = (
+        master_db.query(Tenant)
+        .filter(Tenant.database_url.isnot(None))
+        .filter(Tenant.database_url != "")
+        .all()
+    )
     result = None
     for t in tenants:
         u = (t.database_url or "").strip()

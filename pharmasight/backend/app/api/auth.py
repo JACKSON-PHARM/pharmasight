@@ -84,6 +84,8 @@ class AuthMeResponse(BaseModel):
     debug_db_project_ref: Optional[str] = None
     debug_master_db_project_ref: Optional[str] = None
     debug_master_tenants_with_database_url: Optional[int] = None
+    debug_master_tenants_with_nonempty_database_url: Optional[int] = None
+    debug_master_tenants_dburl_empty_subdomains: Optional[list[str]] = None
 
 
 # When user is found only in default/legacy DB (no tenant DB), reset token uses this subdomain.
@@ -173,6 +175,8 @@ def auth_me(
     debug_db_ref = None
     debug_master_ref = None
     debug_tenants_with_db_url = None
+    debug_tenants_with_nonempty_db_url = None
+    debug_empty_dburl_subdomains = None
     try:
         from app.dependencies import _supabase_project_ref_from_url
         from app.database_master import MASTER_DATABASE_URL
@@ -185,8 +189,23 @@ def auth_me(
                 .filter(Tenant.database_url.isnot(None))
                 .count()
             )
+            debug_tenants_with_nonempty_db_url = (
+                master_db.query(Tenant)
+                .filter(Tenant.database_url.isnot(None))
+                .filter(Tenant.database_url != "")
+                .count()
+            )
+            rows = (
+                master_db.query(Tenant.subdomain)
+                .filter(Tenant.database_url.isnot(None))
+                .filter(Tenant.database_url == "")
+                .all()
+            )
+            debug_empty_dburl_subdomains = [r[0] for r in (rows or []) if r and r[0]]
         except Exception:
             debug_tenants_with_db_url = None
+            debug_tenants_with_nonempty_db_url = None
+            debug_empty_dburl_subdomains = None
     except Exception:
         pass
     return {
@@ -201,6 +220,8 @@ def auth_me(
         "debug_db_project_ref": debug_db_ref,
         "debug_master_db_project_ref": debug_master_ref,
         "debug_master_tenants_with_database_url": debug_tenants_with_db_url,
+        "debug_master_tenants_with_nonempty_database_url": debug_tenants_with_nonempty_db_url,
+        "debug_master_tenants_dburl_empty_subdomains": debug_empty_dburl_subdomains,
     }
 
 
