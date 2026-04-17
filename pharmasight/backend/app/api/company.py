@@ -119,7 +119,6 @@ def create_company(
 @router.get("/company/modules")
 def get_company_modules_entitlements(
     current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
 ) -> Dict[str, Any]:
     """
     Returns only licensed (business/clinical) modules.
@@ -127,7 +126,7 @@ def get_company_modules_entitlements(
     - Core modules are implicit and never included in the response.
     - Backward compatible behavior: if there is no row for ``pharmacy``, it is treated as enabled.
     """
-    user = current_user_and_db[0]
+    user, db = current_user_and_db
     company_id = get_effective_company_id_for_user(db, user)
 
     def _row(name: str) -> Dict[str, Any]:
@@ -185,10 +184,9 @@ def get_company_modules_entitlements(
 @router.get("/companies", response_model=List[CompanyResponse])
 def get_companies(
     current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
 ):
     """Get companies the current user has access to (via branch roles). Ensures tenant isolation."""
-    user = current_user_and_db[0]
+    user, db = current_user_and_db
     effective_company_id = get_effective_company_id_for_user(db, user)
     if not effective_company_id:
         return []
@@ -200,10 +198,9 @@ def get_companies(
 def get_company(
     company_id: UUID,
     current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
 ):
     """Get company by ID. User may only access their effective company (tenant isolation)."""
-    user = current_user_and_db[0]
+    user, db = current_user_and_db
     effective_company_id = get_effective_company_id_for_user(db, user)
     if effective_company_id is None or company_id != effective_company_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")

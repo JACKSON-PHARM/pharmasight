@@ -30,6 +30,7 @@ from app.database_master import get_master_db
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.utils.auth_internal import (
+    CLAIM_COMPANY_ID,
     CLAIM_EXP,
     CLAIM_JTI,
     CLAIM_TENANT_SUBDOMAIN,
@@ -611,13 +612,33 @@ def _resolve_user_and_db_for_request(
     Caller must close db. Raises HTTPException on auth failure.
     """
     tenant = _tenant_from_token_or_header(request, master_db, payload)
+    company_id_claim = (payload.get(CLAIM_COMPANY_ID) or "").strip()
+    tenant_sub_raw = (payload.get(CLAIM_TENANT_SUBDOMAIN) or "").strip()
+    tenant_sub_norm = "" if tenant_sub_raw.lower() in ("", "__default__") else tenant_sub_raw
+
+    def _lookup_in_db(db: Session) -> Optional[User]:
+        return _lookup_user_if_not_revoked(db, sub, payload.get(CLAIM_JTI))
+
+    # Internal tokens with company_id and no real tenant subdomain: user + revoked_tokens live in
+    # the shared app DB only. Do not follow master.tenants "default" database_url — it may still
+    # point at a legacy per-tenant host and would 401 every route while /auth/refresh still works.
+    if company_id_claim and not tenant_sub_norm:
+        db = SessionLocal()
+        user = _lookup_in_db(db)
+        if user:
+            return (user, db, None)
+        _log_user_auth_failure(db, sub, payload.get(CLAIM_JTI), "app_db_company_scoped")
+        db.close()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if tenant is None:
         tenant = _get_default_tenant(master_db)
     if tenant and (tenant.status or "").lower() in ("suspended", "cancelled"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended")
-
-    def _lookup_in_db(db: Session) -> Optional[User]:
-        return _lookup_user_if_not_revoked(db, sub, payload.get(CLAIM_JTI))
 
     # Prefer app DB when no tenant or tenant has no database_url (single-DB / re-invited legacy)
     if not tenant or not (tenant.database_url and tenant.database_url.strip()):
