@@ -3,11 +3,12 @@ Internal authentication: password hashing (bcrypt) and JWT (access, refresh, res
 Uses bcrypt directly to avoid passlib/bcrypt 4.x compatibility issues.
 """
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 from uuid import uuid4
 
 import bcrypt
 from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -175,8 +176,11 @@ def create_impersonation_access_token(
     return _internal_encode(payload, delta, token_type=TYPE_ACCESS)
 
 
-def decode_internal_token(token: str, verify_exp: bool = True) -> Optional[dict]:
-    """Decode and verify internal JWT. Returns payload dict or None. Does not check DB revocation (caller checks with is_token_revoked_in_db)."""
+def decode_internal_token_or_reason(token: str, verify_exp: bool = True) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    Decode and verify internal JWT. Returns (payload, None) on success, (None, reason) on failure.
+    Does not check DB revocation (caller uses _lookup_user_if_not_revoked / is_token_revoked_in_db).
+    """
     try:
         payload = jwt.decode(
             token,
@@ -186,10 +190,20 @@ def decode_internal_token(token: str, verify_exp: bool = True) -> Optional[dict]
             issuer=ISSUER_INTERNAL,
         )
         if not payload.get(CLAIM_SUB):
-            return None
-        return payload
-    except (JWTError, Exception):
-        return None
+            return None, "missing_sub_claim"
+        return payload, None
+    except ExpiredSignatureError:
+        return None, "expired"
+    except JWTError as e:
+        return None, f"jwt_error:{type(e).__name__}"
+    except Exception as e:
+        return None, f"decode_error:{type(e).__name__}"
+
+
+def decode_internal_token(token: str, verify_exp: bool = True) -> Optional[dict]:
+    """Decode and verify internal JWT. Returns payload dict or None."""
+    payload, _ = decode_internal_token_or_reason(token, verify_exp=verify_exp)
+    return payload
 
 
 def is_token_revoked_in_db(session: Session, jti: Optional[str]) -> bool:

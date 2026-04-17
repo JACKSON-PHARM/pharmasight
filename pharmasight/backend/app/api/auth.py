@@ -29,15 +29,15 @@ from app.dependencies import (
     tenant_db_session,
     get_effective_company_id_for_user,
     invalidate_auth_cache_for_user,
-    _tenant_from_token_or_header,
-    _get_default_tenant,
 )
 from app.utils.auth_internal import (
+    CLAIM_COMPANY_ID,
     CLAIM_EXP,
     CLAIM_JTI,
     CLAIM_SUB,
     CLAIM_TENANT_SUBDOMAIN,
     decode_internal_token,
+    decode_internal_token_or_reason,
     revoke_token_in_db,
     insert_refresh_token,
     get_active_refresh_token_by_jti,
@@ -108,7 +108,11 @@ class UsernameLoginResponse(BaseModel):
     user_id: str
     username: Optional[str] = None
     full_name: Optional[str] = None
-    tenant_subdomain: Optional[str] = None
+    # Legacy field: null when the account is company-scoped (single shared DB). JWT may still carry the claim as null.
+    tenant_subdomain: Optional[str] = Field(
+        default=None,
+        description="Deprecated for routing; always null for new company-scoped users. Not used for DB selection.",
+    )
     # Internal auth: when user has password_hash we verify and return these
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
@@ -136,13 +140,28 @@ class StartDemoResponse(BaseModel):
 def auth_me(
     request: Request,
     user_db: Tuple[User, Session] = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
 ):
     """
     Return current authenticated user_id, RBAC role names, and subscription/trial context
     derived from the authenticated user's effective `company_id` (single source of truth).
     """
-    user, _ = user_db
+    user, db = user_db
+    auth_hdr = request.headers.get("Authorization")
+    token = (auth_hdr[7:].strip() if auth_hdr and auth_hdr.startswith("Bearer ") else None) or None
+    if token:
+        pl, dec_err = decode_internal_token_or_reason(token)
+        if pl:
+            logger.debug(
+                "auth/me bearer claims sub=%s jti=%s exp=%s company_id=%s type=%s",
+                pl.get(CLAIM_SUB),
+                pl.get(CLAIM_JTI),
+                pl.get(CLAIM_EXP),
+                pl.get(CLAIM_COMPANY_ID),
+                pl.get("type"),
+            )
+        elif dec_err:
+            logger.warning("auth/me token re-decode failed (unexpected after auth): %s", dec_err)
+
     from app.models.user import UserBranchRole, UserRole
 
     rows = (

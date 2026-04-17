@@ -6,7 +6,7 @@ Tenant DB: one per tenant; full app schema. Data isolated per tenant.
 Legacy/default DB: current DATABASE_URL. No tenant header → use this.
 
 Auth: get_current_user_optional / get_current_user accept PharmaSight internal JWT only.
-Tenant comes from token claims or X-Tenant-* header (legacy/default DB when none).
+Tenant DB routing for the authenticated user row uses JWT tenant_subdomain only; X-Tenant-* is not used here (avoids wrong DB when claim is null but a stale header is set).
 """
 from urllib.parse import urlparse, quote
 import re
@@ -30,9 +30,11 @@ from app.database_master import get_master_db
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.utils.auth_internal import (
+    CLAIM_EXP,
     CLAIM_JTI,
     CLAIM_TENANT_SUBDOMAIN,
     decode_internal_token,
+    decode_internal_token_or_reason,
 )
 from app.utils.company_access import get_company_access
 
@@ -444,24 +446,17 @@ def tenant_or_app_db_session(tenant: Tenant) -> Generator[Session, None, None]:
 # -----------------------------------------------------------------------------
 
 def _tenant_from_token_or_header(request: Request, master_db: Session, payload: dict) -> Optional[Tenant]:
-    """Resolve tenant from token tenant_subdomain or from X-Tenant-* headers."""
-    tenant_subdomain = (payload or {}).get("tenant_subdomain")
-    if tenant_subdomain:
+    """
+    Resolve tenant row from JWT tenant_subdomain only (auth / subscription routing).
+
+    Internal access tokens often set tenant_subdomain to null with company_id set (single shared DB).
+    Falling back to X-Tenant-* here would send user lookup to the wrong physical database and yield 401.
+    Optional tenant headers remain on get_tenant_from_header for routes that need storage paths only.
+    """
+    tenant_subdomain = (payload or {}).get(CLAIM_TENANT_SUBDOMAIN)
+    if tenant_subdomain and str(tenant_subdomain).strip():
         return master_db.query(Tenant).filter(Tenant.subdomain == str(tenant_subdomain).strip()).first()
-    subdomain = request.headers.get("X-Tenant-Subdomain")
-    tenant_id_raw = request.headers.get("X-Tenant-ID")
-    if not subdomain and not tenant_id_raw:
-        return None
-    tenant = None
-    if tenant_id_raw:
-        try:
-            uid = UUID(str(tenant_id_raw).strip())
-            tenant = master_db.query(Tenant).filter(Tenant.id == uid).first()
-        except (ValueError, TypeError):
-            pass
-    if not tenant and subdomain:
-        tenant = master_db.query(Tenant).filter(Tenant.subdomain == str(subdomain).strip()).first()
-    return tenant
+    return None
 
 
 def _get_default_tenant(master_db: Session) -> Optional[Tenant]:
@@ -573,6 +568,37 @@ def _lookup_user_if_not_revoked(db: Session, sub: UUID, jti: Optional[str]) -> O
     return user
 
 
+def _log_user_auth_failure(db: Session, sub: UUID, jti: Optional[str], context: str) -> None:
+    """Best-effort diagnostics when JWT decodes but user row / revocation check fails."""
+    jti_s = (jti or "").strip() or "(none)"
+    user_row = False
+    revoked = False
+    inactive = False
+    try:
+        u = db.execute(
+            text("SELECT id, is_active FROM users WHERE id = :sub AND deleted_at IS NULL"),
+            {"sub": str(sub)},
+        ).fetchone()
+        if u:
+            user_row = True
+            inactive = not bool(u._mapping.get("is_active", True))
+        if jti:
+            r = db.execute(text("SELECT 1 FROM revoked_tokens WHERE jti = :jti"), {"jti": jti}).fetchone()
+            revoked = r is not None
+    except Exception as e:
+        logger.warning("auth_failure_diag_failed context=%s sub=%s err=%s", context, sub, e)
+        return
+    logger.warning(
+        "auth_failure context=%s sub=%s jti=%s user_exists=%s inactive=%s jti_revoked=%s",
+        context,
+        sub,
+        jti_s,
+        user_row,
+        inactive,
+        revoked,
+    )
+
+
 def _resolve_user_and_db_for_request(
     request: Request,
     master_db: Session,
@@ -599,6 +625,7 @@ def _resolve_user_and_db_for_request(
         user = _lookup_in_db(db)
         if user:
             return (user, db, tenant)
+        _log_user_auth_failure(db, sub, payload.get(CLAIM_JTI), "app_db_lookup")
         db.close()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -613,6 +640,7 @@ def _resolve_user_and_db_for_request(
         user = _lookup_in_db(db)
         if user:
             return (user, db, tenant)
+        _log_user_auth_failure(db, sub, payload.get(CLAIM_JTI), "tenant_db_no_matching_user")
         db.close()
     except OperationalError as e:
         err_str = str(e)
@@ -621,7 +649,13 @@ def _resolve_user_and_db_for_request(
             user = _lookup_in_db(db)
             if user:
                 return (user, db, tenant)
+            _log_user_auth_failure(db, sub, payload.get(CLAIM_JTI), "app_db_after_tenant_unreachable")
             db.close()
+    diag = SessionLocal()
+    try:
+        _log_user_auth_failure(diag, sub, payload.get(CLAIM_JTI), "tenant_resolve_final")
+    finally:
+        diag.close()
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="User not found or inactive",
@@ -718,14 +752,21 @@ def get_current_user(
     """
     auth = request.headers.get("Authorization")
     token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
+    path = (request.url.path or "").strip().rstrip("/") or "/"
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_internal_token(token)
+    payload, decode_reason = decode_internal_token_or_reason(token)
     if not payload or not payload.get("sub"):
+        logger.warning(
+            "get_current_user: jwt decode failed path=%s reason=%s algorithm=%s",
+            path,
+            decode_reason or "missing_sub",
+            getattr(settings, "ALGORITHM", None),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
@@ -734,9 +775,14 @@ def get_current_user(
     try:
         sub = UUID(str(payload["sub"]))
     except (ValueError, TypeError):
+        logger.warning(
+            "get_current_user: invalid sub path=%s sub_raw=%r jti=%s exp=%s",
+            path,
+            payload.get("sub"),
+            payload.get(CLAIM_JTI),
+            payload.get(CLAIM_EXP),
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-    path = (request.url.path or "").strip().rstrip("/") or "/"
     method = (request.method or "GET").upper()
 
     jti = payload.get(CLAIM_JTI)
