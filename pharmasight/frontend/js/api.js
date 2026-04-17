@@ -1,9 +1,14 @@
 // API Client for PharmaSight
-
-// Serialize internal JWT refresh: many endpoints firing right after login can all get 401
-// (short-lived access token) and each would POST /api/auth/refresh with the same refresh_token.
-// The backend rotates refresh tokens, so the "loser" gets 401 and triggers globalLogout — a logout loop.
+//
+// 401 handling (app session): A 401 on a stale access token is normal while in-flight requests
+// still carry the old Bearer. We refresh once per request chain, retry with tokens read from
+// localStorage, and ONLY call globalLogout when refresh fails or a post-retry 401 is outside
+// the post-refresh grace window (transient 401s right after refresh do not destroy the session).
+// Single-flight refresh + a short post-resolve hold prevents duplicate /auth/refresh POSTs.
 let _pharmasightInternalRefreshInFlight = null;
+/** Wall-clock ms when internal refresh last persisted new tokens (for post-refresh retry grace). */
+let _pharmasightLastInternalRefreshOkAt = 0;
+const _PHARMASIGHT_POST_REFRESH_GRACE_MS = 3000;
 
 async function _performPharmasightInternalTokenRefresh(baseURL) {
     let rt = null;
@@ -30,6 +35,16 @@ async function _performPharmasightInternalTokenRefresh(baseURL) {
                 }
             }
         } catch (_) {}
+        try {
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(
+                    new CustomEvent('pharmasight-internal-auth-refreshed', {
+                        detail: { access_token: refreshData.access_token },
+                    })
+                );
+            }
+        } catch (_) {}
+        _pharmasightLastInternalRefreshOkAt = Date.now();
         return { ok: true };
     }
     return { ok: false };
@@ -54,6 +69,88 @@ function _getOrStartPharmasightInternalRefreshFlight(baseURL) {
     });
     _pharmasightInternalRefreshInFlight = p;
     return p;
+}
+
+function _pharmasightEndpointAuthFlags(endpoint) {
+    const ep = endpoint || '';
+    const isAuthEndpoint =
+        ep.indexOf('/api/auth/username-login') !== -1 ||
+        ep.indexOf('/api/auth/refresh') !== -1 ||
+        ep.indexOf('/api/auth/request-reset') !== -1 ||
+        ep.indexOf('/api/auth/reset-password') !== -1;
+    const isAdminRoute = ep.indexOf('/api/admin/') === 0;
+    const isAdminLogin = ep.indexOf('/api/admin/auth/login') !== -1;
+    return { isAuthEndpoint, isAdminRoute, isAdminLogin };
+}
+
+/** Mutates headers: Bearer from localStorage (source of truth after refresh). */
+function _applyPharmasightApiAuthHeaders(headers, endpoint, flags) {
+    if (!headers || !flags) return;
+    const { isAuthEndpoint, isAdminRoute, isAdminLogin } = flags;
+    try {
+        if (typeof localStorage === 'undefined') return;
+        if (isAdminRoute && !isAdminLogin) {
+            const adminToken = localStorage.getItem('admin_token');
+            if (adminToken) {
+                headers['Authorization'] = 'Bearer ' + adminToken;
+            } else {
+                try {
+                    delete headers['Authorization'];
+                } catch (_) {
+                    headers['Authorization'] = undefined;
+                }
+            }
+        } else if (!isAuthEndpoint) {
+            const accessToken = localStorage.getItem('pharmasight_access_token');
+            if (accessToken) {
+                headers['Authorization'] = 'Bearer ' + accessToken;
+            } else {
+                try {
+                    delete headers['Authorization'];
+                } catch (_) {
+                    headers['Authorization'] = undefined;
+                }
+            }
+        }
+    } catch (_) {}
+}
+
+function _canAttemptPharmasightInternalRefresh(endpoint, flags) {
+    if (!flags) return false;
+    const { isAuthEndpoint, isAdminRoute } = flags;
+    if (isAuthEndpoint || isAdminRoute) return false;
+    try {
+        if (typeof localStorage === 'undefined') return false;
+        return !!(
+            localStorage.getItem('pharmasight_access_token') && localStorage.getItem('pharmasight_refresh_token')
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+/** Full session teardown when the session is considered dead (not used for grace-window soft 401s). */
+function _pharmasightSessionExpiredLogoutAndRedirect() {
+    if (typeof window.showToast === 'function') {
+        window.showToast('Session expired. Please log in again.', 'warning');
+    }
+    try {
+        if (typeof window.closeModal === 'function') {
+            window.closeModal();
+        }
+    } catch (_) {}
+    try {
+        if (!window.__pharmasightAuthRedirecting) {
+            window.__pharmasightAuthRedirecting = true;
+            window.location.hash = '#login';
+            if (typeof window.loadPage === 'function') {
+                window.loadPage('login');
+            }
+        }
+    } catch (_) {}
+    if (typeof window.globalLogout === 'function') {
+        window.globalLogout();
+    }
 }
 
 class APIClient {
@@ -136,31 +233,8 @@ class APIClient {
             }
         } catch (_) {}
 
-        // Auth: send Bearer token when we have one.
-        // Admin routes (except login): use admin_token.
-        // App routes: use internal pharmasight_access_token only (no Supabase fallback).
-        // Skip for auth endpoints.
-        const isAuthEndpoint = endpoint.indexOf('/api/auth/username-login') !== -1 ||
-            endpoint.indexOf('/api/auth/refresh') !== -1 ||
-            endpoint.indexOf('/api/auth/request-reset') !== -1 ||
-            endpoint.indexOf('/api/auth/reset-password') !== -1;
-        const isAdminRoute = endpoint.indexOf('/api/admin/') === 0;
-        const isAdminLogin = endpoint.indexOf('/api/admin/auth/login') !== -1;
-        try {
-            if (typeof localStorage !== 'undefined') {
-                if (isAdminRoute && !isAdminLogin) {
-                    const adminToken = localStorage.getItem('admin_token');
-                    if (adminToken) {
-                        config.headers['Authorization'] = 'Bearer ' + adminToken;
-                    }
-                } else if (!isAuthEndpoint) {
-                    const accessToken = localStorage.getItem('pharmasight_access_token');
-                    if (accessToken) {
-                        config.headers['Authorization'] = 'Bearer ' + accessToken;
-                    }
-                }
-            }
-        } catch (_) {}
+        const authFlags = _pharmasightEndpointAuthFlags(endpoint);
+        _applyPharmasightApiAuthHeaders(config.headers, endpoint, authFlags);
 
         try {
             const response = await fetch(url, config);
@@ -211,50 +285,43 @@ class APIClient {
                     }
                 }
                 if (response.status === 401) {
-                    var alreadyRetried = options._retried401 === true;
-                    var isInternalAuth = false;
-                    try {
-                        if (typeof localStorage !== 'undefined' && !isAuthEndpoint && !isAdminRoute) {
-                            var at = localStorage.getItem('pharmasight_access_token');
-                            var rt = localStorage.getItem('pharmasight_refresh_token');
-                            isInternalAuth = !!(at && rt);
-                        }
-                    } catch (_) {}
-                    if (isInternalAuth && !alreadyRetried) {
+                    const retriedAfterRefresh = options._retried401 === true;
+                    const canRefresh = _canAttemptPharmasightInternalRefresh(endpoint, authFlags);
+
+                    // Only app (non-admin) routes with both tokens may refresh. Never logout before
+                    // attempting refresh when a retry is still possible.
+                    if (canRefresh && !retriedAfterRefresh) {
+                        let refreshResult;
                         try {
-                            var refreshResult = await _getOrStartPharmasightInternalRefreshFlight(this.baseURL);
-                            if (refreshResult && refreshResult.ok) {
-                                // Must skip dedupe on retry: the original request is still registered as
-                                // in-flight, so reusing the same key would return that promise and deadlock.
-                                var retryOpts = { ...options, _retried401: true, _skipDedupe: true };
-                                return await this.request(endpoint, retryOpts);
-                            }
+                            refreshResult = await _getOrStartPharmasightInternalRefreshFlight(this.baseURL);
                         } catch (refreshErr) {
                             console.warn('Token refresh failed:', refreshErr);
+                            refreshResult = { ok: false };
+                        }
+                        if (refreshResult && refreshResult.ok) {
+                            // localStorage is updated inside refresh; re-apply on this config so any
+                            // in-function retry path sees the new Bearer (recursive request() re-reads too).
+                            _applyPharmasightApiAuthHeaders(config.headers, endpoint, authFlags);
+                            const retryOpts = { ...options, _retried401: true, _skipDedupe: true };
+                            return await this.request(endpoint, retryOpts);
                         }
                     }
-                    if (typeof window.showToast === 'function') {
-                        window.showToast('Session expired. Please log in again.', 'warning');
-                    }
-                    // UX optimization: when session expires from inside a modal flow,
-                    // immediately close modal + route to login so user is never stuck.
-                    try {
-                        if (typeof window.closeModal === 'function') {
-                            window.closeModal();
+
+                    // Post-refresh retry still 401: often transient (races, header propagation). Do not
+                    // logout inside grace window after a successful refresh.
+                    if (retriedAfterRefresh && canRefresh) {
+                        const sinceMs = Date.now() - _pharmasightLastInternalRefreshOkAt;
+                        if (
+                            _pharmasightLastInternalRefreshOkAt > 0 &&
+                            sinceMs >= 0 &&
+                            sinceMs < _PHARMASIGHT_POST_REFRESH_GRACE_MS
+                        ) {
+                            throw error;
                         }
-                    } catch (_) {}
-                    try {
-                        if (!window.__pharmasightAuthRedirecting) {
-                            window.__pharmasightAuthRedirecting = true;
-                            window.location.hash = '#login';
-                            if (typeof window.loadPage === 'function') {
-                                window.loadPage('login');
-                            }
-                        }
-                    } catch (_) {}
-                    if (typeof window.globalLogout === 'function') {
-                        window.globalLogout();
                     }
+
+                    // Logout: no refresh path, refresh failed, or post-retry 401 outside grace window.
+                    _pharmasightSessionExpiredLogoutAndRedirect();
                 }
                 throw error;
             }
