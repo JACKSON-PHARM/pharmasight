@@ -6743,7 +6743,8 @@ def main():
                 "rcptTyCd": "S",
                 "pmtTyCd": "01",
                 "trdInvcNo": trd_invc,
-                "invcNo": invc_no,
+                # OSDC sales: invcNo is overridden at runtime with a sequential SBX counter.
+                "invcNo": "1",
                 "orgInvcNo": "0",
                 "salesSttsCd": "02",
                 "cfmDt": cfm_dt,
@@ -6968,6 +6969,34 @@ def main():
                 },
             ),
         )
+
+    # Portal checklist expects the "sales lookups" to be executed after a successful sale. In practice,
+    # SBX often fails later in the pipeline (purchase/post-purchase stock), which would prevent these
+    # tail endpoints from being marked executed. Reorder them immediately after ``saveInvoice`` so
+    # a run that successfully posts a sale can still reach 100% on the checklist.
+    _post_sale_lookup_names = (
+        "selectTrnsSalesList",
+        "selectInvoiceDetails",
+        "selectCustomerList",
+        "selectTaxPayerInfo",
+    )
+    _post_sale_lookup_steps: list[tuple[str, str, dict]] = []
+    _tmp_seq: list[tuple[str, str, dict]] = []
+    for _t in sequence:
+        if _t[0] in _post_sale_lookup_names:
+            _post_sale_lookup_steps.append(_t)
+        else:
+            _tmp_seq.append(_t)
+    sequence = _tmp_seq
+    try:
+        _sale_idx = next(i for i, t in enumerate(sequence) if t[0] == "saveInvoice")
+    except StopIteration:
+        _sale_idx = -1
+    if _sale_idx >= 0 and _post_sale_lookup_steps:
+        # Preserve the original relative order from the base sequence.
+        _order = {n: i for i, n in enumerate(_post_sale_lookup_names)}
+        _post_sale_lookup_steps.sort(key=lambda t: _order.get(t[0], 10_000))
+        sequence[_sale_idx + 1 : _sale_idx + 1] = _post_sale_lookup_steps
 
     if only_steps_cli:
         unknown = set(only_steps_cli) - set(SEQUENCE_STEP_NAMES)
@@ -9216,15 +9245,20 @@ def main():
                 payload["invcNo"] = str(_pin)
                 for _rk in ("trdInvcNo", "orgInvcNo"):
                     payload.pop(_rk, None)
-                _req_main = coerce_invc_binding(pin_blob.get("main_purchase_sales_invc_no"))
-                if _req_main is not None:
-                    payload["requestedInvcNo"] = str(_req_main).strip()
-                else:
-                    payload["requestedInvcNo"] = str(_pin)
+                # KRA SBX inconsistency:
+                # The servlet can treat query params as null/not-bound for requestedInvcNo.
+                # Make JSON body the single source of truth for insertTrnsPurchase.
+                payload["requestedInvcNo"] = str(payload.get("invcNo") or _pin)
+                if not payload.get("requestedInvcNo"):
+                    print(
+                        "WARNING: insertTrnsPurchase — requestedInvcNo was empty; auto-filled "
+                        f"from invcNo={payload.get('invcNo')!r}."
+                    )
                 ilp = payload.get("itemList")
                 if isinstance(ilp, list) and ilp and isinstance(ilp[0], dict):
                     ilp[0]["itemClsCd"] = item_cls_dynamic["itemClsCd"]
                     ilp[0]["taxTyCd"] = item_cls_dynamic["taxTyCd"]
+                _req_main = coerce_invc_binding(pin_blob.get("main_purchase_sales_invc_no"))
                 if _req_main is not None:
                     _main_rt = _link_tax_rt_for_purchase_or_fallback(
                         pin_blob,
@@ -9324,10 +9358,19 @@ def main():
                     apply_link_tax_rt_to_purchase_payload(payload, _pc_rt)
 
             if endpoint_name == "selectInvoiceDetails":
-                try:
-                    payload["invcNo"] = int(str(invc_no).strip())
-                except (TypeError, ValueError):
-                    payload["invcNo"] = _invc_base
+                # Prefer the OSDC sales invoice number (saveTrnsSalesOsdc) when present; this is what
+                # the sandbox checklist expects after a successful sale.
+                _osdc_iv = str(pin_blob.get("osdc_invc_no_current") or "").strip()
+                if _osdc_iv:
+                    try:
+                        payload["invcNo"] = int(_osdc_iv)
+                    except (TypeError, ValueError):
+                        payload["invcNo"] = _invc_base
+                else:
+                    try:
+                        payload["invcNo"] = int(str(invc_no).strip())
+                    except (TypeError, ValueError):
+                        payload["invcNo"] = _invc_base
 
             if endpoint_name == "saveStockMasterComponentPurchase":
                 _cc_sm = (pin_blob.get("component_item_cd") or "").strip()
@@ -9456,6 +9499,22 @@ def main():
                     "precomp_purchase_link_tax_rt",
                     note_tag="saveInvoice (saveTrnsSalesOsdc)",
                 )
+                # OSDC sales invoice numbering (SBX): sequential invcNo starting at 1, persisted per PIN.
+                # Never generate random invcNo for this endpoint; query params requestedInvcNo must match body invcNo.
+                if isinstance(payload, dict):
+                    try:
+                        _nxt_osdc = int(pin_blob.get("osdc_invc_no_next") or 1)
+                    except (TypeError, ValueError):
+                        _nxt_osdc = 1
+                    if _nxt_osdc < 1:
+                        _nxt_osdc = 1
+                    _iv_osdc = str(_nxt_osdc)
+                    payload["invcNo"] = _iv_osdc
+                    # Keep a consistent trade invoice reference for traceability.
+                    payload["trdInvcNo"] = f"TRD-{_iv_osdc}"
+                    payload["requestedInvcNo"] = _iv_osdc
+                    pin_blob["osdc_invc_no_current"] = _iv_osdc
+                    save_test_state(state_root)
                 # OSDC (saveTrnsSalesOsdc): KRA enforces customer TIN consistency between the root payload and
                 # the nested receipt block. Contract:
                 # - If no verified customer TIN is provided: custTin/custNm MUST NOT exist anywhere.
@@ -9600,8 +9659,7 @@ def main():
             _purchase_base_url = url
             if endpoint_name in ("insertTrnsPurchase", "insertTrnsPurchaseComponentStock"):
                 print(
-                    "NOTE: insertTrnsPurchase — body includes requestedInvcNo (SBX servlet reads it; "
-                    "query params also send invcNo + requestedInvcNo matching body invcNo)."
+                    "NOTE: insertTrnsPurchase — requestedInvcNo is driven by JSON body (not query)."
                 )
 
             if (
@@ -9904,18 +9962,58 @@ def main():
                     )
                 post_headers = dict(headers)
                 _post_params = None
+                _endpoint_param_rules = {
+                    # KRA SBX: requestedInvcNo must be taken from the JSON body for insertTrnsPurchase.
+                    "insertTrnsPurchase": {"requestedInvcNo": "body_only"},
+                    # saveTrnsSalesOsdc (saveInvoice) is stable with requestedInvcNo in both.
+                    "saveInvoice": {"requestedInvcNo": "body_and_query"},
+                }
                 if endpoint_name in ("insertTrnsPurchase", "insertTrnsPurchaseComponentStock"):
                     print("\n=== DEBUG insertTrnsPurchase FULL JSON (before POST) ===")
                     print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+                    if endpoint_name == "insertTrnsPurchase":
+                        _r_inv = payload.get("requestedInvcNo")
+                        print(
+                            "NOTE: insertTrnsPurchase POST pre-assert requestedInvcNo="
+                            f"{_r_inv!r} (invcNo={payload.get('invcNo')!r})."
+                        )
                     _iv_q = str(payload.get("invcNo") or "").strip()
                     if _iv_q:
-                        _post_params = {"invcNo": _iv_q, "requestedInvcNo": _iv_q}
-                        print(f"NOTE: insertTrnsPurchase POST params (match body invcNo): {_post_params}")
+                        # Keep invcNo in query params only; requestedInvcNo is body-only for insertTrnsPurchase.
+                        _post_params = {"invcNo": _iv_q}
+                        print(
+                            "NOTE: insertTrnsPurchase POST params (invcNo only; "
+                            f"requestedInvcNo is body): {_post_params}"
+                        )
                 elif endpoint_name == "saveInvoice":
                     _iv_s = str(payload.get("invcNo") or "").strip()
                     if _iv_s:
                         _post_params = {"invcNo": _iv_s, "requestedInvcNo": _iv_s}
                         print(f"NOTE: saveInvoice POST params (match body invcNo): {_post_params}")
+                # Apply endpoint param rules after initial construction.
+                _rule = _endpoint_param_rules.get(endpoint_name, {})
+                if _rule.get("requestedInvcNo") == "body_only" and isinstance(payload, dict):
+                    # Ensure body requestedInvcNo is always present and non-null.
+                    _iv_rule = str(payload.get("invcNo") or "").strip()
+                    if not _iv_rule:
+                        sequence_fail(
+                            "STOP: insertTrnsPurchase — invcNo is missing/empty; cannot fill requestedInvcNo."
+                        )
+                    _r_inv = payload.get("requestedInvcNo")
+                    if _r_inv is None or str(_r_inv).strip() == "":
+                        payload["requestedInvcNo"] = _iv_rule
+                        print(
+                            "WARNING: insertTrnsPurchase — requestedInvcNo auto-filled from invcNo "
+                            f"(requestedInvcNo={payload.get('requestedInvcNo')!r})."
+                        )
+                    else:
+                        # Defensive: force equality with invcNo to match KRA expectations.
+                        if _iv_rule and str(_r_inv).strip() != _iv_rule:
+                            payload["requestedInvcNo"] = _iv_rule
+                            print(
+                                "NOTE: insertTrnsPurchase — normalized requestedInvcNo to match invcNo "
+                                f"(requestedInvcNo={payload.get('requestedInvcNo')!r})."
+                            )
                 _req_kw: dict = {
                     "headers": post_headers,
                     "json": payload,
@@ -10177,7 +10275,36 @@ def main():
                         and endpoint_http_ok_for_kra(endpoint_name, resp, result_cd)
                     )
                     if _ok_inv:
+                        # Advance the OSDC sequential invoice counter on success.
+                        try:
+                            _cur_iv_ok = int(str(payload.get("invcNo") or "").strip() or "0")
+                        except (TypeError, ValueError):
+                            _cur_iv_ok = 0
+                        if _cur_iv_ok > 0:
+                            pin_blob["osdc_invc_no_next"] = _cur_iv_ok + 1
+                            save_test_state(state_root)
                         break
+                    # If KRA returns an "Expected: X" invoice number, retry this endpoint with invcNo=X.
+                    _inv_msg = str(gate_err or "") or kra_save_item_error_text(parsed) or ""
+                    m_iv = re.search(r"Expected:\s*(\d+)", _inv_msg, re.IGNORECASE)
+                    if m_iv and (attempt + 1) < _cap_attempts:
+                        _exp_iv = m_iv.group(1).strip()
+                        if _exp_iv and _exp_iv.isdigit():
+                            payload["invcNo"] = str(int(_exp_iv))
+                            payload["trdInvcNo"] = f"TRD-{payload['invcNo']}"
+                            payload["requestedInvcNo"] = payload["invcNo"]
+                            pin_blob["osdc_invc_no_current"] = payload["invcNo"]
+                            try:
+                                pin_blob["osdc_invc_no_next"] = int(payload["invcNo"]) + 1
+                            except (TypeError, ValueError):
+                                pass
+                            save_test_state(state_root)
+                            print(
+                                "NOTE: saveInvoice — KRA responded with Expected invoice number; "
+                                f"retrying with invcNo={payload['invcNo']!r} (requestedInvcNo matches)."
+                            )
+                            time.sleep(1.0)
+                            continue
                     _inv_err_blob = kra_save_invoice_error_blob(parsed, gate_err)
                     if kra_save_invoice_stock_master_propagation_error(_inv_err_blob):
                         if (attempt + 1) < SAVE_INVOICE_STOCK_MASTER_MAX_ATTEMPTS:
