@@ -65,7 +65,7 @@ from app.utils.auth_internal import (
 )
 from app.services.plan_context import get_tenant_plan_context
 from app.services.demo_signup_service import create_demo_tenant
-from app.utils.subscription_billing import compute_subscription_billing_state
+from app.utils.company_access import get_company_access, company_access_to_subscription_access
 
 router = APIRouter()
 
@@ -74,18 +74,14 @@ class AuthMeResponse(BaseModel):
     user_id: str
     roles: List[str]
     subscription_access: Optional[str] = None
+    # Backward-compatible fields (used by existing SPA). Values are derived from `companies` only.
     tenant_status: Optional[str] = None
     trial_ends_at: Optional[datetime] = None
     trial_days_remaining: Optional[int] = None
-    # Which master `tenants` row was used (debug: compare local vs Render if behavior differs)
     subscription_tenant_subdomain: Optional[str] = None
     subscription_used_default_tenant_fallback: Optional[bool] = None
-    # Debug (safe: no secrets). Helps compare Render vs local when subscription differs.
-    debug_db_project_ref: Optional[str] = None
-    debug_master_db_project_ref: Optional[str] = None
-    debug_master_tenants_with_database_url: Optional[int] = None
-    debug_master_tenants_with_nonempty_database_url: Optional[int] = None
-    debug_master_tenants_dburl_empty_subdomains: Optional[list[str]] = None
+    company_id: Optional[str] = None
+    company_access: Optional[str] = None
 
 
 # When user is found only in default/legacy DB (no tenant DB), reset token uses this subdomain.
@@ -141,11 +137,10 @@ def auth_me(
     request: Request,
     user_db: Tuple[User, Session] = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
-    master_db: Session = Depends(get_master_db),
 ):
     """
     Return current authenticated user_id, RBAC role names, and subscription/trial context
-    from the master tenant row (for dashboard messaging and UI gating).
+    derived from the authenticated user's effective `company_id` (single source of truth).
     """
     user, _ = user_db
     from app.models.user import UserBranchRole, UserRole
@@ -159,69 +154,33 @@ def auth_me(
     )
     roles = sorted({(r[0] or "").strip().lower() for r in (rows or []) if r and r[0]})
 
-    auth = request.headers.get("Authorization")
-    token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
-    payload = decode_internal_token(token) if token else None
-    tenant = None
-    used_default_fallback = False
-    if payload:
-        tenant = _tenant_from_token_or_header(request, master_db, payload)
-    if tenant is None:
-        tenant = _get_default_tenant(master_db)
-        used_default_fallback = tenant is not None
-    state = compute_subscription_billing_state(tenant)
-
-    # Safe debug: only return Supabase project refs (no passwords/URLs).
-    debug_db_ref = None
-    debug_master_ref = None
-    debug_tenants_with_db_url = None
-    debug_tenants_with_nonempty_db_url = None
-    debug_empty_dburl_subdomains = None
+    # Company access (single source of truth)
+    company_id = None
+    company = None
     try:
-        from app.dependencies import _supabase_project_ref_from_url
-        from app.database_master import MASTER_DATABASE_URL
+        company_id = get_effective_company_id_for_user(db, user)
+        if company_id:
+            from app.models.company import Company
 
-        debug_db_ref = _supabase_project_ref_from_url(getattr(settings, "database_connection_string", "") or "")
-        debug_master_ref = _supabase_project_ref_from_url(MASTER_DATABASE_URL or "")
-        try:
-            debug_tenants_with_db_url = (
-                master_db.query(Tenant)
-                .filter(Tenant.database_url.isnot(None))
-                .count()
-            )
-            debug_tenants_with_nonempty_db_url = (
-                master_db.query(Tenant)
-                .filter(Tenant.database_url.isnot(None))
-                .filter(Tenant.database_url != "")
-                .count()
-            )
-            rows = (
-                master_db.query(Tenant.subdomain)
-                .filter(Tenant.database_url.isnot(None))
-                .filter(Tenant.database_url == "")
-                .all()
-            )
-            debug_empty_dburl_subdomains = [r[0] for r in (rows or []) if r and r[0]]
-        except Exception:
-            debug_tenants_with_db_url = None
-            debug_tenants_with_nonempty_db_url = None
-            debug_empty_dburl_subdomains = None
+            company = db.query(Company).filter(Company.id == company_id).first()
     except Exception:
-        pass
+        company_id = None
+        company = None
+
+    company_access = get_company_access(company)
+    subscription_access = company_access_to_subscription_access(company_access)
+    trial_expires_at = getattr(company, "trial_expires_at", None) if company else None
     return {
         "user_id": str(user.id),
         "roles": roles,
-        "subscription_access": state.get("subscription_access"),
-        "tenant_status": state.get("tenant_status"),
-        "trial_ends_at": state.get("trial_ends_at"),
-        "trial_days_remaining": state.get("trial_days_remaining"),
-        "subscription_tenant_subdomain": getattr(tenant, "subdomain", None) if tenant else None,
-        "subscription_used_default_tenant_fallback": used_default_fallback,
-        "debug_db_project_ref": debug_db_ref,
-        "debug_master_db_project_ref": debug_master_ref,
-        "debug_master_tenants_with_database_url": debug_tenants_with_db_url,
-        "debug_master_tenants_with_nonempty_database_url": debug_tenants_with_nonempty_db_url,
-        "debug_master_tenants_dburl_empty_subdomains": debug_empty_dburl_subdomains,
+        "subscription_access": subscription_access,
+        "tenant_status": getattr(company, "subscription_status", None) if company else None,
+        "trial_ends_at": trial_expires_at,
+        "trial_days_remaining": None,
+        "subscription_tenant_subdomain": None,
+        "subscription_used_default_tenant_fallback": False,
+        "company_id": str(company_id) if company_id else None,
+        "company_access": company_access,
     }
 
 

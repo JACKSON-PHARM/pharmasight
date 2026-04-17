@@ -107,11 +107,18 @@ export async function init() {
             const rows = list.map((c) => {
                 const active = c.is_active ? '<span style="color:#16a34a; font-weight:600;">Yes</span>' : '<span style="color:#dc2626; font-weight:600;">No</span>';
                 const cid = esc(c.id);
+                const effectiveStatus = (() => {
+                    const s = (c.subscription_status || '').trim();
+                    if (s) return s;
+                    // Treat null subscription fields as active (full access) per single-source-of-truth rules.
+                    if (c.trial_expires_at) return 'trial';
+                    return 'active';
+                })();
                 return `
                     <tr data-cid="${cid}" style="cursor:pointer;">
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.name || '—')}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.subscription_plan || '—')}</td>
-                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.subscription_status || '—')}</td>
+                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(effectiveStatus)}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.trial_expires_at ? new Date(c.trial_expires_at).toLocaleString() : '—')}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${active}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9; white-space:nowrap;">

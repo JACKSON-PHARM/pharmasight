@@ -34,7 +34,7 @@ from app.utils.auth_internal import (
     CLAIM_TENANT_SUBDOMAIN,
     decode_internal_token,
 )
-from app.utils.subscription_billing import is_trial_expired
+from app.utils.company_access import get_company_access
 
 logger = logging.getLogger(__name__)
 
@@ -677,6 +677,23 @@ def _path_allowed_for_expired_trial(path: str, method: str) -> bool:
     return False
 
 
+def _path_allowed_for_blocked_company(path: str, method: str) -> bool:
+    """
+    When company is inactive, allow only auth/session endpoints so the client can show messaging.
+    """
+    p = (path or "").strip().rstrip("/") or "/"
+    m = (method or "GET").upper()
+    if p == "/api/auth/me" and m == "GET":
+        return True
+    if p == "/api/auth/logout" and m == "POST":
+        return True
+    if p == "/api/auth/refresh" and m == "POST":
+        return True
+    if p in ("/api/auth/change-password", "/api/users/change-password-first-time") and m == "POST":
+        return True
+    return False
+
+
 def _resolve_user_and_db_optional(
     request: Request,
     master_db: Session,
@@ -721,16 +738,6 @@ def get_current_user(
 
     path = (request.url.path or "").strip().rstrip("/") or "/"
     method = (request.method or "GET").upper()
-    tenant_sub = _tenant_for_subscription_check(request, master_db, payload)
-    if tenant_sub and is_trial_expired(tenant_sub):
-        if not _path_allowed_for_expired_trial(path, method):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "trial_expired",
-                    "message": "Your trial has ended. Upgrade to continue using this feature.",
-                },
-            )
 
     jti = payload.get(CLAIM_JTI)
     cache_key = (jti, str(sub))
@@ -753,10 +760,52 @@ def get_current_user(
             # Fast path for item search: no SET LOCAL, no user fetch — one round-trip (search query only)
             if is_items_search:
                 db = SessionLocal() if not tenant_url or not tenant_url.strip() else _session_factory_for_url(tenant_url)()
+                # Company access enforcement (companies are the source of truth)
+                try:
+                    from app.models.company import Company
+
+                    company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
+                    access = get_company_access(company)
+                    if access == "blocked" and not _path_allowed_for_blocked_company(path, method):
+                        db.close()
+                        db = None
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Company is inactive")
+                    if access == "expired" and not _path_allowed_for_expired_trial(path, method):
+                        db.close()
+                        db = None
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail={"code": "trial_expired", "message": "Your trial has ended. Upgrade to continue using this feature."},
+                        )
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
                 stub_user = _stub_user_for_cache(user_id)
                 yield (stub_user, db)
                 return
             db = SessionLocal() if not tenant_url or not tenant_url.strip() else _session_factory_for_url(tenant_url)()
+            # Company access enforcement (companies are the source of truth)
+            try:
+                from app.models.company import Company
+
+                company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
+                access = get_company_access(company)
+                if access == "blocked" and not _path_allowed_for_blocked_company(path, method):
+                    db.close()
+                    db = None
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Company is inactive")
+                if access == "expired" and not _path_allowed_for_expired_trial(path, method):
+                    db.close()
+                    db = None
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={"code": "trial_expired", "message": "Your trial has ended. Upgrade to continue using this feature."},
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
             try:
                 db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
             except Exception:
@@ -810,6 +859,23 @@ def get_current_user(
                 getattr(tenant, "database_url", None) if tenant else None,
                 _time.monotonic() + _auth_resolution_cache_ttl_seconds,
             )
+        # Company access enforcement (single source of truth: companies table)
+        try:
+            from app.models.company import Company
+
+            company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
+            access = get_company_access(company)
+            if access == "blocked" and not _path_allowed_for_blocked_company(path, method):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Company is inactive")
+            if access == "expired" and not _path_allowed_for_expired_trial(path, method):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"code": "trial_expired", "message": "Your trial has ended. Upgrade to continue using this feature."},
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
         # Enforce must_change_password: deny access except to change-password-first-time, logout, auth/me,
         # and read-only company/branch endpoints so branch-select and status bar can load
         if getattr(user, "must_change_password", False):

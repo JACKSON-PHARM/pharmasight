@@ -21,6 +21,9 @@
         if (fromMe === 'trial_expired') {
             return 'trial_expired';
         }
+        if (fromMe === 'blocked') {
+            return 'trial_expired';
+        }
         if (notifiedFromApi || window.__pharmasightTrialExpiredFromApi) {
             return 'trial_expired';
         }
@@ -124,7 +127,12 @@
             if (searchBar) searchBar.style.display = 'none';
             if (quick) quick.style.display = 'none';
             if (modSwitch) modSwitch.style.display = 'none';
-            showGlobalNotice('');
+            var me = window.__authMe || {};
+            var msg = '';
+            if (me && me.subscription_access === 'blocked') {
+                msg = 'Your account is inactive. Contact support to restore access.';
+            }
+            showGlobalNotice(msg);
         } else {
             if (searchBar) searchBar.style.display = '';
             if (quick) quick.style.display = '';
