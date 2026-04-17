@@ -104,7 +104,14 @@ async function callBackendLogout() {
     }
 }
 
+/** Coalesce parallel globalLogout (401 storms + layout churn) into one run. */
+let _pharmasightGlobalLogoutInFlight = null;
+
 async function globalLogout() {
+    if (_pharmasightGlobalLogoutInFlight) {
+        return _pharmasightGlobalLogoutInFlight;
+    }
+    _pharmasightGlobalLogoutInFlight = (async function _doGlobalLogout() {
     console.log('[LOGOUT] Starting logout process...');
     
     try {
@@ -150,6 +157,12 @@ async function globalLogout() {
         if (window.loadPage) {
             window.loadPage('login');
         }
+    }
+    })();
+    try {
+        await _pharmasightGlobalLogoutInFlight;
+    } finally {
+        _pharmasightGlobalLogoutInFlight = null;
     }
 }
 

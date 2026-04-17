@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
@@ -509,6 +509,9 @@ def auth_logout(request: Request, master_db: Session = Depends(get_master_db)):
     tenant = None
     if tenant_subdomain and tenant_subdomain != "__default__":
         tenant = master_db.query(Tenant).filter(Tenant.subdomain == tenant_subdomain).first()
+    if tenant and (tenant.database_url or "").strip():
+        if _normalize_db_url(tenant.database_url) == _normalize_db_url(settings.database_connection_string):
+            tenant = None
     if tenant and tenant.database_url:
         with tenant_db_session(tenant) as session:
             revoke_token_in_db(session, jti, expires_at)
@@ -581,6 +584,11 @@ def auth_refresh(
     if not tenant or not tenant.database_url:
         session = SessionLocal()
         try:
+            # One refresh per user at a time across uvicorn workers (Render); avoids double-rotate 401s.
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(CAST(:uid AS text)))"),
+                {"uid": str(sub)},
+            )
             _do_refresh_rotate(session, None, body.refresh_token, jti, sub, email, tenant_subdomain, expires_at, body.device_info)
             user = session.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
             company_id_str = None
@@ -597,6 +605,10 @@ def auth_refresh(
             session.close()
 
     with tenant_db_session(tenant) as session:
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(CAST(:uid AS text)))"),
+            {"uid": str(sub)},
+        )
         _do_refresh_rotate(session, tenant, body.refresh_token, jti, sub, email, tenant_subdomain, expires_at, body.device_info)
         user = session.query(User).filter(User.id == sub, User.deleted_at.is_(None)).first()
         company_id_str = None

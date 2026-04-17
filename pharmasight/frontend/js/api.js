@@ -35,12 +35,22 @@ async function _performPharmasightInternalTokenRefresh(baseURL) {
     return { ok: false };
 }
 
+// After the first refresh finishes, many in-flight fetches may still return 401 (they used the old Bearer).
+// If we clear the flight handle immediately, each 401 handler POSTs /auth/refresh again → rotation stampede
+// and parallel globalLogout() → deactivate_all_refresh_tokens. Hold the settled promise briefly so
+// stragglers await the same result and reuse localStorage tokens without a second refresh POST.
+const _PHARMASIGHT_REFRESH_FLIGHT_HOLD_MS = 2800;
+
 function _getOrStartPharmasightInternalRefreshFlight(baseURL) {
     if (_pharmasightInternalRefreshInFlight) {
         return _pharmasightInternalRefreshInFlight;
     }
     const p = _performPharmasightInternalTokenRefresh(baseURL).finally(() => {
-        _pharmasightInternalRefreshInFlight = null;
+        setTimeout(function () {
+            if (_pharmasightInternalRefreshInFlight === p) {
+                _pharmasightInternalRefreshInFlight = null;
+            }
+        }, _PHARMASIGHT_REFRESH_FLIGHT_HOLD_MS);
     });
     _pharmasightInternalRefreshInFlight = p;
     return p;
