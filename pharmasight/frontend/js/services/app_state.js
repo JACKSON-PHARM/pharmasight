@@ -67,6 +67,12 @@ async function clearAppState() {
     try {
         sessionStorage.clear();
     } catch (_) {}
+
+    try {
+        if (typeof window !== 'undefined' && window.API && typeof window.API.clearInternalAccessToken === 'function') {
+            window.API.clearInternalAccessToken();
+        }
+    } catch (_) {}
 }
 
 /**
@@ -91,7 +97,17 @@ function getCleanLoginUrl() {
  */
 async function callBackendLogout() {
     try {
-        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_access_token') : null;
+        var token = null;
+        try {
+            token =
+                typeof window !== 'undefined' && window.API && typeof window.API.getBearerAccessToken === 'function'
+                    ? window.API.getBearerAccessToken()
+                    : typeof localStorage !== 'undefined'
+                      ? localStorage.getItem('pharmasight_access_token')
+                      : null;
+        } catch (_) {
+            token = null;
+        }
         if (!token) return;
         const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL) ? CONFIG.API_BASE_URL : '';
         const url = (base ? base.replace(/\/$/, '') : '') + '/api/auth/logout';

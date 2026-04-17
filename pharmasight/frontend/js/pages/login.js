@@ -488,13 +488,19 @@ async function loadLogin() {
                     // Store tokens and tenant context
                     try {
                         if (typeof localStorage !== 'undefined') {
-                            localStorage.setItem('pharmasight_access_token', data.access_token);
                             localStorage.setItem('pharmasight_refresh_token', data.refresh_token);
                             localStorage.setItem('pharmasight_username', data.username || email);
                             localStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain || '');
                         }
                         if (typeof sessionStorage !== 'undefined' && data.tenant_subdomain) {
                             sessionStorage.setItem('pharmasight_tenant_subdomain', data.tenant_subdomain);
+                        }
+                    } catch (_) {}
+                    try {
+                        if (typeof window !== 'undefined' && window.API && typeof window.API.setInternalAccessToken === 'function') {
+                            window.API.setInternalAccessToken(data.access_token);
+                        } else if (typeof localStorage !== 'undefined') {
+                            localStorage.setItem('pharmasight_access_token', data.access_token);
                         }
                     } catch (_) {}
 
@@ -782,10 +788,16 @@ async function loadLogin() {
                         if (userData.access_token && userData.refresh_token) {
                             try {
                                 if (typeof localStorage !== 'undefined') {
-                                    localStorage.setItem('pharmasight_access_token', userData.access_token);
                                     localStorage.setItem('pharmasight_refresh_token', userData.refresh_token);
                                     localStorage.setItem('pharmasight_user_id', userData.user_id);
                                     localStorage.setItem('pharmasight_user_email', userData.email || '');
+                                }
+                            } catch (_) {}
+                            try {
+                                if (typeof window !== 'undefined' && window.API && typeof window.API.setInternalAccessToken === 'function') {
+                                    window.API.setInternalAccessToken(userData.access_token);
+                                } else if (typeof localStorage !== 'undefined') {
+                                    localStorage.setItem('pharmasight_access_token', userData.access_token);
                                 }
                             } catch (_) {}
                             if (window.LoginSecurity) window.LoginSecurity.clearAttempts(username);

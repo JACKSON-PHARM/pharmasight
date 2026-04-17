@@ -28,11 +28,15 @@ async function _performPharmasightInternalTokenRefresh(baseURL) {
     const refreshData = refreshResp.ok ? await refreshResp.json().catch(() => null) : null;
     if (refreshResp.ok && refreshData && refreshData.access_token) {
         try {
-            if (typeof localStorage !== 'undefined') {
+            if (typeof localStorage !== 'undefined' && refreshData.refresh_token) {
+                localStorage.setItem('pharmasight_refresh_token', refreshData.refresh_token);
+            }
+        } catch (_) {}
+        try {
+            if (typeof window !== 'undefined' && window.API && typeof window.API.setInternalAccessToken === 'function') {
+                window.API.setInternalAccessToken(refreshData.access_token);
+            } else if (typeof localStorage !== 'undefined') {
                 localStorage.setItem('pharmasight_access_token', refreshData.access_token);
-                if (refreshData.refresh_token) {
-                    localStorage.setItem('pharmasight_refresh_token', refreshData.refresh_token);
-                }
             }
         } catch (_) {}
         try {
@@ -83,8 +87,11 @@ function _pharmasightEndpointAuthFlags(endpoint) {
     return { isAuthEndpoint, isAdminRoute, isAdminLogin };
 }
 
-/** Mutates headers: Bearer from localStorage (source of truth after refresh). */
-function _applyPharmasightApiAuthHeaders(headers, endpoint, flags) {
+/**
+ * Mutates headers: Bearer for app routes uses APIClient in-memory token first, then localStorage
+ * (avoids 401s when a request runs in the same tick before storage read is visible everywhere).
+ */
+function _applyPharmasightApiAuthHeaders(headers, endpoint, flags, apiClient) {
     if (!headers || !flags) return;
     const { isAuthEndpoint, isAdminRoute, isAdminLogin } = flags;
     try {
@@ -101,7 +108,12 @@ function _applyPharmasightApiAuthHeaders(headers, endpoint, flags) {
                 }
             }
         } else if (!isAuthEndpoint) {
-            const accessToken = localStorage.getItem('pharmasight_access_token');
+            var accessToken = null;
+            if (apiClient && typeof apiClient.getBearerAccessToken === 'function') {
+                accessToken = apiClient.getBearerAccessToken();
+            } else {
+                accessToken = localStorage.getItem('pharmasight_access_token');
+            }
             if (accessToken) {
                 headers['Authorization'] = 'Bearer ' + accessToken;
             } else {
@@ -115,15 +127,20 @@ function _applyPharmasightApiAuthHeaders(headers, endpoint, flags) {
     } catch (_) {}
 }
 
-function _canAttemptPharmasightInternalRefresh(endpoint, flags) {
+function _canAttemptPharmasightInternalRefresh(endpoint, flags, apiClient) {
     if (!flags) return false;
     const { isAuthEndpoint, isAdminRoute } = flags;
     if (isAuthEndpoint || isAdminRoute) return false;
     try {
         if (typeof localStorage === 'undefined') return false;
-        return !!(
-            localStorage.getItem('pharmasight_access_token') && localStorage.getItem('pharmasight_refresh_token')
-        );
+        var at = null;
+        if (apiClient && typeof apiClient.getBearerAccessToken === 'function') {
+            at = apiClient.getBearerAccessToken();
+        } else {
+            at = localStorage.getItem('pharmasight_access_token');
+        }
+        var rt = localStorage.getItem('pharmasight_refresh_token');
+        return !!(at && rt);
     } catch (_) {
         return false;
     }
@@ -159,6 +176,47 @@ class APIClient {
         // Track in-flight requests to prevent duplicate calls from rapid user interactions.
         // Keyed by HTTP method + URL + (optional) body fingerprint.
         this.inFlightRequests = new Map();
+        /** In-memory app access JWT; preferred over localStorage for Authorization (same key synced). */
+        this._internalAccessToken = null;
+    }
+
+    /** Persist access token to memory + pharmasight_access_token; call immediately after login/refresh. */
+    setInternalAccessToken(accessToken) {
+        this._internalAccessToken = accessToken ? String(accessToken) : null;
+        try {
+            if (typeof localStorage !== 'undefined') {
+                if (this._internalAccessToken) {
+                    localStorage.setItem('pharmasight_access_token', this._internalAccessToken);
+                } else {
+                    localStorage.removeItem('pharmasight_access_token');
+                }
+            }
+        } catch (_) {}
+    }
+
+    clearInternalAccessToken() {
+        this._internalAccessToken = null;
+    }
+
+    /** Token for Authorization: memory first, then localStorage (page reload). */
+    getBearerAccessToken() {
+        if (this._internalAccessToken) {
+            return this._internalAccessToken;
+        }
+        try {
+            return typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_access_token') : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    hydrateInternalAccessTokenFromStorage() {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                var t = localStorage.getItem('pharmasight_access_token');
+                this._internalAccessToken = t ? String(t) : null;
+            }
+        } catch (_) {}
     }
 
     async request(endpoint, options = {}) {
@@ -234,7 +292,7 @@ class APIClient {
         } catch (_) {}
 
         const authFlags = _pharmasightEndpointAuthFlags(endpoint);
-        _applyPharmasightApiAuthHeaders(config.headers, endpoint, authFlags);
+        _applyPharmasightApiAuthHeaders(config.headers, endpoint, authFlags, this);
 
         try {
             const response = await fetch(url, config);
@@ -286,7 +344,7 @@ class APIClient {
                 }
                 if (response.status === 401) {
                     const retriedAfterRefresh = options._retried401 === true;
-                    const canRefresh = _canAttemptPharmasightInternalRefresh(endpoint, authFlags);
+                    const canRefresh = _canAttemptPharmasightInternalRefresh(endpoint, authFlags, this);
 
                     // Only app (non-admin) routes with both tokens may refresh. Never logout before
                     // attempting refresh when a retry is still possible.
@@ -301,7 +359,7 @@ class APIClient {
                         if (refreshResult && refreshResult.ok) {
                             // localStorage is updated inside refresh; re-apply on this config so any
                             // in-function retry path sees the new Bearer (recursive request() re-reads too).
-                            _applyPharmasightApiAuthHeaders(config.headers, endpoint, authFlags);
+                            _applyPharmasightApiAuthHeaders(config.headers, endpoint, authFlags, this);
                             const retryOpts = { ...options, _retried401: true, _skipDedupe: true };
                             return await this.request(endpoint, retryOpts);
                         }
@@ -402,9 +460,17 @@ class APIClient {
 
 // Create API client instance
 const api = new APIClient(CONFIG.API_BASE_URL);
+try {
+    api.hydrateInternalAccessTokenFromStorage();
+} catch (_) {}
 
 // API Methods
 const API = {
+    /** Sync in-memory access JWT + localStorage `pharmasight_access_token` (use right after login/refresh). */
+    setInternalAccessToken: (token) => api.setInternalAccessToken(token),
+    clearInternalAccessToken: () => api.clearInternalAccessToken(),
+    getBearerAccessToken: () => api.getBearerAccessToken(),
+
     // Startup (Complete initialization)
     startup: {
         initialize: (data) => api.post('/api/startup', data),
@@ -705,7 +771,7 @@ const API = {
             try {
                 const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
                 if (sub) headers['X-Tenant-Subdomain'] = sub;
-                const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
+                const token = api.getBearerAccessToken();
                 if (token) headers['Authorization'] = 'Bearer ' + token;
             } catch (_) {}
             const w = window.open('', '_blank');
@@ -782,7 +848,7 @@ const API = {
             try {
                 const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
                 if (sub) headers['X-Tenant-Subdomain'] = sub;
-                const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
+                const token = api.getBearerAccessToken();
                 if (token) headers['Authorization'] = 'Bearer ' + token;
             } catch (_) {}
             const w = window.open('', '_blank');
@@ -828,7 +894,7 @@ const API = {
             try {
                 const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
                 if (sub) headers['X-Tenant-Subdomain'] = sub;
-                const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
+                const token = api.getBearerAccessToken();
                 if (token) headers['Authorization'] = 'Bearer ' + token;
             } catch (_) {}
             const w = window.open('', '_blank');
@@ -889,7 +955,7 @@ const API = {
             try {
                 const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
                 if (sub) headers['X-Tenant-Subdomain'] = sub;
-                const token = typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_access_token');
+                const token = api.getBearerAccessToken();
                 if (token) headers['Authorization'] = 'Bearer ' + token;
             } catch (_) {}
             const w = window.open('', '_blank');

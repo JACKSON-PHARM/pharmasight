@@ -117,8 +117,14 @@ async function tryRefreshInternalSession() {
             return null;
         }
         try {
-            localStorage.setItem('pharmasight_access_token', data.access_token);
             if (data.refresh_token) localStorage.setItem('pharmasight_refresh_token', data.refresh_token);
+        } catch (_) {}
+        try {
+            if (typeof window !== 'undefined' && window.API && typeof window.API.setInternalAccessToken === 'function') {
+                window.API.setInternalAccessToken(data.access_token);
+            } else {
+                localStorage.setItem('pharmasight_access_token', data.access_token);
+            }
         } catch (_) {}
         return getInternalAuthState();
     } catch (_) {
@@ -242,11 +248,17 @@ async function signIn(email, password) {
     }
     try {
         if (typeof localStorage !== 'undefined') {
-            localStorage.setItem('pharmasight_access_token', data.access_token);
             localStorage.setItem('pharmasight_refresh_token', data.refresh_token);
             localStorage.setItem('pharmasight_user_id', data.user_id);
             localStorage.setItem('pharmasight_user_email', data.email || '');
             localStorage.setItem('pharmasight_username', data.username || data.email || '');
+        }
+    } catch (_) {}
+    try {
+        if (typeof window !== 'undefined' && window.API && typeof window.API.setInternalAccessToken === 'function') {
+            window.API.setInternalAccessToken(data.access_token);
+        } else if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('pharmasight_access_token', data.access_token);
         }
     } catch (_) {}
     // Update cached state immediately
@@ -262,7 +274,17 @@ async function signOut() {
         // Best-effort server-side logout (revokes current access token) if available.
         try {
             const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null) ? CONFIG.API_BASE_URL : '';
-            const token = typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_access_token') : null;
+            var token = null;
+            try {
+                token =
+                    typeof window !== 'undefined' && window.API && typeof window.API.getBearerAccessToken === 'function'
+                        ? window.API.getBearerAccessToken()
+                        : typeof localStorage !== 'undefined'
+                          ? localStorage.getItem('pharmasight_access_token')
+                          : null;
+            } catch (_) {
+                token = null;
+            }
             if (token) {
                 await fetch(`${base}/api/auth/logout`, {
                     method: 'POST',
@@ -277,6 +299,11 @@ async function signOut() {
             localStorage.removeItem('pharmasight_user_email');
             localStorage.removeItem('pharmasight_username');
         }
+        try {
+            if (typeof window !== 'undefined' && window.API && typeof window.API.clearInternalAccessToken === 'function') {
+                window.API.clearInternalAccessToken();
+            }
+        } catch (_) {}
     } catch (_) {}
     currentUser = null;
     currentSession = null;
