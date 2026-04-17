@@ -612,6 +612,18 @@ async function startAppFlow() {
                 const me = await API.auth.me();
                 window.__authMe = me || null;
                 window.__authMeRoles = Array.isArray(me?.roles) ? me.roles.map((r) => String(r).toLowerCase()) : [];
+                try {
+                    if (!window.__loggedAuthMeOnce) {
+                        window.__loggedAuthMeOnce = true;
+                        console.log('[AUTH ME]', {
+                            subscription_access: me?.subscription_access,
+                            trial_ends_at: me?.trial_ends_at,
+                            trial_days_remaining: me?.trial_days_remaining,
+                            subscription_tenant_subdomain: me?.subscription_tenant_subdomain,
+                            used_default_tenant_fallback: me?.subscription_used_default_tenant_fallback,
+                        });
+                    }
+                } catch (_) {}
             } else {
                 window.__authMe = null;
                 window.__authMeRoles = [];
@@ -623,6 +635,9 @@ async function startAppFlow() {
         }
         if (window.SubscriptionUI && typeof window.SubscriptionUI.refreshBannerAndShell === 'function') {
             window.SubscriptionUI.refreshBannerAndShell();
+        }
+        if (window.SubscriptionUI && typeof window.SubscriptionUI.flushPendingFromApiFlag === 'function') {
+            window.SubscriptionUI.flushPendingFromApiFlag();
         }
 
         // UI module visibility: company entitlements first, then switcher + sidebar
