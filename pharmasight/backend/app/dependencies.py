@@ -470,6 +470,11 @@ def _get_default_tenant(master_db: Session) -> Optional[Tenant]:
     if not default_url:
         return None
     default_url = default_url.strip()
+    default_ref = None
+    try:
+        default_ref = _supabase_project_ref_from_url(default_url)
+    except Exception:
+        default_ref = None
     now = _time.monotonic()
     with _pool_lock:
         entry = _default_tenant_cache.get(default_url)
@@ -482,7 +487,13 @@ def _get_default_tenant(master_db: Session) -> Optional[Tenant]:
     result = None
     for t in tenants:
         u = (t.database_url or "").strip()
-        if u == default_url or _same_supabase_db(u, default_url):
+        # Match by exact URL, by inferred Supabase project ref, or by explicitly stored ref on the tenant row.
+        # This handles cases where the app uses a pooler URL (Render) but tenant rows store direct db.<ref>.supabase.co URLs.
+        if (
+            u == default_url
+            or _same_supabase_db(u, default_url)
+            or (default_ref and (getattr(t, "supabase_project_ref", None) or "").strip() == default_ref)
+        ):
             result = t
             break
     with _pool_lock:
