@@ -22,6 +22,27 @@ from app.models.tenant import Tenant
 
 logger = logging.getLogger(__name__)
 
+
+def _migration_connect_url(database_url: str) -> str:
+    """
+    Normalize DB URLs before psycopg2 connects.
+
+    On Render (IPv4), direct ``db.<ref>.supabase.co:5432`` often resolves to IPv6 only and fails
+    with "Network is unreachable". Reuse the same pooler rewrite as SQLAlchemy
+    (``resolve_tenant_database_url``) so tenant migration runs match ``DATABASE_URL`` behavior.
+    """
+    if not database_url or not str(database_url).strip():
+        return database_url
+    try:
+        from app.dependencies import resolve_tenant_database_url
+
+        out = resolve_tenant_database_url(str(database_url).strip())
+        return out if out else str(database_url).strip()
+    except Exception as e:
+        logger.warning("migration URL rewrite skipped: %s", e)
+        return str(database_url).strip()
+
+
 # Resolved at import (used by MigrationService and discovery)
 _MIGRATIONS_DIR_CANDIDATES = [
     Path(__file__).resolve().parent.parent.parent.parent / "database" / "migrations",  # pharmasight/database/migrations
@@ -91,7 +112,8 @@ def get_public_table_count(database_url: str) -> int:
     Return number of tables in public schema.
     Used to enforce initialize-only on empty DBs and to verify migrations created tables.
     """
-    conn = psycopg2.connect(_psycopg2_dsn(database_url))
+    url = _migration_connect_url(database_url)
+    conn = psycopg2.connect(_psycopg2_dsn(url))
     try:
         cur = conn.cursor()
         cur.execute(
@@ -146,7 +168,8 @@ def run_predefined_migration_by_version(database_url: str, version: str) -> Dict
         }
     path = version_to_path[version]
     sql = path.read_text(encoding="utf-8", errors="replace")
-    conn = psycopg2.connect(_psycopg2_dsn(database_url))
+    url = _migration_connect_url(database_url)
+    conn = psycopg2.connect(_psycopg2_dsn(url))
     try:
         _ensure_schema_migrations(conn)
         applied = _get_applied_versions(conn)
@@ -176,6 +199,7 @@ def run_migrations_for_url(database_url: str) -> List[str]:
     Returns list of versions applied this run. Always brings DB to latest version.
     """
     applied_this_run: List[str] = []
+    database_url = _migration_connect_url(database_url)
     conn = psycopg2.connect(_psycopg2_dsn(database_url))
 
     try:
@@ -228,7 +252,8 @@ def ensure_master_tenant_storage_columns(database_url: str) -> bool:
     Returns True if run (and no error), False if skipped (e.g. no tenants table).
     """
     try:
-        conn = psycopg2.connect(_psycopg2_dsn(database_url))
+        url = _migration_connect_url(database_url)
+        conn = psycopg2.connect(_psycopg2_dsn(url))
         cur = conn.cursor()
         cur.execute("""
             SELECT EXISTS (
@@ -292,7 +317,8 @@ class MigrationService:
     def get_tenant_schema_version(self, database_url: str) -> Optional[str]:
         """Get current schema version from tenant database"""
         try:
-            conn = psycopg2.connect(_psycopg2_dsn(database_url))
+            url = _migration_connect_url(database_url)
+            conn = psycopg2.connect(_psycopg2_dsn(url))
             cursor = conn.cursor()
             
             # Check if migrations table exists
@@ -377,12 +403,13 @@ class MigrationService:
             }
         
         try:
-            conn = psycopg2.connect(_psycopg2_dsn(tenant.database_url))
+            eff_url = _migration_connect_url(tenant.database_url)
+            conn = psycopg2.connect(_psycopg2_dsn(eff_url))
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             cursor = conn.cursor()
             
             # Check if migration already applied
-            current_version = self.get_tenant_schema_version(tenant.database_url)
+            current_version = self.get_tenant_schema_version(eff_url)
             if current_version == version:
                 cursor.close()
                 conn.close()
@@ -471,7 +498,11 @@ class MigrationService:
             tenants = self.get_all_tenants(db)
             
             for tenant in tenants:
-                version = self.get_tenant_schema_version(tenant.database_url) if tenant.database_url else None
+                version = (
+                    self.get_tenant_schema_version(_migration_connect_url(tenant.database_url))
+                    if tenant.database_url
+                    else None
+                )
                 status_report.append({
                     "tenant_id": str(tenant.id),
                     "tenant_name": tenant.name,

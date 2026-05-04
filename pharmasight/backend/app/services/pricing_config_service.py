@@ -353,41 +353,51 @@ def check_stock_adjustment_requires_confirmation(
     unit_cost_per_base: Decimal,
 ) -> Dict[str, Any]:
     """
-    For stock additions (manual adjustment or supplier invoice): determine if the user
-    must re-enter the unit cost to confirm awareness. Used when:
-    - Item has floor_price_retail (selling at floor price)
-    - Margin when selling at floor would be below standard (especially critical)
+    For stock additions (manual adjustment or supplier invoice): require explicit unit-cost
+    confirmation only when a floor price exists **and** margin at that floor (vs this cost)
+    is below the item's minimum margin rule.
+
+    Floored items with healthy margin at floor do not prompt.
 
     Returns: { requires_confirmation: bool, reason: str, floor_price: float|None,
                margin_below_standard: bool, expected_unit_cost: float }
     """
     overrides = get_effective_item_overrides(db, item_id)
     floor = overrides.get("floor_price_retail")
+    cost = unit_cost_per_base
     if floor is None:
         return {
             "requires_confirmation": False,
             "reason": "",
             "floor_price": None,
             "margin_below_standard": False,
-            "expected_unit_cost": float(unit_cost_per_base),
+            "expected_unit_cost": float(cost) if cost is not None else 0.0,
         }
     floor_dec = Decimal(str(floor))
-    cost = unit_cost_per_base
-    margin_below_standard = False
-    if cost and cost > 0:
-        margin_at_floor_pct = (floor_dec - cost) / cost * Decimal("100")
-        min_margin = PricingService.get_min_margin_percent(db, item_id, company_id)
-        if margin_at_floor_pct < min_margin:
-            margin_below_standard = True
+    if not (cost and cost > 0):
+        return {
+            "requires_confirmation": False,
+            "reason": "",
+            "floor_price": float(floor),
+            "margin_below_standard": False,
+            "expected_unit_cost": float(cost) if cost is not None else 0.0,
+        }
+    margin_at_floor_pct = (floor_dec - cost) / cost * Decimal("100")
+    min_margin = PricingService.get_min_margin_percent(db, item_id, company_id)
+    margin_below_standard = margin_at_floor_pct < min_margin
+    if not margin_below_standard:
+        return {
+            "requires_confirmation": False,
+            "reason": "",
+            "floor_price": float(floor),
+            "margin_below_standard": False,
+            "expected_unit_cost": float(cost),
+        }
 
     return {
         "requires_confirmation": True,
-        "reason": (
-            "Item has a floor price. Margin may be below standard."
-            if margin_below_standard
-            else "Item is selling at floor price. Please confirm the cost is correct."
-        ),
+        "reason": "Margin at floor price is below the minimum for this item. Re-enter unit cost to confirm.",
         "floor_price": float(floor),
-        "margin_below_standard": margin_below_standard,
-        "expected_unit_cost": float(unit_cost_per_base),
+        "margin_below_standard": True,
+        "expected_unit_cost": float(cost),
     }

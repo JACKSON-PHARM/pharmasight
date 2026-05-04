@@ -9,15 +9,16 @@ Option A: same project as legacy app — set MASTER_DATABASE_URL = DATABASE_URL.
 from sqlalchemy import create_engine, pool
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from app.config import settings, normalize_postgres_url
+from app.config import settings, normalize_postgres_url, postgres_url_for_sqlalchemy
 import os
 
 # Master database connection. Use MASTER_DATABASE_URL or fall back to app DB (Option A).
 _raw_master = os.getenv("MASTER_DATABASE_URL") or settings.database_connection_string
-MASTER_DATABASE_URL = normalize_postgres_url(_raw_master)
+MASTER_DATABASE_SOURCE = normalize_postgres_url(_raw_master)
+MASTER_DATABASE_URL = postgres_url_for_sqlalchemy(MASTER_DATABASE_SOURCE)
 
 # Transaction mode (port 6543 / pgbouncer) does not support prepared statements
-_master_use_pooler = ":6543" in MASTER_DATABASE_URL or "pgbouncer=true" in MASTER_DATABASE_URL.lower()
+_master_use_pooler = ":6543" in MASTER_DATABASE_SOURCE or "pgbouncer=true" in MASTER_DATABASE_SOURCE.lower()
 _master_connect_args = {
     "connect_timeout": 10,
     "options": "-c statement_timeout=120000",

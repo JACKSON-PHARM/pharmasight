@@ -4,6 +4,7 @@ PharmaSight - Main FastAPI Application
 import logging
 import time
 from pathlib import Path
+import os
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -96,23 +97,15 @@ async def health_check():
 
 @app.get("/api/debug/tenants")
 async def debug_tenants_count():
-    """When DEBUG=true and not production: returns count of tenants with database_url. Disabled in production."""
+    """Deprecated: tenant DB routing was removed; kept for backward compatibility in DEBUG only."""
     if getattr(settings, "ENVIRONMENT", "development") == "production":
         raise HTTPException(status_code=404, detail="Not found")
     if not settings.DEBUG:
         return {"error": "Enable DEBUG in .env to use this endpoint."}
-    try:
-        from app.services.migration_service import MigrationService
-        svc = MigrationService()
-        tenants = svc.get_all_tenants_with_db()
-        return {
-            "tenants_with_db": len(tenants),
-            "subdomains": [t.subdomain for t in tenants],
-            "master_ok": True,
-        }
-    except Exception as e:
-        logger.exception("Debug tenants: %s", e)
-        return {"master_ok": False, "error": str(e)}
+    return {
+        "deprecated": True,
+        "message": "Tenant DB routing is disabled. Tenancy is enforced via company_id in a single shared database.",
+    }
 
 
 @app.get("/api/config")
@@ -156,9 +149,13 @@ def log_smtp_and_migrations():
 
 @app.on_event("startup")
 def run_tenant_migrations():
-    """Apply missing migrations on default/master app DB and on all tenant DBs. Runs every restart to reach latest version."""
+    """
+    Apply missing migrations on the shared app DB (single-DB, company_id tenancy).
+
+    NOTE: Legacy "tenant DB" migration logic (database-per-tenant) is intentionally not run.
+    """
     try:
-        from app.services.migration_service import MigrationService, run_migrations_for_url
+        from app.services.migration_service import run_migrations_for_url
 
         print("")
         print("========================================")
@@ -180,9 +177,6 @@ def run_tenant_migrations():
             print(f"  [Migrations] Target DB: {db_target}")
             print("  [Migrations] Default/master DB...")
             try:
-                # Master public.tenants must match Tenant ORM before MigrationService queries it (schema drift guard).
-                from app.services.migration_service import ensure_master_tenant_storage_columns
-                ensure_master_tenant_storage_columns(default_url)
                 ran_default = run_migrations_for_url(default_url)
                 if ran_default:
                     print(f"  [Migrations] Default DB: applied {len(ran_default)} migration(s) -> {', '.join(ran_default)}")
@@ -199,36 +193,8 @@ def run_tenant_migrations():
                     exc_info=True,
                 )
 
-        print("  [Migrations] Tenant DBs...")
-        try:
-            svc = MigrationService()
-            tenants_with_db = svc.get_all_tenants_with_db()
-            subdomains = [t.subdomain for t in tenants_with_db]
-            print(f"  [Migrations] Found {len(tenants_with_db)} tenant(s) with database_url: {subdomains or '(none)'}")
-            if not tenants_with_db:
-                print("  [Migrations] Tip: In master DB (public.tenants), ensure each row has database_url set (e.g. session pooler URL).")
-            out = svc.run_migrations_all_tenant_dbs()
-            if out["applied"]:
-                for tid, versions in out["applied"].items():
-                    print(f"  [Migrations] Tenant {tid}: applied {len(versions)} migration(s)")
-                logger.info("Startup migrations applied on tenant DBs: %s", out["applied"])
-            elif tenants_with_db:
-                print("  [Migrations] All tenant DBs already at latest version.")
-            else:
-                print("  [Migrations] No tenant DBs to migrate (or already up to date).")
-            if out["errors"]:
-                for tid, err in out["errors"].items():
-                    print(f"  [Migrations] Tenant {tid}: ERROR - {err}")
-                logger.warning(
-                    "Startup migration errors on tenant DBs: %s (To skip a deleted tenant, run: python scripts/mark_tenant_cancelled.py <tenant_id_or_name>)",
-                    out["errors"],
-                )
-        except Exception as e:
-            print(f"  [Migrations] Tenant DBs: SKIP - {e}")
-            logger.warning(
-                "Could not run tenant DB migrations (master DB unreachable?). App will start; API may fail until DB is reachable. Error: %s",
-                e,
-            )
+        # Single-DB mode: no tenant DB migrations.
+        print("  [Migrations] Tenant DBs: SKIP (single-DB company_id tenancy)")
 
         print("  MIGRATIONS: Complete.")
         print("========================================")
@@ -262,7 +228,12 @@ from app.api.supplier_management import router as supplier_management_router
 from app.api.expenses import router as expenses_router
 from app.api.cashbook import router as cashbook_router
 from app.api.excel_import import router as excel_import_router
-from app.api.tenants import router as tenants_router
+_enable_tenant_admin = os.getenv("ENABLE_TENANT_ADMIN", "").lower() in ("true", "1", "yes")
+if _enable_tenant_admin:
+    # Legacy admin/registry routes. Disabled by default to avoid reintroducing database-per-tenant behavior.
+    from app.api.tenants import router as tenants_router
+else:
+    tenants_router = None
 from app.api.onboarding import router as onboarding_router
 # Optional imports - app can run without these
 try:
@@ -308,7 +279,8 @@ app.include_router(modules_router, prefix="/api", tags=["Modules"])
 app.include_router(clinic_router, prefix="/api", tags=["Clinic / OPD"])
 app.include_router(etims.router, prefix="/api/etims", tags=["ETIMS"])
 app.include_router(reports_router, prefix="/api", tags=["Reports"])
-app.include_router(tenants_router, prefix="/api/admin", tags=["Tenant Management (Admin)"])
+if tenants_router:
+    app.include_router(tenants_router, prefix="/api/admin", tags=["Tenant Management (Admin)"])
 app.include_router(impersonation_router, prefix="/api/admin", tags=["Admin Impersonation"])
 app.include_router(admin_metrics_router, prefix="/api/admin", tags=["Platform Admin Dashboard"])
 app.include_router(admin_platform_licensing_router, prefix="/api/admin", tags=["Platform Licensing (Admin)"])

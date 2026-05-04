@@ -11,10 +11,39 @@ from uuid import UUID
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+# Stripe / admin.html statuses that mean "not a self-service demo tenant" for cap purposes,
+# even if subscription_plan was left as demo by mistake.
+_LICENSED_SUBSCRIPTION_STATUSES = frozenset(
+    {"active", "paid", "trialing", "past_due"},
+)
+
 
 def company_is_demo_plan(company: Any) -> bool:
-    """Self-service / demo-style plans use subscription_plan slug ``demo`` on the company row."""
-    return (getattr(company, "subscription_plan", None) or "").strip().lower() == "demo"
+    """
+    Demo-style caps apply when the company slug is ``demo``.
+
+    Admin tooling often updates ``subscription_status`` while the plan slug is accidentally left
+    as ``demo``. Treat licensed billing statuses as non-demo so caps lift.
+    """
+    plan = (getattr(company, "subscription_plan", None) or "").strip().lower()
+    if plan != "demo":
+        return False
+    status = (getattr(company, "subscription_status", None) or "").strip().lower()
+    if status in _LICENSED_SUBSCRIPTION_STATUSES:
+        return False
+    return True
+
+
+def sync_demo_plan_slug_with_subscription_status(company: Any) -> None:
+    """
+    Mutates ``company`` in memory: if status is licensed but plan slug is still ``demo``, clear the slug.
+
+    Keeps the DB consistent with how operators use admin.html (status vs plan).
+    """
+    status = (getattr(company, "subscription_status", None) or "").strip().lower()
+    plan = (getattr(company, "subscription_plan", None) or "").strip().lower()
+    if status in _LICENSED_SUBSCRIPTION_STATUSES and plan == "demo":
+        company.subscription_plan = None
 
 
 def company_product_limit(company: Any) -> Optional[int]:
@@ -65,6 +94,7 @@ def count_distinct_company_users(db: Session, company_id: UUID) -> int:
 
 __all__ = [
     "company_is_demo_plan",
+    "sync_demo_plan_slug_with_subscription_status",
     "company_product_limit",
     "company_branch_limit",
     "company_user_limit",

@@ -70,6 +70,36 @@ from app.utils.company_access import get_company_access, company_access_to_subsc
 router = APIRouter()
 
 
+def _raise_http_for_db_unreachable(exc: OperationalError) -> None:
+    """
+    Map infrastructure-style DB errors to 503 so login does not surface as opaque 500.
+    Re-raises other OperationalError (e.g. auth failures) unchanged.
+    """
+    orig = getattr(exc, "orig", None)
+    msg = (str(orig) if orig is not None else str(exc)).lower()
+    unreachable_markers = (
+        "could not translate host name",
+        "name or service not known",
+        "could not connect to server",
+        "connection timed out",
+        "connection refused",
+        "network is unreachable",
+        "temporary failure in name resolution",
+        "no route to host",
+    )
+    if any(m in msg for m in unreachable_markers):
+        logger.warning("Database unreachable during auth request: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Cannot connect to the database from this server. Check internet access, DNS, and "
+                "DATABASE_URL. If the direct host (db.*.supabase.co) does not resolve or IPv6 is blocked, "
+                "use the Supabase Session pooler URL (IPv4, port 5432) from the Supabase dashboard."
+            ),
+        ) from None
+    raise exc
+
+
 class AuthMeResponse(BaseModel):
     user_id: str
     roles: List[str]
@@ -414,110 +444,113 @@ def username_login(
     (from master). Ignores X-Tenant-Subdomain for lookup so master and tenant users
     both resolve correctly regardless of frontend state.
     """
-    normalized_username = body.username.lower().strip()
-    check_email = "@" in body.username
-
-    # 1) Legacy DB first
-    legacy_db = SessionLocal()
     try:
-        user = _find_user_in_db(legacy_db, normalized_username, check_email)
-        if user:
+        normalized_username = body.username.lower().strip()
+        check_email = "@" in body.username
+
+        # 1) Legacy DB first
+        legacy_db = SessionLocal()
+        try:
+            user = _find_user_in_db(legacy_db, normalized_username, check_email)
+            if user:
+                _require_password_if_internal(user, body.password)
+                _enforce_login_company_access(legacy_db, user)
+                resp = _build_login_response(user, None, body.password, db=legacy_db)
+                if resp.refresh_token:
+                    _persist_refresh_token_on_login(None, str(user.id), resp.refresh_token)
+                return resp
+        finally:
+            legacy_db.close()
+
+        # 2) Not in legacy: discover in all tenant DBs (from master)
+        logger.info("Username not in legacy DB, searching all tenants for username=%s", normalized_username[:50])
+        found_list = _find_user_in_all_tenants(master_db, normalized_username, check_email)
+        if len(found_list) == 0:
+            # If client sent a tenant hint (e.g. from ?tenant= in URL), check if that org is deleted/deactivated
+            tenant_hint = (body.tenant or "").strip().lower() or None
+            if tenant_hint:
+                hinted = master_db.query(Tenant).filter(func.lower(Tenant.subdomain) == tenant_hint).first()
+                if hinted:
+                    hn = (hinted.name or "").strip()
+                    if hn:
+                        hinted_co_db = SessionLocal()
+                        try:
+                            from app.models.company import Company
+
+                            co = (
+                                hinted_co_db.query(Company)
+                                .filter(func.lower(func.trim(Company.name)) == hn.lower())
+                                .first()
+                            )
+                            if co and get_company_access(co) == "blocked":
+                                logger.info(
+                                    "User not found; hinted tenant %s matches inactive company",
+                                    tenant_hint,
+                                )
+                                raise HTTPException(
+                                    status_code=status.HTTP_403_FORBIDDEN,
+                                    detail=(
+                                        "This organization is no longer active. Your account was part of an organization that has been deactivated. "
+                                        "Please contact your administrator or support if you need access."
+                                    ),
+                                )
+                        finally:
+                            hinted_co_db.close()
+            logger.warning(
+                "User not found in legacy DB or any tenant DB (username=%s). "
+                "Ensure tenant DBs are reachable and public.tenants have database_url set.",
+                normalized_username[:50],
+            )
+            # 401 (not 404): avoids confusion in browser DevTools where 404 looks like a missing API route.
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password",
+            )
+        if len(found_list) == 1:
+            tenant, user = found_list[0]
+            # Expired non-demo trials may still sign in; the app restricts features until they upgrade.
             _require_password_if_internal(user, body.password)
-            _enforce_login_company_access(legacy_db, user)
-            resp = _build_login_response(user, None, body.password, db=legacy_db)
+            # User found in legacy/app DB (tenant is None) or in a tenant DB (use app DB if tenant DB unreachable)
+            if tenant is None:
+                db = SessionLocal()
+                try:
+                    _enforce_login_company_access(db, user)
+                    resp = _build_login_response(user, tenant, body.password, db=db)
+                finally:
+                    db.close()
+            else:
+                try:
+                    with tenant_db_session(tenant) as tenant_db:
+                        _enforce_login_company_access(tenant_db, user)
+                        resp = _build_login_response(user, tenant, body.password, db=tenant_db)
+                except OperationalError as e:
+                    if "Tenant or user not found" in str(e) or "FATAL:" in str(e).upper():
+                        db = SessionLocal()
+                        try:
+                            _enforce_login_company_access(db, user)
+                            resp = _build_login_response(user, tenant, body.password, db=db)
+                        finally:
+                            db.close()
+                    else:
+                        raise
             if resp.refresh_token:
-                _persist_refresh_token_on_login(None, str(user.id), resp.refresh_token)
+                _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
             return resp
-    finally:
-        legacy_db.close()
-
-    # 2) Not in legacy: discover in all tenant DBs (from master)
-    logger.info("Username not in legacy DB, searching all tenants for username=%s", normalized_username[:50])
-    found_list = _find_user_in_all_tenants(master_db, normalized_username, check_email)
-    if len(found_list) == 0:
-        # If client sent a tenant hint (e.g. from ?tenant= in URL), check if that org is deleted/deactivated
-        tenant_hint = (body.tenant or "").strip().lower() or None
-        if tenant_hint:
-            hinted = master_db.query(Tenant).filter(func.lower(Tenant.subdomain) == tenant_hint).first()
-            if hinted:
-                hn = (hinted.name or "").strip()
-                if hn:
-                    hinted_co_db = SessionLocal()
-                    try:
-                        from app.models.company import Company
-
-                        co = (
-                            hinted_co_db.query(Company)
-                            .filter(func.lower(func.trim(Company.name)) == hn.lower())
-                            .first()
-                        )
-                        if co and get_company_access(co) == "blocked":
-                            logger.info(
-                                "User not found; hinted tenant %s matches inactive company",
-                                tenant_hint,
-                            )
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail=(
-                                    "This organization is no longer active. Your account was part of an organization that has been deactivated. "
-                                    "Please contact your administrator or support if you need access."
-                                ),
-                            )
-                    finally:
-                        hinted_co_db.close()
-        logger.warning(
-            "User not found in legacy DB or any tenant DB (username=%s). "
-            "Ensure tenant DBs are reachable and public.tenants have database_url set.",
-            normalized_username[:50],
-        )
-        # 401 (not 404): avoids confusion in browser DevTools where 404 looks like a missing API route.
+        # Same username in multiple tenants
+        tenants_info = [{"subdomain": t.subdomain, "name": t.name} for t, _ in found_list]
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "multiple_tenants",
+                "message": (
+                    "This username exists in more than one organization. "
+                    "Please sign in using the link from your invite email, or add ?tenant=SUBDOMAIN to the URL."
+                ),
+                "tenants": tenants_info,
+            },
         )
-    if len(found_list) == 1:
-        tenant, user = found_list[0]
-        # Expired non-demo trials may still sign in; the app restricts features until they upgrade.
-        _require_password_if_internal(user, body.password)
-        # User found in legacy/app DB (tenant is None) or in a tenant DB (use app DB if tenant DB unreachable)
-        if tenant is None:
-            db = SessionLocal()
-            try:
-                _enforce_login_company_access(db, user)
-                resp = _build_login_response(user, tenant, body.password, db=db)
-            finally:
-                db.close()
-        else:
-            try:
-                with tenant_db_session(tenant) as tenant_db:
-                    _enforce_login_company_access(tenant_db, user)
-                    resp = _build_login_response(user, tenant, body.password, db=tenant_db)
-            except OperationalError as e:
-                if "Tenant or user not found" in str(e) or "FATAL:" in str(e).upper():
-                    db = SessionLocal()
-                    try:
-                        _enforce_login_company_access(db, user)
-                        resp = _build_login_response(user, tenant, body.password, db=db)
-                    finally:
-                        db.close()
-                else:
-                    raise
-        if resp.refresh_token:
-            _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
-        return resp
-    # Same username in multiple tenants
-    tenants_info = [{"subdomain": t.subdomain, "name": t.name} for t, _ in found_list]
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={
-            "code": "multiple_tenants",
-            "message": (
-                "This username exists in more than one organization. "
-                "Please sign in using the link from your invite email, or add ?tenant=SUBDOMAIN to the URL."
-            ),
-            "tenants": tenants_info,
-        },
-    )
+    except OperationalError as e:
+        _raise_http_for_db_unreachable(e)
 
 
 @router.post("/auth/start-demo", response_model=StartDemoResponse, status_code=status.HTTP_201_CREATED)

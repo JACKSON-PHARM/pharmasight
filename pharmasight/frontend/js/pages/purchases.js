@@ -2226,6 +2226,7 @@ async function onSupplierInvoiceAddItem(item) {
                 created_by: CONFIG.USER_ID,
                 items: [mapTableItemToSupplierInvoiceItem(item)]
             };
+            lastFirstLineSupplierInvoicePayload = payload;
             const invoice = await API.purchases.createInvoice(payload);
             currentDocument.invoiceId = invoice.id;
             currentDocument.mode = 'edit';
@@ -2306,6 +2307,51 @@ async function onSupplierInvoiceAddItem(item) {
             transactionItemsTable.setItems(documentItems);
         }
     } catch (err) {
+        const d = _structuredDetailFromApiError(err);
+        if (d && d.code === 'PRICE_CONFIRMATION_REQUIRED' && (d.items || []).length && lastFirstLineSupplierInvoicePayload) {
+            showPurchaseLineUnitCostConfirmModal('Confirm unit cost', d.items, 'Confirm & create draft', async (confirmations) => {
+                const invoice = await API.purchases.createInvoice({ ...lastFirstLineSupplierInvoicePayload, confirmations });
+                currentDocument.invoiceId = invoice.id;
+                currentDocument.mode = 'edit';
+                currentDocument.invoiceData = invoice;
+                currentDocument.invoiceNumber = invoice.invoice_number;
+                supplierInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
+                documentItems = (invoice.items || []).map(i => {
+                    const disp = getSupplierInvoiceItemDisplay(i, supplierInvoiceItemDisplayCache);
+                    const parsed = i.batch_data ? (() => { try { return JSON.parse(i.batch_data); } catch (e) { return null; } })() : null;
+                    const batches = parsed || (String(i.item_id) === String(item.item_id) && item.batches && item.batches.length ? item.batches : null);
+                    return {
+                        item_id: i.item_id,
+                        item_name: disp.item_name,
+                        item_sku: disp.item_code,
+                        item_code: disp.item_code,
+                        unit_name: i.unit_name,
+                        quantity: i.quantity,
+                        unit_price: i.unit_cost_exclusive,
+                        tax_percent: i.vat_rate,
+                        discount_percent: (() => {
+                            const grossUnit = parseFloat(i.unit_cost_exclusive) || 0;
+                            const qty = parseFloat(i.quantity) || 0;
+                            const netExclusive = parseFloat(i.line_total_exclusive) || 0;
+                            if (!(grossUnit > 0) || !(qty > 0)) return 0;
+                            const base = grossUnit * qty;
+                            if (!(base > 0)) return 0;
+                            const disc = 100 * (1 - (netExclusive / base));
+                            if (!isFinite(disc)) return 0;
+                            return Math.max(0, Math.min(100, disc));
+                        })(),
+                        total: i.line_total_inclusive,
+                        batches: batches
+                    };
+                });
+                if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
+                    transactionItemsTable.setItems(documentItems);
+                }
+                showToast('Draft invoice created. Add more items or use Manage Batches, then Batch to add stock.', 'success');
+                if (typeof closeModal === 'function') closeModal();
+            });
+            return;
+        }
         const msg = (err && err.message) || String(err);
         if (msg.indexOf('already exists') !== -1) {
             showToast('Item already on this invoice. Remove the line or choose a different item.', 'warning');
@@ -2858,6 +2904,42 @@ function handlePOFromBookSupplierFocus(event) {
 // Save purchase document
 let isSavingDocument = false; // Flag to prevent duplicate submissions
 let isDeletingOrder = false; // Flag to prevent duplicate delete operations
+/** Last supplier-invoice payload sent to create/update (for PRICE_CONFIRMATION_REQUIRED retry). */
+let lastSupplierInvoicePriceConfirmPayload = null;
+let lastSupplierInvoicePriceConfirmIsEdit = false;
+/** First-line draft create payload when adding an item before an invoice id exists. */
+let lastFirstLineSupplierInvoicePayload = null;
+
+/** FastAPI `detail` may be an object or a JSON string; normalize for branching. */
+function _normalizePurchaseApiDetail(detail) {
+    if (detail == null) return null;
+    if (typeof detail === 'string') {
+        try {
+            const p = JSON.parse(detail);
+            if (p && typeof p === 'object' && !Array.isArray(p)) return p;
+        } catch (_) {}
+        return null;
+    }
+    if (typeof detail === 'object' && !Array.isArray(detail)) return detail;
+    return null;
+}
+
+/**
+ * Recover structured PRICE_CONFIRMATION (etc.) from api errors.
+ * api.js sets error.message to JSON.stringify(detail) when detail is an object, so also parse message.
+ */
+function _structuredDetailFromApiError(err) {
+    const fromData = _normalizePurchaseApiDetail(err && err.data && err.data.detail);
+    if (fromData && fromData.code) return fromData;
+    const msg = err && err.message;
+    if (typeof msg === 'string' && msg.trim().startsWith('{')) {
+        try {
+            const p = JSON.parse(msg);
+            if (p && typeof p === 'object' && p.code) return p;
+        } catch (_) {}
+    }
+    return null;
+}
 
 function getPrimaryFormActionButton(form) {
     if (!form) return null;
@@ -3033,7 +3115,10 @@ async function savePurchaseDocument(event, documentType) {
             
             // Check if we're updating an existing invoice
             const isEditMode = currentDocument && currentDocument.mode === 'edit' && currentDocument.invoiceId;
-            
+
+            lastSupplierInvoicePriceConfirmPayload = invoiceData;
+            lastSupplierInvoicePriceConfirmIsEdit = !!isEditMode;
+
             let result;
             if (isEditMode) {
                 // Update existing invoice
@@ -3101,28 +3186,86 @@ async function savePurchaseDocument(event, documentType) {
             status: error.status,
             data: error.data
         });
-        
+
+        const confirmDetail = _structuredDetailFromApiError(error);
+        if (
+            confirmDetail &&
+            confirmDetail.code === 'PRICE_CONFIRMATION_REQUIRED' &&
+            documentType === 'invoice' &&
+            (confirmDetail.items || []).length > 0 &&
+            lastSupplierInvoicePriceConfirmPayload
+        ) {
+            showPurchaseLineUnitCostConfirmModal(
+                'Confirm unit costs (floor / margin)',
+                confirmDetail.items,
+                'Confirm & save',
+                async (confirmations) => {
+                    const payload = { ...lastSupplierInvoicePriceConfirmPayload, confirmations };
+                    let result;
+                    if (lastSupplierInvoicePriceConfirmIsEdit && currentDocument && currentDocument.invoiceId) {
+                        result = await API.purchases.updateInvoice(currentDocument.invoiceId, payload);
+                        showToast('Supplier Invoice updated successfully!', 'success');
+                        documentItems = [];
+                        currentDocument = null;
+                        transactionItemsTable = null;
+                        await loadPurchaseSubPage('invoices');
+                        await fetchAndRenderSupplierInvoicesData();
+                    } else {
+                        result = await API.purchases.createInvoice(payload);
+                        if (result && result.invoice_number) {
+                            showToast(`Supplier Invoice ${result.invoice_number} saved as DRAFT! You can Batch or Update from this page.`, 'success');
+                        } else {
+                            showToast('Supplier Invoice saved as DRAFT! (Note: Invoice number not assigned — check branch code)', 'warning');
+                        }
+                        if (result && result.id) {
+                            let fullInvoice = result;
+                            try {
+                                fullInvoice = await API.purchases.getInvoice(result.id);
+                            } catch (e) {
+                                console.warn('Could not fetch full invoice after create, using result:', e);
+                            }
+                            currentDocument = {
+                                type: 'invoice',
+                                mode: 'edit',
+                                invoiceId: result.id,
+                                invoiceData: fullInvoice
+                            };
+                            await loadPurchaseSubPage('create-invoice');
+                        }
+                    }
+                    if (typeof closeModal === 'function') closeModal();
+                }
+            );
+            isSavingDocument = false;
+            setButtonSavingState(submitButton, false);
+            return;
+        }
+
         // Show detailed error message
         let errorMessage = error.message || 'Error saving document';
         const detail = error.data && error.data.detail;
+        const detailObj = _normalizePurchaseApiDetail(detail) || detail;
         if (detail) {
             if (typeof detail === 'string') {
-                errorMessage = detail;
+                const parsed = _normalizePurchaseApiDetail(detail);
+                errorMessage = parsed && parsed.message ? parsed.message : detail;
             } else if (Array.isArray(detail)) {
                 errorMessage = detail.map(e => e.msg || e.loc?.join('.') + ': ' + e.msg).join(', ');
-            } else if (typeof detail === 'object' && detail.message) {
-                errorMessage = detail.message;
+            } else if (typeof detailObj === 'object' && detailObj && !Array.isArray(detailObj) && detailObj.message) {
+                errorMessage = detailObj.message;
                 // If short-expiry blocked save, show override modal (user can then Batch with override)
-                if (detail.code === 'SHORT_EXPIRY_OVERRIDE_REQUIRED') {
+                if (detailObj.code === 'SHORT_EXPIRY_OVERRIDE_REQUIRED') {
                     const invoiceId = currentDocument && currentDocument.invoiceId;
                     if (invoiceId && typeof showShortExpiryOverrideModal === 'function') {
-                        showShortExpiryOverrideModal(invoiceId, detail, null, null);
+                        showShortExpiryOverrideModal(invoiceId, detailObj, null, null);
+                        isSavingDocument = false;
+                        setButtonSavingState(submitButton, false);
                         return;
                     }
                 }
             }
         }
-        
+
         showToast(errorMessage, 'error');
         isSavingDocument = false; // Reset flag on error
         setButtonSavingState(submitButton, false);
@@ -4158,8 +4301,7 @@ async function batchSupplierInvoice(invoiceId, buttonEl, confirmationsBody) {
         }
     } catch (error) {
         console.error('Error batching invoice:', error);
-        const data = error.data || error.response?.data || {};
-        const detail = data.detail;
+        const detail = _structuredDetailFromApiError(error) || _normalizePurchaseApiDetail((error.data || error.response?.data || {}).detail);
         if (detail && typeof detail === 'object' && detail.code === 'PRICE_CONFIRMATION_REQUIRED') {
             const items = detail.items || [];
             if (items.length === 0) {
@@ -4183,38 +4325,46 @@ async function batchSupplierInvoice(invoiceId, buttonEl, confirmationsBody) {
     }
 }
 
-function showBatchPriceConfirmationModal(invoiceId, items, buttonEl) {
+/**
+ * Re-enter unit cost (per base unit) for lines that hit floor / margin rules — used for batch post,
+ * draft save (create/update invoice), and first-line draft create.
+ * @param {string} modalTitle
+ * @param {Array} items - server detail.items: { item_id, item_name, unit_cost_base, floor_price?, margin_below_standard? }
+ * @param {string} submitLabel
+ * @param {function(Array<{item_id:string, unit_cost_base:number}>): Promise<void>} onConfirm
+ */
+function showPurchaseLineUnitCostConfirmModal(modalTitle, items, submitLabel, onConfirm) {
     const rows = items.map((it, idx) => {
         const floorNote = it.floor_price != null ? ` (Floor: ${it.floor_price})` : '';
         const marginNote = it.margin_below_standard ? ' — Margin below standard' : '';
         return `
             <div class="form-group" style="margin-bottom:0.75rem;">
-                <label for="batchConfirm_${idx}">${escapeHtml(it.item_name || it.item_id)}${floorNote}${marginNote}</label>
-                <input type="number" id="batchConfirm_${idx}" class="form-input" min="0" step="0.01" 
+                <label for="purchaseLineConfirm_${idx}">${escapeHtml(it.item_name || it.item_id)}${floorNote}${marginNote}</label>
+                <input type="number" id="purchaseLineConfirm_${idx}" class="form-input" min="0" step="0.01"
                     data-item-id="${escapeHtml(it.item_id)}" data-expected="${it.unit_cost_base}"
-                    placeholder="Re-enter unit cost: ${it.unit_cost_base}">
+                    placeholder="Re-enter unit cost (base): ${it.unit_cost_base}">
             </div>`;
     }).join('');
     const content = `
         <div style="padding:0.5rem 0;">
             <p style="margin-bottom:1rem; color:var(--warning-text,#856404); font-weight:600;">
-                <i class="fas fa-exclamation-triangle"></i> Some items have a floor price or margin below standard. 
-                Please re-enter the unit cost for each item to confirm you are aware of the price.
+                <i class="fas fa-exclamation-triangle"></i> Some items have a floor price or margin below standard.
+                Re-enter the <strong>unit cost per base unit</strong> for each line (must match the cost you are posting) to confirm.
             </p>
             ${rows}
         </div>`;
     const footer = `
         <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" id="batchConfirmSubmitBtn"><i class="fas fa-check"></i> Confirm & Batch</button>`;
+        <button class="btn btn-primary" id="purchaseLineUnitCostConfirmSubmit"><i class="fas fa-check"></i> ${escapeHtml(submitLabel)}</button>`;
     if (typeof showModal === 'function') {
-        showModal('Confirm Unit Costs', content, footer);
+        showModal(modalTitle, content, footer);
     }
-    const submitBtn = document.getElementById('batchConfirmSubmitBtn');
+    const submitBtn = document.getElementById('purchaseLineUnitCostConfirmSubmit');
     if (submitBtn) {
         submitBtn.onclick = async () => {
             const confirmations = [];
             for (let i = 0; i < items.length; i++) {
-                const inp = document.getElementById('batchConfirm_' + i);
+                const inp = document.getElementById('purchaseLineConfirm_' + i);
                 if (!inp) continue;
                 const val = parseFloat(inp.value);
                 if (isNaN(val) || val < 0) {
@@ -4224,9 +4374,25 @@ function showBatchPriceConfirmationModal(invoiceId, items, buttonEl) {
                 }
                 confirmations.push({ item_id: items[i].item_id, unit_cost_base: val });
             }
-            await batchSupplierInvoice(invoiceId, buttonEl, { confirmations });
+            try {
+                submitBtn.disabled = true;
+                await onConfirm(confirmations);
+            } catch (e) {
+                console.error('Price confirm action failed:', e);
+                const d = e.data && e.data.detail;
+                const msg = d && typeof d === 'object' && d.message ? d.message : (e.message || 'Request failed');
+                showToast(msg, 'error');
+            } finally {
+                submitBtn.disabled = false;
+            }
         };
     }
+}
+
+function showBatchPriceConfirmationModal(invoiceId, items, buttonEl) {
+    showPurchaseLineUnitCostConfirmModal('Confirm unit costs', items, 'Confirm & Batch', async (confirmations) => {
+        await batchSupplierInvoice(invoiceId, buttonEl, { confirmations });
+    });
 }
 
 function showShortExpiryOverrideModal(invoiceId, detail, buttonEl, existingConfirmationsBody) {

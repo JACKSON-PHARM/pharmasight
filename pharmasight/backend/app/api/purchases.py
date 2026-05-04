@@ -80,6 +80,15 @@ import httpx
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 
+def _user_can_cost_outlier_override(db: Session, user_id: UUID) -> bool:
+    """Explicit permission or owner/admin (same idea as short-expiry override on batch)."""
+    if _user_has_permission(db, user_id, "inventory.cost_override"):
+        return True
+    from app.api.users import _user_has_owner_or_admin_role
+
+    return _user_has_owner_or_admin_role(db, user_id)
+
+
 def _purchase_company_branch_perm(
     db: Session,
     user: User,
@@ -631,9 +640,7 @@ def create_supplier_invoice(
             db, invoice.company_id, invoice.branch_id, item_data.item_id, unit_cost_base
         )
         if outlier.get("is_outlier"):
-            from app.dependencies import _user_has_permission
-            has_override = _user_has_permission(db, user.id, "inventory.cost_override")
-            if not has_override:
+            if not _user_can_cost_outlier_override(db, user.id):
                 baseline = outlier.get("baseline_cost")
                 deviation = outlier.get("deviation_pct")
                 threshold = outlier.get("threshold_pct")
@@ -1288,8 +1295,7 @@ def update_supplier_invoice_item(
                 db, invoice.company_id, invoice.branch_id, item_id, unit_cost_base
             )
             if outlier.get("is_outlier"):
-                has_override = _user_has_permission(db, current_user_and_db[0].id, "inventory.cost_override")
-                if not has_override:
+                if not _user_can_cost_outlier_override(db, current_user_and_db[0].id):
                     baseline = outlier.get("baseline_cost")
                     deviation = outlier.get("deviation_pct")
                     threshold = outlier.get("threshold_pct")
@@ -1413,31 +1419,106 @@ def update_supplier_invoice(
     db_invoice.vat_rate = invoice_update.vat_rate
     # amount_paid / payment_status for posted invoices come from supplier_payment_allocations only
 
-    # Recalculate totals
+    # Recalculate totals (recomputed after replacing lines)
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
-    
-    # Delete existing items
-    db.query(SupplierInvoiceItem).filter(SupplierInvoiceItem.purchase_invoice_id == invoice_id).delete()
-    
-    # Preload all items (no N+1)
+
+    # Preload all items (no N+1) — before deleting lines so validation can fail safely
     item_ids_update = [item_data.item_id for item_data in invoice_update.items]
     items_preloaded = db.query(Item).filter(Item.id.in_(item_ids_update), Item.company_id == db_invoice.company_id).all()
     items_map_update = {item.id: item for item in items_preloaded}
     stock_validation_config_update = get_stock_validation_config(db, db_invoice.company_id)
-    
+
+    # Resolve unit cost per line + floor/margin confirmation + cost outlier (same rules as POST /invoice create)
+    resolved_unit_costs_update = []
+    need_confirm_list_update = []
+    for item_data in invoice_update.items:
+        item = items_map_update.get(item_data.item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
+        multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
+        if multiplier is None:
+            raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
+        uc = item_data.unit_cost_exclusive
+        if uc is None or (uc is not None and float(uc) <= 0):
+            last_base = CanonicalPricingService.get_last_purchase_cost(
+                db, item_data.item_id, db_invoice.branch_id, db_invoice.company_id
+            )
+            if last_base is not None and float(last_base) > 0:
+                uc = last_base * Decimal(str(multiplier))
+            else:
+                uc = Decimal("0")
+        else:
+            uc = Decimal(str(uc))
+        resolved_unit_costs_update.append(uc)
+        unit_cost_base = uc / Decimal(str(multiplier))
+        check = check_stock_adjustment_requires_confirmation(
+            db, item_data.item_id, db_invoice.company_id, unit_cost_base
+        )
+        if check.get("requires_confirmation"):
+            need_confirm_list_update.append({
+                "item_id": str(item_data.item_id),
+                "item_name": getattr(item, "name", None) or str(item_data.item_id),
+                "unit_cost_base": float(unit_cost_base),
+                "floor_price": check.get("floor_price"),
+                "margin_below_standard": check.get("margin_below_standard", False),
+            })
+        outlier = is_cost_outlier_vs_weighted_average(
+            db, db_invoice.company_id, db_invoice.branch_id, item_data.item_id, unit_cost_base
+        )
+        if outlier.get("is_outlier"):
+            if not _user_can_cost_outlier_override(db, user.id):
+                baseline = outlier.get("baseline_cost")
+                deviation = outlier.get("deviation_pct")
+                threshold = outlier.get("threshold_pct")
+                item_name = getattr(item, "name", None) or str(item_data.item_id)
+                detail_msg = (
+                    f"Unit cost {unit_cost_base} for item '{item_name}' deviates "
+                    f"{deviation:.1f}% from branch weighted average {baseline}. Manager override required."
+                )
+                if threshold is not None:
+                    detail_msg += f" (Threshold {threshold:.1f}%.)"
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"code": "COST_OUTLIER_OVERRIDE_REQUIRED", "message": detail_msg},
+                )
+
+    if need_confirm_list_update:
+        confirm_map = {}
+        if invoice_update.confirmations:
+            for c in invoice_update.confirmations:
+                k = (str(c.item_id), round(float(c.unit_cost_base), 4))
+                confirm_map[k] = float(c.unit_cost_base)
+        missing = []
+        for nc in need_confirm_list_update:
+            k = (nc["item_id"], round(nc["unit_cost_base"], 4))
+            if k not in confirm_map:
+                missing.append(nc)
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "PRICE_CONFIRMATION_REQUIRED",
+                    "message": "Some items have a floor price or margin below standard. Re-enter the unit cost for each to confirm.",
+                    "items": missing,
+                },
+            )
+
+    # Delete existing items (only after validation passes)
+    db.query(SupplierInvoiceItem).filter(SupplierInvoiceItem.purchase_invoice_id == invoice_id).delete()
+
     # Add new items
     invoice_items = []
-    for item_data in invoice_update.items:
+    for idx, item_data in enumerate(invoice_update.items):
         # Get item from preloaded map
         item = items_map_update.get(item_data.item_id)
         if not item:
             raise HTTPException(status_code=404, detail=f"Item {item_data.item_id} not found")
-        
+
         multiplier = get_unit_multiplier_from_item(item, item_data.unit_name)
         if multiplier is None:
             raise HTTPException(status_code=404, detail=f"Unit '{item_data.unit_name}' not found for item {item_data.item_id}")
-        
+
         # Enforce tracking fields for items with Track Expiry enabled (company-level toggles decide what is required)
         if getattr(item, "track_expiry", False):
             _require_batch_and_expiry_for_track_expiry_item(
@@ -1452,13 +1533,15 @@ def update_supplier_invoice(
                     item.name or str(item_data.item_id), item, item_data.batches,
                     stock_validation_config_update, override=True, from_dict=False,
                 )
-        
+
+        unit_cost_exclusive = resolved_unit_costs_update[idx] if idx < len(resolved_unit_costs_update) else item_data.unit_cost_exclusive
+
         # Accounting model:
         # - Keep original/gross unit cost in `unit_cost_exclusive`.
         # - Apply discount only to payable totals (line totals) by calculating net unit cost.
         disc_pct = Decimal(str(getattr(item_data, "discount_percent", 0) or 0))
         disc_pct = max(Decimal("0"), min(Decimal("100"), disc_pct))
-        net_unit_cost_exclusive = item_data.unit_cost_exclusive * (Decimal("100") - disc_pct) / Decimal("100")
+        net_unit_cost_exclusive = unit_cost_exclusive * (Decimal("100") - disc_pct) / Decimal("100")
 
         # Calculate line totals (VAT) — normalize vat_rate; use item master VAT if request sent 0
         line_total_exclusive = net_unit_cost_exclusive * item_data.quantity
@@ -1484,7 +1567,7 @@ def update_supplier_invoice(
             item_id=item_data.item_id,
             unit_name=item_data.unit_name,
             quantity=item_data.quantity,
-            unit_cost_exclusive=item_data.unit_cost_exclusive,
+            unit_cost_exclusive=unit_cost_exclusive,
             vat_rate=vat_rate_pct,
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
@@ -1493,10 +1576,10 @@ def update_supplier_invoice(
         )
         invoice_items.append(invoice_item)
         db.add(invoice_item)
-        
+
         total_exclusive += line_total_exclusive
         total_vat += line_vat
-    
+
     total_inclusive = total_exclusive + total_vat
 
     # Update invoice totals
@@ -1664,12 +1747,7 @@ def batch_supplier_invoice(
             db, invoice.company_id, invoice.branch_id, invoice_item.item_id, unit_cost_base
         )
         if outlier.get("is_outlier"):
-            from app.dependencies import _user_has_permission
-
-            has_override = _user_has_permission(
-                db, invoice.created_by, "inventory.cost_override"
-            )
-            if not has_override:
+            if not _user_can_cost_outlier_override(db, user.id):
                 baseline = outlier.get("baseline_cost")
                 deviation = outlier.get("deviation_pct")
                 threshold = outlier.get("threshold_pct")

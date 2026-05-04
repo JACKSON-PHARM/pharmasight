@@ -39,6 +39,28 @@ def normalize_postgres_url(url: str) -> str:
     return u
 
 
+def postgres_url_for_sqlalchemy(url: str) -> str:
+    """
+    URL suitable for SQLAlchemy + psycopg2 create_engine().
+
+    Supabase / PgBouncer docs sometimes append ``?pgbouncer=true`` for transaction pooler mode.
+    That is not a valid libpq keyword; psycopg2 raises ProgrammingError: invalid connection option "pgbouncer".
+    Drop it and rely on ``prepare_threshold=None`` in engine ``connect_args`` for port 6543 / pooler hosts.
+    """
+    url = normalize_postgres_url(url or "")
+    if not url or "pgbouncer" not in url.lower():
+        return url
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    try:
+        p = urlparse(url)
+        pairs = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if k.lower() != "pgbouncer"]
+        new_q = urlencode(pairs)
+        return urlunparse((p.scheme, p.netloc, p.path, p.params, new_q, p.fragment))
+    except Exception:
+        return url
+
+
 class Settings(BaseSettings):
     """Application settings"""
 
@@ -57,6 +79,8 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
     
     # Database (Supabase)
+    # Prefer DATABASE_URL from the dashboard: Connect → Session pooler (IPv4-friendly).
+    # Direct db.<ref>.supabase.co:5432 is often IPv6-only; on Windows/IPv4 networks use session pooler instead.
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")  # Anon key (for frontend)
@@ -69,7 +93,9 @@ class Settings(BaseSettings):
     # Keep disabled by default to avoid silent reintroduction of per-tenant project behavior.
     ENABLE_LEGACY_PATH_TENANT_FALLBACK: bool = os.getenv("ENABLE_LEGACY_PATH_TENANT_FALLBACK", "false").lower() in ("true", "1", "yes")
     SUPABASE_DB_PASSWORD: str = os.getenv("SUPABASE_DB_PASSWORD", "")
-    SUPABASE_DB_HOST: str = os.getenv("SUPABASE_DB_HOST", "db.kwvkkbofubsjiwqlqakt.supabase.co")
+    # Optional legacy fallback when DATABASE_URL is unset. Leave empty unless you know the host;
+    # use full DATABASE_URL (session pooler) from the dashboard instead of guessing db.*.supabase.co.
+    SUPABASE_DB_HOST: str = os.getenv("SUPABASE_DB_HOST", "")
     SUPABASE_DB_NAME: str = os.getenv("SUPABASE_DB_NAME", "postgres")
     SUPABASE_DB_PORT: int = int(os.getenv("SUPABASE_DB_PORT", "5432"))
     SUPABASE_DB_USER: str = os.getenv("SUPABASE_DB_USER", "postgres")
@@ -104,7 +130,18 @@ class Settings(BaseSettings):
         if self.DATABASE_URL:
             return normalize_postgres_url(self.DATABASE_URL)
 
-        # Build from Supabase components
+        # Build from Supabase components (legacy convenience for local/dev).
+        #
+        # IMPORTANT: If SUPABASE_DB_PASSWORD is not set, treat DB as not configured.
+        # This avoids trying to connect to the default db.<ref>.supabase.co host when
+        # the app is running without an actual DB configured (common in local dev),
+        # which otherwise causes noisy startup migration failures.
+        if not (self.SUPABASE_DB_PASSWORD or "").strip():
+            return ""
+        if not (self.SUPABASE_DB_HOST or "").strip():
+            # Password without host is incomplete; avoid building a bogus URL.
+            return ""
+
         return (
             f"postgresql://{self.SUPABASE_DB_USER}:{self.SUPABASE_DB_PASSWORD}"
             f"@{self.SUPABASE_DB_HOST}:{self.SUPABASE_DB_PORT}/{self.SUPABASE_DB_NAME}"

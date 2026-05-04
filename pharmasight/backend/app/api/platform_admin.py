@@ -23,6 +23,7 @@ from app.models.company import Branch, BranchEtimsCredentials
 from app.models.company_module import CompanyModule
 from app.models.user import User, UserBranchRole, UserRole
 from app.module_enforcement import get_company_module_license_catalog
+from app.utils.company_plan_limits import sync_demo_plan_slug_with_subscription_status
 from app.module_metadata import get_core_modules
 from app.services.etims.branch_credentials import effective_etims_environment, get_cmc_key_plain, get_oauth_username_password
 from app.services.etims.constants import SELECT_INIT_OSDC_PATH
@@ -426,6 +427,7 @@ def patch_company_subscription(
         c.subscription_status = body.subscription_status.strip() or None
     if body.trial_expires_at is not None or body.trial_expires_at is None:
         c.trial_expires_at = body.trial_expires_at
+    sync_demo_plan_slug_with_subscription_status(c)
     db.commit()
     db.refresh(c)
     return c

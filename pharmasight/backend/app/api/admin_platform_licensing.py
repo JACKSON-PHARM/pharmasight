@@ -21,6 +21,7 @@ from app.models.company import Company
 from app.models.company import Branch, BranchEtimsCredentials
 from app.models.company_module import CompanyModule
 from app.module_enforcement import get_company_module_license_catalog
+from app.utils.company_plan_limits import sync_demo_plan_slug_with_subscription_status
 from app.module_metadata import get_core_modules
 from app.services.etims.branch_credentials import effective_etims_environment, get_cmc_key_plain, get_oauth_username_password
 from app.services.etims.constants import SELECT_INIT_OSDC_PATH
@@ -213,6 +214,7 @@ def patch_company_subscription(
     for key in ("subscription_plan", "subscription_status", "trial_expires_at", "product_limit", "branch_limit", "user_limit"):
         if key in upd:
             setattr(c, key, upd[key])
+    sync_demo_plan_slug_with_subscription_status(c)
     db.commit()
     db.refresh(c)
     return c

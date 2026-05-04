@@ -644,6 +644,11 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "default_cost_per_base": float(item.default_cost_per_base) if item.default_cost_per_base is not None else None,
         "default_supplier_id": item.default_supplier_id,
         "default_cost": default_cost,
+        "setup_complete": bool(getattr(item, "setup_complete", True)),
+        "floor_price_retail": float(item.floor_price_retail) if getattr(item, "floor_price_retail", None) is not None else None,
+        "promo_price_retail": float(item.promo_price_retail) if getattr(item, "promo_price_retail", None) is not None else None,
+        "promo_start_date": getattr(item, "promo_start_date", None),
+        "promo_end_date": getattr(item, "promo_end_date", None),
         "units": [],  # Set below from _display_units_from_item
     }
 
@@ -1252,7 +1257,11 @@ def adjust_stock(
             db, item.company_id, body.branch_id, item_id, unit_cost
         )
         if outlier.get("is_outlier"):
-            has_override = _user_has_permission(db, current_user.id, "inventory.cost_override")
+            from app.api.users import _user_has_owner_or_admin_role
+
+            has_override = _user_has_permission(db, current_user.id, "inventory.cost_override") or _user_has_owner_or_admin_role(
+                db, current_user.id
+            )
             if not has_override:
                 baseline = outlier.get("baseline_cost")
                 deviation = outlier.get("deviation_pct")
@@ -2130,9 +2139,11 @@ def post_cost_adjustment(
         db, item.company_id, body.branch_id, item_id, new_cost
     )
     if cost_outlier.get("is_outlier"):
-        from app.dependencies import _user_has_permission
+        from app.api.users import _user_has_owner_or_admin_role
 
-        has_override = _user_has_permission(db, user.id, "inventory.cost_override")
+        has_override = _user_has_permission(db, user.id, "inventory.cost_override") or _user_has_owner_or_admin_role(
+            db, user.id
+        )
         if not has_override:
             baseline = cost_outlier.get("baseline_cost")
             deviation = cost_outlier.get("deviation_pct")

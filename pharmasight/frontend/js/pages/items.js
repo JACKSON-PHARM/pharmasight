@@ -1777,7 +1777,7 @@ async function editItem(itemId) {
                             min="0"
                             class="form-input"
                             name="floor_price_retail"
-                            value="${item.floor_price_retail != null ? item.floor_price_retail : ''}"
+                            value="${item.floor_price_retail != null && item.floor_price_retail !== '' ? Number(item.floor_price_retail) : ''}"
                             placeholder="e.g. 150.00"
                         >
                     </div>
@@ -1794,7 +1794,7 @@ async function editItem(itemId) {
                             min="0"
                             class="form-input"
                             name="promo_price_retail"
-                            value="${item.promo_price_retail != null ? item.promo_price_retail : ''}"
+                            value="${item.promo_price_retail != null && item.promo_price_retail !== '' ? Number(item.promo_price_retail) : ''}"
                             placeholder="e.g. 120.00"
                         >
                     </div>

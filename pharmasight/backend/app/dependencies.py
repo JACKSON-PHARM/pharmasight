@@ -1,12 +1,13 @@
 """
-Tenant resolution and DB dependencies for database-per-tenant architecture.
+DB + auth dependencies (single shared DB, multi-company tenancy).
 
-Master DB: tenant management only. Never users, companies, branches, items.
-Tenant DB: one per tenant; full app schema. Data isolated per tenant.
-Legacy/default DB: current DATABASE_URL. No tenant header → use this.
+NON-NEGOTIABLE architecture:
+- One shared Postgres database (Supabase) for all companies.
+- Tenant isolation is enforced by `company_id` (and often `branch_id`) scoping.
 
-Auth: get_current_user_optional / get_current_user accept PharmaSight internal JWT only.
-Tenant DB routing for the authenticated user row uses JWT tenant_subdomain only; X-Tenant-* is not used here (avoids wrong DB when claim is null but a stale header is set).
+Legacy database-per-tenant routing existed earlier in the project and remains in this file
+only for backwards compatibility. **All request DB sessions must come from the shared DB**
+(`SessionLocal`). Do not reintroduce per-tenant engines/sessions or dynamic connection routing.
 """
 from urllib.parse import urlparse, quote
 import re
@@ -24,7 +25,7 @@ from sqlalchemy import create_engine, pool, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.config import settings, normalize_postgres_url
+from app.config import settings, normalize_postgres_url, postgres_url_for_sqlalchemy
 from app.database import SessionLocal
 from app.database_master import get_master_db
 from app.models.tenant import Tenant
@@ -282,6 +283,8 @@ def resolve_tenant_database_url(raw_url: Optional[str]) -> str:
 def _session_factory_for_url(database_url: str) -> sessionmaker:
     """Get or create session factory for a tenant database_url. Thread-safe."""
     effective_url = resolve_tenant_database_url(database_url)
+    # libpq rejects ?pgbouncer=true; SQLAlchemy uses prepare_threshold=None for transaction pooler.
+    engine_url = postgres_url_for_sqlalchemy(effective_url)
     # Use pooler-safe options when connecting via Supabase pooler (session or transaction).
     use_pooler = (
         ":6543" in effective_url
@@ -294,9 +297,9 @@ def _session_factory_for_url(database_url: str) -> sessionmaker:
     if use_pooler:
         connect_args["prepare_threshold"] = None  # Transaction pooler does not support prepared statements
     with _pool_lock:
-        if effective_url not in _tenant_sessions:
+        if engine_url not in _tenant_sessions:
             engine = create_engine(
-                effective_url,
+                engine_url,
                 poolclass=pool.QueuePool,
                 pool_size=5,
                 max_overflow=10,
@@ -305,11 +308,11 @@ def _session_factory_for_url(database_url: str) -> sessionmaker:
                 connect_args=connect_args,
                 echo=settings.DEBUG,
             )
-            _tenant_engines[effective_url] = engine
-            _tenant_sessions[effective_url] = sessionmaker(
+            _tenant_engines[engine_url] = engine
+            _tenant_sessions[engine_url] = sessionmaker(
                 autocommit=False, autoflush=False, bind=engine
             )
-        return _tenant_sessions[effective_url]
+        return _tenant_sessions[engine_url]
 
 
 def get_tenant_from_header(
@@ -358,46 +361,13 @@ def get_tenant_db(
     tenant: Optional[Tenant] = Depends(get_tenant_from_header),
 ) -> Generator[Session, None, None]:
     """
-    Yield a DB session for tenant-scoped app data (users, company, branches, items, etc.).
+    Yield a DB session for app data (users, company, branches, items, etc.).
 
-    - No tenant (no header) → LEGACY/DEFAULT DB (current DATABASE_URL). Same as get_db.
-    - Tenant resolved → TENANT DB (tenant.database_url). Isolated per tenant.
-
-    Uses MASTER only for resolution; this session is never master.
+    Single-DB multi-company tenancy: ALWAYS returns the shared DB session.
+    `tenant` is ignored here (it may still be used for storage routing elsewhere).
     """
-    if tenant is None or not (tenant.database_url and tenant.database_url.strip()):
-        # No tenant header or tenant has no DB URL (single-DB / re-invited legacy): use app DB
-        db = SessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-        return
-
-    # Architecture: tenant.database_url from master DB. If unreachable (e.g. deleted project), use app DB.
-    try:
-        factory = _session_factory_for_url(tenant.database_url)
-        db = factory()
-        db.execute(text("SELECT 1"))  # force connection
-    except (OperationalError, OSError) as e:
-        err_str = str(e)
-        if "tenant or user not found" in err_str.lower() or "fatal:" in err_str.lower():
-            # Tenant's DB points to deleted/unreachable project (e.g. re-invited legacy). Use app DB.
-            logger.info(
-                "Tenant %s DB unreachable (e.g. deleted project), using app DB",
-                getattr(tenant, "subdomain", None),
-            )
-            db = SessionLocal()
-        else:
-            logger.warning(
-                "Tenant DB unreachable subdomain=%s: %s",
-                getattr(tenant, "subdomain", None),
-                e,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Tenant database is temporarily unreachable (network or DNS). The URL is read from the master DB; check connectivity to that host.",
-            ) from e
+    _ = tenant  # ignored (single DB)
+    db = SessionLocal()
     try:
         yield db
     finally:
@@ -407,19 +377,12 @@ def get_tenant_db(
 @contextmanager
 def tenant_db_session(tenant: Tenant) -> Generator[Session, None, None]:
     """
-    Context manager: yield a DB session for a given tenant's database.
+    Legacy context manager (database-per-tenant).
 
-    Use for token-based flows (e.g. onboarding) where tenant comes from token, not header.
-    - Raises HTTPException 503 if tenant.database_url is missing (not provisioned).
-    - Yields session for TENANT DB only. Caller uses it for users, company, etc.
+    Single-DB mode: always yields the shared DB session and ignores tenant.database_url.
     """
-    if not tenant.database_url:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Tenant database not provisioned",
-        )
-    factory = _session_factory_for_url(tenant.database_url)
-    db = factory()
+    _ = tenant
+    db = SessionLocal()
     try:
         yield db
     finally:
@@ -429,18 +392,16 @@ def tenant_db_session(tenant: Tenant) -> Generator[Session, None, None]:
 @contextmanager
 def tenant_or_app_db_session(tenant: Tenant) -> Generator[Session, None, None]:
     """
-    Yield a DB session for invite/onboarding: tenant's DB if database_url set, else app DB (single-DB).
-    Use when creating invites or completing invite so tenants without database_url still work.
+    Legacy helper retained for call-site compatibility.
+
+    Single-DB mode: always yields the shared DB session.
     """
-    if tenant.database_url and tenant.database_url.strip():
-        with tenant_db_session(tenant) as db:
-            yield db
-    else:
-        db = SessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
+    _ = tenant
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 # -----------------------------------------------------------------------------
@@ -511,9 +472,11 @@ def get_current_user_optional(
 ) -> Generator[Optional[Tuple[User, Session]], None, None]:
     """
     If Authorization: Bearer <token> present and valid (internal JWT),
-    yield (user, tenant_db_session). Otherwise yield None. Uses app DB when tenant
-    missing or tenant DB unreachable (same as get_current_user).
+    yield (user, shared_db_session). Otherwise yield None.
+
+    Single-DB mode: does not consult tenant registry tables and never routes to a tenant DB URL.
     """
+    _ = master_db  # legacy; not used in single-DB mode
     auth = request.headers.get("Authorization")
     token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
     if not token:
@@ -528,18 +491,22 @@ def get_current_user_optional(
     except (ValueError, TypeError):
         yield None
         return
-    result = _resolve_user_and_db_optional(request, master_db, payload, sub)
-    if result is None:
-        yield None
-        return
-    user, db, _tenant = result
+    db = SessionLocal()
     try:
+        user = _lookup_user_if_not_revoked(db, sub, payload.get(CLAIM_JTI))
+        if not user:
+            yield None
+            return
         company_id = get_effective_company_id_for_user(db, user)
         if company_id:
             try:
                 db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
             except Exception as e:
                 logger.debug("Could not set RLS GUC %s: %s", RLS_CLAIM_COMPANY_ID, e)
+        try:
+            request.state.effective_company_id = company_id
+        except Exception:
+            pass
         yield (user, db)
     finally:
         db.close()
@@ -786,9 +753,11 @@ def get_current_user(
     master_db: Session = Depends(get_master_db),
 ) -> Generator[Tuple[User, Session], None, None]:
     """
-    Require valid JWT; yield (user, tenant_db_session). Uses app DB when tenant
-    missing or tenant DB unreachable (e.g. re-invited legacy users). Raises 401 if no/invalid token.
+    Require valid internal JWT; yield (user, shared_db_session).
+
+    Single-DB mode: does not consult tenant registry tables and never routes to a tenant DB URL.
     """
+    _ = master_db  # legacy; not used in single-DB mode
     auth = request.headers.get("Authorization")
     token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
     path = (request.url.path or "").strip().rstrip("/") or "/"
@@ -823,140 +792,26 @@ def get_current_user(
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     method = (request.method or "GET").upper()
-
-    jti = payload.get(CLAIM_JTI)
-    cache_key = (jti, str(sub))
-    cached = None
-    with _pool_lock:
-        entry = _auth_resolution_cache.get(cache_key)
-        if entry:
-            if len(entry) == 4:
-                user_id, company_id, tenant_url, expiry = entry
-                t_link_cid = None
-            else:
-                user_id, company_id, tenant_url, t_link_cid, expiry = entry
-            if expiry > _time.monotonic():
-                cached = (user_id, company_id, tenant_url, t_link_cid)
-            else:
-                _auth_resolution_cache.pop(cache_key, None)
-
-    db = None
+    db: Optional[Session] = None
     try:
-        if cached:
-            user_id, company_id, tenant_url, t_link_cid = cached
-            if t_link_cid is not None and company_id is not None and str(t_link_cid) != str(company_id):
-                with _pool_lock:
-                    _auth_resolution_cache.pop(cache_key, None)
-                raise RuntimeError(
-                    "AUTH DESYNC: cached tenant-company mismatch "
-                    f"tenant.company_id={t_link_cid} effective_company_id={company_id}"
-                )
-            path = (request.url.path or "").strip().rstrip("/")
-            is_items_search = path == "/api/items/search"
-            # Fast path for item search: no SET LOCAL, no user fetch — one round-trip (search query only)
-            if is_items_search:
-                db = SessionLocal() if not tenant_url or not tenant_url.strip() else _session_factory_for_url(tenant_url)()
-                # Company access enforcement (companies are the source of truth)
-                try:
-                    from app.models.company import Company
+        db = SessionLocal()
+        user = _lookup_user_if_not_revoked(db, sub, payload.get(CLAIM_JTI))
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found or inactive",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
-                    company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
-                    access = get_company_access(company)
-                    if access == "blocked" and not _path_allowed_for_blocked_company(path, method):
-                        db.close()
-                        db = None
-                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Company is inactive")
-                    if access == "expired" and not _path_allowed_for_expired_trial(path, method):
-                        db.close()
-                        db = None
-                        raise HTTPException(
-                            status_code=status.HTTP_403_FORBIDDEN,
-                            detail={"code": "trial_expired", "message": "Your trial has ended. Upgrade to continue using this feature."},
-                        )
-                except HTTPException:
-                    raise
-                except Exception:
-                    pass
-                stub_user = _stub_user_for_cache(user_id)
-                yield (stub_user, db)
-                return
-            db = SessionLocal() if not tenant_url or not tenant_url.strip() else _session_factory_for_url(tenant_url)()
-            # Company access enforcement (companies are the source of truth)
-            try:
-                from app.models.company import Company
-
-                company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
-                access = get_company_access(company)
-                if access == "blocked" and not _path_allowed_for_blocked_company(path, method):
-                    db.close()
-                    db = None
-                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Company is inactive")
-                if access == "expired" and not _path_allowed_for_expired_trial(path, method):
-                    db.close()
-                    db = None
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail={"code": "trial_expired", "message": "Your trial has ended. Upgrade to continue using this feature."},
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                pass
-            try:
-                db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
-            except Exception:
-                pass
-            user = db.get(User, user_id)
-            if user and getattr(user, "deleted_at", None) is None and getattr(user, "is_active", True):
-                if getattr(user, "must_change_password", False):
-                    allowed = {
-                        "/api/users/change-password-first-time",
-                        "/api/auth/change-password",
-                        "/api/auth/logout",
-                        "/api/auth/me",
-                    }
-                    if path not in allowed:
-                        parts = path.split("/")
-                        allow_read = (
-                            path == "/api/companies"
-                            or (path.startswith("/api/companies/") and len(parts) == 4 and "logo" not in path and "settings" not in path and "stamp" not in path)
-                            or (path.startswith("/api/companies/") and len(parts) == 5 and path.rstrip("/").endswith("/settings"))
-                            or (path.startswith("/api/branches/company/") and len(parts) == 5)
-                            or (path.startswith("/api/branches/") and len(parts) == 4)
-                        )
-                        if not allow_read:
-                            db.close()
-                            db = None
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail="You must change your password before accessing other resources.",
-                            )
-                setattr(request.state, "effective_company_id", company_id)
-                yield (user, db)
-                return
-            with _pool_lock:
-                _auth_resolution_cache.pop(cache_key, None)
-            db.close()
-            db = None
-
-        user, db, tenant = _resolve_user_and_db_for_request(request, master_db, payload, sub)
-        # Set RLS session GUC so all queries in this request are scoped to user's company
+        # Scope to effective company for this request (and RLS policies when enabled)
         company_id = get_effective_company_id_for_user(db, user)
         if company_id:
             try:
                 db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
             except Exception as e:
                 logger.debug("Could not set RLS GUC %s: %s", RLS_CLAIM_COMPANY_ID, e)
-        # Populate auth cache for repeat requests (e.g. item search) — short TTL
-        with _pool_lock:
-            _auth_resolution_cache[cache_key] = (
-                user.id,
-                company_id,
-                getattr(tenant, "database_url", None) if tenant else None,
-                getattr(tenant, "company_id", None) if tenant else None,
-                _time.monotonic() + _auth_resolution_cache_ttl_seconds,
-            )
-        # Company access enforcement (single source of truth: companies table)
+
+        # Company access enforcement (blocked/expired)
         try:
             from app.models.company import Company
 
@@ -973,18 +828,16 @@ def get_current_user(
             raise
         except Exception:
             pass
-        # Enforce must_change_password: deny access except to change-password-first-time, logout, auth/me,
-        # and read-only company/branch endpoints so branch-select and status bar can load
+
+        # Enforce must_change_password: allow only password change + minimal read-only shell
         if getattr(user, "must_change_password", False):
-            path = (request.url.path or "").strip()
             allowed = {
                 "/api/users/change-password-first-time",
-                "/api/auth/change-password",  # regular change-password also clears the flag
+                "/api/auth/change-password",
                 "/api/auth/logout",
                 "/api/auth/me",
             }
             if path not in allowed:
-                # Allow GET company list, GET company by id, company settings, branches by company, and single branch (for branch-select / validateBranchAccess / status bar)
                 parts = path.split("/")
                 allow_read = (
                     path == "/api/companies"
@@ -998,6 +851,7 @@ def get_current_user(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="You must change your password before accessing other resources.",
                     )
+
         setattr(request.state, "effective_company_id", company_id)
         yield (user, db)
     finally:

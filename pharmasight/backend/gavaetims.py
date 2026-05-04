@@ -25,6 +25,8 @@ resume for the initial stock triple, forces ``sarNo=1`` / line qty 1, and prints
 Optional ``.env`` overrides **only**:
   BEARER_TOKEN  — skip OAuth
   CMC_KEY       — skip selectInitOsdcInfo / saved CSV cmc_key
+  GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS — clamp 3…25; default 8 for SBX 502/503/504 on ``selectInitOsdcInfo``
+  GAVAETIMS_FORCE_INIT_REVALIDATION — if ``1``/``true``, re-run OAuth+selectInit even when state has ``credentials_init_validated_ok``
   GAVAETIMS_MINIMAL_ITEM_CD — for ``--minimal-osdc-sale-test`` only: exact ``itemCd`` for the first
   ``saveItem`` attempt (e.g. when KRA’s next sequence is known). Catalog-based allocation is used
   after that attempt fails or for later retries.
@@ -968,16 +970,27 @@ def persist(rows: list[dict[str, str]], entry: dict[str, str]) -> None:
 
 
 def sibling_defaults_from_rows(rows: list[dict[str, str]], exclude_app_pin: str) -> dict[str, str]:
+    """
+    First non-empty value per field from any other CSV row (same SBX org / device pool).
+    New Application Test PINs reuse consumer_key, consumer_secret, Apigee app id, integrator PIN,
+    branch, and device serial so prompts show ``[default]`` and Enter accepts without re-pasting.
+    """
+    fields = (
+        "consumer_key",
+        "consumer_secret",
+        "integ_pin",
+        "branch_id",
+        "device_serial",
+        "apigee_app_id",
+    )
     found: dict[str, str] = {}
     ex = exclude_app_pin.strip()
     for r in rows:
         if r.get("app_pin", "").strip() == ex:
             continue
-        for f in ("integ_pin", "branch_id", "device_serial"):
+        for f in fields:
             if f not in found and str(r.get(f) or "").strip():
                 found[f] = str(r[f]).strip()
-        if len(found) == 3:
-            break
     return found
 
 
@@ -1161,7 +1174,7 @@ def ensure_required_fields(
     elif new_pin:
         print(
             "\n--- New Application Test PIN — enter credentials ---\n"
-            "(Defaults in [brackets] may come from another row in the CSV.)\n"
+            "(Bracketed defaults are filled from another row in this CSV when available; press Enter to accept.)\n"
         )
     else:
         print(f"\n--- Incomplete row in CSV — enter missing fields ---\nMissing: {', '.join(missing)}\n")
@@ -1171,7 +1184,14 @@ def ensure_required_fields(
 
     to_ask = [k for k in PROMPT_FIELD_ORDER if k in missing]
     for step_num, k in enumerate(to_ask, start=1):
-        default = out.get(k) or sib.get(k, "")
+        default = out.get(k) or ""
+        if not default:
+            if k == "device_serial" and new_pin:
+                # GavaConnect often registers device serial equal to Application Test PIN; avoid a
+                # sibling row’s serial (e.g. another OSCU device) pre-filling the wrong dvcSrlNo.
+                default = app_pin or sib.get(k, "")
+            else:
+                default = sib.get(k, "")
         out[k] = input_line(f"Step {step_num} — {_FIELD_LABELS[k]}", default)
 
     still = [k for k in REQUIRED_BODY_FIELDS if not str(out.get(k) or "").strip()]
@@ -1208,12 +1228,98 @@ def obtain_bearer_token(
     return str(token).strip(), None
 
 
+_INIT_TRANSIENT_CODES = frozenset({502, 503, 504})
+
+
+def _select_init_max_attempts() -> int:
+    raw = (get_optional_env("GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS") or "").strip()
+    if not raw:
+        return 8
+    try:
+        n = int(raw)
+    except ValueError:
+        return 8
+    return max(3, min(25, n))
+
+
+def kra_init_response_is_transient(
+    resp: requests.Response | None, parsed: dict | list | str | None
+) -> bool:
+    """True when HTTP or KRA envelope ``header`` / ``responseHeader`` shows gateway overload (502–504)."""
+    if resp is not None:
+        try:
+            if int(resp.status_code) in _INIT_TRANSIENT_CODES:
+                return True
+        except (TypeError, ValueError):
+            pass
+    if not isinstance(parsed, dict):
+        return False
+    for hk in ("responseHeader", "header"):
+        h = parsed.get(hk)
+        if not isinstance(h, dict):
+            continue
+        rc = h.get("responseCode")
+        try:
+            ri = int(rc) if rc is not None else None
+        except (TypeError, ValueError):
+            continue
+        if ri in _INIT_TRANSIENT_CODES:
+            return True
+    return False
+
+
+def post_select_init_osdc_info_with_retries(
+    *,
+    step0_url: str,
+    headers: dict,
+    step0_payload: dict,
+    log_label: str,
+    timeout: int = 120,
+) -> tuple[requests.Response | None, dict | None, str | None]:
+    """
+    POST ``selectInitOsdcInfo`` with retries on 502/503/504 (HTTP and/or JSON envelope).
+    Returns (response, parsed_json_or_none, error_message_or_none).
+    """
+    ma = _select_init_max_attempts()
+    resp0: requests.Response | None = None
+    parsed0: dict | None = None
+    for attempt in range(ma):
+        try:
+            resp0 = requests.post(step0_url, headers=headers, json=step0_payload, timeout=timeout)
+        except requests.RequestException as e:
+            if attempt < ma - 1:
+                wait = min(60, 4 * (2**attempt) + 2)
+                print(
+                    f"{log_label}: request error ({e!r}); retry in {wait}s "
+                    f"({attempt + 2}/{ma})…"
+                )
+                time.sleep(wait)
+                continue
+            return None, None, f"selectInitOsdcInfo request failed after {ma} attempts: {e}"
+
+        parsed0 = print_full_response_json(resp0, log_label)
+        if kra_init_response_is_transient(resp0, parsed0) and attempt < ma - 1:
+            wait = min(60, 4 * (2**attempt) + 2)
+            http_s = getattr(resp0, "status_code", "?")
+            print(
+                f"{log_label}: gateway/transient (HTTP={http_s}); retry in {wait}s "
+                f"({attempt + 2}/{ma})…"
+            )
+            time.sleep(wait)
+            continue
+        break
+
+    if resp0 is None:
+        return None, None, "selectInitOsdcInfo: no response"
+    return resp0, parsed0, None
+
+
 def validate_credentials_for_app_pin(
     entry: dict[str, str],
-) -> tuple[bool, str | None, str | None, str | None]:
+) -> tuple[bool, str | None, str | None, str | None, str | None]:
     """
     OAuth (unless BEARER_TOKEN in .env) + selectInitOsdcInfo. Does not write CSV.
-    Returns (success, error_detail, bearer_if_success, cmc_key_from_response_or_none).
+    Returns (success, error_detail, bearer_if_success, cmc_key_from_response_or_none, init_resultCd_or_none).
     """
     app_pin = str(entry.get("app_pin", "")).strip()
     consumer_key = entry["consumer_key"]
@@ -1230,7 +1336,7 @@ def validate_credentials_for_app_pin(
         print("VALIDATION: OAuth (client_credentials)...")
         bearer, oerr = obtain_bearer_token(consumer_key, consumer_secret)
         if oerr:
-            return False, oerr, None, None
+            return False, oerr, None, None, None
         tok = bearer or ""
         preview = f"{tok[:12]}…{tok[-8:]}" if len(tok) > 24 else "(short token)"
         print(f"VALIDATION: OAuth OK (Bearer {preview}, len={len(tok)})")
@@ -1248,15 +1354,29 @@ def validate_credentials_for_app_pin(
     print("VALIDATION: Calling selectInitOsdcInfo...")
     print("Payload:", json.dumps(step0_payload, indent=2, ensure_ascii=False))
 
-    try:
-        resp0 = requests.post(step0_url, headers=headers, json=step0_payload, timeout=60)
-    except requests.RequestException as e:
-        return False, f"VALIDATION: selectInitOsdcInfo request failed: {e}", bearer, None
+    resp0, parsed0, post_err = post_select_init_osdc_info_with_retries(
+        step0_url=step0_url,
+        headers=headers,
+        step0_payload=step0_payload,
+        log_label="VALIDATION: selectInitOsdcInfo",
+        timeout=120,
+    )
+    if post_err:
+        return False, f"VALIDATION: {post_err}", bearer, None, None
 
-    parsed0 = print_full_response_json(resp0, "selectInitOsdcInfo (validation)")
+    assert resp0 is not None
     result_cd0 = extract_result_cd(parsed0)
     gate_err0 = kra_top_level_error_detail(parsed0)
     rb_msg0 = kra_extract_response_body_result_msg(parsed0)
+
+    if kra_init_response_is_transient(resp0, parsed0):
+        detail = (
+            f"VALIDATION: selectInitOsdcInfo still gateway/transient after "
+            f"{_select_init_max_attempts()} attempts (HTTP={resp0.status_code}). "
+            "SBX may be overloaded — wait and retry, increase GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS, "
+            "or set CMC_KEY in .env / CSV if the portal already issued a key."
+        )
+        return (False, detail, bearer, None, result_cd0)
 
     if resp0.status_code >= 400:
         detail = f"VALIDATION: HTTP {resp0.status_code} from selectInitOsdcInfo"
@@ -1267,39 +1387,38 @@ def validate_credentials_for_app_pin(
             detail += ")"
         elif rb_msg0:
             detail += f" (resultMsg={rb_msg0!r})"
-        return (False, detail, bearer, None)
+        if resp0.status_code in _INIT_TRANSIENT_CODES:
+            detail += (
+                " — SBX often returns 502/503/504 briefly; wait and retry, or set CMC_KEY in CSV "
+                "if you already have a valid key from the portal."
+            )
+        return (False, detail, bearer, None, result_cd0)
     if gate_err0:
-        return False, f"VALIDATION: KRA gateway error — {gate_err0}", bearer, None
+        return False, f"VALIDATION: KRA gateway error — {gate_err0}", bearer, None, result_cd0
     if result_cd0 not in ("000", "902"):
         return (
             False,
             f"VALIDATION: selectInitOsdcInfo resultCd={result_cd0}",
             bearer,
             None,
+            result_cd0,
         )
 
-    new_cmc = None
-    if isinstance(parsed0, dict):
-        rb0 = parsed0.get("responseBody")
-        if isinstance(rb0, dict):
-            ck = rb0.get("cmcKey")
-            if isinstance(ck, str) and ck.strip():
-                new_cmc = ck.strip()
-    if not new_cmc:
-        new_cmc = extract_first_cmc_key(parsed0)
+    new_cmc = extract_cmc_key_from_select_init_parsed(parsed0)
 
     if result_cd0 == "000":
         if not new_cmc:
             return (
                 False,
-                "VALIDATION: resultCd=000 but cmcKey missing in response.",
+                "VALIDATION: resultCd=000 but cmcKey missing in response (check responseBody/body shape).",
                 bearer,
                 None,
+                result_cd0,
             )
     # result_cd0 == 902: installed device; cmcKey may be absent — still a match
 
     print(f"VALIDATION: OK (resultCd={result_cd0}, cmcKey={'present' if new_cmc else 'absent (902 acceptable)'})")
-    return True, None, bearer, new_cmc
+    return True, None, bearer, new_cmc, result_cd0
 
 
 def reload_cmc_from_csv(app_pin: str) -> str | None:
@@ -1892,6 +2011,27 @@ def extract_first_cmc_key(obj):
     return None
 
 
+def extract_cmc_key_from_select_init_parsed(
+    parsed: dict | list | str | None,
+) -> str | None:
+    """``cmcKey`` from selectInitOsdcInfo — ``responseBody`` / ``body`` / nested ``data``, then deep scan."""
+    if not isinstance(parsed, dict):
+        return None
+    for root_key in ("responseBody", "body"):
+        blk = parsed.get(root_key)
+        if not isinstance(blk, dict):
+            continue
+        ck = blk.get("cmcKey")
+        if isinstance(ck, str) and ck.strip():
+            return ck.strip()
+        data = blk.get("data")
+        if isinstance(data, dict):
+            ck2 = data.get("cmcKey")
+            if isinstance(ck2, str) and ck2.strip():
+                return ck2.strip()
+    return extract_first_cmc_key(parsed)
+
+
 def mask_cmc_preview(s: str) -> str:
     s = (s or "").strip()
     if not s:
@@ -2134,6 +2274,9 @@ def extract_result_cd(parsed_json):
     rb = parsed_json.get("responseBody")
     if isinstance(rb, dict) and rb.get("resultCd") is not None:
         return str(rb.get("resultCd")).strip()
+    bd = parsed_json.get("body")
+    if isinstance(bd, dict) and bd.get("resultCd") is not None:
+        return str(bd.get("resultCd")).strip()
     if parsed_json.get("resultCd") is not None:
         return str(parsed_json.get("resultCd")).strip()
     if "responseBody" in parsed_json and isinstance(parsed_json["responseBody"], dict):
@@ -4631,6 +4774,9 @@ def kra_top_level_error_detail(parsed_json) -> str | None:
         return None
     rh = parsed_json.get("responseHeader")
     if not isinstance(rh, dict):
+        # SBX ``selectInitOsdcInfo`` gateway errors sometimes use ``header`` instead of ``responseHeader``.
+        rh = parsed_json.get("header")
+    if not isinstance(rh, dict):
         return None
     rcode = rh.get("responseCode")
     try:
@@ -5879,7 +6025,15 @@ def main():
             entry = {k: "" for k in CSV_COLUMNS}
             entry["app_pin"] = app_pin.strip()
 
-        need_validation = new_pin or not str(entry.get("cmc_key") or "").strip()
+        _force_init_reval = (get_optional_env("GAVAETIMS_FORCE_INIT_REVALIDATION") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        need_validation = new_pin or (
+            not str(entry.get("cmc_key") or "").strip()
+            and (not pin_blob.get("credentials_init_validated_ok") or _force_init_reval)
+        )
         reprompt_all = False
         restart_with_new_pin = False
 
@@ -5892,9 +6046,10 @@ def main():
             if not need_validation:
                 break
 
-            ok, err, bearer, val_cmc = validate_credentials_for_app_pin(entry)
+            ok, err, bearer, val_cmc, _init_rc = validate_credentials_for_app_pin(entry)
             if ok:
                 validated_bearer = bearer
+                pin_blob["credentials_init_validated_ok"] = True
                 if val_cmc:
                     entry["cmc_key"] = val_cmc.strip()
                 pin_blob["cmc_key"] = str(entry.get("cmc_key") or "").strip()
@@ -5918,6 +6073,16 @@ def main():
                     "means KRA does not accept this device for this PIN until the portal "
                     "registration/session is active."
                 )
+                if "504" in (err or "") or "503" in (err or "") or "502" in (err or ""):
+                    print(
+                        "HTTP 502/503/504 is usually KRA/SBX load or timeout — not wrong credentials. "
+                        "Wait a minute and press Enter to retry; the script now auto-retries a few times."
+                    )
+                print(
+                    "To change the Application Test PIN (the JSON ``tin`` / device identity), type "
+                    "exactly ``pin`` at the next prompt — do not paste an integrator TIN (e.g. P600…) "
+                    "there; that only re-prompts OAuth fields for the same PIN."
+                )
             else:
                 print("Please re-enter credentials or fix the error above.")
             if not sys.stdin.isatty():
@@ -5926,8 +6091,8 @@ def main():
                     f"{CSV_FILE.name} or run interactively."
                 )
             choice = input(
-                "Press Enter to re-enter all credentials for this PIN, or type "
-                "'pin' to enter a different Application Test PIN: "
+                "Press Enter to re-enter OAuth/device fields for the SAME Application Test PIN, "
+                "or type the word pin to change Application Test PIN (not your KRA TIN): "
             ).strip().lower()
             if choice in ("pin", "p"):
                 restart_with_new_pin = True
@@ -6945,7 +7110,8 @@ def main():
         ),
         (
             "selectTaxPayerInfo",
-            "/selectTaxPayerInfo",
+            # KRA Apigee registers ``/selectTaxpayerInfo`` (camelCase); ``/selectTaxPayerInfo`` yields unresolved targetPath.
+            "/selectTaxpayerInfo",
             {
                 "tin": effective_tin,
                 "bhfId": branch_id,
@@ -7016,8 +7182,14 @@ def main():
             + ", ".join(t[0] for t in sequence)
         )
 
+    new_cmc: str | None = None
+    _force_init_reval_main = (get_optional_env("GAVAETIMS_FORCE_INIT_REVALIDATION") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     if manual_cmc:
-        new_cmc = manual_cmc
+        new_cmc = manual_cmc.strip()
         pin_blob["cmc_key"] = new_cmc
         save_test_state(state_root)
         print("Using CMC_KEY from environment (skipping selectInitOsdcInfo / stored cmc_key).")
@@ -7026,13 +7198,43 @@ def main():
         pin_blob["cmc_key"] = new_cmc
         save_test_state(state_root)
         print(f"Using stored cmc_key from {CSV_FILE.name}: {mask_cmc_preview(new_cmc)}")
+    elif pin_blob.get("credentials_init_validated_ok") and not _force_init_reval_main:
+        new_cmc = (pin_blob.get("cmc_key") or "").strip() or None
+        if new_cmc:
+            if not str(entry.get("cmc_key") or "").strip():
+                entry["cmc_key"] = new_cmc
+                persist(rows, entry)
+            print(
+                f"Using cmc_key from {STATE_FILE.name} / {CSV_FILE.name} "
+                f"(selectInitOsdcInfo already succeeded during validation): {mask_cmc_preview(new_cmc)}"
+            )
+        else:
+            print(
+                "NOTE: selectInitOsdcInfo already succeeded during credential validation; "
+                "no cmcKey was returned (common for resultCd=902). Skipping a duplicate selectInit call. "
+                "Set CMC_KEY in .env or add cmc_key to CSV if the sequence requires it."
+            )
     else:
         print("No stored cmc_key (or empty). Calling selectInitOsdcInfo to obtain a fresh key...")
         step0_url = f"{BASE_URL.rstrip('/')}/selectInitOsdcInfo"
         step0_payload = {"tin": effective_tin, "bhfId": branch_id, "dvcSrlNo": device_serial}
         print("Payload:", json.dumps(step0_payload, indent=2, ensure_ascii=False))
-        resp0 = requests.post(step0_url, headers=headers, json=step0_payload, timeout=60)
-        parsed0 = print_full_response_json(resp0, "selectInitOsdcInfo")
+        resp0, parsed0, post_err0 = post_select_init_osdc_info_with_retries(
+            step0_url=step0_url,
+            headers=headers,
+            step0_payload=step0_payload,
+            log_label="selectInitOsdcInfo",
+            timeout=120,
+        )
+        if post_err0:
+            raise SystemExit(f"STOP: {post_err0}")
+        assert resp0 is not None
+        if kra_init_response_is_transient(resp0, parsed0):
+            raise SystemExit(
+                "STOP: selectInitOsdcInfo gateway timeout after "
+                f"{_select_init_max_attempts()} attempts — SBX overload. Retry later, set CMC_KEY in .env "
+                f"or {CSV_FILE.name}, or raise GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS (max 25)."
+            )
         result_cd0 = extract_result_cd(parsed0)
         gate_err0 = kra_top_level_error_detail(parsed0)
 
@@ -7046,15 +7248,7 @@ def main():
         print(f"CONTINUE: selectInitOsdcInfo OK (state={result_cd0})")
         print(f"EXTRACTED resultCd={result_cd0}")
 
-        new_cmc = None
-        if isinstance(parsed0, dict):
-            rb0 = parsed0.get("responseBody")
-            if isinstance(rb0, dict):
-                ck = rb0.get("cmcKey")
-                if isinstance(ck, str) and ck.strip():
-                    new_cmc = ck.strip()
-        if not new_cmc:
-            new_cmc = extract_first_cmc_key(parsed0)
+        new_cmc = extract_cmc_key_from_select_init_parsed(parsed0)
 
         if not new_cmc and result_cd0 == "902":
             new_c = reload_cmc_from_csv(app_pin)
@@ -7067,20 +7261,29 @@ def main():
 
         if not new_cmc:
             if result_cd0 == "902":
-                raise SystemExit(
-                    "STOP: Device already installed (resultCd=902) but no cmcKey in response and none stored.\n"
-                    f"Complete a resultCd=000 run once to store cmc_key in {CSV_FILE.name}, or set CMC_KEY in .env."
+                print(
+                    "NOTE: selectInitOsdcInfo resultCd=902 (device already registered on SBX) but no "
+                    f"cmcKey in the response — continuing without saving cmc_key to {CSV_FILE.name}. "
+                    "If later steps fail, set CMC_KEY in .env or paste cmc_key from the OSCU portal into CSV."
                 )
-            raise SystemExit("STOP: selectInitOsdcInfo OK but cmcKey missing in response.")
+            else:
+                raise SystemExit("STOP: selectInitOsdcInfo OK but cmcKey missing in response.")
 
-        entry["cmc_key"] = new_cmc
-        pin_blob["cmc_key"] = new_cmc
-        save_test_state(state_root)
-        persist(rows, entry)
-        print(f"Saved cmc_key to {CSV_FILE.name}: {mask_cmc_preview(new_cmc)}")
+        if new_cmc:
+            entry["cmc_key"] = new_cmc
+            pin_blob["cmc_key"] = new_cmc
+            save_test_state(state_root)
+            persist(rows, entry)
+            print(f"Saved cmc_key to {CSV_FILE.name}: {mask_cmc_preview(new_cmc)}")
 
-    headers["cmcKey"] = new_cmc
-    print(f"Using CMC_KEY: {mask_cmc_preview(new_cmc)}")
+    if new_cmc:
+        headers["cmcKey"] = new_cmc
+        print(f"Using CMC_KEY: {mask_cmc_preview(new_cmc)}")
+    else:
+        print(
+            "NOTE: OSCU requests will run without a cmcKey header (Bearer + tin/bhfId/device only). "
+            "If KRA returns errors, add cmc_key to CSV or set CMC_KEY in .env."
+        )
 
     def flush_progress(
         endpoint_just_done: str | None = None, *, mark_endpoint_complete: bool = True

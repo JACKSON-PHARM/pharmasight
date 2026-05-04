@@ -635,6 +635,11 @@ export async function init() {
                 const t = _tierBySlug(slug);
                 const adv = document.getElementById('lic-plan-slug-adv');
                 if (adv) adv.value = slug || '';
+                const statusEl = document.getElementById('lic-status');
+                if (statusEl && slug && slug !== 'demo') {
+                    const cur = (statusEl.value || '').trim().toLowerCase();
+                    if (!cur || cur === 'demo') statusEl.value = 'active';
+                }
                 if (!t) return;
                 const u = document.getElementById('lic-cap-users');
                 const br = document.getElementById('lic-cap-branches');

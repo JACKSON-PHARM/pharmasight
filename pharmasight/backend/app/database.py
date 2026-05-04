@@ -4,11 +4,12 @@ Database connection and session management
 from sqlalchemy import create_engine, pool
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from app.config import settings
+from app.config import settings, postgres_url_for_sqlalchemy
 
-_db_url = settings.database_connection_string
+_db_source = settings.database_connection_string
+_db_url = postgres_url_for_sqlalchemy(_db_source)
 # Transaction mode (port 6543 / pgbouncer) does not support prepared statements
-_use_pooler = ":6543" in _db_url or "pgbouncer=true" in _db_url.lower()
+_use_pooler = ":6543" in _db_source or "pgbouncer=true" in _db_source.lower()
 _connect_args = {
     "connect_timeout": 10,
     "options": "-c statement_timeout=120000",
