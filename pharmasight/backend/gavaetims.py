@@ -27,6 +27,7 @@ Optional ``.env`` overrides **only**:
   CMC_KEY       — skip selectInitOsdcInfo / saved CSV cmc_key
   GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS — clamp 3…25; default 8 for SBX 502/503/504 on ``selectInitOsdcInfo``
   GAVAETIMS_FORCE_INIT_REVALIDATION — if ``1``/``true``, re-run OAuth+selectInit even when state has ``credentials_init_validated_ok``
+  GAVAETIMS_VALIDATE_OAUTH_ONLY — if ``1``/``true``, credential validation runs **OAuth only** (skips ``selectInitOsdcInfo`` during that step). Saves typing when SBX init is timing out; the main runner still calls ``selectInitOsdcInfo`` unless ``CMC_KEY`` / CSV ``cmc_key`` is set.
   GAVAETIMS_MINIMAL_ITEM_CD — for ``--minimal-osdc-sale-test`` only: exact ``itemCd`` for the first
   ``saveItem`` attempt (e.g. when KRA’s next sequence is known). Catalog-based allocation is used
   after that attempt fails or for later retries.
@@ -1230,6 +1231,24 @@ def obtain_bearer_token(
 
 _INIT_TRANSIENT_CODES = frozenset({502, 503, 504})
 
+# 5th return value from ``validate_credentials_for_app_pin`` when ``GAVAETIMS_VALIDATE_OAUTH_ONLY`` is set.
+INIT_RC_SKIPPED_SELECT_INIT = "__SKIPPED_SELECT_INIT__"
+
+
+def warn_select_init_tin_device_serial_mismatch(app_pin: str, device_serial: str) -> None:
+    """SBX ``tin`` / ``dvcSrlNo`` mismatch often correlates with 504/901; default is serial = Application Test PIN."""
+    ap = (app_pin or "").strip()
+    dv = (device_serial or "").strip()
+    if not ap or not dv or ap == dv:
+        return
+    if ap.upper().startswith("P") and len(ap) >= 9:
+        print(
+            "WARNING: Application Test PIN (JSON ``tin``) and device serial (``dvcSrlNo``) differ. "
+            "On GavaConnect SBX they usually match; another device’s serial (e.g. from an older CSV row) "
+            "often causes gateway timeouts or 901 — at Step 5 press Enter to accept the default that "
+            "equals this PIN unless the portal explicitly registered a different serial."
+        )
+
 
 def _select_init_max_attempts() -> int:
     raw = (get_optional_env("GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS") or "").strip()
@@ -1320,6 +1339,7 @@ def validate_credentials_for_app_pin(
     """
     OAuth (unless BEARER_TOKEN in .env) + selectInitOsdcInfo. Does not write CSV.
     Returns (success, error_detail, bearer_if_success, cmc_key_from_response_or_none, init_resultCd_or_none).
+    The 5th value is ``INIT_RC_SKIPPED_SELECT_INIT`` when ``GAVAETIMS_VALIDATE_OAUTH_ONLY`` skipped the POST.
     """
     app_pin = str(entry.get("app_pin", "")).strip()
     consumer_key = entry["consumer_key"]
@@ -1341,6 +1361,19 @@ def validate_credentials_for_app_pin(
         preview = f"{tok[:12]}…{tok[-8:]}" if len(tok) > 24 else "(short token)"
         print(f"VALIDATION: OAuth OK (Bearer {preview}, len={len(tok)})")
 
+    if (get_optional_env("GAVAETIMS_VALIDATE_OAUTH_ONLY") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        warn_select_init_tin_device_serial_mismatch(app_pin, device_serial)
+        print(
+            "NOTE: GAVAETIMS_VALIDATE_OAUTH_ONLY — skipping selectInitOsdcInfo during this validation step "
+            f"(saves time when SBX returns 504). CSV row will still save; main run will call selectInitOsdcInfo "
+            f"unless {CSV_FILE.name} already has cmc_key or CMC_KEY is set in .env."
+        )
+        return True, None, bearer, None, INIT_RC_SKIPPED_SELECT_INIT
+
     headers = {
         "Authorization": f"Bearer {bearer}",
         "tin": app_pin,
@@ -1351,6 +1384,7 @@ def validate_credentials_for_app_pin(
     }
     step0_url = f"{BASE_URL.rstrip('/')}/selectInitOsdcInfo"
     step0_payload = {"tin": app_pin, "bhfId": branch_id, "dvcSrlNo": device_serial}
+    warn_select_init_tin_device_serial_mismatch(app_pin, device_serial)
     print("VALIDATION: Calling selectInitOsdcInfo...")
     print("Payload:", json.dumps(step0_payload, indent=2, ensure_ascii=False))
 
@@ -1373,8 +1407,10 @@ def validate_credentials_for_app_pin(
         detail = (
             f"VALIDATION: selectInitOsdcInfo still gateway/transient after "
             f"{_select_init_max_attempts()} attempts (HTTP={resp0.status_code}). "
-            "SBX may be overloaded — wait and retry, increase GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS, "
-            "or set CMC_KEY in .env / CSV if the portal already issued a key."
+            "This is returned by **KRA’s gateway** (not a Python regression). SBX may be overloaded — "
+            "wait and retry; ensure ``dvcSrlNo`` matches the device registered for this Application Test PIN "
+            f"(default Step 5 = PIN); set CMC_KEY / CSV cmc_key if the portal already issued a key; or set "
+            "GAVAETIMS_VALIDATE_OAUTH_ONLY=1 to save OAuth+CSV and retry init only in the main phase."
         )
         return (False, detail, bearer, None, result_cd0)
 
@@ -6046,10 +6082,11 @@ def main():
             if not need_validation:
                 break
 
-            ok, err, bearer, val_cmc, _init_rc = validate_credentials_for_app_pin(entry)
+            ok, err, bearer, val_cmc, init_rc = validate_credentials_for_app_pin(entry)
             if ok:
                 validated_bearer = bearer
-                pin_blob["credentials_init_validated_ok"] = True
+                if init_rc != INIT_RC_SKIPPED_SELECT_INIT:
+                    pin_blob["credentials_init_validated_ok"] = True
                 if val_cmc:
                     entry["cmc_key"] = val_cmc.strip()
                 pin_blob["cmc_key"] = str(entry.get("cmc_key") or "").strip()
@@ -7218,6 +7255,7 @@ def main():
         print("No stored cmc_key (or empty). Calling selectInitOsdcInfo to obtain a fresh key...")
         step0_url = f"{BASE_URL.rstrip('/')}/selectInitOsdcInfo"
         step0_payload = {"tin": effective_tin, "bhfId": branch_id, "dvcSrlNo": device_serial}
+        warn_select_init_tin_device_serial_mismatch(effective_tin, device_serial)
         print("Payload:", json.dumps(step0_payload, indent=2, ensure_ascii=False))
         resp0, parsed0, post_err0 = post_select_init_osdc_info_with_retries(
             step0_url=step0_url,
@@ -7232,8 +7270,9 @@ def main():
         if kra_init_response_is_transient(resp0, parsed0):
             raise SystemExit(
                 "STOP: selectInitOsdcInfo gateway timeout after "
-                f"{_select_init_max_attempts()} attempts — SBX overload. Retry later, set CMC_KEY in .env "
-                f"or {CSV_FILE.name}, or raise GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS (max 25)."
+                f"{_select_init_max_attempts()} attempts — SBX/KRA gateway (HTTP 504), not a local script bug. "
+                "Retry later; align ``dvcSrlNo`` with the PIN’s registered device; set CMC_KEY or CSV cmc_key; "
+                "or raise GAVAETIMS_SELECT_INIT_MAX_ATTEMPTS (max 25)."
             )
         result_cd0 = extract_result_cd(parsed0)
         gate_err0 = kra_top_level_error_detail(parsed0)

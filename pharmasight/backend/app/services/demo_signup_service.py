@@ -424,6 +424,7 @@ def create_demo_tenant(
                     is_pending=False,
                     password_set=True,
                     password_hash=password_hash,
+                    must_change_password=False,
                 )
                 tenant_db.add(admin_user)
                 tenant_db.flush()

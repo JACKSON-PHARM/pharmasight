@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
 from app.database_master import get_master_db
 from app.database import SessionLocal
-from app.dependencies import tenant_or_app_db_session
+from app.dependencies import invalidate_auth_cache_for_user, tenant_or_app_db_session
 from app.schemas.tenant import OnboardingSignupRequest, OnboardingSignupResponse
 from datetime import datetime, timedelta, timezone
 
@@ -233,8 +233,11 @@ def _complete_invite_with_session(
     username = _username_for_tenant(tenant, tenant_db)
     existing_by_id = tenant_db.query(User).filter(User.id == uid).first()
     if existing_by_id:
+        if hasattr(existing_by_id, "must_change_password"):
+            existing_by_id.must_change_password = False
         _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
         tenant_db.commit()
+        invalidate_auth_cache_for_user(uid)
         _sync_master_tenant_company_id(master_db, tenant, tenant_db, uid)
         OnboardingService.mark_invite_used(body.token, uid, master_db)
         return {
@@ -258,11 +261,13 @@ def _complete_invite_with_session(
         password_set=True,
         password_hash=hash_password(body.password),
         password_updated_at=datetime.now(timezone.utc),
+        must_change_password=False,
     )
     tenant_db.add(user)
     tenant_db.flush()
     _ensure_user_branch_role_for_tenant(tenant_db, uid, tenant)
     tenant_db.commit()
+    invalidate_auth_cache_for_user(uid)
     _sync_master_tenant_company_id(master_db, tenant, tenant_db, uid)
     OnboardingService.mark_invite_used(body.token, uid, master_db)
     return {

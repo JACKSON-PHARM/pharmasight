@@ -295,14 +295,13 @@ def generate_sku(company_id: UUID, db: Session) -> str:
 def create_item(
     item: ItemCreate,
     current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
 ):
     """
     Create a new item with 3-tier units. SKU auto-generated if not provided.
     Rejects duplicate names and duplicate SKU/code (same company, case-insensitive). No duplicate items allowed.
     Item and item_branch_snapshot are updated in a single transaction: if snapshot refresh fails, the item is not committed.
     """
-    user, _ = current_user_and_db
+    user, db = current_user_and_db
     effective_company_id = get_effective_company_id_for_user(db, user)
     if effective_company_id is None or str(item.company_id) != str(effective_company_id):
         raise HTTPException(
@@ -1631,7 +1630,6 @@ def delete_item(
 def bulk_create_items(
     bulk_data: ItemsBulkCreate,
     current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
 ):
     """
     Bulk create items (for Excel import) - OPTIMIZED with duplicate detection
@@ -1648,7 +1646,7 @@ def bulk_create_items(
     if len(bulk_data.items) > 1000:
         raise HTTPException(status_code=400, detail="Maximum 1000 items per batch")
 
-    user, _ = current_user_and_db
+    user, db = current_user_and_db
     effective_company_id = get_effective_company_id_for_user(db, user)
     if effective_company_id is None or str(bulk_data.company_id) != str(effective_company_id):
         raise HTTPException(

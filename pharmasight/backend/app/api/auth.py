@@ -108,6 +108,10 @@ class AuthMeResponse(BaseModel):
     tenant_status: Optional[str] = None
     subscription_plan: Optional[str] = None
     trial_ends_at: Optional[datetime] = None
+    subscription_period_ends_at: Optional[datetime] = Field(
+        None,
+        description="Effective period end for UI (demo: inferred from created_at when trial_expires_at is unset).",
+    )
     trial_days_remaining: Optional[int] = None
     subscription_tenant_subdomain: Optional[str] = None
     subscription_used_default_tenant_fallback: Optional[bool] = None
@@ -282,10 +286,14 @@ def auth_me(
     company_access = get_company_access(company)
     subscription_access = company_access_to_subscription_access(company_access)
     trial_expires_at = getattr(company, "trial_expires_at", None) if company else None
+    from app.utils.company_plan_limits import company_trial_expires_effective
+
+    period_end = company_trial_expires_effective(company) if company else None
     trial_days_remaining: Optional[int] = None
-    if trial_expires_at is not None:
-        n = datetime.now(timezone.utc)
-        end = trial_expires_at
+    n = datetime.now(timezone.utc)
+    end_for_days = period_end or trial_expires_at
+    if end_for_days is not None:
+        end = end_for_days
         if getattr(end, "tzinfo", None) is None:
             end = end.replace(tzinfo=timezone.utc)
         delta_days = (end - n).days
@@ -293,6 +301,9 @@ def auth_me(
             trial_days_remaining = max(0, delta_days)
         elif company_access == "expired":
             trial_days_remaining = 0
+        elif company_access == "active" and end > n:
+            # Paid / active row with a future renewal date: surface whole days for banner UX
+            trial_days_remaining = max(0, delta_days)
     return {
         "user_id": str(user.id),
         "roles": roles,
@@ -300,6 +311,7 @@ def auth_me(
         "tenant_status": getattr(company, "subscription_status", None) if company else None,
         "subscription_plan": getattr(company, "subscription_plan", None) if company else None,
         "trial_ends_at": trial_expires_at,
+        "subscription_period_ends_at": period_end,
         "trial_days_remaining": trial_days_remaining,
         "subscription_tenant_subdomain": None,
         "subscription_used_default_tenant_fallback": False,
@@ -854,7 +866,10 @@ def auth_set_password(
     user.is_pending = False
     user.invitation_token = None
     user.is_active = True
+    if hasattr(user, "must_change_password"):
+        user.must_change_password = False
     db.commit()
+    invalidate_auth_cache_for_user(user.id)
     return {"message": "Password set. Sign in with your username and password."}
 
 
@@ -1016,7 +1031,10 @@ def auth_reset_password(
             user.password_hash = hash_password(body.new_password)
             user.password_updated_at = datetime.now(timezone.utc)
             user.password_set = True
+            if hasattr(user, "must_change_password"):
+                user.must_change_password = False
             db.commit()
+            invalidate_auth_cache_for_user(user.id)
         finally:
             db.close()
         return {"message": "Password reset. Sign in with your username and password."}
@@ -1038,4 +1056,5 @@ def auth_reset_password(
         if hasattr(user, "must_change_password"):
             user.must_change_password = False
         db.commit()
+        invalidate_auth_cache_for_user(user.id)
     return {"message": "Password reset. Sign in with your username and password."}

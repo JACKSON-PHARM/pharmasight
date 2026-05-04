@@ -1454,8 +1454,13 @@ const API = {
             initializeStatus: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/initialize-status`),
             initialize: (tenantId, data) => api.post(`/api/admin/tenants/${tenantId}/initialize`, data),
             invites: {
-                create: (tenantId, data) => api.post(`/api/admin/tenants/${tenantId}/invites`, { expires_in_days: 7, send_email: true, ...data }, { timeout: 120000 }),
-                list: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/invites`),
+                create: (tenantId, data) =>
+                    api.post(
+                        `/api/admin/platform-licensing/tenants/${tenantId}/invites`,
+                        { expires_in_days: 7, send_email: true, ...data },
+                        { timeout: 120000 },
+                    ),
+                list: (tenantId) => api.get(`/api/admin/platform-licensing/tenants/${tenantId}/invites`),
             },
             subscription: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/subscription`),
             modules: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/modules`),
@@ -1463,9 +1468,11 @@ const API = {
         platformLicensing: {
             companies: (params = {}, requestOptions = {}) =>
                 api.get('/api/admin/platform-licensing/companies', params, requestOptions),
+            createCompany: (data) => api.post('/api/admin/platform-licensing/companies', data),
             company: (companyId) => api.get(`/api/admin/platform-licensing/company/${companyId}`),
             patchModules: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/modules`, data),
             patchSubscription: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/subscription`, data),
+            patchProfile: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/profile`, data),
             patchStatus: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/status`, data),
             etimsCompany: (companyId) => api.get(`/api/admin/platform-licensing/company/${companyId}/etims`),
             etimsPatchCompanyPin: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/etims/pin`, data),

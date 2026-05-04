@@ -5,6 +5,54 @@
  */
 (function () {
     var notifiedFromApi = false;
+    var bannerCountdownTimer = null;
+
+    var PLAN_LABELS = {
+        demo: 'Demo',
+        clinic_starter: 'Clinic Starter',
+        pharmacy_growth: 'Pharmacy Growth',
+        health_network: 'Health Network',
+        enterprise: 'Enterprise',
+    };
+
+    function planLabel(slug) {
+        if (!slug || String(slug).trim() === '') {
+            return 'Standard';
+        }
+        var s = String(slug).trim().toLowerCase();
+        if (PLAN_LABELS[s]) {
+            return PLAN_LABELS[s];
+        }
+        return s.replace(/_/g, ' ').replace(/\b\w/g, function (ch) {
+            return ch.toUpperCase();
+        });
+    }
+
+    function clearBannerCountdown() {
+        if (bannerCountdownTimer) {
+            clearInterval(bannerCountdownTimer);
+            bannerCountdownTimer = null;
+        }
+    }
+
+    function formatCountdownParts(ms) {
+        if (ms <= 0) {
+            return { text: '0m', done: true };
+        }
+        var sec = Math.floor(ms / 1000);
+        var d = Math.floor(sec / 86400);
+        var h = Math.floor((sec % 86400) / 3600);
+        var m = Math.floor((sec % 3600) / 60);
+        var parts = [];
+        if (d > 0) {
+            parts.push(d + 'd');
+        }
+        if (h > 0 || d > 0) {
+            parts.push(h + 'h');
+        }
+        parts.push(m + 'm');
+        return { text: parts.join(' '), done: false };
+    }
 
     function effectiveAccess() {
         var me = window.__authMe;
@@ -142,49 +190,124 @@
 
         if (!banner) return;
 
-        banner.classList.remove('subscription-banner-strip--danger');
+        clearBannerCountdown();
+        banner.classList.remove(
+            'subscription-banner-strip--danger',
+            'subscription-banner-strip--ok',
+            'subscription-banner-strip--urgent',
+        );
 
-        if (acc === 'full') {
+        if (!window.__authMe) {
             banner.style.display = 'none';
             banner.innerHTML = '';
-            return;
-        }
-
-        if (acc === 'trial') {
-            var me = window.__authMe || {};
-            var days = me.trial_days_remaining;
-            var ends = me.trial_ends_at;
-            var line = 'Trial';
-            if (days != null && days !== '') {
-                line =
-                    Number(days) === 1
-                        ? 'Trial · 1 day remaining'
-                        : 'Trial · ' + String(days) + ' days remaining';
-            } else if (ends) {
-                try {
-                    line = 'Trial · ends ' + new Date(ends).toLocaleDateString();
-                } catch (_) {
-                    line = 'Trial';
-                }
-            } else {
-                line = 'Trial';
-            }
-            banner.style.display = 'flex';
-            banner.innerHTML =
-                '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-hourglass-half"></i></span>' +
-                '<span class="subscription-banner-text">' +
-                line +
-                '</span>';
             return;
         }
 
         if (acc === 'trial_expired') {
             banner.style.display = 'flex';
             banner.classList.add('subscription-banner-strip--danger');
+            var meDead = window.__authMe || {};
+            var pDead = planLabel(meDead.subscription_plan);
             banner.innerHTML =
                 '<span class="subscription-banner-icon subscription-banner-warn" aria-hidden="true"><i class="fas fa-exclamation-circle"></i></span>' +
-                '<span class="subscription-banner-text">Your trial has ended. Contact support to upgrade and restore full access.</span>';
+                '<span class="subscription-banner-text"><strong>' +
+                pDead +
+                '</strong> · Your access period has ended. Contact support to renew or upgrade.</span>';
+            return;
         }
+
+        var me = window.__authMe || {};
+        var plan = planLabel(me.subscription_plan);
+        var endIso = me.subscription_period_ends_at || me.trial_ends_at;
+        var FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
+
+        banner.style.display = 'flex';
+
+        if (!endIso) {
+            banner.classList.add('subscription-banner-strip--ok');
+            banner.innerHTML =
+                '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-circle-check"></i></span>' +
+                '<span class="subscription-banner-text"><strong>' +
+                plan +
+                '</strong> · Active. No renewal end date is set on your company profile.</span>';
+            return;
+        }
+
+        var endMs = null;
+        try {
+            endMs = new Date(endIso).getTime();
+        } catch (_) {
+            endMs = null;
+        }
+        if (endMs == null || isNaN(endMs)) {
+            banner.classList.add('subscription-banner-strip--ok');
+            banner.innerHTML =
+                '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-circle-check"></i></span>' +
+                '<span class="subscription-banner-text"><strong>' + plan + '</strong> · Active</span>';
+            return;
+        }
+
+        function paintBannerUrgent() {
+            var now = Date.now();
+            var left = endMs - now;
+            var parts = formatCountdownParts(left);
+            var icon =
+                '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-clock"></i></span>';
+            var dateStr = '';
+            try {
+                dateStr = new Date(endIso).toLocaleString();
+            } catch (_) {
+                dateStr = '';
+            }
+            banner.innerHTML =
+                icon +
+                '<span class="subscription-banner-text"><strong>' +
+                plan +
+                '</strong> · <span style="font-weight:700;">Renews/ends in ' +
+                parts.text +
+                '</span>' +
+                (dateStr ? ' <span style="opacity:0.9;">(' + dateStr + ')</span>' : '') +
+                '</span>';
+            if (parts.done) {
+                clearBannerCountdown();
+            }
+        }
+
+        var now0 = Date.now();
+        var diff0 = endMs - now0;
+
+        if (diff0 > FIVE_DAYS_MS) {
+            banner.classList.add('subscription-banner-strip--ok');
+            var dateLong = '';
+            try {
+                dateLong = new Date(endIso).toLocaleString();
+            } catch (_) {
+                dateLong = '';
+            }
+            banner.innerHTML =
+                '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-circle-check"></i></span>' +
+                '<span class="subscription-banner-text"><strong>' +
+                plan +
+                '</strong> · Active. Access window ends <strong>' +
+                dateLong +
+                '</strong> (more than 5 days from now).</span>';
+            return;
+        }
+
+        if (diff0 > 0) {
+            banner.classList.add('subscription-banner-strip--urgent');
+            paintBannerUrgent();
+            var tickMs = diff0 < 48 * 60 * 60 * 1000 ? 1000 : 60 * 1000;
+            bannerCountdownTimer = setInterval(paintBannerUrgent, tickMs);
+            return;
+        }
+
+        banner.classList.add('subscription-banner-strip--urgent');
+        banner.innerHTML =
+            '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-exclamation-triangle"></i></span>' +
+            '<span class="subscription-banner-text"><strong>' +
+            plan +
+            '</strong> · The scheduled end date has passed. Contact your administrator or support if you still need access.</span>';
     }
 
     function flushPendingFromApiFlag() {

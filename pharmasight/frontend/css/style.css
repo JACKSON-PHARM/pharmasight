@@ -730,6 +730,26 @@ body.subscription-trial-expired .subscription-banner-strip {
     color: #7f1d1d !important;
 }
 
+.subscription-banner-strip--ok {
+    background: linear-gradient(90deg, rgba(22, 163, 74, 0.14), rgba(16, 185, 129, 0.1));
+    border: 1px solid rgba(22, 163, 74, 0.4);
+    color: #166534;
+}
+
+.subscription-banner-strip--ok .subscription-banner-icon {
+    color: #16a34a;
+}
+
+.subscription-banner-strip--urgent {
+    background: linear-gradient(90deg, rgba(220, 38, 38, 0.16), rgba(248, 113, 113, 0.14)) !important;
+    border: 1px solid rgba(220, 38, 38, 0.5) !important;
+    color: #991b1b !important;
+}
+
+.subscription-banner-strip--urgent .subscription-banner-icon {
+    color: #dc2626;
+}
+
 .subscription-banner-icon {
     flex-shrink: 0;
     color: var(--primary-color);

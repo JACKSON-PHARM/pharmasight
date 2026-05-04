@@ -8,34 +8,50 @@ with `platform_super_admin`.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.database_master import get_master_db
 from app.dependencies import get_current_admin, get_tenant_db
+from app.config import is_supabase_owner_email, settings
 from app.models.company import Company
+from app.models.tenant import Tenant
 from app.models.company import Branch, BranchEtimsCredentials
 from app.models.company_module import CompanyModule
 from app.module_enforcement import get_company_module_license_catalog
-from app.utils.company_plan_limits import sync_demo_plan_slug_with_subscription_status
+from app.utils.company_plan_limits import (
+    company_branch_limit,
+    company_product_limit,
+    company_trial_expires_effective,
+    company_user_limit,
+    sync_demo_plan_slug_with_subscription_status,
+)
 from app.module_metadata import get_core_modules
 from app.services.etims.branch_credentials import effective_etims_environment, get_cmc_key_plain, get_oauth_username_password
 from app.services.etims.constants import SELECT_INIT_OSDC_PATH
 from app.services.etims.etims_invoice_submitter import api_base_for_branch_credentials, find_etims_result_cd
 from app.services.etims.etims_oauth_client import get_access_token
+from app.schemas.tenant import TenantInviteCreate, TenantInviteResponse
+from app.services.tenant_invite_service import create_tenant_invite, list_tenant_invites
 
 import requests
 
 router = APIRouter(prefix="/platform-licensing", tags=["Platform Licensing (Admin)"])
+logger = logging.getLogger(__name__)
 
 
 class PlatformCompanyResponse(BaseModel):
     id: UUID
     name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
     currency: Optional[str] = None
     timezone: Optional[str] = None
     is_active: bool = True
@@ -48,6 +64,12 @@ class PlatformCompanyResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PlatformCompanyListItem(PlatformCompanyResponse):
+    """List row: includes inferred trial end for demo when ``trial_expires_at`` was never persisted."""
+
+    trial_display_expires_at: Optional[datetime] = None
 
 
 class ModuleToggle(BaseModel):
@@ -70,6 +92,39 @@ class PatchCompanySubscriptionRequest(BaseModel):
 
 class PatchCompanyStatusRequest(BaseModel):
     is_active: bool
+
+
+class PatchCompanyProfileRequest(BaseModel):
+    """Update company + matching tenant registry contact (single-DB)."""
+
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(None, max_length=50)
+    admin_full_name: Optional[str] = Field(None, max_length=255)
+
+
+class CreatePlatformCompanyRequest(BaseModel):
+    """Provision a new organization on the shared app DB + tenant registry (single-DB)."""
+
+    name: str = Field(..., min_length=1, max_length=255, description="Legal / display company name")
+    admin_email: EmailStr = Field(..., description="Primary contact; used on tenant registry row")
+    admin_full_name: Optional[str] = Field(None, max_length=255)
+    phone: Optional[str] = Field(None, max_length=50)
+    currency: str = Field(default="KES", max_length=10)
+    timezone: str = Field(default="Africa/Nairobi", max_length=50)
+    hq_branch_name: str = Field(default="Head Office", max_length=255)
+    hq_branch_code: str = Field(default="HQ", max_length=50)
+    tenant_subdomain: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Optional URL slug; must be unique. If omitted, a slug is generated from the company name.",
+    )
+    subscription_plan: Optional[str] = None
+    subscription_status: Optional[str] = None
+    trial_expires_at: Optional[datetime] = None
+    product_limit: Optional[int] = None
+    branch_limit: Optional[int] = None
+    user_limit: Optional[int] = None
 
 
 class PlatformEtimsBranchRow(BaseModel):
@@ -123,7 +178,7 @@ def _test_http_success(r: requests.Response, parsed: Optional[dict]) -> bool:
     return rc == "000"
 
 
-@router.get("/companies", response_model=List[PlatformCompanyResponse])
+@router.get("/companies", response_model=List[PlatformCompanyListItem])
 def list_companies(
     q: Optional[str] = Query(None),
     _admin: None = Depends(get_current_admin),
@@ -133,7 +188,171 @@ def list_companies(
     if q and str(q).strip():
         term = f"%{str(q).strip()}%"
         query = query.filter(Company.name.ilike(term))
-    return query.order_by(Company.created_at.desc()).limit(1000).all()
+    rows = query.order_by(Company.created_at.desc()).limit(1000).all()
+    out: List[PlatformCompanyListItem] = []
+    for c in rows:
+        base = PlatformCompanyResponse.model_validate(c).model_dump()
+        base["trial_display_expires_at"] = company_trial_expires_effective(c)
+        out.append(PlatformCompanyListItem(**base))
+    return out
+
+
+@router.post("/companies", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+def create_platform_company(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: CreatePlatformCompanyRequest,
+    _admin: None = Depends(get_current_admin),
+    db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
+):
+    """
+    Create a new client company: ``Company`` + HQ ``Branch`` + ``tenants`` registry row.
+
+    Does **not** create a login user. Use **Tenant invites** (``POST /api/admin/platform-licensing/tenants/{tenant_id}/invites``)
+    or your public signup flow so the client can set a password and receive branch access.
+    """
+    from app.services.company_provisioning_service import HQBranchSpec, create_company_with_hq_branch_and_registry
+
+    email_norm = str(body.admin_email).strip().lower()
+    if is_supabase_owner_email(email_norm):
+        raise HTTPException(
+            status_code=400,
+            detail="This email is reserved (Supabase owner). Use a different admin contact email.",
+        )
+    existing_tenant = master_db.query(Tenant).filter(func.lower(Tenant.admin_email) == email_norm).first()
+    if existing_tenant:
+        raise HTTPException(
+            status_code=409,
+            detail="A tenant registry row already uses this admin email. Use another email or manage the existing company.",
+        )
+
+    sub_raw = (body.tenant_subdomain or "").strip().lower()
+    if sub_raw:
+        if len(sub_raw) > 100:
+            raise HTTPException(status_code=400, detail="tenant_subdomain is too long (max 100).")
+        taken = master_db.query(Tenant).filter(Tenant.subdomain == sub_raw).first()
+        if taken:
+            raise HTTPException(status_code=409, detail="That subdomain is already in use.")
+
+    company_kwargs: Dict[str, Any] = {
+        "name": body.name.strip(),
+        "currency": (body.currency or "KES").strip() or "KES",
+        "timezone": (body.timezone or "Africa/Nairobi").strip() or "Africa/Nairobi",
+        "is_active": True,
+        "email": email_norm,
+    }
+    if body.phone and str(body.phone).strip():
+        company_kwargs["phone"] = str(body.phone).strip()[:50]
+    for key in (
+        "subscription_plan",
+        "subscription_status",
+        "trial_expires_at",
+        "product_limit",
+        "branch_limit",
+        "user_limit",
+    ):
+        val = getattr(body, key, None)
+        if val is not None:
+            if key in ("subscription_plan", "subscription_status") and isinstance(val, str):
+                company_kwargs[key] = val.strip() or None
+            else:
+                company_kwargs[key] = val
+
+    plan_slug = (company_kwargs.get("subscription_plan") or "").strip().lower()
+    if plan_slug == "demo" and company_kwargs.get("trial_expires_at") is None:
+        demo_days = int(getattr(settings, "DEMO_DURATION_DAYS", 7) or 7)
+        company_kwargs["trial_expires_at"] = datetime.now(timezone.utc) + timedelta(days=demo_days)
+
+    hq = HQBranchSpec(
+        name=(body.hq_branch_name or "Head Office").strip()[:255] or "Head Office",
+        code=(body.hq_branch_code or "HQ").strip()[:50] or "HQ",
+    )
+
+    try:
+        company, branch, tenant = create_company_with_hq_branch_and_registry(
+            db,
+            master_db,
+            company_kwargs=company_kwargs,
+            admin_email=email_norm,
+            hq=hq,
+            admin_full_name=(body.admin_full_name or "").strip() or None,
+            tenant_phone=(body.phone or "").strip() or None,
+            tenant_subdomain=sub_raw if sub_raw else None,
+            tenant_status="trial",
+            tenant_plan_type="paid",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Provisioning failed: {e}") from e
+
+    sync_demo_plan_slug_with_subscription_status(company)
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+
+    initial_invite: Optional[TenantInviteResponse] = None
+    invite_warning: Optional[str] = None
+    try:
+        initial_invite = create_tenant_invite(
+            tenant_id=tenant.id,
+            invite_data=TenantInviteCreate(expires_in_days=7, send_email=True),
+            db=master_db,
+            request=request,
+            background_tasks=background_tasks,
+        )
+    except HTTPException as he:
+        invite_warning = str(he.detail)
+        logger.warning("Auto-invite failed after company create: %s", invite_warning)
+    except Exception:
+        logger.exception("Auto-invite failed after company create")
+        invite_warning = "Invite could not be created; use Manage → resend invite."
+
+    return {
+        "company": PlatformCompanyResponse.model_validate(company).model_dump(),
+        "tenant_id": str(tenant.id),
+        "subdomain": tenant.subdomain,
+        "hq_branch_id": str(branch.id),
+        "initial_invite": initial_invite.model_dump() if initial_invite else None,
+        "invite_warning": invite_warning,
+        "invite_hint": (
+            f"Create an invite for this tenant: POST /api/admin/platform-licensing/tenants/{tenant.id}/invites "
+            "(same admin session) so the client can complete signup."
+        ),
+    }
+
+
+@router.post("/tenants/{tenant_id}/invites", response_model=TenantInviteResponse, status_code=status.HTTP_201_CREATED)
+def licensing_create_tenant_invite(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    tenant_id: UUID,
+    invite_data: TenantInviteCreate,
+    _admin: None = Depends(get_current_admin),
+    db: Session = Depends(get_master_db),
+):
+    """
+    Create a setup invite for a tenant registry row (same logic as legacy ``/api/admin/tenants/.../invites``).
+
+    Exposed under platform-licensing so ``admin.html`` works when ``ENABLE_TENANT_ADMIN`` is not set.
+    """
+    return create_tenant_invite(
+        tenant_id=tenant_id,
+        invite_data=invite_data,
+        db=db,
+        request=request,
+        background_tasks=background_tasks,
+    )
+
+
+@router.get("/tenants/{tenant_id}/invites", response_model=List[TenantInviteResponse])
+def licensing_list_tenant_invites(
+    tenant_id: UUID,
+    _admin: None = Depends(get_current_admin),
+    db: Session = Depends(get_master_db),
+):
+    return list_tenant_invites(tenant_id=tenant_id, db=db)
 
 
 @router.get("/company/{company_id}", response_model=Dict[str, Any])
@@ -141,6 +360,7 @@ def get_company(
     company_id: UUID,
     _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     c = db.query(Company).filter(Company.id == company_id).first()
     if not c:
@@ -151,12 +371,95 @@ def get_company(
         .order_by(CompanyModule.module_name.asc())
         .all()
     )
+    company_payload = PlatformCompanyResponse.model_validate(c).model_dump()
+    # What enforcement uses (demo + NULL columns → platform demo defaults).
+    company_payload["resolved_user_limit"] = company_user_limit(c)
+    company_payload["resolved_branch_limit"] = company_branch_limit(c)
+    company_payload["resolved_product_limit"] = company_product_limit(c)
+    company_payload["trial_display_expires_at"] = company_trial_expires_effective(c)
+    tenant = master_db.query(Tenant).filter(Tenant.company_id == company_id).first()
+    if tenant:
+        company_payload["tenant_id"] = str(tenant.id)
+        company_payload["tenant_subdomain"] = tenant.subdomain
+        company_payload["tenant_admin_full_name"] = tenant.admin_full_name
+    else:
+        company_payload["tenant_id"] = None
+        company_payload["tenant_subdomain"] = None
+        company_payload["tenant_admin_full_name"] = None
     return {
-        "company": PlatformCompanyResponse.model_validate(c).model_dump(),
+        "company": company_payload,
         "modules": [{"name": r.module_name, "enabled": bool(r.is_enabled)} for r in rows],
         "module_catalog": get_company_module_license_catalog(db, company_id),
         "core_modules": sorted(list(get_core_modules(db))),
     }
+
+
+@router.patch("/company/{company_id}/profile", response_model=Dict[str, Any])
+def patch_company_profile(
+    company_id: UUID,
+    body: PatchCompanyProfileRequest,
+    _admin: None = Depends(get_current_admin),
+    db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
+):
+    c = db.query(Company).filter(Company.id == company_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Company not found")
+    tenant = master_db.query(Tenant).filter(Tenant.company_id == company_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant registry row not found for this company")
+
+    data = body.model_dump(exclude_unset=True)
+    if "name" in data and data["name"] is not None:
+        nm = str(data["name"]).strip()
+        if not nm:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        c.name = nm[:255]
+        tenant.name = nm[:255]
+    if "email" in data and data["email"] is not None:
+        new_email = str(data["email"]).strip().lower()
+        if is_supabase_owner_email(new_email):
+            raise HTTPException(status_code=400, detail="This email is reserved. Use a different contact email.")
+        if new_email != (tenant.admin_email or "").lower():
+            taken = (
+                master_db.query(Tenant)
+                .filter(func.lower(Tenant.admin_email) == new_email, Tenant.id != tenant.id)
+                .first()
+            )
+            if taken:
+                raise HTTPException(
+                    status_code=409,
+                    detail="That admin email is already used by another tenant.",
+                )
+        c.email = new_email
+        tenant.admin_email = new_email
+    if "phone" in data:
+        ph = data["phone"]
+        if ph is None or str(ph).strip() == "":
+            c.phone = None
+            tenant.phone = None
+        else:
+            phs = str(ph).strip()[:50]
+            c.phone = phs
+            tenant.phone = phs
+    if "admin_full_name" in data:
+        afn = data["admin_full_name"]
+        tenant.admin_full_name = (str(afn).strip()[:255] if afn else None)
+
+    db.commit()
+    master_db.commit()
+    db.refresh(c)
+    master_db.refresh(tenant)
+
+    company_payload = PlatformCompanyResponse.model_validate(c).model_dump()
+    company_payload["resolved_user_limit"] = company_user_limit(c)
+    company_payload["resolved_branch_limit"] = company_branch_limit(c)
+    company_payload["resolved_product_limit"] = company_product_limit(c)
+    company_payload["trial_display_expires_at"] = company_trial_expires_effective(c)
+    company_payload["tenant_id"] = str(tenant.id)
+    company_payload["tenant_subdomain"] = tenant.subdomain
+    company_payload["tenant_admin_full_name"] = tenant.admin_full_name
+    return {"company": company_payload}
 
 
 @router.patch("/company/{company_id}/modules", response_model=Dict[str, Any])

@@ -127,6 +127,7 @@ def initialize_tenant_database(
             is_active=True,
             is_pending=True,
             password_set=False,
+            must_change_password=False,
         )
         tenant_db.add(user)
         tenant_db.commit()

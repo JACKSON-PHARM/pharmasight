@@ -6,18 +6,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime, timedelta
-import secrets
-import string
 import logging
 
 logger = logging.getLogger(__name__)
 
 from app.database_master import get_master_db
-from app.dependencies import tenant_or_app_db_session, get_current_admin, is_tenant_ready_for_invite
+from app.dependencies import get_current_admin
 from app.database import SessionLocal
 from app.models.company import Branch, Company
-from app.models.tenant import Tenant, TenantInvite, SubscriptionPlan
+from app.models.tenant import Tenant, SubscriptionPlan
 from app.services.company_provisioning_service import HQBranchSpec, create_company_with_hq_branch_and_registry
 from app.schemas.tenant import (
     TenantCreate, TenantResponse, TenantUpdate, TenantListResponse,
@@ -25,11 +22,10 @@ from app.schemas.tenant import (
     TenantInitializeRequest,
     SubscriptionPlanResponse,
 )
-from app.utils.username_generator import generate_username_from_name
-from app.utils.public_url import get_public_base_url
 from app.services.email_service import EmailService
 from app.services.tenant_provisioning import initialize_tenant_database
 from app.services.migration_service import get_public_table_count
+from app.services.tenant_invite_service import create_tenant_invite, list_tenant_invites
 from app.config import settings, is_supabase_owner_email
 
 router = APIRouter()
@@ -297,108 +293,13 @@ def create_invite(
     db: Session = Depends(get_master_db),
 ):
     """Create an invite token for tenant setup. Works when tenant is provisioned or points to the app DB (single-DB)."""
-    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
-    if not tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found"
-        )
-    if not is_tenant_ready_for_invite(tenant):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Tenant not ready for invite. Set database_url to your app database URL or leave it unset to use the shared app DB."
-        )
-
-    # Generate username (tenant DB or app DB when single-DB)
-    generated_username = None
-    with tenant_or_app_db_session(tenant) as tenant_db:
-        if tenant.admin_full_name:
-            try:
-                generated_username = generate_username_from_name(
-                    tenant.admin_full_name,
-                    db_session=tenant_db
-                )
-            except Exception as e:
-                print(f"Warning: Could not generate username from admin_full_name: {e}")
-        if not generated_username:
-            email_local = tenant.admin_email.split('@')[0]
-            name_parts = email_local.replace('.', ' ').replace('_', ' ').replace('-', ' ').split()
-            if len(name_parts) >= 2:
-                try:
-                    generated_username = generate_username_from_name(
-                        ' '.join(name_parts),
-                        db_session=tenant_db
-                    )
-                except Exception:
-                    generated_username = f"{email_local[0].upper()}-{email_local.upper()[:10]}"
-            else:
-                generated_username = f"{email_local[0].upper()}-{email_local.upper()[:10]}"
-    
-    # Generate secure token
-    token = _generate_secure_token()
-    
-    # Create invite
-    invite = TenantInvite(
+    return create_tenant_invite(
         tenant_id=tenant_id,
-        token=token,
-        expires_at=datetime.utcnow() + timedelta(days=invite_data.expires_in_days)
+        invite_data=invite_data,
+        db=db,
+        request=request,
+        background_tasks=background_tasks,
     )
-    
-    db.add(invite)
-    db.commit()
-    db.refresh(invite)
-    
-    # Build setup URL so email and UI use a reachable link (APP_PUBLIC_URL or inferred from request on Render)
-    base_url = get_public_base_url(request)
-    setup_url = f"{base_url.rstrip('/')}/setup?token={invite.token}"
-    
-    # Return response immediately; send email in background to avoid timeout on Render (cold start / slow SMTP)
-    invite_response = TenantInviteResponse.model_validate(invite)
-    invite_response.username = generated_username
-    invite_response.setup_url = setup_url
-
-    if invite_data.send_email:
-        # Check SMTP config before adding background task
-        smtp_configured = EmailService.is_configured()
-        invite_response.email_sent = smtp_configured  # True if SMTP is configured (email will be sent in background)
-        
-        if not smtp_configured:
-            missing = []
-            if not settings.SMTP_HOST:
-                missing.append("SMTP_HOST")
-            if not settings.SMTP_USER:
-                missing.append("SMTP_USER")
-            if not settings.SMTP_PASSWORD:
-                missing.append("SMTP_PASSWORD")
-            logger.warning(
-                f"SMTP not configured (missing: {', '.join(missing)}). "
-                f"Invite created for {tenant.admin_email} but email will not be sent. "
-                f"Share the link manually: {setup_url}"
-            )
-        else:
-            # Wrapper to log background task execution
-            def send_email_with_logging():
-                try:
-                    logger.info(f"Background task: Sending invite email to {tenant.admin_email} for tenant {tenant.name}")
-                    result = EmailService.send_tenant_invite(
-                        to_email=tenant.admin_email,
-                        tenant_name=tenant.name,
-                        setup_url=setup_url,
-                        username=generated_username,
-                    )
-                    if result:
-                        logger.info(f"Background task: Successfully sent invite email to {tenant.admin_email}")
-                    else:
-                        logger.warning(f"Background task: Failed to send invite email to {tenant.admin_email} (check SMTP config and Render logs)")
-                except Exception as e:
-                    logger.exception(f"Background task: Exception sending invite email to {tenant.admin_email}: {e}")
-            
-            background_tasks.add_task(send_email_with_logging)
-            logger.info(f"Invite created for {tenant.admin_email}. Email sending queued in background task (SMTP configured).")
-    else:
-        invite_response.email_sent = False
-
-    return invite_response
 
 
 @router.get("/tenants/{tenant_id}/invites", response_model=List[TenantInviteResponse])
@@ -408,11 +309,7 @@ def list_invites(
     db: Session = Depends(get_master_db),
 ):
     """List all invites for a tenant"""
-    invites = db.query(TenantInvite).filter(
-        TenantInvite.tenant_id == tenant_id
-    ).order_by(TenantInvite.created_at.desc()).all()
-    
-    return [TenantInviteResponse.model_validate(inv) for inv in invites]
+    return list_tenant_invites(tenant_id=tenant_id, db=db)
 
 
 @router.get("/smtp-status")
@@ -483,9 +380,3 @@ def _generate_subdomain(company_name: str, db: Session) -> str:
         counter += 1
     
     return subdomain
-
-
-def _generate_secure_token(length: int = 32) -> str:
-    """Generate a secure random token"""
-    alphabet = string.ascii_letters + string.digits
-    return ''.join(secrets.choice(alphabet) for _ in range(length))

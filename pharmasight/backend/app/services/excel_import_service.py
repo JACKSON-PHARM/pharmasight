@@ -1131,7 +1131,9 @@ class ExcelImportService:
                     result['opening_balance_created'] = 1
                 else:
                     # No ledger row for qty 0 (DB constraint); still load snapshot so search finds the item.
-                    SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item.id)
+                    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(
+                        db, company_id, item.id
+                    )
             except Exception as stock_error:
                 logger.warning(f"Could not create opening balance for item '{item_name}': {stock_error}")
                 raise
@@ -1197,6 +1199,11 @@ class ExcelImportService:
             result['supplier_created'] = 1
         item.default_supplier_id = supplier_id
         item.default_cost_per_base = _default_cost_per_base_from_row(row)
+
+        if result.get("item_created"):
+            SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(
+                db, company_id, item.id
+            )
         
         # NO opening balances in non-destructive mode
         # Stock is immutable once live transactions exist
@@ -1414,7 +1421,7 @@ class ExcelImportService:
                 document_number="OPENING",
             )
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
-            SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
+            SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, company_id, item_id)
         else:
             ledger_entry = InventoryLedger(
                 company_id=company_id,
@@ -1437,7 +1444,7 @@ class ExcelImportService:
                 document_number="OPENING",
             )
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
-            SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
+            SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, company_id, item_id)
     
     @staticmethod
     def _process_batch_bulk(
@@ -1828,23 +1835,26 @@ class ExcelImportService:
         batch_snapshot_item_ids = [iid for iid in all_item_ids_batch if iid not in items_with_real_tx_set]
         batch_snapshot_item_ids = list(dict.fromkeys(batch_snapshot_item_ids))
         if batch_snapshot_item_ids:
-            try:
-                snapshot_refresh_mode = "sync_items"
-                if len(batch_snapshot_item_ids) <= 5000:
-                    for iid in batch_snapshot_item_ids:
-                        SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, iid)
-                else:
-                    snapshot_refresh_mode = "enqueue_branch_refresh"
-                    SnapshotRefreshService.enqueue_branch_refresh(
-                        db, company_id, branch_id, reason="excel_import_bulk"
+            snapshot_refresh_mode = "sync_items_all_branches"
+            if len(batch_snapshot_item_ids) <= 5000:
+                for iid in batch_snapshot_item_ids:
+                    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(
+                        db, company_id, iid
                     )
-                logger.info(
-                    "Excel bulk batch snapshot refresh (%s): %s items",
-                    snapshot_refresh_mode,
-                    len(batch_snapshot_item_ids),
-                )
-            except Exception as e:
-                logger.warning("Excel bulk batch snapshot refresh failed: %s", e)
+            else:
+                snapshot_refresh_mode = "enqueue_branch_refresh_all"
+                for (bid,) in db.query(Branch.id).filter(
+                    Branch.company_id == company_id,
+                    Branch.is_active == True,
+                ).all():
+                    SnapshotRefreshService.enqueue_branch_refresh(
+                        db, company_id, bid, reason="excel_import_bulk_oversize"
+                    )
+            logger.info(
+                "Excel bulk batch snapshot refresh (%s): %s items",
+                snapshot_refresh_mode,
+                len(batch_snapshot_item_ids),
+            )
 
         return result
     

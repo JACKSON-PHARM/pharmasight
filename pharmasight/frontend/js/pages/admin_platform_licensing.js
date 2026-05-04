@@ -77,6 +77,63 @@ function _licFormatCap(n) {
     return String(n);
 }
 
+function createClientCompanySectionHtml(esc) {
+    const tierOpts = SAAS_TIERS.map(
+        (t) => `<option value="${esc(t.slug)}">${esc(t.title)} (${esc(t.slug)})</option>`,
+    ).join('');
+    return `
+            <div class="lic-create-client" style="margin-bottom: 20px; padding: 16px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff;">
+                <h3 style="margin: 0 0 8px 0; font-size: 1.05rem;">Create client company</h3>
+                <p style="margin: 0 0 14px 0; color: #475569; font-size: 0.9rem; line-height: 1.4;">
+                    Provisions a <strong>company</strong>, HQ <strong>branch</strong>, and <strong>tenant</strong> row on the shared database (same path as legacy admin tenant create).
+                    No login user is created here — after saving, send an <strong>invite</strong> so the client can complete signup and get branch access.
+                </p>
+                <form id="lic-create-client-form" style="display: grid; gap: 12px; max-width: 640px;">
+                    <div>
+                        <label style="display:block; font-weight:600; margin-bottom:4px;">Company name *</label>
+                        <input name="name" type="text" required maxlength="255" class="form-input" placeholder="e.g. Acme Pharmacy Ltd" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-weight:600; margin-bottom:4px;">Admin email *</label>
+                        <input name="admin_email" type="email" required class="form-input" placeholder="owner@client.com" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-weight:600; margin-bottom:4px;">Admin full name <span style="font-weight:400; color:#64748b;">(recommended — used for default username)</span></label>
+                        <input name="admin_full_name" type="text" maxlength="255" class="form-input" placeholder="e.g. Jane Mwangi" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-weight:600; margin-bottom:4px;">Phone</label>
+                        <input name="phone" type="text" maxlength="50" class="form-input" placeholder="Optional" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                    </div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+                        <div>
+                            <label style="display:block; font-weight:600; margin-bottom:4px;">Currency</label>
+                            <input name="currency" type="text" value="KES" maxlength="10" class="form-input" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-weight:600; margin-bottom:4px;">Timezone</label>
+                            <input name="timezone" type="text" value="Africa/Nairobi" maxlength="50" class="form-input" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                        </div>
+                    </div>
+                    <div>
+                        <label style="display:block; font-weight:600; margin-bottom:4px;">URL subdomain <span style="font-weight:400; color:#64748b;">(optional — unique)</span></label>
+                        <input name="tenant_subdomain" type="text" maxlength="100" class="form-input" placeholder="Leave blank to auto-generate from company name" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-weight:600; margin-bottom:4px;">Initial subscription plan slug</label>
+                        <select name="subscription_plan" class="form-input" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                            <option value="">— Not set (paid trial tenant row) —</option>
+                            ${tierOpts}
+                        </select>
+                    </div>
+                    <div>
+                        <button type="submit" class="btn btn-primary" id="lic-create-client-submit">Create company</button>
+                    </div>
+                </form>
+                <div id="lic-create-client-result" style="display:none; margin-top:14px; padding:12px; border-radius:8px; background:#ecfdf5; border:1px solid #6ee7b7; font-size:0.9rem;"></div>
+            </div>`;
+}
+
 function publicDemoSignupSectionHtml() {
     return `
             <div class="public-demo-qr" style="margin-bottom: 16px; padding: 14px; border: 1px dashed #cbd5e1; border-radius: 12px; background: #f8fafc;">
@@ -219,6 +276,7 @@ export async function init() {
 
         mount.innerHTML = `
             <div class="card" style="padding:16px;">
+                ${createClientCompanySectionHtml(esc)}
                 ${publicDemoSignupSectionHtml()}
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
                     <div>
@@ -252,6 +310,92 @@ export async function init() {
 
         const tbody = document.getElementById('lic-tbody');
         void setupPublicDemoSignupQr();
+        const wireCreateClient = () => {
+            const form = document.getElementById('lic-create-client-form');
+            const resultEl = document.getElementById('lic-create-client-result');
+            const submitBtn = document.getElementById('lic-create-client-submit');
+            if (!form || !resultEl) return;
+
+            form.addEventListener('submit', async (ev) => {
+                ev.preventDefault();
+                const fd = new FormData(form);
+                const name = (fd.get('name') || '').toString().trim();
+                const admin_email = (fd.get('admin_email') || '').toString().trim();
+                const admin_full_name = (fd.get('admin_full_name') || '').toString().trim() || null;
+                const phone = (fd.get('phone') || '').toString().trim() || null;
+                const currency = (fd.get('currency') || 'KES').toString().trim() || 'KES';
+                const timezone = (fd.get('timezone') || 'Africa/Nairobi').toString().trim() || 'Africa/Nairobi';
+                const tenant_subdomain = (fd.get('tenant_subdomain') || '').toString().trim() || null;
+                const subscription_plan = (fd.get('subscription_plan') || '').toString().trim() || null;
+                const payload = {
+                    name,
+                    admin_email,
+                    admin_full_name,
+                    phone,
+                    currency,
+                    timezone,
+                    tenant_subdomain,
+                };
+                if (subscription_plan) payload.subscription_plan = subscription_plan;
+                if (submitBtn) submitBtn.disabled = true;
+                resultEl.style.display = 'none';
+                try {
+                    const out = await api.createCompany(payload);
+                    const tid = out.tenant_id;
+                    const sub = out.subdomain || '—';
+                    const cid = out.company?.id || '—';
+                    const inv = out.initial_invite || null;
+                    const invWarn = out.invite_warning ? String(out.invite_warning) : '';
+                    const setupUrl = inv && inv.setup_url ? String(inv.setup_url) : '';
+                    const emailed = inv && inv.email_sent === true;
+                    resultEl.style.display = 'block';
+                    resultEl.innerHTML = `
+                        <p style="margin:0 0 8px 0; font-weight:600;">Company created</p>
+                        <p style="margin:0 0 8px 0;">Company ID: <code>${esc(cid)}</code></p>
+                        <p style="margin:0 0 8px 0;">Tenant ID: <code>${esc(tid)}</code> · Subdomain: <code>${esc(sub)}</code></p>
+                        ${
+                            invWarn
+                                ? `<p style="margin:0 0 8px 0; color:#b45309;">Invite: ${esc(invWarn)}</p>`
+                                : `<p style="margin:0 0 8px 0; color:#065f46;">A setup invite was created automatically${
+                                      emailed ? ' and the email was queued (requires SMTP on the server).' : '.'
+                                  }</p>`
+                        }
+                        ${
+                            setupUrl
+                                ? `<div style="margin:0 0 10px 0;">
+                            <label style="display:block; font-weight:600; font-size:0.85rem; margin-bottom:4px;">Setup link (share if email did not send)</label>
+                            <input type="text" readonly value="${esc(setupUrl)}" style="width:100%; max-width:560px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px; font-size:12px;">
+                        </div>`
+                                : ''
+                        }
+                        <p style="margin:0 0 6px 0; color:#64748b; font-size:0.85rem;">You can resend or fix the email under <strong>Manage</strong> for this company.</p>
+                        <button type="button" class="btn btn-secondary btn-sm" id="lic-create-client-invite-btn">Send another invite email</button>
+                        <span id="lic-create-client-invite-status" style="margin-left:10px; color:#64748b;"></span>
+                    `;
+                    toast('Company created. Invite created — check Manage if email did not arrive.', 'success');
+                    document.getElementById('lic-create-client-invite-btn')?.addEventListener('click', async () => {
+                        const st = document.getElementById('lic-create-client-invite-status');
+                        if (st) st.textContent = 'Sending…';
+                        try {
+                            const invApi = window.API?.admin?.tenants?.invites;
+                            if (!invApi?.create) throw new Error('Invite API not available');
+                            await invApi.create(tid, { expires_in_days: 7, send_email: true });
+                            if (st) st.textContent = 'Invite queued (check SMTP on server).';
+                            toast('Invite email queued', 'success');
+                        } catch (e2) {
+                            if (st) st.textContent = '';
+                            toast(e2.message || 'Invite failed', 'error');
+                        }
+                    });
+                } catch (e) {
+                    toast(e.message || 'Create failed', 'error');
+                } finally {
+                    if (submitBtn) submitBtn.disabled = false;
+                }
+            });
+        };
+        wireCreateClient();
+
         try {
             const listRaw = await api.companies(qNorm ? { q: qNorm } : {}, { _skipDedupe: true });
             if (seq !== _licListLoadSeq) return;
@@ -262,7 +406,7 @@ export async function init() {
                 list = list.filter((c) => (c.name || '').toLowerCase().includes(ql));
             }
 
-            const rows = list.map((c) => {
+                const rows = list.map((c) => {
                 const active = c.is_active ? '<span style="color:#16a34a; font-weight:600;">Yes</span>' : '<span style="color:#dc2626; font-weight:600;">No</span>';
                 const cid = esc(c.id);
                 const effectiveStatus = (() => {
@@ -272,12 +416,20 @@ export async function init() {
                     if (c.trial_expires_at) return 'trial';
                     return 'active';
                 })();
+                const trialIso = c.trial_display_expires_at || c.trial_expires_at;
+                const trialCell = trialIso
+                    ? `${esc(new Date(trialIso).toLocaleString())}${
+                          !c.trial_expires_at && c.trial_display_expires_at
+                              ? ' <span style="color:#64748b;font-size:0.78rem;">(demo default)</span>'
+                              : ''
+                      }`
+                    : '—';
                 return `
                     <tr data-cid="${cid}" style="cursor:pointer;">
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.name || '—')}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.subscription_plan || '—')}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(effectiveStatus)}</td>
-                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.trial_expires_at ? new Date(c.trial_expires_at).toLocaleString() : '—')}</td>
+                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${trialCell}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${active}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9; white-space:nowrap;">
                             <button type="button" class="btn btn-primary btn-sm lic-open-manage" data-cid="${cid}">Manage</button>
@@ -402,6 +554,15 @@ export async function init() {
                 (typeof api.etimsCompany === 'function' ? api.etimsCompany(companyId) : Promise.resolve(null)).catch(() => null),
             ]);
             const c = resp.company || {};
+            const dispUserCap = c.user_limit != null ? c.user_limit : c.resolved_user_limit;
+            const dispBranchCap = c.branch_limit != null ? c.branch_limit : c.resolved_branch_limit;
+            const dispProductCap = c.product_limit != null ? c.product_limit : c.resolved_product_limit;
+            const planSlugForUi = (c.subscription_plan || '').trim().toLowerCase();
+            const tierForUi = _tierBySlug(planSlugForUi);
+            const fmtCap = (n) => (n == null ? 'Unlimited' : String(n));
+            const trialForInput = c.trial_expires_at || c.trial_display_expires_at;
+            const trialListLabel = trialForInput ? new Date(trialForInput).toLocaleString() : '—';
+            const tenantIdForInvite = (c.tenant_id || '').trim();
             const core = new Set((resp.core_modules || []).map((x) => String(x).toLowerCase()));
             const mods = Array.isArray(resp.modules) ? resp.modules : [];
             const catalog = Array.isArray(resp.module_catalog) ? resp.module_catalog : [];
@@ -453,19 +614,82 @@ export async function init() {
                         <button id="lic-back" class="btn btn-secondary">← Back</button>
                     </div>
 
+                    <div style="margin-top:14px; padding:12px 14px; border-radius:10px; border:2px solid #4338ca; background:linear-gradient(135deg,#f5f3ff 0%,#eef2ff 100%); box-shadow:0 0 0 1px rgba(67,56,202,0.12);">
+                        <div style="font-weight:700; color:#312e81; font-size:0.95rem;">Current plan (Manage)</div>
+                        <div style="margin-top:6px; color:#3730a3; font-size:0.88rem; line-height:1.45;">
+                            <strong>${esc(tierForUi ? tierForUi.title : planSlugForUi || '—')}</strong>
+                            ${planSlugForUi ? ` · slug <code style="background:#e0e7ff;padding:1px 6px;border-radius:4px;">${esc(planSlugForUi)}</code>` : ''}
+                            ${c.subscription_status ? ` · status <code style="background:#e0e7ff;padding:1px 6px;border-radius:4px;">${esc(String(c.subscription_status))}</code>` : ''}
+                        </div>
+                        <div style="margin-top:8px; font-size:0.85rem; color:#4338ca;">
+                            <strong>Enforced caps</strong> (what the app applies now):
+                            Users ${esc(fmtCap(c.resolved_user_limit))},
+                            Branches ${esc(fmtCap(c.resolved_branch_limit))},
+                            Products ${esc(fmtCap(c.resolved_product_limit))}
+                        </div>
+                        <div style="margin-top:6px; font-size:0.8rem; color:#64748b;">
+                            Stored columns can be blank; demo still uses platform defaults. Use <strong>Save subscription</strong> to persist explicit numbers on the company row.
+                        </div>
+                        <div style="margin-top:10px; font-size:0.85rem; color:#4338ca;">
+                            <strong>Trial / access window</strong> (for list + reminders): ${esc(trialListLabel)}
+                            ${
+                                !c.trial_expires_at && c.trial_display_expires_at
+                                    ? ' <span style="color:#64748b;">(inferred for <code>demo</code> from company creation — set <strong>Trial expires</strong> below and save to store on the company row.)</span>'
+                                    : ''
+                            }
+                        </div>
+                    </div>
+
+                    <div style="margin-top:16px; border:1px solid #e2e8f0; border-radius:10px; padding:14px; background:#fafafa;">
+                        <h3 style="margin:0 0 6px 0;">Organization &amp; setup invite</h3>
+                        <p style="margin:0 0 12px 0; color:#64748b; font-size:0.88rem; line-height:1.4;">
+                            Fix typos in the owner contact, then resend the setup email so they can choose a password. If SMTP is not configured on the server, copy the setup link from the toast / server logs or configure <code>SMTP_*</code> in the backend environment.
+                        </p>
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
+                            <div style="grid-column: 1 / -1;">
+                                <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Company name</label>
+                                <input id="lic-prof-name" type="text" value="${esc(c.name || '')}" maxlength="255" style="width:100%; max-width:480px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                            </div>
+                            <div>
+                                <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Owner email (login / invites)</label>
+                                <input id="lic-prof-email" type="email" value="${esc(c.email || '')}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                            </div>
+                            <div>
+                                <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Phone</label>
+                                <input id="lic-prof-phone" type="text" value="${esc(c.phone || '')}" maxlength="50" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                            </div>
+                            <div>
+                                <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Owner full name <span style="font-weight:400;color:#64748b;">(suggested username)</span></label>
+                                <input id="lic-prof-admin-name" type="text" value="${esc(c.tenant_admin_full_name || '')}" maxlength="255" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                            </div>
+                        </div>
+                        <button type="button" id="lic-save-profile" class="btn btn-primary" style="margin-top:12px;">Save organization</button>
+                        <div style="margin-top:16px; padding-top:14px; border-top:1px solid #e2e8f0;">
+                            <div style="font-weight:600; margin-bottom:6px;">Setup invite</div>
+                            ${
+                                tenantIdForInvite
+                                    ? `<p style="margin:0 0 8px 0; font-size:0.85rem; color:#475569;">Tenant <code>${esc(tenantIdForInvite)}</code>${c.tenant_subdomain ? ` · subdomain <code>${esc(c.tenant_subdomain)}</code>` : ''}</p>
+                                <button type="button" id="lic-resend-invite" class="btn btn-secondary">Resend setup invite email</button>
+                                <span id="lic-invite-action-status" style="margin-left:10px; color:#64748b; font-size:0.85rem;"></span>`
+                                    : `<p style="margin:0; color:#b45309; font-size:0.88rem;">No tenant registry row is linked to this company — invites cannot be sent until provisioning is repaired.</p>`
+                            }
+                        </div>
+                    </div>
+
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; margin-top:16px;">
                         <div style="border:1px solid #e2e8f0; border-radius:10px; padding:12px; grid-column: 1 / -1;">
                             <h3 style="margin:0 0 6px 0;">Subscription &amp; plan</h3>
                             <p style="margin:0 0 12px 0; color:#64748b; font-size:0.88rem; line-height:1.4;">
-                                Choose a predefined healthcare SaaS tier. Caps apply to users, branches, and catalog size (empty cap = unlimited). Billing integration still uses your Stripe price configuration per tier slug.
+                                Choose a tier to preset caps. Fields below show <strong>stored</strong> caps when set; otherwise they show the same numbers as <strong>Enforced caps</strong> above (demo defaults from server config when the slug is demo and columns are empty). Non-demo plans with blank caps mean no numeric limit unless you set one.
                             </p>
                             <div id="lic-tier-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap:10px;">
                                 ${SAAS_TIERS.map((t) => {
                                     const cur = ((c.subscription_plan || '').trim().toLowerCase() === t.slug);
-                                    const b = cur ? '#6366f1' : '#e2e8f0';
+                                    const b = cur ? '#4338ca' : '#e2e8f0';
                                     const bg = cur ? '#f5f3ff' : '#fff';
+                                    const ring = cur ? '0 0 0 3px rgba(67,56,202,0.35), 0 4px 14px rgba(67,56,202,0.12)' : 'none';
                                     return `
-                                <button type="button" class="lic-tier-card" data-tier-slug="${esc(t.slug)}" style="cursor:pointer; text-align:left; border:2px solid ${b}; background:${bg}; border-radius:10px; padding:10px 12px; font:inherit;">
+                                <button type="button" class="lic-tier-card" data-tier-slug="${esc(t.slug)}" style="cursor:pointer; text-align:left; border:2px solid ${b}; background:${bg}; border-radius:10px; padding:10px 12px; font:inherit; box-shadow:${ring}; outline:${cur ? '2px solid #4338ca' : 'none'}; outline-offset:2px;">
                                     <div style="font-weight:700; font-size:0.95rem;">${esc(t.title)}</div>
                                     <div style="color:#64748b; font-size:0.78rem; margin:4px 0 6px;">${esc(t.subtitle)}</div>
                                     <div style="font-weight:600; color:#4338ca; font-size:0.85rem;">${esc(t.price)}</div>
@@ -487,15 +711,15 @@ export async function init() {
                             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-top:12px;">
                                 <div>
                                     <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">User cap</label>
-                                    <input id="lic-cap-users" type="number" min="1" placeholder="empty = unlimited" value="${c.user_limit != null ? esc(String(c.user_limit)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    <input id="lic-cap-users" type="number" min="1" placeholder="blank + non-demo → unlimited" value="${dispUserCap != null ? esc(String(dispUserCap)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                                 </div>
                                 <div>
                                     <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Branch cap</label>
-                                    <input id="lic-cap-branches" type="number" min="1" placeholder="empty = unlimited" value="${c.branch_limit != null ? esc(String(c.branch_limit)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    <input id="lic-cap-branches" type="number" min="1" placeholder="blank + non-demo → unlimited" value="${dispBranchCap != null ? esc(String(dispBranchCap)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                                 </div>
                                 <div>
                                     <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Product cap</label>
-                                    <input id="lic-cap-products" type="number" min="1" placeholder="empty = unlimited" value="${c.product_limit != null ? esc(String(c.product_limit)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    <input id="lic-cap-products" type="number" min="1" placeholder="blank + non-demo → unlimited" value="${dispProductCap != null ? esc(String(dispProductCap)) : ''}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                                 </div>
                             </div>
                             <label style="display:block; font-weight:600; margin:12px 0 6px 0;">Status</label>
@@ -508,7 +732,7 @@ export async function init() {
                                 }).join('')}
                             </select>
                             <label style="display:block; font-weight:600; margin:10px 0 6px 0;">Trial expires</label>
-                            <input id="lic-trial" type="datetime-local" value="${esc(toLocalDatetimeValue(c.trial_expires_at))}" style="width:100%; max-width:320px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                            <input id="lic-trial" type="datetime-local" value="${esc(toLocalDatetimeValue(trialForInput))}" style="width:100%; max-width:320px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                             <button id="lic-save-sub" class="btn btn-primary" style="margin-top:12px;">Save subscription</button>
                         </div>
 
@@ -631,6 +855,47 @@ export async function init() {
 
             document.getElementById('lic-back')?.addEventListener('click', () => void loadCompanies());
 
+            document.getElementById('lic-save-profile')?.addEventListener('click', async () => {
+                try {
+                    if (typeof api.patchProfile !== 'function') throw new Error('Profile API not available');
+                    const name = (document.getElementById('lic-prof-name')?.value || '').trim();
+                    const email = (document.getElementById('lic-prof-email')?.value || '').trim();
+                    const phone = (document.getElementById('lic-prof-phone')?.value || '').trim() || null;
+                    const admin_full_name = (document.getElementById('lic-prof-admin-name')?.value || '').trim() || null;
+                    if (!name) throw new Error('Company name is required');
+                    if (!email) throw new Error('Owner email is required');
+                    await api.patchProfile(companyId, { name, email, phone, admin_full_name });
+                    toast('Organization saved', 'success');
+                    await loadCompanyDetail(companyId);
+                } catch (e) {
+                    toast(e.message || 'Failed to save organization', 'error');
+                }
+            });
+
+            document.getElementById('lic-resend-invite')?.addEventListener('click', async () => {
+                const tid = tenantIdForInvite;
+                const st = document.getElementById('lic-invite-action-status');
+                if (!tid) return;
+                if (st) st.textContent = 'Sending…';
+                try {
+                    const invApi = window.API?.admin?.tenants?.invites;
+                    if (!invApi?.create) throw new Error('Invite API not available');
+                    const inv = await invApi.create(tid, { expires_in_days: 7, send_email: true });
+                    const url = inv && inv.setup_url ? String(inv.setup_url) : '';
+                    if (st) {
+                        st.textContent = inv?.email_sent ? 'Email queued.' : 'Invite created; email may be disabled (check SMTP).';
+                    }
+                    if (url) {
+                        toast(inv?.email_sent ? 'Invite email queued' : `Setup link: ${url}`, 'info');
+                    } else {
+                        toast('Invite created', 'success');
+                    }
+                } catch (e) {
+                    if (st) st.textContent = '';
+                    toast(e.message || 'Invite failed', 'error');
+                }
+            });
+
             const licApplyTierToForm = (slug) => {
                 const t = _tierBySlug(slug);
                 const adv = document.getElementById('lic-plan-slug-adv');
@@ -649,8 +914,11 @@ export async function init() {
                 if (pr) pr.value = t.products != null ? String(t.products) : '';
                 mount.querySelectorAll('.lic-tier-card').forEach((btn) => {
                     const on = (btn.getAttribute('data-tier-slug') || '') === slug;
-                    btn.style.borderColor = on ? '#6366f1' : '#e2e8f0';
+                    btn.style.borderColor = on ? '#4338ca' : '#e2e8f0';
                     btn.style.background = on ? '#f5f3ff' : '#fff';
+                    btn.style.boxShadow = on ? '0 0 0 3px rgba(67,56,202,0.35), 0 4px 14px rgba(67,56,202,0.12)' : 'none';
+                    btn.style.outline = on ? '2px solid #4338ca' : 'none';
+                    btn.style.outlineOffset = on ? '2px' : '';
                 });
             };
 
