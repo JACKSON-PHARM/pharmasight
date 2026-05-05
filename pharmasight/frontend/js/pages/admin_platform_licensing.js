@@ -172,7 +172,7 @@ async function setupPublicDemoSignupQr() {
             }
         })();
         const base = savedPublic || window.location.origin;
-        const link = `${base}/#login?demo=1`;
+        const link = `${base.replace(/\/+$/, '')}/app#login?demo=1`;
         const input = document.getElementById('public-demo-signup-link');
         const copyBtn = document.getElementById('copy-public-demo-signup-link-btn');
         const qrContainer = document.getElementById('public-demo-qr');

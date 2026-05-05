@@ -513,7 +513,7 @@ async function loadLogin() {
                             toastMsg += ' Your username is ' + uname + '.';
                         }
                         if (sub && origin) {
-                            toastMsg += ' To sign in later, use ' + origin + '/?tenant=' + encodeURIComponent(sub) + '#login';
+                            toastMsg += ' To sign in later, use ' + origin + '/app?tenant=' + encodeURIComponent(sub) + '#login';
                         }
                         toastMsg += ' Check your email for setup details and save your username.';
                         showToast(toastMsg, 'success');
@@ -847,7 +847,7 @@ async function loadLogin() {
                                     tenants.forEach(function(t) {
                                         const sub = (t.subdomain || '').replace(/"/g, '&quot;');
                                         const name = (t.name || t.subdomain || sub).replace(/</g, '&lt;');
-                                        const url = (window.location.pathname || '/') + '?tenant=' + encodeURIComponent(t.subdomain) + '#login';
+                                        const url = '/app?tenant=' + encodeURIComponent(t.subdomain) + '#login';
                                         html += '<a href="' + url + '" class="btn btn-secondary" style="font-size:0.85rem;">' + name + '</a>';
                                     });
                                     html += '</div>';
@@ -868,7 +868,7 @@ async function loadLogin() {
                                 const isAuthInvalid = usernameResponse.status === 401 && (msgLc.includes('invalid username') || msgLc.includes('invalid password'));
                                 let hint = '';
                                 if (isOrgDeactivated && hasTenant) {
-                                    hint = '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">If you have an account in another organization, <a href="' + (window.location.pathname || '/') + '#login">sign in without the organization link</a>.</p>';
+                                    hint = '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">If you have an account in another organization, <a href="/app#login">sign in without the organization link</a>.</p>';
                                 } else if (!hasTenant) {
                                     hint = '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">Signing in to an organization? Use the link from your invite email, or add <code>?tenant=your-org</code> to the URL (e.g. <code>?tenant=your-org-subdomain</code> then #login).</p>';
                                 }

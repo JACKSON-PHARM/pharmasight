@@ -1,4 +1,6 @@
 # PharmaSight on Render
+# Public visitors: https://<your-service>.onrender.com/ → marketing site (SEO / free trial).
+# Staff app: https://<your-service>.onrender.com/app#login (password reset & invite emails use /app too).
 # Set these in Render Dashboard → Service → Environment:
 #   ADMIN_PASSWORD = your-secure-admin-password  (login with username "admin")
 #   DATABASE_URL, SUPABASE_* = as in local dev

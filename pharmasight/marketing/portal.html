@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <base href="/marketing/">
   <title>Account — PharmaSight</title>
   <link rel="stylesheet" href="site.css">
   <script src="config.js"></script>
@@ -85,7 +86,7 @@
           });
       }
 
-      document.getElementById('openErp').href = erp + '/#landing';
+      document.getElementById('openErp').href = erp + '/app#landing';
       document.getElementById('waUpgrade').href = 'https://wa.me/' + ((cfg.WHATSAPP_E164 || '254700000000')) + '?text=' + encodeURIComponent('Hi — I want to upgrade my PharmaSight subscription.');
 
       document.getElementById('loginBtn').onclick = function () {

@@ -921,7 +921,7 @@ def auth_request_reset(
     logger.info("[request-reset] User found, queuing reset email to %s (tenant=%s)", user.email, subdomain_for_token)
     reset_token = create_reset_token(str(user.id), subdomain_for_token)
     base = get_public_base_url(request)
-    reset_url = f"{base}/#password-reset?token={reset_token}"
+    reset_url = f"{base.rstrip('/')}/app#password-reset?token={reset_token}"
     expire_minutes = settings.RESET_TOKEN_EXPIRE_MINUTES
     to_email = user.email
     if not EmailService.is_configured():
@@ -936,7 +936,7 @@ def auth_request_reset(
             uname = (getattr(user, "username", None) or "").strip() or None
             sign_in_url = None
             if subdomain_for_token and subdomain_for_token != LEGACY_TENANT_SUBDOMAIN:
-                sign_in_url = f"{base.rstrip('/')}/?tenant={subdomain_for_token}#login"
+                sign_in_url = f"{base.rstrip('/')}/app?tenant={subdomain_for_token}#login"
             sent = EmailService.send_password_reset(
                 to_email,
                 reset_url,

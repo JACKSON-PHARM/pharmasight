@@ -1,4 +1,23 @@
 /**
+ * If user lands on / or /marketing/* with an ERP hash (#login, #password-reset, handoff, etc.),
+ * send them to the SPA mount at /app so they never see the marketing shell by mistake.
+ */
+(function () {
+    try {
+        var path = window.location.pathname || '';
+        var onMarketingShell =
+            path === '/' ||
+            path === '/marketing' ||
+            path.indexOf('/marketing/') === 0;
+        if (!onMarketingShell) return;
+        var h = window.location.hash || '';
+        if (h.length > 1) {
+            window.location.replace(window.location.origin + '/app' + window.location.search + h);
+        }
+    } catch (_e) {}
+})();
+
+/**
  * Override via optional <meta name="pharmasight-api-base" content="https://api.example.com">
  * and <meta name="pharmasight-erp-url" content="https://app.example.com"> on each HTML page.
  */

@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PharmaSight — Pharmacy, clinic & agrovet operations</title>
+  <base href="/marketing/">
+  <meta name="description" content="PharmaSight — pharmacy POS and inventory software for retail pharmacies, dispensaries, clinics, and agrovet. Stock, sales, purchases, branches. Start a free trial.">
+  <meta name="keywords" content="pharmacy POS, pharmacy software, pharmacy inventory, dispensary software, retail pharmacy Kenya, clinic stock, agrovet POS">
+  <title>PharmaSight — Pharmacy POS &amp; inventory software</title>
   <link rel="stylesheet" href="site.css">
   <script src="config.js"></script>
 </head>
@@ -51,7 +54,7 @@
       var cfg = window.MARKETING_CONFIG || {};
       var erp = (cfg.ERP_APP_URL || window.location.origin).replace(/\/$/, '');
       var si = document.getElementById('signInErp');
-      if (si) si.href = erp + '/#login';
+      if (si) si.href = erp + '/app#login';
       var wa = 'https://wa.me/' + (cfg.WHATSAPP_E164 || '254700000000') + '?text=' + encodeURIComponent('Hi PharmaSight — I have a question about the product.');
       var wf = document.getElementById('waFooter');
       if (wf) wf.href = wa;

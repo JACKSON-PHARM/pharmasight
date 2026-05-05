@@ -33,7 +33,7 @@ def main() -> int:
     try:
         ok = EmailService.send_password_reset(
             to_email,
-            "https://example.com/#password-reset?token=test-token",
+            "https://example.com/app#password-reset?token=test-token",
             60,
         )
         if ok:

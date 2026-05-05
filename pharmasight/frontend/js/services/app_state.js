@@ -82,9 +82,8 @@ async function clearAppState() {
  */
 function getCleanLoginUrl() {
     const origin = typeof window !== 'undefined' && window.location.origin ? window.location.origin : '';
-    const pathname = (typeof window !== 'undefined' && window.location.pathname) ? window.location.pathname : '/';
-    const base = origin + (pathname === '' ? '/' : pathname);
-    return (base.endsWith('/') ? base : base + '/') + '#login';
+    // ERP SPA is served at /app when a public marketing homepage exists at /. Keeps login bookmarks stable.
+    return origin.replace(/\/$/, '') + '/app#login';
 }
 
 /**

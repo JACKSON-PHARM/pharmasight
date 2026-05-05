@@ -160,9 +160,8 @@ async function loadTenantInviteSetup() {
                 var res = await window.API.tenantInviteSetup.complete({ token: token, password: pwd });
                 if (res && res.success) {
                     try { sessionStorage.setItem('tenant_invite_setup_done', '1'); } catch (_) {}
-                    var base = window.location.origin + (window.location.pathname || '/');
                     var sub = typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_tenant_subdomain') : null;
-                    var loginUrl = base + (sub ? '?tenant=' + encodeURIComponent(sub) : '') + '#login';
+                    var loginUrl = window.location.origin + '/app' + (sub ? '?tenant=' + encodeURIComponent(sub) : '') + '#login';
                     window.location.replace(loginUrl);
                 } else {
                     throw new Error(res && (res.message || res.detail) ? (res.message || res.detail) : 'Setup failed');

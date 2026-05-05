@@ -308,6 +308,7 @@ if _UPLOADS_DIR.is_dir():
 if _FRONTEND_DIR.is_dir():
     _index_path = _FRONTEND_DIR / "index.html"
     _admin_path = _FRONTEND_DIR / "admin.html"
+    _marketing_index_path = (_MARKETING_DIR / "index.html") if _MARKETING_DIR.is_dir() else None
 
     if _MARKETING_DIR.is_dir():
         @app.get("/marketing")
@@ -322,6 +323,12 @@ if _FRONTEND_DIR.is_dir():
 
     @app.get("/")
     async def root():
+        """
+        Public marketing homepage when marketing/index.html exists (SEO / trials).
+        ERP SPA entry for staff: /app (hash routes e.g. #login).
+        """
+        if _marketing_index_path and _marketing_index_path.is_file():
+            return FileResponse(_marketing_index_path, media_type="text/html")
         return FileResponse(_index_path, media_type="text/html")
 
     @app.get("/admin.html")

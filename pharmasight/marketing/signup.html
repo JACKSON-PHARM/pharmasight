@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <base href="/marketing/">
   <title>Start free trial — PharmaSight</title>
   <link rel="stylesheet" href="site.css">
   <script src="config.js"></script>
@@ -87,7 +88,7 @@
           }
           var q = sub ? ('?tenant=' + encodeURIComponent(sub)) : '';
           var enc = encodeURIComponent(token);
-          window.location.href = erp + q + '#handoff_token=' + enc;
+          window.location.href = erp + '/app' + q + '#handoff_token=' + enc;
         } catch (x) {
           err.textContent = 'Network error. Check API URL and that the backend is running.';
           err.style.display = 'block';
