@@ -74,6 +74,38 @@ class EncounterResponse(BaseModel):
     created_by: Optional[UUID] = None
     created_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
+    # Convenience: include patient summary to avoid N+1 fetches on the UI (queue screens).
+    patient: Optional[PatientResponse] = None
+
+    class Config:
+        from_attributes = True
+
+
+# --- Triage ---
+class EncounterTriageUpsert(BaseModel):
+    payment_mode: Optional[str] = None  # e.g. cash | insurance | other
+    insurance_scheme: Optional[str] = None
+    chief_complaint: Optional[str] = None
+    symptoms: Optional[str] = None
+    triage_notes: Optional[str] = None
+    vitals: Optional[dict] = None
+
+
+class EncounterTriageResponse(BaseModel):
+    id: UUID
+    encounter_id: UUID
+    company_id: UUID
+    branch_id: UUID
+    patient_id: UUID
+    payment_mode: Optional[str] = None
+    insurance_scheme: Optional[str] = None
+    chief_complaint: Optional[str] = None
+    symptoms: Optional[str] = None
+    triage_notes: Optional[str] = None
+    vitals: Optional[dict] = None
+    created_by: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

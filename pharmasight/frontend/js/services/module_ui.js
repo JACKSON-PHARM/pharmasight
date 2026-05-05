@@ -481,7 +481,14 @@
 
         let userMods = await fetchUserModuleList();
         if (!userMods.length) {
-            userMods = ['pharmacy'];
+            // If RBAC module endpoint fails (e.g. transient backend error), prefer company entitlements
+            // so Enterprise tenants don't collapse to Pharmacy-only UX.
+            try {
+                userMods = Array.from(_enabledModules || []);
+            } catch (_) {
+                userMods = [];
+            }
+            if (!userMods.length) userMods = ['pharmacy'];
         }
         _modules = computeVisibleSwitcherModules(userMods);
 

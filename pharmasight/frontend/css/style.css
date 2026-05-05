@@ -341,6 +341,13 @@ body {
     flex-direction: column;
 }
 
+/* Prevent flex-shrink from collapsing lower sidebar rows (e.g. Management links). */
+.sidebar-nav > .nav-section-label,
+.sidebar-nav > .nav-item,
+.sidebar-nav > .nav-sidebar-empty-hint {
+    flex-shrink: 0;
+}
+
 .nav-item {
     display: flex;
     align-items: center;

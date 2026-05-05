@@ -19,7 +19,8 @@
   </header>
   <main>
     <h1>Start free trial</h1>
-    <p style="color:var(--muted); max-width:36rem;">Creates your organization, HQ branch, and admin user. You will be sent to the operations app to finish setup.</p>
+    <p style="color:var(--muted); max-width:36rem;">Creates your organization and admin user. After you submit, we send an invitation email with a link to finish setup—check your inbox and spam folder.</p>
+
     <form id="signupForm" class="card" style="max-width:420px; margin-top:1.5rem;">
       <div class="form-group">
         <label for="org">Organization name</label>
@@ -34,8 +35,31 @@
         <input id="email" name="email" type="email" required autocomplete="email">
       </div>
       <div class="form-group">
-        <label for="phone">Phone (optional)</label>
-        <input id="phone" name="phone" type="tel" autocomplete="tel">
+        <label for="country">Country / region</label>
+        <select id="country" name="country" required style="width:100%;max-width:420px;padding:0.55rem 0.65rem;border-radius:0.4rem;border:1px solid #475569;background:#0f172a;color:var(--text);">
+          <option value="254" selected>Kenya (+254)</option>
+          <option value="256">Uganda (+256)</option>
+          <option value="255">Tanzania (+255)</option>
+          <option value="250">Rwanda (+250)</option>
+          <option value="251">Ethiopia (+251)</option>
+          <option value="211">South Sudan (+211)</option>
+          <option value="249">Sudan (+249)</option>
+          <option value="252">Somalia (+252)</option>
+          <option value="257">Burundi (+257)</option>
+          <option value="27">South Africa (+27)</option>
+          <option value="234">Nigeria (+234)</option>
+          <option value="233">Ghana (+233)</option>
+          <option value="44">United Kingdom (+44)</option>
+          <option value="1">United States / Canada (+1)</option>
+          <option value="971">United Arab Emirates (+971)</option>
+          <option value="91">India (+91)</option>
+          <option value="">Other — full international number</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="phone">Mobile number</label>
+        <input id="phone" name="phone" type="tel" required autocomplete="tel" placeholder="712345678" inputmode="numeric">
+        <small id="phoneHint" style="color:var(--muted); display:block; margin-top:0.35rem;">Enter your number without the country code (leading 0 is OK). Used to help prevent duplicate signups.</small>
       </div>
       <div class="form-group">
         <label for="password">Password (min 8 characters)</label>
@@ -44,13 +68,68 @@
       <button type="submit" class="btn btn-primary" id="submitBtn">Create account</button>
       <div id="err" class="error" style="display:none;"></div>
     </form>
+
+    <div id="successPanel" class="card" style="display:none; max-width:420px; margin-top:1.5rem;">
+      <h2 style="margin-top:0;">Check your email</h2>
+      <p id="successBody">We sent a setup link to <strong id="successEmail"></strong>. Open it to finish onboarding (branch selection and related steps).</p>
+      <p id="successMailWarning" style="display:none; color:var(--muted);">Our mail server is not configured on this environment—the link was still created. Sign in from the app using your username and password, or contact support.</p>
+      <p style="margin-bottom:0;"><a class="btn btn-primary" id="openAppBtn" href="#">Open operations app</a></p>
+      <p style="margin-top:1rem; margin-bottom:0;"><a href="index.html">Back to home</a></p>
+    </div>
   </main>
   <footer><a href="index.html">Home</a> · PharmaSight</footer>
   <script>
     (function () {
+      function signupDetailMessage(data) {
+        if (!data || data.detail == null) return '';
+        var d = data.detail;
+        if (typeof d === 'string') return d;
+        if (Array.isArray(d)) {
+          return d.map(function (x) { return (x && x.msg) ? x.msg : JSON.stringify(x); }).join(' ');
+        }
+        if (typeof d === 'object' && typeof d.message === 'string') return d.message;
+        return '';
+      }
+
       var form = document.getElementById('signupForm');
       var err = document.getElementById('err');
       var btn = document.getElementById('submitBtn');
+      var successPanel = document.getElementById('successPanel');
+      var successEmail = document.getElementById('successEmail');
+      var successMailWarning = document.getElementById('successMailWarning');
+      var openAppBtn = document.getElementById('openAppBtn');
+      var countryEl = document.getElementById('country');
+      var phoneEl = document.getElementById('phone');
+      var phoneHint = document.getElementById('phoneHint');
+
+      function syncPhoneHint() {
+        var other = !countryEl.value;
+        if (other) {
+          phoneHint.textContent = 'Type the full number including country code (digits only, e.g. 447911123456).';
+          phoneEl.placeholder = 'Full international digits';
+        } else {
+          phoneHint.textContent = 'Enter your number without the country code (leading 0 is OK). Used to help prevent duplicate signups.';
+          phoneEl.placeholder = '712345678';
+        }
+      }
+      countryEl.addEventListener('change', syncPhoneHint);
+      syncPhoneHint();
+
+      function buildSignupPhone() {
+        var cc = countryEl.value;
+        var raw = phoneEl.value.replace(/\D/g, '');
+        if (!cc) {
+          return raw;
+        }
+        if (raw.indexOf(cc) === 0) {
+          raw = raw.slice(cc.length);
+        }
+        if (raw.charAt(0) === '0') {
+          raw = raw.slice(1);
+        }
+        return cc + raw;
+      }
+
       form.addEventListener('submit', async function (e) {
         e.preventDefault();
         err.style.display = 'none';
@@ -59,11 +138,22 @@
         var cfg = window.MARKETING_CONFIG || { API_BASE_URL: '', ERP_APP_URL: '' };
         var api = (cfg.API_BASE_URL || '').replace(/\/$/, '');
         var erp = (cfg.ERP_APP_URL || window.location.origin).replace(/\/$/, '');
+        var emailVal = document.getElementById('email').value.trim();
+        var digits = buildSignupPhone();
+        if (!digits || digits.length < 8) {
+          err.textContent = countryEl.value
+            ? 'Enter a valid mobile number (national digits only, at least 8 digits total with country code).'
+            : 'Enter a valid international phone number (at least 8 digits including country code).';
+          err.style.display = 'block';
+          btn.disabled = false;
+          return;
+        }
+        var phoneVal = '+' + digits;
         var body = {
           organization_name: document.getElementById('org').value.trim(),
           full_name: document.getElementById('full').value.trim(),
-          email: document.getElementById('email').value.trim(),
-          phone: document.getElementById('phone').value.trim() || null,
+          email: emailVal,
+          phone: phoneVal,
           password: document.getElementById('password').value
         };
         try {
@@ -74,21 +164,15 @@
           });
           var data = await res.json().catch(function () { return {}; });
           if (!res.ok) {
-            var msg = (typeof data.detail === 'string') ? data.detail : (res.statusText || 'Signup failed');
-            err.textContent = msg;
+            err.textContent = signupDetailMessage(data) || (res.statusText || 'Signup failed');
             err.style.display = 'block';
             return;
           }
-          var sub = data.tenant_subdomain || '';
-          var token = data.signup_handoff_token || '';
-          if (!token) {
-            err.textContent = 'Account created but handoff token missing. Try signing in from the app.';
-            err.style.display = 'block';
-            return;
-          }
-          var q = sub ? ('?tenant=' + encodeURIComponent(sub)) : '';
-          var enc = encodeURIComponent(token);
-          window.location.href = erp + '/app' + q + '#handoff_token=' + enc;
+          form.style.display = 'none';
+          successEmail.textContent = emailVal;
+          successMailWarning.style.display = (data.invite_email_sent === false) ? 'block' : 'none';
+          openAppBtn.href = erp + '/app#login';
+          successPanel.style.display = 'block';
         } catch (x) {
           err.textContent = 'Network error. Check API URL and that the backend is running.';
           err.style.display = 'block';

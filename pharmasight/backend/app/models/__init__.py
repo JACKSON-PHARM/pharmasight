@@ -39,7 +39,7 @@ from .branch_inventory import (
     BranchReceipt,
     BranchReceiptLine,
 )
-from .clinic import Patient, Encounter, EncounterNote, ClinicOrder, ClinicOrderItem
+from .clinic import Patient, Encounter, EncounterNote, ClinicOrder, ClinicOrderItem, EncounterTriage
 from .etims_sync_cursor import EtimsSyncCursor
 
 __all__ = [
@@ -109,5 +109,6 @@ __all__ = [
     "EncounterNote",
     "ClinicOrder",
     "ClinicOrderItem",
+    "EncounterTriage",
     "EtimsSyncCursor",
 ]

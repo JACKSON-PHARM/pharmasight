@@ -52,6 +52,7 @@ class PlatformCompanyResponse(BaseModel):
     name: str
     email: Optional[str] = None
     phone: Optional[str] = None
+    portal_upgrade_whatsapp: Optional[str] = None
     currency: Optional[str] = None
     timezone: Optional[str] = None
     is_active: bool = True
@@ -101,6 +102,11 @@ class PatchCompanyProfileRequest(BaseModel):
     email: Optional[EmailStr] = None
     phone: Optional[str] = Field(None, max_length=50)
     admin_full_name: Optional[str] = Field(None, max_length=255)
+    portal_upgrade_whatsapp: Optional[str] = Field(
+        None,
+        max_length=32,
+        description="WhatsApp for marketing portal upgrade CTA (digits or local e.g. 07…); empty clears.",
+    )
 
 
 class CreatePlatformCompanyRequest(BaseModel):
@@ -445,6 +451,12 @@ def patch_company_profile(
     if "admin_full_name" in data:
         afn = data["admin_full_name"]
         tenant.admin_full_name = (str(afn).strip()[:255] if afn else None)
+    if "portal_upgrade_whatsapp" in data:
+        wa = data["portal_upgrade_whatsapp"]
+        if wa is None or str(wa).strip() == "":
+            c.portal_upgrade_whatsapp = None
+        else:
+            c.portal_upgrade_whatsapp = str(wa).strip()[:32]
 
     db.commit()
     master_db.commit()

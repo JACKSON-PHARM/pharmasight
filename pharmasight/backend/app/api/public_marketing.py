@@ -20,7 +20,7 @@ class PublicSignupRequest(BaseModel):
     organization_name: str = Field(..., min_length=1, max_length=255)
     full_name: str = Field(..., min_length=1, max_length=255)
     email: EmailStr
-    phone: str | None = None
+    phone: str = Field(..., min_length=5, max_length=50)
     password: str = Field(..., min_length=8)
 
 
@@ -57,6 +57,7 @@ def public_signup(request: Request, body: PublicSignupRequest):
                 if (
                     "already registered with this email" in msg_lc
                     or "already registered for this organization" in msg_lc
+                    or "already registered with this phone number" in msg_lc
                     or "organization with this name already exists" in msg_lc
                 )
                 else status.HTTP_400_BAD_REQUEST

@@ -354,7 +354,7 @@ async function loadLogin() {
                             </div>
                             <div class="form-group">
                                 <label for="demoPhone">Phone</label>
-                                <input type="tel" id="demoPhone" autocomplete="tel" placeholder="+254700000000">
+                                <input type="tel" id="demoPhone" required autocomplete="tel" placeholder="+254700000000 (required)" inputmode="tel">
                             </div>
                             <div class="form-group">
                                 <label for="demoPassword">Password</label>
@@ -457,6 +457,14 @@ async function loadLogin() {
                         }
                         return;
                     }
+                    const phoneDigits = phone.replace(/\D/g, '');
+                    if (!phone || phoneDigits.length < 8) {
+                        if (demoError) {
+                            demoError.textContent = 'Please enter a phone number with country code (at least 8 digits).';
+                            demoError.style.display = 'block';
+                        }
+                        return;
+                    }
 
                     const baseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL)
                         ? CONFIG.API_BASE_URL
@@ -515,8 +523,11 @@ async function loadLogin() {
                         if (sub && origin) {
                             toastMsg += ' To sign in later, use ' + origin + '/app?tenant=' + encodeURIComponent(sub) + '#login';
                         }
-                        toastMsg += ' Check your email for setup details and save your username.';
+                        toastMsg += ' Check your email for the setup link.';
                         showToast(toastMsg, 'success');
+                        if (data.invite_email_sent === false) {
+                            showToast('Email could not be sent (SMTP not configured). Sign in with your username or ask an admin to resend your invite.', 'warning');
+                        }
                     }
 
                     // Close modal

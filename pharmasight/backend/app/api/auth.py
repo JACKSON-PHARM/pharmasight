@@ -66,6 +66,7 @@ from app.utils.auth_internal import (
 )
 from app.services.demo_signup_service import create_demo_tenant
 from app.utils.company_access import get_company_access, company_access_to_subscription_access
+from app.utils.whatsapp_e164 import normalize_whatsapp_e164
 
 router = APIRouter()
 
@@ -100,9 +101,23 @@ def _raise_http_for_db_unreachable(exc: OperationalError) -> None:
     raise exc
 
 
+PORTAL_BILLING_ROLES = frozenset({"admin", "owner", "super admin"})
+
+
 class AuthMeResponse(BaseModel):
     user_id: str
     roles: List[str]
+    username: Optional[str] = None
+    full_name: Optional[str] = None
+    company_name: Optional[str] = None
+    portal_billing_visible: bool = Field(
+        default=False,
+        description="True when the user may see plan/subscription details on the marketing portal.",
+    )
+    portal_whatsapp_e164: Optional[str] = Field(
+        default=None,
+        description="Digits-only international WhatsApp for wa.me (company override or platform default).",
+    )
     subscription_access: Optional[str] = None
     # Backward-compatible fields (used by existing SPA). Values are derived from `companies` only.
     tenant_status: Optional[str] = None
@@ -188,7 +203,7 @@ class StartDemoRequest(BaseModel):
     organization_name: str = Field(..., min_length=1, max_length=255, description="Used to create the organization/company")
     full_name: str = Field(..., min_length=1, max_length=255, description="Used for display and to generate the username")
     email: EmailStr
-    phone: Optional[str] = None
+    phone: str = Field(..., min_length=5, max_length=50, description="Required; used for duplicate detection")
     password: str = Field(..., min_length=8)
 
 
@@ -202,6 +217,10 @@ class StartDemoResponse(BaseModel):
     user_id: Optional[str] = None
     email: Optional[str] = None
     signup_handoff_token: Optional[str] = None
+    invite_email_sent: Optional[bool] = Field(
+        default=None,
+        description="True if the setup invite email was delivered via SMTP.",
+    )
 
 
 class ExchangeSignupHandoffRequest(BaseModel):
@@ -230,7 +249,29 @@ def start_demo_api_response(result: dict, request_email: str) -> StartDemoRespon
         user_id=user_id or None,
         email=email or None,
         signup_handoff_token=handoff,
+        invite_email_sent=result.get("invite_email_sent"),
     )
+
+
+def _portal_redacted_me(payload: dict) -> dict:
+    """Strip billing/subscription fields for marketing portal when caller is not an owner/admin."""
+    if payload.get("portal_billing_visible"):
+        return payload
+    redacted = dict(payload)
+    for key in (
+        "subscription_access",
+        "tenant_status",
+        "subscription_plan",
+        "trial_ends_at",
+        "subscription_period_ends_at",
+        "trial_days_remaining",
+        "subscription_tenant_subdomain",
+        "subscription_used_default_tenant_fallback",
+        "company_id",
+        "company_access",
+    ):
+        redacted[key] = None
+    return redacted
 
 
 @router.get("/auth/me", response_model=AuthMeResponse)
@@ -241,6 +282,9 @@ def auth_me(
     """
     Return current authenticated user_id, RBAC role names, and subscription/trial context
     derived from the authenticated user's effective `company_id` (single source of truth).
+
+    When the client sends ``X-PharmaSight-Portal: 1`` (marketing customer portal), subscription/plan
+    fields are omitted unless ``portal_billing_visible`` (company admin / owner roles).
     """
     user, db = user_db
     auth_hdr = request.headers.get("Authorization")
@@ -304,9 +348,24 @@ def auth_me(
         elif company_access == "active" and end > n:
             # Paid / active row with a future renewal date: surface whole days for banner UX
             trial_days_remaining = max(0, delta_days)
-    return {
+
+    portal_billing_visible = bool(PORTAL_BILLING_ROLES.intersection(set(roles)))
+    portal_wa_raw = (
+        getattr(company, "portal_upgrade_whatsapp", None) if company else None
+    )
+    portal_whatsapp_e164 = normalize_whatsapp_e164(
+        str(portal_wa_raw).strip() if portal_wa_raw else None,
+        default_e164=settings.PORTAL_DEFAULT_WHATSAPP or "0708476318",
+    )
+
+    row = {
         "user_id": str(user.id),
         "roles": roles,
+        "username": getattr(user, "username", None),
+        "full_name": getattr(user, "full_name", None),
+        "company_name": getattr(company, "name", None) if company else None,
+        "portal_billing_visible": portal_billing_visible,
+        "portal_whatsapp_e164": portal_whatsapp_e164,
         "subscription_access": subscription_access,
         "tenant_status": getattr(company, "subscription_status", None) if company else None,
         "subscription_plan": getattr(company, "subscription_plan", None) if company else None,
@@ -318,6 +377,12 @@ def auth_me(
         "company_id": str(company_id) if company_id else None,
         "company_access": company_access,
     }
+
+    hdr = (request.headers.get("x-pharmasight-portal") or "").strip().lower()
+    if hdr in ("1", "true", "yes"):
+        return _portal_redacted_me(row)
+
+    return row
 
 
 def _find_user_in_db(db: Session, normalized_username: str, check_email: bool) -> Optional[User]:
@@ -594,6 +659,7 @@ def auth_start_demo(request: Request, body: StartDemoRequest):
                 if (
                     "already registered with this email" in msg_lc
                     or "already registered for this organization" in msg_lc
+                    or "already registered with this phone number" in msg_lc
                     or "organization with this name already exists" in msg_lc
                 )
                 else status.HTTP_400_BAD_REQUEST

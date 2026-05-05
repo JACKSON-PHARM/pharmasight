@@ -1568,7 +1568,10 @@ async function renderEditRoleForm(page, roleId, roles) {
                                   placeholder="Describe the role's responsibilities">${escapeHtml(role.description || '')}</textarea>
                     </div>
                     <h4 style="margin-top: 1.5rem; margin-bottom: 1rem;">Permissions</h4>
-                    <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">Toggle permissions for this role. Check = granted.</p>
+                    <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
+                        Toggle permissions for this role. Check = granted.
+                        Rows labeled <strong>Module · …</strong> control which areas appear in the top module switcher; the company must still have that module licensed.
+                    </p>
                     <div class="perm-matrix-container" style="overflow-x: auto; margin-bottom: 1.5rem;">
                         <table class="perm-matrix">
                             <thead>
@@ -3215,6 +3218,11 @@ function getPermissionDisplayLabel(perm) {
     if (!perm || typeof perm !== 'object') return '';
     if (perm.name === 'sales.view_cost') {
         return 'View Cost in Sales/Quotation Search';
+    }
+    const modSwitch = /^modules\.(.+)$/.exec(perm.name || '');
+    if (modSwitch) {
+        const slug = modSwitch[1];
+        return slug.charAt(0).toUpperCase() + slug.slice(1);
     }
     return (perm.action || '').replace(/_/g, ' ');
 }

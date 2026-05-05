@@ -21,6 +21,20 @@ import threading
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+_MIN_SIGNUP_PHONE_DIGITS = 8
+
+
+def _normalize_phone_digits(phone: str) -> str:
+    return "".join(c for c in (phone or "") if c.isdigit())
+
+
+def _phone_digits_sql(column):
+    """PostgreSQL: strip non-digits from stored phone for comparison."""
+    return func.nullif(
+        func.regexp_replace(func.coalesce(column, ""), "[^0-9]", "", "g"),
+        "",
+    )
+
 from app.config import settings
 from app.database import SessionLocal
 from app.database_master import MasterSessionLocal
@@ -80,7 +94,7 @@ def create_demo_tenant(
     organization_name = (organization_name or "").strip()
     full_name = (full_name or "").strip()
     email = (email or "").strip().lower()
-    phone = (phone or "").strip() if phone else None
+    phone_raw = (phone or "").strip()
     password = (password or "").strip()
 
     if not organization_name:
@@ -89,6 +103,14 @@ def create_demo_tenant(
         raise ValueError("Your full name is required.")
     if not email:
         raise ValueError("Email is required.")
+    if not phone_raw:
+        raise ValueError("Phone number is required.")
+    phone_digits = _normalize_phone_digits(phone_raw)
+    if len(phone_digits) < _MIN_SIGNUP_PHONE_DIGITS:
+        raise ValueError(
+            "Enter a valid phone number including country code (at least 8 digits)."
+        )
+    phone = phone_raw
     if not password or len(password) < 8:
         raise ValueError("Password must be at least 8 characters.")
 
@@ -96,8 +118,33 @@ def create_demo_tenant(
     demo_product_limit = getattr(settings, "DEMO_PRODUCT_LIMIT", 100) or 100
     demo_user_limit = getattr(settings, "DEMO_USER_LIMIT", 1) or 1
 
+    phone_precheck_db: Session = SessionLocal()
+    try:
+        dup_phone_user = (
+            phone_precheck_db.query(User)
+            .filter(User.deleted_at.is_(None))
+            .filter(_phone_digits_sql(User.phone) == phone_digits)
+            .first()
+        )
+        if dup_phone_user and (dup_phone_user.email or "").strip().lower() != email:
+            raise ValueError(
+                "An account is already registered with this phone number. Use a different phone number or sign in."
+            )
+    finally:
+        phone_precheck_db.close()
+
     master_db: Session = MasterSessionLocal()
     try:
+        dup_phone_tenant = (
+            master_db.query(Tenant)
+            .filter(_phone_digits_sql(Tenant.phone) == phone_digits)
+            .first()
+        )
+        if dup_phone_tenant and (dup_phone_tenant.admin_email or "").strip().lower() != email:
+            raise ValueError(
+                "An account is already registered with this phone number. Use a different phone number or sign in."
+            )
+
         org_norm = organization_name.strip()
         org_norm_lc = org_norm.lower()
         # Recovery mode: sometimes we may already have the Company/User in the shared app DB
@@ -108,8 +155,8 @@ def create_demo_tenant(
         recover_admin_user_id: uuid.UUID | None = None
         recover_admin_username: str | None = None
 
-        def _create_setup_invite_and_send(tenant: Tenant, to_email: str, username: str | None) -> None:
-            """Best-effort: create a TenantInvite and send setup email."""
+        def _create_setup_invite_and_send(tenant: Tenant, to_email: str, username: str | None) -> bool:
+            """Create a TenantInvite and send setup email. Returns True if SMTP delivery succeeded."""
             now = datetime.now(timezone.utc)
             token_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
             invite_token = "".join(secrets.choice(token_chars) for _ in range(32))
@@ -122,22 +169,20 @@ def create_demo_tenant(
             master_db.add(invite)
             master_db.commit()
 
-            base_url = (getattr(settings, "APP_PUBLIC_URL", None) or "").strip().rstrip("/")
-            if not base_url:
-                base_url = "http://localhost:3000"
+            base_url = settings.effective_erp_app_url
             setup_url = f"{base_url}/setup?token={invite_token}"
 
-            # Email sending should never block tenant creation flow.
             try:
-                EmailService.send_tenant_invite(
-                    to_email=to_email,
-                    tenant_name=tenant.name,
-                    setup_url=setup_url,
-                    username=username,
+                return bool(
+                    EmailService.send_tenant_invite(
+                        to_email=to_email,
+                        tenant_name=tenant.name,
+                        setup_url=setup_url,
+                        username=username,
+                    )
                 )
             except Exception:
-                # Log-only; invite token still exists in master DB.
-                pass
+                return False
 
         # Ensure organization name is unique in master (tenants table)
         existing_tenant_by_org = (
@@ -161,7 +206,8 @@ def create_demo_tenant(
 
                 _create_setup_invite_and_send(existing_tenant_by_org, to_email=email, username=username)
                 raise ValueError(
-                    "That email is already registered for this organization. We re-sent your setup email (check your inbox and spam). Sign in with your email, or use a different email to create a new account."
+                    "That email is already registered for this organization. Use a different email to create a new account, or sign in. "
+                    "If you already started signup, check your inbox (and spam) for the setup email—we sent another copy."
                 )
 
             raise ValueError(
@@ -194,7 +240,8 @@ def create_demo_tenant(
 
             _create_setup_invite_and_send(existing_tenant, to_email=email, username=username)
             raise ValueError(
-                "An account is already registered with this email. We re-sent your setup email (check your inbox and spam). Sign in with that email, or use a different email to create a new account."
+                "An account is already registered with this email. Use a different email address to create a new organization, or sign in with this email. "
+                "If you recently signed up, check your inbox (and spam) for the setup email—we sent another copy."
             )
 
         # Shared app DB: block if this email already exists as a user (e.g. another org)
@@ -227,7 +274,7 @@ def create_demo_tenant(
                 else:
                     # Email exists, but not for this organization name—block this attempt.
                     raise ValueError(
-                        "An account is already registered with this email. We re-sent your setup email (check your inbox and spam). Sign in with that email, or use a different email to create a new account."
+                        "An account is already registered with this email. Use a different email address to create a new organization, or sign in with this email."
                     )
             else:
                 dup_company = (
@@ -481,7 +528,9 @@ def create_demo_tenant(
 
         # Send setup invite email so the user has a clear "complete setup" direction
         # and so the invite can be re-sent later from the tenant admin page.
-        _create_setup_invite_and_send(tenant, to_email=email, username=admin_username)
+        invite_email_sent = _create_setup_invite_and_send(
+            tenant, to_email=email, username=admin_username
+        )
 
         # Issue authentication tokens (demo tenants use the app DB, so company_id from company we just created)
         company_id_str = str(company_id)
@@ -496,6 +545,7 @@ def create_demo_tenant(
             "username": admin_username,
             "user_id": str(admin_user_id),
             "email": email,
+            "invite_email_sent": invite_email_sent,
         }
     except Exception:
         master_db.rollback()

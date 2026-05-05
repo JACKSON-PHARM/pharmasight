@@ -37,6 +37,8 @@ class Company(Base):
     # Stripe (Phase 2 — company-scoped; never mirrored on tenants)
     stripe_customer_id = Column(String(255), nullable=True)
     stripe_subscription_id = Column(String(255), nullable=True)
+    # Marketing customer portal: optional WhatsApp override for upgrade CTAs (wa.me)
+    portal_upgrade_whatsapp = Column(String(32), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

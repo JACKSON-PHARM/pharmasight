@@ -13,7 +13,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.dependencies import (
     get_current_user,
@@ -30,6 +30,7 @@ from app.models.clinic import (
     EncounterNote,
     ClinicOrder,
     ClinicOrderItem,
+    EncounterTriage,
 )
 from app.schemas.clinic import (
     PatientCreate,
@@ -43,6 +44,8 @@ from app.schemas.clinic import (
     ClinicOrderResponse,
     ClinicOrderItemResponse,
     ClinicOrderItemCreate,
+    EncounterTriageUpsert,
+    EncounterTriageResponse,
 )
 from app.services.clinic_billing_service import ensure_draft_invoice_for_encounter
 
@@ -268,7 +271,11 @@ def list_encounters(
 ):
     user, _ = auth
     company_id = _company_id(db, user)
-    q = db.query(Encounter).filter(Encounter.company_id == company_id)
+    q = (
+        db.query(Encounter)
+        .options(joinedload(Encounter.patient))
+        .filter(Encounter.company_id == company_id)
+    )
     if status_filter:
         q = q.filter(Encounter.status == status_filter)
     return q.order_by(Encounter.created_at.desc()).limit(500).all()
@@ -282,7 +289,88 @@ def get_encounter(
 ):
     user, _ = auth
     company_id = _company_id(db, user)
-    return _get_encounter_scoped(db, encounter_id, company_id)
+    e = (
+        db.query(Encounter)
+        .options(joinedload(Encounter.patient))
+        .filter(Encounter.id == encounter_id, Encounter.company_id == company_id)
+        .first()
+    )
+    if not e:
+        raise HTTPException(status_code=404, detail="Encounter not found")
+    return e
+
+
+# ---------------------------------------------------------------------------
+# Triage
+# ---------------------------------------------------------------------------
+@router.get("/encounters/{encounter_id}/triage", response_model=Optional[EncounterTriageResponse])
+def get_encounter_triage(
+    encounter_id: UUID,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    enc = _get_encounter_scoped(db, encounter_id, company_id)
+    t = (
+        db.query(EncounterTriage)
+        .filter(EncounterTriage.encounter_id == enc.id, EncounterTriage.company_id == company_id)
+        .first()
+    )
+    return t
+
+
+@router.put("/encounters/{encounter_id}/triage", response_model=EncounterTriageResponse)
+def upsert_encounter_triage(
+    encounter_id: UUID,
+    body: EncounterTriageUpsert,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    enc = (
+        db.query(Encounter)
+        .filter(Encounter.id == encounter_id, Encounter.company_id == company_id)
+        .with_for_update()
+        .first()
+    )
+    if not enc:
+        raise HTTPException(status_code=404, detail="Encounter not found")
+    _assert_encounter_not_completed(enc)
+
+    existing = (
+        db.query(EncounterTriage)
+        .filter(EncounterTriage.encounter_id == enc.id, EncounterTriage.company_id == company_id)
+        .with_for_update()
+        .first()
+    )
+    if existing is None:
+        existing = EncounterTriage(
+            encounter_id=enc.id,
+            company_id=company_id,
+            branch_id=enc.branch_id,
+            patient_id=enc.patient_id,
+            created_by=user.id,
+        )
+
+    def _clean(v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    existing.payment_mode = _clean(body.payment_mode)
+    existing.insurance_scheme = _clean(body.insurance_scheme)
+    existing.chief_complaint = _clean(body.chief_complaint)
+    existing.symptoms = _clean(body.symptoms)
+    existing.triage_notes = _clean(body.triage_notes)
+    existing.vitals = body.vitals or None
+
+    db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    return existing
 
 
 @router.patch("/encounters/{encounter_id}/status", response_model=EncounterResponse)

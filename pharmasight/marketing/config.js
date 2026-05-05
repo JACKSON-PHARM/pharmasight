@@ -42,6 +42,6 @@
     window.MARKETING_CONFIG = {
         API_BASE_URL: api,
         ERP_APP_URL: (metaErp || sameOrigin).replace(/\/$/, ''),
-        WHATSAPP_E164: ((metaWa || '').replace(/\D/g, '')) || '254700000000'
+        WHATSAPP_E164: ((metaWa || '').replace(/\D/g, '')) || '254708476318'
     };
 })();

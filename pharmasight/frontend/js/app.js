@@ -297,7 +297,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Load appropriate auth page
             // Ensure hash is set to login if it's pointing to an app route
             let route = routeHash.replace('#', '').split('?')[0] || 'login';
-            const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'patients', 'encounters', 'consultation'];
+            const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'patients', 'encounters', 'triage', 'consultation'];
             if (!isAuthRoute_ && appRoutes.includes(route)) {
                 // Hash is pointing to app route but not authenticated - force login
                 route = 'login';
@@ -374,7 +374,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     
                     // Force hash to login immediately (before any async operations)
                     const currentHash = window.location.hash.replace('#', '');
-                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set', 'setup', 'patients', 'encounters', 'consultation'];
+                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set', 'setup', 'patients', 'encounters', 'triage', 'consultation'];
                     
                     if (appRoutes.includes(currentHash) || !currentHash || currentHash === '') {
                         console.log('[AUTH STATE CHANGE] Redirecting from app route to login (tenant-free URL):', currentHash);
@@ -1963,6 +1963,11 @@ async function loadPage(pageName) {
         case 'encounters':
             if (typeof window.loadClinicEncounters === 'function') {
                 window.loadClinicEncounters();
+            }
+            break;
+        case 'triage':
+            if (typeof window.loadClinicTriage === 'function') {
+                window.loadClinicTriage();
             }
             break;
         case 'consultation':

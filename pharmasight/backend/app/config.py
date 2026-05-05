@@ -192,6 +192,8 @@ class Settings(BaseSettings):
     # Base URL for invite/password-reset links. Set to your public frontend URL (e.g. https://app.pharmasight.com)
     # so links work for recipients; if unset or localhost, links will point to localhost and fail for external users.
     APP_PUBLIC_URL: str = os.getenv("APP_PUBLIC_URL", "http://localhost:3000")
+    # Marketing portal WhatsApp when companies.portal_upgrade_whatsapp is NULL (local or E.164 digits).
+    PORTAL_DEFAULT_WHATSAPP: str = os.getenv("PORTAL_DEFAULT_WHATSAPP", "0708476318").strip()
 
     @property
     def effective_erp_app_url(self) -> str:

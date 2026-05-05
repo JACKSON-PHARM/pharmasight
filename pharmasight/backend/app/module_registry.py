@@ -45,6 +45,11 @@ _PERMISSION_NAME_TO_MODULE: dict[str, str] = {
     "inventory.adjust": "pharmacy",
 }
 
+# Explicit RBAC for top-bar module pills (permissions named modules.<slug>).
+_MODULE_SWITCHER_SLUGS = frozenset(
+    {"pharmacy", "clinic", "lab", "billing", "finance", "management"}
+)
+
 
 def _modules_from_permissions(
     permission_names: Iterable[str],
@@ -53,6 +58,12 @@ def _modules_from_permissions(
     enabled: set[str] = set()
     for name in permission_names:
         if not name:
+            continue
+        nl = str(name).strip().lower()
+        if nl.startswith("modules."):
+            slug = nl.split(".", 1)[1].strip().lower()
+            if slug in _MODULE_SWITCHER_SLUGS:
+                enabled.add(slug)
             continue
         m = _PERMISSION_NAME_TO_MODULE.get(name)
         if m:
@@ -74,7 +85,9 @@ def get_user_modules(db: Session, user_id: UUID) -> List[str]:
 
     Rules:
     - Derived from existing RBAC assignments (user_branch_roles -> role_permissions -> permissions)
-    - No new schema / no enforcement side-effects
+    - Plus explicit `modules.<slug>` permissions for the module switcher (slug in pharmacy, clinic,
+      lab, billing, finance, management)
+    - No enforcement side-effects on APIs
     - Fast: single query to fetch distinct permission names for the user
     """
     from app.models.user import UserBranchRole

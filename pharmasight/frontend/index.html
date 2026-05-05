@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>PharmaSight - Pharmacy Management System</title>
-    <link rel="stylesheet" href="css/style.css?v=3">
+    <link rel="stylesheet" href="css/style.css?v=4">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -352,6 +352,7 @@
                 <div id="cashbook" class="page"></div>
                 <div id="patients" class="page"></div>
                 <div id="encounters" class="page"></div>
+                <div id="triage" class="page"></div>
                 <div id="consultation" class="page"></div>
                 <div id="reports" class="page"></div>
                 <div id="settings" class="page"></div>
@@ -386,13 +387,23 @@
                 window.location.replace(window.location.origin + '/' + hash);
                 return;
             }
-            // Tenant invite setup: /setup?token=... -> set-password flow
-            if (pathname === '/setup' || pathname === '/setup/') {
+            // Tenant invite setup: /setup or /app/setup with ?token= -> ERP app (never marketing root)
+            if (
+                pathname === '/setup' ||
+                pathname === '/setup/' ||
+                pathname === '/app/setup' ||
+                pathname === '/app/setup/'
+            ) {
                 const params = new URLSearchParams(window.location.search);
                 const token = params.get('token');
                 if (token) {
-                    console.log('[SETUP] Redirecting /setup?token= to tenant-invite-setup');
-                    window.location.replace(window.location.origin + '/?token=' + encodeURIComponent(token) + '#tenant-invite-setup');
+                    console.log('[SETUP] Redirecting /setup?token= to tenant-invite-setup on /app');
+                    window.location.replace(
+                        window.location.origin +
+                            '/app?token=' +
+                            encodeURIComponent(token) +
+                            '#tenant-invite-setup'
+                    );
                     return;
                 }
             }
@@ -461,7 +472,7 @@
     <script src="js/utils/permissions.js?v=1"></script>
     <script src="js/services/subscription_ui.js?v=3"></script>
     <!-- Module switcher + dynamic sidebar (UI-only visibility) -->
-    <script src="js/services/module_ui.js?v=2"></script>
+    <script src="js/services/module_ui.js?v=4"></script>
     <!-- Stock Take (before app.js so loadStockTake exists when router runs) -->
     <script src="js/pages/stock_take.js?v=11"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
@@ -491,11 +502,11 @@
     <script src="js/pages/purchases.js?v=24"></script>
     <script src="js/pages/expenses.js?v=1"></script>
     <script src="js/pages/cashbook.js?v=1"></script>
-    <script src="js/pages/clinic.js?v=1"></script>
+    <script src="js/pages/clinic.js?v=2"></script>
     <script src="js/pages/inventory.js?v=9"></script>
     <script src="js/pages/reports.js?v=1"></script>
     <script src="js/pages/settings_etims.js?v=3"></script>
-    <script src="js/pages/settings.js?v=8"></script>
+    <script src="js/pages/settings.js?v=9"></script>
     <script src="js/pages/platform_admin_companies.js?v=1"></script>
     <script src="js/pages/platform_admin_company.js?v=1"></script>
     <script src="js/pages/change_password.js?v=1"></script>

@@ -11,6 +11,7 @@ from sqlalchemy import (
     CheckConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.types import TIMESTAMP
@@ -162,3 +163,53 @@ class ClinicOrderItem(Base):
             name="ck_clinic_order_items_ref_type",
         ),
     )
+
+
+class EncounterTriage(Base):
+    """
+    Triage snapshot for an encounter (separate from consultation notes).
+    One triage record per encounter (upserted as needed).
+    """
+
+    __tablename__ = "encounter_triage"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    encounter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("encounters.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    branch_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("branches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    patient_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    payment_mode = Column(Text, nullable=True)
+    insurance_scheme = Column(Text, nullable=True)
+    chief_complaint = Column(Text, nullable=True)
+    symptoms = Column(Text, nullable=True)
+    triage_notes = Column(Text, nullable=True)
+    vitals = Column(JSONB, nullable=True)
+
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    encounter = relationship("Encounter")
+    patient = relationship("Patient")

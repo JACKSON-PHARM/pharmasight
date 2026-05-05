@@ -662,6 +662,11 @@ export async function init() {
                                 <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Owner full name <span style="font-weight:400;color:#64748b;">(suggested username)</span></label>
                                 <input id="lic-prof-admin-name" type="text" value="${esc(c.tenant_admin_full_name || '')}" maxlength="255" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                             </div>
+                            <div style="grid-column: 1 / -1;">
+                                <label style="display:block; font-weight:600; margin-bottom:4px; font-size:0.85rem;">Customer portal · WhatsApp (upgrades)</label>
+                                <input id="lic-prof-portal-wa" type="text" value="${esc(c.portal_upgrade_whatsapp || '')}" maxlength="32" placeholder="e.g. 0708476318 — overrides platform default on marketing portal" style="width:100%; max-width:480px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                <div style="margin-top:6px; font-size:0.78rem; color:#64748b;">Shown on <code>/marketing/portal.html</code> “Contact WhatsApp”. Leave blank to use server default (<code>PORTAL_DEFAULT_WHATSAPP</code>).</div>
+                            </div>
                         </div>
                         <button type="button" id="lic-save-profile" class="btn btn-primary" style="margin-top:12px;">Save organization</button>
                         <div style="margin-top:16px; padding-top:14px; border-top:1px solid #e2e8f0;">
@@ -862,9 +867,17 @@ export async function init() {
                     const email = (document.getElementById('lic-prof-email')?.value || '').trim();
                     const phone = (document.getElementById('lic-prof-phone')?.value || '').trim() || null;
                     const admin_full_name = (document.getElementById('lic-prof-admin-name')?.value || '').trim() || null;
+                    const portal_upgrade_whatsapp =
+                        (document.getElementById('lic-prof-portal-wa')?.value || '').trim() || null;
                     if (!name) throw new Error('Company name is required');
                     if (!email) throw new Error('Owner email is required');
-                    await api.patchProfile(companyId, { name, email, phone, admin_full_name });
+                    await api.patchProfile(companyId, {
+                        name,
+                        email,
+                        phone,
+                        admin_full_name,
+                        portal_upgrade_whatsapp,
+                    });
                     toast('Organization saved', 'success');
                     await loadCompanyDetail(companyId);
                 } catch (e) {

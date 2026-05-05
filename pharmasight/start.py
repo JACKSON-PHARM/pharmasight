@@ -254,9 +254,16 @@ def main():
         print_colored(f"   API Docs:       http://localhost:{backend_port}/docs", Colors.WHITE)
         print_colored(f"   Health Check:   http://localhost:{backend_port}/health", Colors.WHITE)
         if frontend_port is not None:
-            print_colored(f"   Frontend:       http://127.0.0.1:{frontend_port}", Colors.WHITE)
+            print_colored(
+                f"   Public site:    http://127.0.0.1:{frontend_port}/",
+                Colors.WHITE,
+            )
+            print_colored(
+                f"   ERP app:        http://127.0.0.1:{frontend_port}/app",
+                Colors.WHITE,
+            )
         else:
-            print_colored("   Frontend:       (not started)", Colors.WHITE)
+            print_colored("   Dev frontend:   (not started)", Colors.WHITE)
         print()
         print_colored("💡 Press Ctrl+C to stop both servers", Colors.YELLOW)
         print()

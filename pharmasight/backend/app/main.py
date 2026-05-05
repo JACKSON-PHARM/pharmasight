@@ -12,7 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from app.config import settings
 from app.rate_limit import limiter
@@ -56,11 +56,35 @@ class RequestTimingMiddleware(BaseHTTPMiddleware):
                     pass
         return response
 
-# Frontend directory (pharmasight/frontend, relative to backend/app)
+# Frontend + marketing (walk up from backend/ so Render/repo layouts still resolve)
 _BACKEND_APP = Path(__file__).resolve().parent
 _BACKEND = _BACKEND_APP.parent
-_FRONTEND_DIR = _BACKEND.parent / "frontend"
-_MARKETING_DIR = _BACKEND.parent / "marketing"
+
+
+def _resolve_site_root(backend_dir: Path) -> Path:
+    """
+    Directory that contains frontend/ and/or marketing/ as siblings of backend/.
+    Render/monorepo layouts vary; env PHARMASIGHT_SITE_ROOT overrides when set.
+    """
+    override = (os.getenv("PHARMASIGHT_SITE_ROOT") or "").strip()
+    if override:
+        p = Path(override).expanduser().resolve()
+        if p.is_dir():
+            return p
+    cur = backend_dir.resolve()
+    for _ in range(10):
+        if (cur / "frontend").is_dir() or (cur / "marketing").is_dir():
+            return cur
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    return backend_dir.resolve().parent
+
+
+_SITE_ROOT = _resolve_site_root(_BACKEND)
+_FRONTEND_DIR = _SITE_ROOT / "frontend"
+_MARKETING_DIR = _SITE_ROOT / "marketing"
 
 # Create FastAPI app
 app = FastAPI(
@@ -296,6 +320,16 @@ app.include_router(company_billing_router, prefix="/api", tags=["Billing"])
 app.include_router(auth_router, prefix="/api", tags=["Authentication"])
 
 # Serve frontend static files (must NOT depend on backend/uploads — Render often has no uploads dir on first deploy).
+logger.warning(
+    "Static paths: SITE_ROOT=%s FRONTEND_DIR=%s (exists=%s) MARKETING_DIR=%s (exists=%s) marketing_index=%s",
+    _SITE_ROOT,
+    _FRONTEND_DIR,
+    _FRONTEND_DIR.is_dir(),
+    _MARKETING_DIR,
+    _MARKETING_DIR.is_dir(),
+    (_MARKETING_DIR / "index.html").is_file(),
+)
+
 if _FRONTEND_DIR.is_dir():
     app.mount("/css", StaticFiles(directory=str(_FRONTEND_DIR / "css")), name="css")
     app.mount("/js", StaticFiles(directory=str(_FRONTEND_DIR / "js")), name="js")
@@ -331,6 +365,11 @@ if _FRONTEND_DIR.is_dir():
             return FileResponse(_marketing_index_path, media_type="text/html")
         return FileResponse(_index_path, media_type="text/html")
 
+    @app.head("/")
+    async def root_head():
+        """Render and proxies may probe HEAD /; FileResponse GET-only would return 405."""
+        return Response(status_code=200)
+
     @app.get("/admin.html")
     async def admin_page():
         """Serve the real admin panel page so admin login redirect lands here (not the SPA index)."""
@@ -340,5 +379,9 @@ if _FRONTEND_DIR.is_dir():
 
     @app.get("/{full_path:path}")
     async def spa_fallback(full_path: str):
+        # Some Starlette versions match GET / on this catch-all; never serve SPA instead of marketing home.
+        fp = (full_path or "").strip()
+        if fp in ("", ".") and _marketing_index_path and _marketing_index_path.is_file():
+            return FileResponse(_marketing_index_path, media_type="text/html")
         return FileResponse(_index_path, media_type="text/html")
 

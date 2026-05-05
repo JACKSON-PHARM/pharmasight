@@ -541,6 +541,10 @@ const API = {
             get: (id) => api.get(`/api/clinic/encounters/${id}`),
             create: (data) => api.post('/api/clinic/encounters', data),
             patchStatus: (id, status) => api.patch(`/api/clinic/encounters/${id}/status`, { status }),
+            triage: {
+                get: (encounterId) => api.get(`/api/clinic/encounters/${encounterId}/triage`),
+                upsert: (encounterId, data) => api.put(`/api/clinic/encounters/${encounterId}/triage`, data),
+            },
             notes: {
                 list: (encounterId) => api.get(`/api/clinic/encounters/${encounterId}/notes`),
                 add: (encounterId, data) => api.post(`/api/clinic/encounters/${encounterId}/notes`, data),
