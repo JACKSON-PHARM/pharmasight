@@ -1877,6 +1877,29 @@ def batch_sales_invoice(
             detail="Invoice has no line items. Add items before batching."
         )
 
+    # Reject when the UI sends lines that never persisted as sales_invoice_items. Otherwise stock
+    # would follow DB lines only while the cashier believed extra lines were included (silent mismatch).
+    if body and body.items and len(body.items) > 0:
+        server_item_ids = {str(line.item_id) for line in invoice.items}
+        unknown_ids: List[str] = []
+        seen_payload: set[str] = set()
+        for it in body.items:
+            sid = str(it.item_id)
+            if sid in server_item_ids or sid in seen_payload:
+                continue
+            seen_payload.add(sid)
+            unknown_ids.append(sid)
+        if unknown_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "These items appear in the batch request but are not saved on this invoice yet: "
+                    + ", ".join(unknown_ids[:15])
+                    + (f" (and {len(unknown_ids) - 15} more)" if len(unknown_ids) > 15 else "")
+                    + ". Wait for each line to finish saving, refresh the invoice, then batch again."
+                ),
+            )
+
     # If frontend sent current items, update each draft line to match (quantity, unit, price, discount)
     if body and body.items and len(body.items) > 0:
         payload_by_item = {str(it.item_id): it for it in body.items}

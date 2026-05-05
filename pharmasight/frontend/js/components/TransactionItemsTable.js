@@ -2374,21 +2374,12 @@
             this.render();
             this.attachEventListeners();
             const p = Promise.resolve(this.onAddItem(data));
-            // Clear the add-row selection immediately so user can search next item without waiting.
-            // (Server updates may re-render; setItems preserves add-row input below.)
+            // Clear add-row selection; parent setItems() after API will refresh the table.
             this.addRowItem = null;
             this.closeSuggestions();
             this.closeSelectedItemDropdown();
             this.render();
             this.attachEventListeners();
-            // POS focus: do NOT force focus to search. Parent's setItems (with focusNewRowQty) will focus qty of new row.
-            // Unlock Add button as soon as parent's optimistic update has run (next tick), so user can add next item without waiting for API.
-            // POS: Do NOT call render() here — it would rebuild the add row and wipe search/dropdown/focus when API returns.
-            const self = this;
-            setTimeout(function() {
-                self.addRowLoading = false;
-                self.updateAddRowButtonOnly();
-            }, 0);
             p.finally(() => {
                 this.addRowLoading = false;
                 this.updateAddRowButtonOnly();

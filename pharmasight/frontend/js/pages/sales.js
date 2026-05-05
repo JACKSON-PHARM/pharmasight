@@ -1653,42 +1653,12 @@ async function createSalesDraftWithFirstItem(firstItem) {
     return invoice;
 }
 
-/** Add-row flow: user clicked "Add item". Optimistic update: show line immediately, then one API call (create draft or add line). */
+/** Add-row flow: user clicked "Add item". Lines appear only after the server confirms (no optimistic rows). */
 async function onSalesInvoiceAddItem(item) {
     const draftId = currentInvoice && currentInvoice.id;
     if (!draftId && draftCreationInProgress) {
         if (typeof showToast === 'function') showToast('Creating draft… add the next item in a moment.', 'info');
         return;
-    }
-
-    const perf = typeof performance !== 'undefined' && performance.mark ? performance : null;
-    const t0 = perf ? performance.now() : 0;
-    if (perf) {
-        try { performance.mark('add-item-start'); } catch (_) {}
-    }
-
-    const optimisticLine = mapTableItemToDocumentItem(item);
-
-    // Optimistic: show the new line immediately so add feels instant (<20ms perceived)
-    if (!draftId) {
-        documentItems = [optimisticLine];
-    } else {
-        documentItems = (documentItems || []).concat(optimisticLine);
-    }
-    if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
-        salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
-    }
-    updateSalesInvoiceSummary();
-
-    const tOptimistic = perf ? performance.now() - t0 : 0;
-    if (perf) {
-        try {
-            performance.mark('add-item-optimistic-done');
-            performance.measure('add-item-to-visible', 'add-item-start', 'add-item-optimistic-done');
-        } catch (_) {}
-    }
-    if (typeof console !== 'undefined' && console.log) {
-        console.log('[POS Add Item] Line on table (optimistic): ' + Math.round(tOptimistic) + ' ms');
     }
 
     try {
@@ -1762,30 +1732,19 @@ async function onSalesInvoiceAddItem(item) {
         });
         documentItems = itemsToSet;
         lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(apiItems);
-        // Sync server state only; do NOT pass focusNewRowQty so add-row search/typing is preserved (user may already be searching next item).
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
-            salesInvoiceItemsTable.setItems(documentItems);
+            salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
         }
         updateSalesInvoiceSummary();
     } catch (err) {
         draftCreationInProgress = false;
         const msg = (err && err.message) || String(err);
-        // Revert optimistic update: remove the line we just added
-        if (!draftId) {
-            documentItems = [];
-        } else {
-            documentItems = (documentItems || []).slice(0, -1);
-        }
-        if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
-            salesInvoiceItemsTable.setItems(documentItems);
-        }
-        updateSalesInvoiceSummary();
         if (msg.indexOf('already exists') !== -1) {
             showToast('Item already on this invoice. Remove the line or choose a different item.', 'warning');
         } else {
             showToast(msg || 'Server error adding item. Try again.', 'error');
         }
-        // Refetch invoice so table matches server (e.g. if add partially succeeded). Skip on 5xx to avoid cascading server errors.
+        // Sync table to server only (no merging of unsaved client rows).
         const msgLower = (msg || '').toLowerCase();
         const is5xx = msgLower.indexOf('500') !== -1 || msgLower.indexOf('502') !== -1 || msgLower.indexOf('503') !== -1 || msgLower.indexOf('internal server error') !== -1;
         if (!is5xx && currentInvoice && currentInvoice.id && salesInvoiceItemsTable && typeof API.sales.getInvoice === 'function') {
@@ -1793,28 +1752,7 @@ async function onSalesInvoiceAddItem(item) {
             try {
                 const fresh = await API.sales.getInvoice(refetchId);
                 if (fresh && fresh.items) {
-                    let apiItems = fresh.items;
-                    const current = typeof salesInvoiceItemsTable.getItems === 'function' ? salesInvoiceItemsTable.getItems() : [];
-                    const apiIds = new Set(apiItems.map(i => i.item_id && i.item_id.toString()));
-                    const missing = current.filter(c => c.item_id && !apiIds.has(c.item_id.toString()));
-                    if (missing.length > 0) {
-                        const missingAsApi = missing.map(c => ({
-                            item_id: c.item_id,
-                            item_name: c.item_name,
-                            item_sku: c.item_sku,
-                            item_code: c.item_code || c.item_sku,
-                            unit_name: c.unit_name,
-                            quantity: c.quantity,
-                            unit_price_exclusive: c.unit_price,
-                            vat_rate: c.tax_percent,
-                            line_total_inclusive: c.total,
-                            discount_percent: c.discount_percent || 0,
-                            batch_allocations: c.batch_allocations || null,
-                            batch_number: c.batch_number || null,
-                            expiry_date: c.expiry_date || null
-                        }));
-                        apiItems = [...missingAsApi, ...apiItems];
-                    }
+                    const apiItems = fresh.items;
                     documentItems = apiItems.map(i => ({
                         item_id: i.item_id,
                         item_name: i.item_name,
@@ -1838,17 +1776,6 @@ async function onSalesInvoiceAddItem(item) {
                     updateSalesInvoiceSummary();
                 }
             } catch (_) { /* ignore refetch errors */ }
-        }
-    } finally {
-        if (perf) {
-            try {
-                performance.mark('add-item-api-done');
-                performance.measure('add-item-total', 'add-item-start', 'add-item-api-done');
-                var m = performance.getEntriesByName('add-item-total')[0];
-                if (m && typeof console !== 'undefined' && console.log) {
-                    console.log('[POS Add Item] Total (click → API done): ' + Math.round(m.duration) + ' ms');
-                }
-            } catch (_) {}
         }
     }
 }
