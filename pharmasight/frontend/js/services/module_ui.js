@@ -259,7 +259,7 @@
             return false;
         }
         if (m === 'clinic') {
-            if (base === 'patients' || base === 'encounters' || base === 'consultation') return true;
+            if (base === 'patients' || base === 'encounters' || base === 'triage' || base === 'consultation') return true;
             if (base.startsWith('settings')) return true;
             if (base.startsWith('reports')) return true;
             if (base.startsWith('expenses')) return true;
