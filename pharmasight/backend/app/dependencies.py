@@ -21,7 +21,7 @@ from typing import Generator, Optional, Tuple
 from uuid import UUID
 
 from fastapi import Request, Depends, HTTPException, status
-from sqlalchemy import create_engine, pool, text
+from sqlalchemy import create_engine, pool, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -519,22 +519,18 @@ def _lookup_user_if_not_revoked(db: Session, sub: UUID, jti: Optional[str]) -> O
     """
     jti = jti or ""
     try:
-        row = db.execute(
+        # Use from_statement() to get a mapped ORM instance without creating a transient object.
+        # (db.add(User(**row)) would mark it as "pending" and attempt an INSERT on flush.)
+        stmt = select(User).from_statement(
             text(
-                "SELECT * FROM users WHERE id = :sub AND deleted_at IS NULL AND is_active = true "
+                "SELECT * FROM users "
+                "WHERE id = :sub AND deleted_at IS NULL AND is_active = true "
                 "AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = :jti)"
-            ),
-            {"sub": str(sub), "jti": jti},
-        ).fetchone()
+            )
+        )
+        return db.execute(stmt, {"sub": str(sub), "jti": jti}).scalars().first()
     except Exception:
         return None
-    if not row:
-        return None
-    # Build User from row and attach to session (single round-trip, no second SELECT)
-    data = dict(row._mapping)
-    user = User(**{k: data[k] for k in data if hasattr(User, k)})
-    db.add(user)
-    return user
 
 
 def _log_user_auth_failure(db: Session, sub: UUID, jti: Optional[str], context: str) -> None:
