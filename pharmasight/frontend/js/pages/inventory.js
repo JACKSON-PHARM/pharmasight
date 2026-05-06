@@ -2400,7 +2400,41 @@ function renderBatchTrackingSubPage() {
 }
 
 function renderExpiryReportSubPage() {
-    return '<div><h2>Expiry Report</h2><p>Expiry report functionality coming soon...</p></div>';
+    const branchId = getBranchIdForStock();
+    const today = new Date().toISOString().slice(0, 10);
+    return `
+        <div>
+            <h2 style="margin-bottom: 1rem;"><i class="fas fa-hourglass-half"></i> Expiry Report</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Batches expiring within the selected window, grouped by item + batch + expiry. Use Export to download CSV or Print/PDF.</p>
+            <div class="card" style="margin-bottom: 1.5rem;">
+                <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Branch</label>
+                        <select id="expiryReportBranch" class="form-input" style="min-width: 220px;">
+                            <option value="">Loading branches…</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Days ahead</label>
+                        <input type="number" id="expiryReportDays" class="form-input" min="1" max="3650" step="1" value="365" style="width: 140px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>As of</label>
+                        <input type="date" id="expiryReportAsOf" class="form-input" value="${today}">
+                    </div>
+                    <button type="button" class="btn btn-primary" id="expiryReportApplyBtn"><i class="fas fa-check"></i> Apply</button>
+                    <div style="display: flex; gap: 0.5rem; align-items: center; margin-left: auto;">
+                        <span style="color: var(--text-secondary); font-size: 0.875rem;">Export</span>
+                        <button type="button" class="btn btn-outline btn-sm" id="expiryReportExportCsvBar" title="Export as CSV"><i class="fas fa-file-csv"></i> CSV</button>
+                        <button type="button" class="btn btn-outline btn-sm" id="expiryReportPrintBar" title="Print or save as PDF"><i class="fas fa-print"></i> Print / PDF</button>
+                    </div>
+                </div>
+            </div>
+            <div id="expiryReportContainer">
+                <p style="text-align: center; color: var(--text-secondary);">Select branch and click Apply to load expiry report.</p>
+            </div>
+        </div>
+    `;
 }
 
 function renderItemMovementSubPage() {
@@ -2473,7 +2507,176 @@ async function loadBatchTrackingData() {
 }
 
 async function loadExpiryReportData() {
-    // TODO
+    const container = document.getElementById('expiryReportContainer');
+    const branchSelect = document.getElementById('expiryReportBranch');
+    const daysEl = document.getElementById('expiryReportDays');
+    const applyBtn = document.getElementById('expiryReportApplyBtn');
+    const csvBar = document.getElementById('expiryReportExportCsvBar');
+    const printBar = document.getElementById('expiryReportPrintBar');
+    if (!container) return;
+
+    // load branches
+    if (branchSelect && branchSelect.options.length === 1 && branchSelect.options[0].value === '') {
+        try {
+            if (!CONFIG.COMPANY_ID) {
+                branchSelect.innerHTML = '<option value="">No company selected</option>';
+            } else {
+                const branches = await API.branch.list(CONFIG.COMPANY_ID);
+                const sessionBranchId = getBranchIdForStock();
+                const sid = sessionBranchId ? (typeof sessionBranchId === 'string' ? sessionBranchId : (sessionBranchId.id || sessionBranchId)) : null;
+                branchSelect.innerHTML = (branches || []).map(function (b) {
+                    const bid = b.id || b.branch_id;
+                    return '<option value="' + (bid || '') + '"' + (sid && String(bid) === String(sid) ? ' selected' : '') + '>' + escapeHtml(b.name || b.branch_name || 'Branch') + '</option>';
+                }).join('') || '<option value="">No branches</option>';
+            }
+        } catch (e) {
+            console.warn('Failed to load branches for Expiry Report:', e);
+            branchSelect.innerHTML = '<option value="">Failed to load branches</option>';
+        }
+    }
+
+    // Load default days from company settings (expiring_soon_days), fallback 365
+    try {
+        if (daysEl && API.company && typeof API.company.getSettings === 'function' && CONFIG && CONFIG.COMPANY_ID) {
+            const r = await API.company.getSettings(CONFIG.COMPANY_ID, 'expiring_soon_days');
+            const n = parseInt(r && r.value, 10);
+            if (isFinite(n) && n >= 1 && n <= 3650) daysEl.value = String(n);
+        }
+    } catch (_) { /* ignore */ }
+
+    if (applyBtn && !applyBtn._bound) {
+        applyBtn._bound = true;
+        applyBtn.addEventListener('click', function () { runExpiryReport(); });
+    }
+    if (csvBar) csvBar.onclick = function () { exportExpiryReportCsv(); };
+    if (printBar) printBar.onclick = function () { printExpiryReport(); };
+
+    // auto run once if branch set
+    var bid = branchSelect && branchSelect.value ? branchSelect.value : getBranchIdForStock();
+    if (bid) {
+        bid = typeof bid === 'string' ? bid : (bid && (bid.id || bid));
+        runExpiryReport(bid);
+    }
+}
+
+// --- Expiry report state + exports (CSV, Print/PDF) ---
+let lastExpiryReport = null;
+
+async function runExpiryReport(overrideBranchId) {
+    const container = document.getElementById('expiryReportContainer');
+    const branchSelect = document.getElementById('expiryReportBranch');
+    const daysEl = document.getElementById('expiryReportDays');
+    const applyBtn = document.getElementById('expiryReportApplyBtn');
+    if (!container) return;
+    var branchId = overrideBranchId || (branchSelect && branchSelect.value);
+    if (!branchId) {
+        container.innerHTML = '<div class="alert alert-warning"><i class="fas fa-exclamation-triangle"></i> Select a branch and click Apply.</div>';
+        return;
+    }
+    const days = Math.max(1, Math.min(3650, parseInt(daysEl && daysEl.value ? daysEl.value : '365', 10) || 365));
+    if (applyBtn) applyBtn.disabled = true;
+    container.innerHTML = '<div class="spinner" style="margin: 1rem auto;"></div><p style="text-align: center; color: var(--text-secondary);">Loading…</p>';
+    try {
+        if (!API.inventory || typeof API.inventory.getExpiryReport !== 'function') {
+            throw new Error('Expiry report API not available');
+        }
+        const res = await API.inventory.getExpiryReport(branchId, days);
+        const rows = (res && res.rows) ? res.rows : [];
+        const totalValue = (res && res.total_value != null) ? res.total_value : 0;
+        lastExpiryReport = {
+            rows: rows,
+            total_value: totalValue,
+            row_count: (res && res.row_count != null) ? res.row_count : rows.length,
+            branch_name: (res && res.branch_name) ? res.branch_name : '',
+            days: days
+        };
+        if (!rows || rows.length === 0) {
+            lastExpiryReport = null;
+            var emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
+                ? window.EmptyStateWatermark.render({ title: 'No expiring batches in this window', description: 'Try increasing the days ahead.' })
+                : '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No expiring batches in this window. Try increasing the days ahead.</p>';
+            container.innerHTML = emptyHtml;
+            return;
+        }
+        var tableRows = rows.map(function (r) {
+            return '<tr>'
+                + '<td>' + escapeHtml(r.item_name || '—') + '</td>'
+                + '<td><code>' + escapeHtml(r.batch_number || '') + '</code></td>'
+                + '<td>' + escapeHtml(r.expiry_date || '—') + '</td>'
+                + '<td style="text-align:right;">' + escapeHtml(r.quantity_display || formatNumber(r.quantity)) + '</td>'
+                + '<td style="text-align:right;">' + formatNumber(r.unit_cost) + '</td>'
+                + '<td style="text-align:right;">' + formatNumber(r.value) + '</td>'
+                + '</tr>';
+        }).join('');
+        container.innerHTML =
+            '<div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">' +
+            '<span style="color: var(--text-secondary); font-size: 0.875rem;">Export</span>' +
+            '<div>' +
+            '<button type="button" class="btn btn-outline btn-sm" id="expiryReportExportCsv"><i class="fas fa-file-csv"></i> CSV</button> ' +
+            '<button type="button" class="btn btn-outline btn-sm" id="expiryReportPrint"><i class="fas fa-print"></i> Print / PDF</button>' +
+            '</div></div>' +
+            '<div class="table-container" style="max-height: 60vh; overflow-y: auto;" id="expiryReportTableWrap">' +
+            '<table style="width: 100%; border-collapse: collapse;">' +
+            '<thead style="position: sticky; top: 0; background: white; z-index: 1;">' +
+            '<tr>' +
+            '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Item</th>' +
+            '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Batch</th>' +
+            '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: left;">Expiry</th>' +
+            '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Quantity</th>' +
+            '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Unit cost</th>' +
+            '<th style="padding: 0.75rem; border-bottom: 2px solid var(--border-color); text-align: right;">Value</th>' +
+            '</tr>' +
+            '</thead><tbody>' + tableRows + '</tbody></table></div>' +
+            '<p style="margin-top: 0.75rem; color: var(--text-secondary);">' + rows.length + ' batch row(s) · Total value: <strong>' + formatNumber(totalValue) + ' KES</strong></p>';
+        var csvBtn = document.getElementById('expiryReportExportCsv');
+        var printBtn = document.getElementById('expiryReportPrint');
+        if (csvBtn) csvBtn.onclick = function () { exportExpiryReportCsv(); };
+        if (printBtn) printBtn.onclick = function () { printExpiryReport(); };
+    } catch (e) {
+        console.error('Expiry report failed:', e);
+        var msg = (e && (e.message || (e.detail && (typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail))))) || String(e);
+        container.innerHTML = '<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Failed to load expiry report. ' + escapeHtml(msg) + '</div>';
+    } finally {
+        if (applyBtn) applyBtn.disabled = false;
+    }
+}
+
+function exportExpiryReportCsv() {
+    if (!lastExpiryReport || !lastExpiryReport.rows || lastExpiryReport.rows.length === 0) {
+        if (typeof showToast === 'function') showToast('No data to export. Click Apply to load expiry report first.', 'warning');
+        return;
+    }
+    var escapeCsv = function (v) {
+        if (v == null) return '';
+        var s = String(v);
+        if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) return '"' + s.replace(/"/g, '""') + '"';
+        return s;
+    };
+    var headers = ['Item', 'Batch', 'Expiry date', 'Quantity', 'Unit cost', 'Value'];
+    var rows = lastExpiryReport.rows.map(function (r) {
+        var qtyD = (r.quantity_display != null) ? r.quantity_display : (formatNumber(r.quantity));
+        return [r.item_name || '—', r.batch_number || '', r.expiry_date || '', qtyD, r.unit_cost, r.value].map(escapeCsv).join(',');
+    });
+    var csv = [headers.map(escapeCsv).join(','), rows.join('\n')].join('\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'expiry-report-' + new Date().toISOString().slice(0, 10) + '.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+    if (typeof showToast === 'function') showToast('CSV exported.', 'success');
+}
+
+function printExpiryReport() {
+    var wrap = document.getElementById('expiryReportTableWrap');
+    if (wrap) {
+        var prevTitle = document.title;
+        document.title = 'Expiry Report - ' + (lastExpiryReport && lastExpiryReport.branch_name ? lastExpiryReport.branch_name : 'PharmaSight');
+        window.print();
+        document.title = prevTitle;
+    } else {
+        if (typeof showToast === 'function') showToast('No table to print. Click Apply to load the report first.', 'warning');
+    }
 }
 
 async function loadItemMovementData() {

@@ -3064,6 +3064,8 @@ async function renderTransactionSettingsPage() {
 
     let requireBatchTracking = true;
     let requireExpiryTracking = true;
+    let sustainableMinMarginPct = '';
+    let expiringSoonDays = '365';
     try {
         const res = await api.company.getSettings(cid);
         const s = (res && res.settings) ? res.settings : {};
@@ -3072,6 +3074,12 @@ async function renderTransactionSettingsPage() {
         }
         if (s && typeof s.require_expiry_tracking !== 'undefined') {
             requireExpiryTracking = s.require_expiry_tracking === true || s.require_expiry_tracking === 'true';
+        }
+        if (s && typeof s.sustainable_min_margin_pct !== 'undefined' && s.sustainable_min_margin_pct != null) {
+            sustainableMinMarginPct = String(s.sustainable_min_margin_pct);
+        }
+        if (s && typeof s.expiring_soon_days !== 'undefined' && s.expiring_soon_days != null) {
+            expiringSoonDays = String(s.expiring_soon_days);
         }
     } catch (e) {
         console.warn('Load transaction/company tracking settings:', e);
@@ -3099,6 +3107,24 @@ async function renderTransactionSettingsPage() {
                             <input type="checkbox" name="require_expiry_tracking" ${requireExpiryTracking ? 'checked' : ''}>
                             <span>Require expiry date tracking</span>
                         </label>
+                    </div>
+
+                    <h4 style="margin-top: 2rem; margin-bottom: 1rem;">Expiry dashboard tracking</h4>
+                    <p style="margin: 0 0 0.75rem 0; font-size: 0.875rem; color: var(--text-secondary);">
+                        Controls how many days ahead the “Expiring Soon” dashboard card tracks batches (e.g. 30/60/180/365).
+                    </p>
+                    <div class="form-group">
+                        <label>Days ahead</label>
+                        <input type="number" name="expiring_soon_days" min="1" max="3650" step="1" value="${escapeHtml(expiringSoonDays)}" placeholder="365">
+                    </div>
+
+                    <h4 style="margin-top: 2rem; margin-bottom: 1rem;">Sustainable margin (warn-only)</h4>
+                    <p style="margin: 0 0 0.75rem 0; font-size: 0.875rem; color: var(--text-secondary);">
+                        Track (don’t block) items sold below this minimum margin. These lines will appear on the dashboard “Sold below sustainable margin” report.
+                    </p>
+                    <div class="form-group">
+                        <label>Minimum margin (%)</label>
+                        <input type="number" name="sustainable_min_margin_pct" min="0" max="100" step="0.1" value="${escapeHtml(sustainableMinMarginPct)}" placeholder="e.g. 15">
                     </div>
 
                     <h4 style="margin-bottom: 1rem;">Transaction Options</h4>
@@ -3185,9 +3211,13 @@ function saveTransactionSettings(event) {
     const fd = new FormData(form);
     const requireBatchTracking = fd.has('require_batch_tracking');
     const requireExpiryTracking = fd.has('require_expiry_tracking');
+    const sustainableMinMarginPct = fd.get('sustainable_min_margin_pct');
+    const expiringSoonDays = fd.get('expiring_soon_days');
     Promise.resolve()
         .then(() => window.API.company.updateSetting(cid, { key: 'require_batch_tracking', value: requireBatchTracking }))
         .then(() => window.API.company.updateSetting(cid, { key: 'require_expiry_tracking', value: requireExpiryTracking }))
+        .then(() => window.API.company.updateSetting(cid, { key: 'sustainable_min_margin_pct', value: (sustainableMinMarginPct == null ? '' : String(sustainableMinMarginPct)) }))
+        .then(() => window.API.company.updateSetting(cid, { key: 'expiring_soon_days', value: (expiringSoonDays == null ? '' : String(expiringSoonDays)) }))
         .then(() => {
             if (typeof CONFIG !== 'undefined') {
                 CONFIG.REQUIRE_BATCH_TRACKING = requireBatchTracking;

@@ -49,12 +49,41 @@ from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
 from app.utils.vat import vat_rate_to_percent
+from app.models.settings import CompanySetting
 
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 # Log when draft snapshot COGS (qty×mult×unit_cost_used) would differ from batched ledger by
 # more than this fraction of line revenue (before overwriting unit_cost_used at batch).
 SNAPSHOT_VS_LEDGER_WARN_THRESHOLD = Decimal("0.01")  # 1% of line_total_exclusive
+
+
+def _get_company_setting_decimal(db: Session, company_id: UUID, key: str) -> Decimal | None:
+    row = (
+        db.query(CompanySetting.setting_value)
+        .filter(CompanySetting.company_id == company_id, CompanySetting.setting_key == key)
+        .first()
+    )
+    if not row or row[0] is None:
+        return None
+    try:
+        s = str(row[0]).strip()
+        if not s:
+            return None
+        return Decimal(s)
+    except Exception:
+        return None
+
+
+def _sustainable_min_margin_pct(db: Session, company_id: UUID) -> Decimal | None:
+    v = _get_company_setting_decimal(db, company_id, "sustainable_min_margin_pct")
+    if v is None:
+        return None
+    if v < 0:
+        return Decimal("0")
+    if v > 100:
+        return Decimal("100")
+    return v
 
 
 def _sales_margin_reference_unit_cost_base(
@@ -1934,6 +1963,8 @@ def batch_sales_invoice(
 
     # Process each item and reduce stock based on FEFO allocation (all in same transaction)
     ledger_entries = []
+    below_margin_rows: list[dict] = []
+    sustainable_min_margin = _sustainable_min_margin_pct(db, invoice.company_id)
 
     try:
         for invoice_item in invoice.items:
@@ -1999,6 +2030,36 @@ def batch_sales_invoice(
                             status_code=400,
                             detail=validation.get("message", "Price validation failed.")
                         )
+
+                    # Sustainable margin (warn-only): log lines sold below configured threshold.
+                    # Uses reference/list cost, not landed COGS.
+                    if sustainable_min_margin is not None and sustainable_min_margin > 0 and cost_per_sale_unit_ref > 0:
+                        computed_margin_pct = (
+                            (unit_price_val - cost_per_sale_unit_ref) / cost_per_sale_unit_ref * Decimal("100")
+                        )
+                        if computed_margin_pct < sustainable_min_margin:
+                            below_margin_rows.append(
+                                {
+                                    "company_id": str(invoice.company_id),
+                                    "branch_id": str(invoice.branch_id),
+                                    "sales_invoice_id": str(invoice.id),
+                                    "sales_invoice_item_id": str(invoice_item.id),
+                                    "invoice_no": str(invoice.invoice_no),
+                                    "invoice_date": invoice.invoice_date,
+                                    "payment_mode": getattr(invoice, "payment_mode", None),
+                                    "customer_name": getattr(invoice, "customer_name", None),
+                                    "item_id": str(invoice_item.item_id),
+                                    "item_name": getattr(item, "name", None),
+                                    "unit_name": str(invoice_item.unit_name or ""),
+                                    "quantity_sale_unit": Decimal(str(invoice_item.quantity or 0)),
+                                    "quantity_base_unit": qty_base_dec,
+                                    "unit_price_exclusive": Decimal(str(invoice_item.unit_price_exclusive or 0)),
+                                    "reference_unit_cost_base": Decimal(str(ref_base)) if ref_base is not None else None,
+                                    "sustainable_min_margin_pct": sustainable_min_margin,
+                                    "computed_margin_pct": computed_margin_pct,
+                                    "created_by": str(batched_by) if batched_by else None,
+                                }
+                            )
 
                 # Snapshot: per retail/base unit so qty×mult×unit_cost_used == sum(SALE ledger total_cost)
                 old_uc = invoice_item.unit_cost_used
@@ -2088,6 +2149,35 @@ def batch_sales_invoice(
             db.add(entry)
 
         db.flush()
+
+        # Persist sustainable below-margin logs (non-blocking; best effort).
+        if below_margin_rows:
+            try:
+                from sqlalchemy import text
+
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO below_margin_sales_lines (
+                            company_id, branch_id, sales_invoice_id, sales_invoice_item_id,
+                            invoice_no, invoice_date, payment_mode, customer_name,
+                            item_id, item_name, unit_name, quantity_sale_unit, quantity_base_unit,
+                            unit_price_exclusive, reference_unit_cost_base,
+                            sustainable_min_margin_pct, computed_margin_pct, created_by
+                        )
+                        VALUES (
+                            :company_id, :branch_id, :sales_invoice_id, :sales_invoice_item_id,
+                            :invoice_no, :invoice_date, :payment_mode, :customer_name,
+                            :item_id, :item_name, :unit_name, :quantity_sale_unit, :quantity_base_unit,
+                            :unit_price_exclusive, :reference_unit_cost_base,
+                            :sustainable_min_margin_pct, :computed_margin_pct, :created_by
+                        )
+                        """
+                    ),
+                    below_margin_rows,
+                )
+            except Exception as e:
+                logging.getLogger(__name__).warning("Below-margin log insert failed (ignored): %s", e)
         for entry in ledger_entries:
             SnapshotService.upsert_inventory_balance(
                 db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
@@ -2158,6 +2248,114 @@ def delete_sales_invoice(
     db.delete(invoice)
     db.commit()
     return None
+
+
+@router.get("/branch/{branch_id}/below-margin/summary", response_model=dict)
+def get_below_margin_summary(
+    branch_id: UUID,
+    preset: Optional[str] = Query(None, description="today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year"),
+    start_date: Optional[date] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Count sale lines logged below sustainable company margin (warn-only)."""
+    from sqlalchemy import text
+
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    sd, ed = _resolve_date_range(preset, start_date, end_date)
+    row = db.execute(
+        text(
+            """
+            SELECT
+              COALESCE(COUNT(*), 0) AS line_count,
+              COALESCE(COUNT(DISTINCT item_id), 0) AS item_count
+            FROM below_margin_sales_lines
+            WHERE branch_id = :branch_id
+              AND invoice_date BETWEEN :sd AND :ed
+            """
+        ),
+        {"branch_id": str(branch_id), "sd": sd, "ed": ed},
+    ).first()
+    return {
+        "start_date": sd.isoformat(),
+        "end_date": ed.isoformat(),
+        "line_count": int(getattr(row, "line_count", 0) or 0),
+        "item_count": int(getattr(row, "item_count", 0) or 0),
+        "sustainable_min_margin_pct": str(_sustainable_min_margin_pct(db, branch.company_id) or ""),
+    }
+
+
+@router.get("/branch/{branch_id}/below-margin/details", response_model=dict)
+def get_below_margin_details(
+    branch_id: UUID,
+    preset: Optional[str] = Query(None, description="today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year"),
+    start_date: Optional[date] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Detailed rows for below sustainable margin (warn-only) log."""
+    from sqlalchemy import text
+
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    sd, ed = _resolve_date_range(preset, start_date, end_date)
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              invoice_date,
+              invoice_no,
+              payment_mode,
+              customer_name,
+              item_id,
+              item_name,
+              unit_name,
+              quantity_sale_unit,
+              quantity_base_unit,
+              unit_price_exclusive,
+              reference_unit_cost_base,
+              sustainable_min_margin_pct,
+              computed_margin_pct
+            FROM below_margin_sales_lines
+            WHERE branch_id = :branch_id
+              AND invoice_date BETWEEN :sd AND :ed
+            ORDER BY invoice_date DESC, invoice_no DESC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        {"branch_id": str(branch_id), "sd": sd, "ed": ed, "limit": limit, "offset": offset},
+    ).mappings().all()
+
+    return {
+        "start_date": sd.isoformat(),
+        "end_date": ed.isoformat(),
+        "rows": [dict(r) for r in rows],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # =====================================================

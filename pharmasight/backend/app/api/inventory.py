@@ -349,6 +349,101 @@ def get_expiring_list(
     return result
 
 
+@router.get("/branch/{branch_id}/expiry-report", response_model=dict)
+def get_expiry_report(
+    branch_id: UUID,
+    days: int = Query(365, ge=1, le=3650, description="Number of days ahead to look for expiring items"),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Expiry report with valuation per batch/expiry pool.
+
+    Each row is a (item_id, batch_number, expiry_date) pool that has remaining stock (>0) and expires
+    within [today, today+days]. Quantity and value are derived from the ledger:
+      quantity = SUM(quantity_delta)
+      value    = SUM(total_cost)
+      unit_cost = value / quantity
+    This matches how ledger-based stock valuation behaves and allows one item to appear multiple times
+    for different batches/expiry dates.
+    """
+    current_user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    _require_branch_belongs_to_user_company(db, branch, current_user)
+    ensure_user_has_branch_access(db, current_user.id, branch_id)
+    if not _user_has_permission(db, current_user.id, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    cutoff = date.today() + timedelta(days=days)
+
+    batch_agg = (
+        db.query(
+            InventoryLedger.item_id,
+            InventoryLedger.batch_number,
+            InventoryLedger.expiry_date,
+            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("quantity"),
+            func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("value"),
+        )
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.company_id == branch.company_id,
+            InventoryLedger.expiry_date.isnot(None),
+            InventoryLedger.expiry_date <= cutoff,
+            InventoryLedger.expiry_date >= date.today(),
+        )
+        .group_by(
+            InventoryLedger.item_id,
+            InventoryLedger.batch_number,
+            InventoryLedger.expiry_date,
+        )
+        .having(func.sum(InventoryLedger.quantity_delta) > 0)
+        .order_by(InventoryLedger.expiry_date.asc())
+        .all()
+    )
+
+    if not batch_agg:
+        return {"days": days, "rows": []}
+
+    item_ids = list({r.item_id for r in batch_agg})
+    items = {item.id: item for item in db.query(Item).filter(Item.id.in_(item_ids)).all()}
+
+    rows = []
+    total_value = 0.0
+    for r in batch_agg:
+        item = items.get(r.item_id)
+        qty = float(r.quantity or 0)
+        val = float(r.value or 0)
+        total_value += val
+        unit_cost = (val / qty) if qty > 0 else 0.0
+        display_str = (
+            InventoryService.format_quantity_display(qty, item)
+            if item
+            else f"{qty}"
+        )
+        rows.append(
+            {
+                "item_id": str(r.item_id),
+                "item_name": item.name if item else "—",
+                "batch_number": r.batch_number or "",
+                "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None,
+                "quantity": qty,
+                "quantity_display": display_str,
+                "unit_cost": unit_cost,
+                "value": val,
+            }
+        )
+    return {
+        "days": days,
+        "branch_id": str(branch_id),
+        "branch_name": branch.name,
+        "rows": rows,
+        "total_value": total_value,
+        "row_count": len(rows),
+    }
+
+
 @router.get("/branch/{branch_id}/total-value", response_model=dict)
 def get_total_stock_value(
     branch_id: UUID,

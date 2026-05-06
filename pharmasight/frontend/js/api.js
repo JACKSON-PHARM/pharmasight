@@ -675,6 +675,8 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/expiring-count?days=${days}`),
         getExpiringList: (branchId, days = 365) =>
             api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/expiring?days=${days}`),
+        getExpiryReport: (branchId, days = 365) =>
+            api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/expiry-report?days=${days}`),
         getTotalStockValue: (branchId) =>
             api.get(`${CONFIG.API_ENDPOINTS.inventory}/branch/${branchId}/total-value`),
         allocateFEFO: (itemId, branchId, quantity, unitName) => 
@@ -741,6 +743,10 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/today-summary`, userId != null ? { user_id: userId } : {}),
         getGrossProfit: (branchId, params = {}) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/gross-profit`, params),
+        getBelowMarginSummary: (branchId, params = {}) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/below-margin/summary`, params),
+        getBelowMarginDetails: (branchId, params = {}) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/below-margin/details`, params),
         updateInvoice: (invoiceId, data) => 
             api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
         addInvoiceItem: (invoiceId, item) =>

@@ -4,6 +4,8 @@
 let cachedExpiringList = [];
 // Cached order book pending list for quick preview
 let cachedOrderBookPendingToday = [];
+// Expiring-soon days window (company setting)
+let cachedExpiringSoonDays = 365;
 
 // Cache for dashboard metrics: key = branchId + preset + start + end (for range data), branchId only for KPIs
 const DASHBOARD_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
@@ -92,7 +94,7 @@ async function loadDashboard() {
     if (gridRestore) gridRestore.style.display = '';
 
     const branchId = getBranchIdForStock();
-    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'ordersProcessed', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday'];
+    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'ordersProcessed', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday', 'belowMarginCount'];
 
     // Reset cards to placeholder (no auto-fetch)
     cardIds.forEach(function (id) {
@@ -231,7 +233,12 @@ async function applyDashboardFilters() {
                     return (!p.canViewAll && p.canViewOwn) ? (CONFIG.USER_ID || null) : null;
                 })
                 : (CONFIG.USER_ID || null);
-            const gpRes = await API.sales.getGrossProfit(branchId, gpParams);
+            const [gpRes, bmRes] = await Promise.all([
+                API.sales.getGrossProfit(branchId, gpParams),
+                (API.sales && typeof API.sales.getBelowMarginSummary === 'function')
+                    ? API.sales.getBelowMarginSummary(branchId, gpParams).catch(() => null)
+                    : Promise.resolve(null),
+            ]);
             rangeData = {
                 sales_exclusive: parseFloat(gpRes.sales_exclusive || 0), // gross sales (before credit notes)
                 sales_inclusive: parseFloat(gpRes.sales_inclusive || 0), // gross sales inclusive of VAT (before credit notes)
@@ -241,7 +248,9 @@ async function applyDashboardFilters() {
                 margin_percent: parseFloat(gpRes.margin_percent || 0),
                 invoice_count: parseInt(gpRes.invoice_count || 0, 10),
                 start_date: gpRes.start_date,
-                end_date: gpRes.end_date
+                end_date: gpRes.end_date,
+                below_margin_lines: bmRes ? parseInt(bmRes.line_count || 0, 10) : 0,
+                sustainable_min_margin_pct: bmRes ? (bmRes.sustainable_min_margin_pct || '') : ''
             };
             dashboardCache.range = { key: rangeKey, data: rangeData, ts: now };
         }
@@ -249,6 +258,18 @@ async function applyDashboardFilters() {
         if (!kpisData) {
             const promises = [];
             const kpis = {};
+            // Load company expiring window once per Apply (fallback 365)
+            promises.push(
+                (API.company && typeof API.company.getSettings === 'function' && CONFIG && CONFIG.COMPANY_ID)
+                    ? API.company.getSettings(CONFIG.COMPANY_ID, 'expiring_soon_days')
+                        .then(function (d) {
+                            const raw = d ? d.value : null;
+                            const n = parseInt(raw, 10);
+                            cachedExpiringSoonDays = (isFinite(n) && n >= 1 && n <= 3650) ? n : 365;
+                        })
+                        .catch(function () { cachedExpiringSoonDays = 365; })
+                    : Promise.resolve().then(function () { cachedExpiringSoonDays = 365; })
+            );
             if (API.items && typeof API.items.count === 'function') {
                 promises.push(API.items.count(CONFIG.COMPANY_ID).then(function (d) { kpis.itemsCount = (d.count != null ? d.count : 0); }).catch(function () { kpis.itemsCount = 0; }));
             }
@@ -259,7 +280,11 @@ async function applyDashboardFilters() {
                 promises.push(API.inventory.getTotalStockValue(branchId).then(function (d) { kpis.stockValue = d.total_value; }).catch(function () { kpis.stockValue = null; }));
             }
             if (API.inventory && typeof API.inventory.getExpiringCount === 'function') {
-                promises.push(API.inventory.getExpiringCount(branchId, 365).then(function (d) { kpis.expiringCount = (d.count != null ? d.count : 0); }).catch(function () { kpis.expiringCount = 0; }));
+                promises.push(Promise.resolve().then(function () {
+                    return API.inventory.getExpiringCount(branchId, cachedExpiringSoonDays)
+                        .then(function (d) { kpis.expiringCount = (d.count != null ? d.count : 0); })
+                        .catch(function () { kpis.expiringCount = 0; });
+                }));
             }
             if (API.orderBook && typeof API.orderBook.getTodaySummary === 'function') {
                 promises.push(API.orderBook.getTodaySummary(branchId, CONFIG.COMPANY_ID, 50).then(function (s) {
@@ -282,6 +307,7 @@ async function applyDashboardFilters() {
         const todayGrossProfitMetaEl = document.getElementById('todayGrossProfitMeta');
         const expiringItemsEl = document.getElementById('expiringItems');
         const orderBookPendingEl = document.getElementById('orderBookPendingToday');
+        const belowMarginEl = document.getElementById('belowMarginCount');
 
         if (totalItemsEl) totalItemsEl.textContent = (kpisData.itemsCount != null ? kpisData.itemsCount : '—');
         if (totalStockEl) totalStockEl.textContent = (kpisData.stockCount != null ? kpisData.stockCount : '—');
@@ -293,6 +319,7 @@ async function applyDashboardFilters() {
         if (todayGrossProfitMetaEl) todayGrossProfitMetaEl.textContent = 'Gross Profit • Margin ' + (rangeData.margin_percent != null ? rangeData.margin_percent.toFixed(1) : '0') + '%';
         if (expiringItemsEl) expiringItemsEl.textContent = (kpisData.expiringCount != null ? kpisData.expiringCount : '—');
         if (orderBookPendingEl) orderBookPendingEl.textContent = (kpisData.orderBookPending != null ? kpisData.orderBookPending : '—');
+        if (belowMarginEl) belowMarginEl.textContent = (rangeData.below_margin_lines != null ? rangeData.below_margin_lines : '—');
 
     } catch (error) {
         console.error('Error loading dashboard:', error);
@@ -396,16 +423,17 @@ async function showExpiringSoonModal() {
 
     const content = '<div class="spinner" style="margin: 2rem auto;"></div><p style="text-align: center;">Loading expiring items...</p>';
     const footer = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
-    if (typeof showModal === 'function') showModal('Expiring Soon (within 365 days)', content, footer, 'modal-large');
+    const days = cachedExpiringSoonDays || 365;
+    if (typeof showModal === 'function') showModal(`Expiring Soon (within ${days} days)`, content, footer, 'modal-large');
 
     try {
-        const list = await API.inventory.getExpiringList(branchId, 365);
+        const list = await API.inventory.getExpiringList(branchId, days);
         cachedExpiringList = list || [];
 
         if (!list || list.length === 0) {
-            const emptyContent = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items expiring within the next 365 days.</p>';
+            const emptyContent = `<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No items expiring within the next ${days} days.</p>`;
             const emptyFooter = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
-            if (typeof showModal === 'function') showModal('Expiring Soon (within 365 days)', emptyContent, emptyFooter, 'modal-large');
+            if (typeof showModal === 'function') showModal(`Expiring Soon (within ${days} days)`, emptyContent, emptyFooter, 'modal-large');
             return;
         }
 
@@ -431,10 +459,10 @@ async function showExpiringSoonModal() {
                     <tbody>${rows}</tbody>
                 </table>
             </div>
-            <p style="color: var(--text-secondary); font-size: 0.875rem;">${list.length} batch(es) expiring within 365 days</p>
+            <p style="color: var(--text-secondary); font-size: 0.875rem;">${list.length} batch(es) expiring within ${days} days</p>
         `;
         const modalFooter = '<button class="btn btn-outline" onclick="exportExpiringToCsv()"><i class="fas fa-file-csv"></i> Export CSV</button><button class="btn btn-outline" onclick="closeModal()">Close</button>';
-        if (typeof showModal === 'function') showModal('Expiring Soon (within 365 days)', tableContent, modalFooter, 'modal-large');
+        if (typeof showModal === 'function') showModal(`Expiring Soon (within ${days} days)`, tableContent, modalFooter, 'modal-large');
     } catch (err) {
         console.error('Failed to load expiring list:', err);
         const errContent = '<p style="padding: 2rem; text-align: center; color: var(--danger-color);">Failed to load expiring items. ' + (err.message || '') + '</p>';
@@ -479,6 +507,93 @@ function openFinancialReportsFromDashboard() {
     }
 }
 
+async function showBelowMarginModal() {
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
+        if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
+        return;
+    }
+    if (!API.sales || typeof API.sales.getBelowMarginDetails !== 'function') {
+        if (typeof showToast === 'function') showToast('Below-margin report not available.', 'warning');
+        return;
+    }
+
+    const params = getDashboardParams();
+    const qp = {};
+    if (params && params.preset && params.preset !== 'custom') qp.preset = params.preset;
+    if (params && params.preset === 'custom') {
+        if (params.startDate) qp.start_date = params.startDate;
+        if (params.endDate) qp.end_date = params.endDate;
+    }
+
+    const content = '<div class="spinner" style="margin: 2rem auto;"></div><p style="text-align: center;">Loading report...</p>';
+    const footer = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
+    if (typeof showModal === 'function') showModal('Sold below sustainable margin', content, footer, 'modal-large');
+
+    try {
+        const res = await API.sales.getBelowMarginDetails(branchId, { ...qp, limit: 300, offset: 0 });
+        const rows = (res && Array.isArray(res.rows)) ? res.rows : [];
+        if (!rows.length) {
+            const empty = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No below-margin sales in this range.</p>';
+            if (typeof showModal === 'function') showModal('Sold below sustainable margin', empty, footer, 'modal-large');
+            return;
+        }
+        const tr = rows.map(r => {
+            const d = (r.invoice_date || '').slice(0, 10);
+            const inv = r.invoice_no || '—';
+            const cust = r.customer_name || 'Walk-in';
+            const item = r.item_name || '—';
+            const unit = r.unit_name || '';
+            const qty = (r.quantity_sale_unit != null ? Number(r.quantity_sale_unit) : 0);
+            const base = (r.quantity_base_unit != null ? Number(r.quantity_base_unit) : 0);
+            const price = (r.unit_price_exclusive != null ? Number(r.unit_price_exclusive) : 0);
+            const mp = (r.computed_margin_pct != null ? Number(r.computed_margin_pct) : null);
+            const minp = (r.sustainable_min_margin_pct != null ? Number(r.sustainable_min_margin_pct) : null);
+            const fm = (v) => (v == null || isNaN(v)) ? '—' : (v.toFixed(1) + '%');
+            const fc = (v) => (typeof formatCurrency === 'function') ? formatCurrency(v) : String(v);
+            const esc = (v) => (typeof escapeHtml === 'function') ? escapeHtml(v) : String(v);
+            return `
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${d}</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${esc(inv)}</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${esc(cust)}</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${esc(item)}</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color); text-align:right;">${(typeof formatNumber==='function')?formatNumber(qty):qty} ${esc(unit)}</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color); text-align:right;">${(typeof formatNumber==='function')?formatNumber(base):base}</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color); text-align:right;">${fc(price)}</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color); text-align:right;">${fm(mp)}</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid var(--border-color); text-align:right;">${fm(minp)}</td>
+                </tr>
+            `;
+        }).join('');
+        const table = `
+            <div style="max-height: 65vh; overflow:auto;">
+                <table style="width:100%; border-collapse: collapse;">
+                    <thead style="position: sticky; top: 0; background: white;">
+                        <tr>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:left;">Date</th>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:left;">Invoice</th>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:left;">Account</th>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:left;">Item</th>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:right;">Units sold</th>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:right;">Pieces (base)</th>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:right;">Price/Unit</th>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:right;">Margin</th>
+                            <th style="padding:0.5rem; border-bottom:2px solid var(--border-color); text-align:right;">Min</th>
+                        </tr>
+                    </thead>
+                    <tbody>${tr}</tbody>
+                </table>
+            </div>
+        `;
+        if (typeof showModal === 'function') showModal('Sold below sustainable margin', table, footer, 'modal-large');
+    } catch (e) {
+        console.error('Below margin modal failed:', e);
+        const msg = `<p style="color: var(--danger-color); padding: 1rem;">Failed to load report.</p>`;
+        if (typeof showModal === 'function') showModal('Sold below sustainable margin', msg, footer, 'modal-large');
+    }
+}
+
 // Export
 window.loadDashboard = loadDashboard;
 window.applyDashboardFilters = applyDashboardFilters;
@@ -487,3 +602,4 @@ window.openOrderBookFromDashboard = openOrderBookFromDashboard;
 window.showExpiringSoonModal = showExpiringSoonModal;
 window.exportExpiringToCsv = exportExpiringToCsv;
 window.openFinancialReportsFromDashboard = openFinancialReportsFromDashboard;
+window.showBelowMarginModal = showBelowMarginModal;
