@@ -4,60 +4,271 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <base href="/marketing/">
-  <meta name="description" content="PharmaSight — pharmacy POS and inventory software for retail pharmacies, dispensaries, clinics, and agrovet. Stock, sales, purchases, branches. Start a free trial.">
+  <script src="config.js"></script>
+  <meta name="description" content="PharmaSight — pharmacy POS and inventory software for retail pharmacies, dispensaries, clinics, and agrovet. Stock, sales, purchases, branches. Start using PharmaSight now.">
   <meta name="keywords" content="pharmacy POS, pharmacy software, pharmacy inventory, dispensary software, retail pharmacy Kenya, clinic stock, agrovet POS">
   <title>PharmaSight — Pharmacy POS &amp; inventory software</title>
+  <link rel="icon" type="image/png" href="logo.png" data-marketing-link="favicon">
+  <meta property="og:image" content="" data-marketing-meta="og_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="site.css">
-  <script src="config.js"></script>
 </head>
-<body>
-  <header>
-    <a class="logo" href="index.html">PharmaSight</a>
-    <nav>
+<body class="marketing-home">
+  <header class="site-header site-header--landing">
+    <a class="logo logo-wordmark" href="index.html">
+      <img src="logo.png" alt="" data-marketing-logo="" class="logo-img" onerror="this.style.display='none'">
+      <span class="logo-text" aria-label="PharmaSight"><span class="logo-pharma">Pharma</span><span class="logo-sight">Sight</span></span>
+    </a>
+    <nav class="site-nav-landing">
       <a href="pricing.html">Pricing</a>
       <a href="help.html">Help</a>
       <a href="portal.html">Account</a>
-      <a href="signup.html">Start free trial</a>
+      <a href="signup.html" class="nav-cta">Start using PharmaSight now</a>
     </nav>
+    <button id="themeToggle" class="theme-toggle-btn" type="button" aria-label="Toggle theme">🌙</button>
   </header>
-  <main>
-    <section class="hero">
-      <h1>Run your dispensary, clinic, or agrovet in one place</h1>
-      <p>PharmaSight is a focused operations platform for inventory, sales, purchases, and compliance-ready workflows — without the noise of a generic ERP.</p>
-      <div class="cta-row">
-        <a class="btn btn-primary" href="signup.html">Start free trial</a>
-        <a class="btn btn-secondary" id="signInErp" href="#">Sign in to app</a>
+  <main class="main-landing">
+    <section class="hero hero--split">
+      <div class="hero-copy">
+        <p class="hero-badge"><span class="hero-badge-icon" aria-hidden="true">★</span> Trusted by Pharmacies, Clinics &amp; Agrovets</p>
+        <h1 class="hero-title">Stop guessing your pharmacy <span class="hero-accent">profits</span></h1>
+        <p class="hero-lede">Track stock, sales, and margins in real time — built specifically for pharmacies, clinics, and agrovets.</p>
+        <div class="cta-row hero-cta">
+          <a class="btn btn-primary btn-pill" href="signup.html">Start using PharmaSight now</a>
+          <button class="btn btn-secondary btn-pill btn-outline-dark" type="button" id="askQuestionBtn">Ask a question</button>
+          <a class="btn btn-secondary btn-pill btn-outline-dark" id="signInErp" href="#">Sign in to app</a>
+        </div>
+        <ul class="hero-features" aria-label="Highlights">
+          <li>
+            <span class="hero-feature-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3l7 4v5c0 5-3.5 9-7 10-3.5-1-7-5-7-10V7l7-4z" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span>Accurate Stock Control</span>
+          </li>
+          <li>
+            <span class="hero-feature-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 19V5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M4 19h16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M7 15l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span>Real-time Insights</span>
+          </li>
+          <li>
+            <span class="hero-feature-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.75"/><path d="M8 11V8a4 4 0 018 0v3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg></span>
+            <span>Secure &amp; Reliable</span>
+          </li>
+        </ul>
+      </div>
+      <div class="hero-visual">
+        <div class="hero-blob hero-blob--a" aria-hidden="true"></div>
+        <div class="hero-blob hero-blob--b" aria-hidden="true"></div>
+        <img data-marketing-image="hero" alt="" class="hero-uploaded-shot">
+        <div class="dash-mock" aria-hidden="true">
+          <div class="dash-mock-inner">
+            <aside class="dash-nav">
+              <span class="dash-nav-dot"></span><span class="dash-nav-dot"></span><span class="dash-nav-dot"></span><span class="dash-nav-dot"></span>
+            </aside>
+            <div class="dash-main">
+              <div class="dash-toolbar"><span class="dash-title">Dashboard</span></div>
+              <div class="dash-kpis">
+                <div class="dash-kpi"><span class="dash-kpi-label">Total Sales</span><strong>$42.450</strong><span class="dash-kpi-up">+12%</span></div>
+                <div class="dash-kpi"><span class="dash-kpi-label">Total Orders</span><strong>1,245</strong><span class="dash-kpi-up">+8%</span></div>
+                <div class="dash-kpi"><span class="dash-kpi-label">Active Patients</span><strong>892</strong><span class="dash-kpi-up">+15%</span></div>
+                <div class="dash-kpi"><span class="dash-kpi-label">On-Time Delivery</span><strong>96%</strong><span class="dash-kpi-up">+4%</span></div>
+              </div>
+              <div class="dash-panels">
+                <div class="dash-panel dash-panel--wide">
+                  <span class="dash-panel-title">Sales Overview</span>
+                  <div class="dash-spark" aria-hidden="true"></div>
+                </div>
+                <div class="dash-panel">
+                  <span class="dash-panel-title">Stock Overview</span>
+                  <div class="dash-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+                </div>
+                <div class="dash-panel">
+                  <span class="dash-panel-title">Top Products</span>
+                  <div class="dash-donut" aria-hidden="true"><span></span></div>
+                </div>
+              </div>
+              <div class="dash-table">
+                <span class="dash-panel-title">Recent Orders</span>
+                <div class="dash-table-rows">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="hero-product-decor" aria-hidden="true">
+          <div class="decor-pills"></div>
+          <div class="decor-bottle"></div>
+        </div>
       </div>
     </section>
     <section class="grid-3">
-      <div class="card">
+      <div class="card" id="segment-pharmacy">
         <h2>Pharmacy</h2>
         <p>Stock, margins, sales, and branch-aware inventory tuned for retail pharmacy.</p>
       </div>
-      <div class="card">
+      <div class="card" id="segment-clinic">
         <h2>Clinic</h2>
         <p>OPD-friendly flows alongside your core stock and billing discipline.</p>
       </div>
-      <div class="card">
+      <div class="card" id="segment-agrovet">
         <h2>Agrovet</h2>
         <p>Manage veterinary retail and agronomy SKUs with the same reliable ledger.</p>
       </div>
     </section>
+    <section style="margin-top:2.25rem;">
+      <h2 style="margin:0 0 0.75rem;">See how PharmaSight works</h2>
+      <p style="color:var(--muted); margin:0 0 1.25rem; max-width:44rem;">
+        Three daily workflows that remove guesswork—so you always know what you have, what it costs, and what you made.
+      </p>
+      <div class="grid-3">
+        <div class="card">
+          <h2>1) Receive stock</h2>
+          <p>Enter a supplier invoice → PharmaSight records cost and batch details automatically.</p>
+        </div>
+        <div class="card">
+          <h2>2) Set selling price</h2>
+          <p>Margins are calculated instantly so you always know your profit before you sell.</p>
+        </div>
+        <div class="card">
+          <h2>3) Sell &amp; track profit</h2>
+          <p>Every sale updates stock and profit in real time — no spreadsheets, no surprises.</p>
+        </div>
+      </div>
+    </section>
+    <section style="margin-top:3rem;">
+      <h2>Tutorials</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3 style="margin:0 0 0.5rem;">How to receive stock</h3>
+          <p>Learn how to record supplier invoices and track cost.</p>
+        </div>
+        <div class="card">
+          <h3 style="margin:0 0 0.5rem;">How to track margins</h3>
+          <p>Understand pricing and profit in real time.</p>
+        </div>
+        <div class="card">
+          <h3 style="margin:0 0 0.5rem;">How to avoid expiries</h3>
+          <p>Use batch tracking to reduce losses.</p>
+        </div>
+      </div>
+    </section>
   </main>
-  <footer>
-    <a id="waFooter" href="#">WhatsApp support</a>
-    · <a href="help.html">Help</a>
-    · PharmaSight
+  <footer class="site-footer">
+    <div class="site-footer-grid">
+      <div class="site-footer-col">
+        <div class="site-footer-brand">PharmaSight</div>
+        <p class="site-footer-muted">Pharmacy POS, inventory, and branch-aware operations.</p>
+        <p class="site-footer-address" id="footerAddress">Kenya · Remote-first support</p>
+        <p class="site-footer-line">Email: <a id="footerGeneralEmail" href="mailto:support@pharmasight.co.ke">support@pharmasight.co.ke</a></p>
+        <p class="site-footer-line"><a id="footerWa" href="#">WhatsApp</a></p>
+      </div>
+      <div class="site-footer-col">
+        <h3 class="site-footer-heading">Sales &amp; Marketing</h3>
+        <p class="site-footer-line">Email: <a id="footerSalesEmail" href="mailto:sales@pharmasight.co.ke">sales@pharmasight.co.ke</a></p>
+        <p class="site-footer-line">Tel: <span id="footerSalesPhone">+254 XXX XXX XXX</span></p>
+      </div>
+      <div class="site-footer-col">
+        <h3 class="site-footer-heading">Technical Support</h3>
+        <p class="site-footer-line">Email: <a id="footerSupportEmail" href="mailto:support@pharmasight.co.ke">support@pharmasight.co.ke</a></p>
+        <p class="site-footer-line">Tel: <span id="footerSupportPhone">+254 XXX XXX XXX</span></p>
+      </div>
+      <div class="site-footer-col">
+        <h3 class="site-footer-heading">Company</h3>
+        <ul class="site-footer-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="pricing.html">Pricing</a></li>
+          <li><a href="help.html">Help</a></li>
+          <li><a href="portal.html">Account</a></li>
+          <li><a href="signup.html">Start using PharmaSight now</a></li>
+        </ul>
+      </div>
+      <div class="site-footer-col">
+        <h3 class="site-footer-heading">Solutions</h3>
+        <ul class="site-footer-links">
+          <li><a href="index.html#segment-pharmacy">Pharmacy</a></li>
+          <li><a href="index.html#segment-clinic">Clinic</a></li>
+          <li><a href="index.html#segment-agrovet">Agrovet</a></li>
+          <li><a id="footerSignInApp" href="#">Operations app</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="site-footer-bar">
+      <span>&copy; <span id="footerYear"></span> PharmaSight. All rights reserved.</span>
+      <span class="site-footer-bar-sep">·</span>
+      <a id="footerWaBar" href="#">WhatsApp</a>
+      <span class="site-footer-bar-sep">·</span>
+      <a href="help.html">Help</a>
+    </div>
   </footer>
+  <script src="chat-widget.js"></script>
   <script>
     (function () {
       var cfg = window.MARKETING_CONFIG || {};
       var erp = (cfg.ERP_APP_URL || window.location.origin).replace(/\/$/, '');
       var si = document.getElementById('signInErp');
       if (si) si.href = erp + '/app#login';
-      var wa = 'https://wa.me/' + (cfg.WHATSAPP_E164 || '254700000000') + '?text=' + encodeURIComponent('Hi PharmaSight — I have a question about the product.');
-      var wf = document.getElementById('waFooter');
-      if (wf) wf.href = wa;
+      function normalizeWaDigits(raw, fallback) {
+        var d = String(raw || '').replace(/\D/g, '');
+        if (!d) d = String(fallback || '').replace(/\D/g, '');
+        if (!d) d = '254708476318';
+        if (d.charAt(0) === '0' && d.length >= 10) d = '254' + d.slice(1);
+        if (d.length === 9 && d.charAt(0) === '7') d = '254' + d;
+        return d;
+      }
+
+      var ss = cfg.SITE_SETTINGS || {};
+      var waDigits = normalizeWaDigits(ss.whatsapp, cfg.WHATSAPP_E164 || '254708476318');
+      var wa = 'https://wa.me/' + waDigits + '?text=' + encodeURIComponent('Hi PharmaSight — I have a question about the product.');
+      ['footerWa', 'footerWaBar'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.href = wa;
+      });
+      var y = document.getElementById('footerYear');
+      if (y) y.textContent = String(new Date().getFullYear());
+      var footerSignIn = document.getElementById('footerSignInApp');
+      if (footerSignIn) footerSignIn.href = erp + '/app#login';
+
+      function applyFooterContacts(siteSettings) {
+        var s = siteSettings || {};
+        var genEmail = (s.support_email || '').trim();
+        var salesEmail = (s.sales_email || '').trim();
+        var phone = (s.phone || '').trim();
+        var addr = (s.address || '').trim();
+
+        function setMail(id, email) {
+          var el = document.getElementById(id);
+          if (!el) return;
+          if (!email) return;
+          el.textContent = email;
+          el.href = 'mailto:' + email;
+        }
+        function setText(id, text) {
+          var el = document.getElementById(id);
+          if (!el) return;
+          if (!text) return;
+          el.textContent = text;
+        }
+
+        setMail('footerGeneralEmail', genEmail);
+        setMail('footerSupportEmail', genEmail);
+        setMail('footerSalesEmail', salesEmail);
+        setText('footerSalesPhone', phone);
+        setText('footerSupportPhone', phone);
+        setText('footerAddress', addr);
+      }
+
+      // Apply immediately (may be empty), then re-apply when config fetch completes
+      applyFooterContacts(ss);
+      try {
+        if (cfg.site_settings_ready && typeof cfg.site_settings_ready.then === 'function') {
+          cfg.site_settings_ready.then(applyFooterContacts);
+        }
+      } catch (_e) {}
+      try {
+        window.addEventListener('pharmasight:site-settings', function (e) {
+          applyFooterContacts((e && e.detail) ? e.detail : {});
+        });
+      } catch (_e) {}
     })();
   </script>
 </body>

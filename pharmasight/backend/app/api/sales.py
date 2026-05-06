@@ -57,6 +57,19 @@ router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 SNAPSHOT_VS_LEDGER_WARN_THRESHOLD = Decimal("0.01")  # 1% of line_total_exclusive
 
 
+def _sales_margin_reference_unit_cost_base(
+    db: Session,
+    company_id: UUID,
+    branch_id: UUID,
+    item_id: UUID,
+    client_override: Optional[Any],
+) -> Optional[Decimal]:
+    """Catalog/list cost per base unit for margin UI (supplier discounts do not shrink this baseline)."""
+    if client_override is not None:
+        return Decimal(str(client_override))
+    return PricingService.get_margin_reference_cost_per_base(db, item_id, branch_id, company_id)
+
+
 def _total_cost_from_allocations(allocations: list) -> Decimal:
     """Sum qty×unit_cost across FEFO allocations (matches posted SALE ledger total_cost)."""
     total = Decimal("0")
@@ -252,8 +265,11 @@ def create_sales_invoice(
             pricing_tier = 'retail'
         
         unit_price = item_data.unit_price_exclusive
-        unit_cost_used = None
-        
+        margin_ref_base = _sales_margin_reference_unit_cost_base(
+            db, invoice.company_id, invoice.branch_id, item_data.item_id,
+            getattr(item_data, "unit_cost_base", None),
+        )
+
         if not unit_price:
             price_info = PricingService.calculate_recommended_price(
                 db, item_data.item_id, invoice.branch_id,
@@ -267,46 +283,39 @@ def create_sales_invoice(
                 )
             if price_info:
                 unit_price = price_info["recommended_unit_price"]
-                unit_cost_used = price_info["unit_cost_used"]
+                if price_info.get("unit_cost_used") is not None:
+                    margin_ref_base = price_info["unit_cost_used"]
             else:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Price not available for {item.name}"
                 )
         else:
-            # Get cost for margin calculation and min-margin check
-            cost_info = PricingService.get_item_cost(
-                db, item_data.item_id, invoice.branch_id
-            )
-            if cost_info:
-                # unit_cost_used = cost per retail/base unit (from CanonicalPricingService)
-                unit_cost_used = cost_info
-            # Price validation (floor + margin + promo)
-            if unit_cost_used and float(unit_cost_used) > 0:
+            # Price validation (floor + margin + promo) vs list/catalog economics
+            if margin_ref_base is not None:
                 mult = get_unit_multiplier_from_item(item, item_data.unit_name)
                 if mult is not None and mult > 0:
-                    cost_per_sale_unit = unit_cost_used * mult
+                    cost_per_sale_unit = margin_ref_base * mult
                     unit_price_val = Decimal(str(unit_price))
-                    if cost_per_sale_unit > 0:
-                        user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
-                        is_promo = is_line_price_at_promo(
-                            db, item_data.item_id, item_data.unit_name or "", unit_price_val
+                    user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
+                    is_promo = is_line_price_at_promo(
+                        db, item_data.item_id, item_data.unit_name or "", unit_price_val
+                    )
+                    validation = validate_line_price(
+                        db,
+                        invoice.company_id,
+                        item_data.item_id,
+                        unit_price_val,
+                        cost_per_sale_unit,
+                        user_has_override,
+                        branch_id=invoice.branch_id,
+                        is_promo_price=is_promo,
+                    )
+                    if not validation.get("allowed"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=validation.get("message", "Price validation failed.")
                         )
-                        validation = validate_line_price(
-                            db,
-                            invoice.company_id,
-                            item_data.item_id,
-                            unit_price_val,
-                            cost_per_sale_unit,
-                            user_has_override,
-                            branch_id=invoice.branch_id,
-                            is_promo_price=is_promo,
-                        )
-                        if not validation.get("allowed"):
-                            raise HTTPException(
-                                status_code=400,
-                                detail=validation.get("message", "Price validation failed.")
-                            )
         
         # Calculate line totals
         line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
@@ -329,7 +338,8 @@ def create_sales_invoice(
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
             line_total_inclusive=line_total_inclusive,
-            unit_cost_used=unit_cost_used,
+            unit_cost_used=None,
+            margin_reference_unit_cost_base=margin_ref_base,
             item_name=item.name,  # Cache item name
             item_code=item.sku or ''  # Cache item code
         )
@@ -511,20 +521,14 @@ def _get_sales_invoice_response(
             invoice_item.unit_display_short = get_unit_display_short(
                 invoice_item.item, invoice_item.unit_name or ''
             )
-            # Base-unit cost for margin: batched/paid lines use ledger-reconciled unit_cost_used
-            # (per retail); drafts use live FEFO cost from pricing service.
-            if getattr(invoice, "status", None) in ("BATCHED", "PAID") and getattr(
-                invoice_item, "unit_cost_used", None
-            ) is not None and float(invoice_item.unit_cost_used or 0) > 0:
-                invoice_item.unit_cost_base = Decimal(str(invoice_item.unit_cost_used))
-            else:
-                try:
-                    invoice_item.unit_cost_base = PricingService.get_item_cost(
-                        db, invoice_item.item_id, invoice.branch_id
-                    )
-                except Exception:
-                    invoice_item.unit_cost_base = None
-            if getattr(invoice_item, "unit_cost_base", None) is not None and float(invoice_item.unit_cost_base) > 0:
+            # unit_cost_base in responses = catalog/list reference for margin % (not landed COGS).
+            ref_base = getattr(invoice_item, "margin_reference_unit_cost_base", None)
+            if ref_base is None:
+                ref_base = PricingService.get_margin_reference_cost_per_base(
+                    db, invoice_item.item_id, invoice.branch_id, invoice.company_id
+                )
+            invoice_item.unit_cost_base = ref_base
+            if getattr(invoice_item, "unit_cost_base", None) is not None and float(invoice_item.unit_cost_base or 0) >= 0:
                 mult = get_unit_multiplier_from_item(invoice_item.item, invoice_item.unit_name or "")
                 if mult is not None and mult > 0:
                     cost_per_sale_unit = float(invoice_item.unit_cost_base) * float(mult)
@@ -690,7 +694,10 @@ def add_sales_invoice_item(
     sales_type = getattr(invoice, 'sales_type', 'RETAIL') or 'RETAIL'
     pricing_tier = 'wholesale' if sales_type == 'WHOLESALE' else ('supplier' if sales_type == 'SUPPLIER' else 'retail')
     unit_price = item_data.unit_price_exclusive
-    unit_cost_used = None
+    margin_ref_base = _sales_margin_reference_unit_cost_base(
+        db, invoice.company_id, invoice.branch_id, item_data.item_id,
+        getattr(item_data, "unit_cost_base", None),
+    )
     if not unit_price:
         price_info = PricingService.calculate_recommended_price(
             db, item_data.item_id, invoice.branch_id,
@@ -703,39 +710,35 @@ def add_sales_invoice_item(
             )
         if price_info:
             unit_price = price_info["recommended_unit_price"]
-            unit_cost_used = price_info["unit_cost_used"]
+            if price_info.get("unit_cost_used") is not None:
+                margin_ref_base = price_info["unit_cost_used"]
         else:
             raise HTTPException(status_code=400, detail=f"Price not available for {item.name}")
     else:
-        cost_info = PricingService.get_item_cost(db, item_data.item_id, invoice.branch_id)
-        if cost_info:
-            unit_cost_used = cost_info
-        # Price validation (floor + margin + promo)
-        if unit_cost_used and float(unit_cost_used) > 0:
+        if margin_ref_base is not None:
             mult = get_unit_multiplier_from_item(item, item_data.unit_name)
             if mult is not None and mult > 0:
-                cost_per_sale_unit = unit_cost_used * mult
+                cost_per_sale_unit = margin_ref_base * mult
                 unit_price_val = Decimal(str(unit_price))
-                if cost_per_sale_unit > 0:
-                    user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
-                    is_promo = is_line_price_at_promo(
-                        db, item_data.item_id, item_data.unit_name or "", unit_price_val
+                user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
+                is_promo = is_line_price_at_promo(
+                    db, item_data.item_id, item_data.unit_name or "", unit_price_val
+                )
+                validation = validate_line_price(
+                    db,
+                    invoice.company_id,
+                    item_data.item_id,
+                    unit_price_val,
+                    cost_per_sale_unit,
+                    user_has_override,
+                    branch_id=invoice.branch_id,
+                    is_promo_price=is_promo,
+                )
+                if not validation.get("allowed"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=validation.get("message", "Price validation failed.")
                     )
-                    validation = validate_line_price(
-                        db,
-                        invoice.company_id,
-                        item_data.item_id,
-                        unit_price_val,
-                        cost_per_sale_unit,
-                        user_has_override,
-                        branch_id=invoice.branch_id,
-                        is_promo_price=is_promo,
-                    )
-                    if not validation.get("allowed"):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=validation.get("message", "Price validation failed.")
-                        )
 
     line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
     discount_amount = item_data.discount_amount or (line_total_exclusive * item_data.discount_percent / Decimal("100"))
@@ -756,7 +759,8 @@ def add_sales_invoice_item(
         vat_amount=line_vat,
         line_total_exclusive=line_total_exclusive,
         line_total_inclusive=line_total_inclusive,
-        unit_cost_used=unit_cost_used,
+        unit_cost_used=None,
+        margin_reference_unit_cost_base=margin_ref_base,
         item_name=item.name,
         item_code=item.sku or "",
     )
@@ -788,33 +792,19 @@ def add_sales_invoice_item(
                     inv_item.item_code = it.sku or ""
                 inv_item.unit_display_short = get_unit_display_short(it, inv_item.unit_name or "")
             if inv_item.item_id == item_data.item_id:
-                # Carry cost/margin from client when provided (item search + user price); margin validated at batch
-                if getattr(item_data, "unit_cost_base", None) is not None:
-                    inv_item.unit_cost_base = Decimal(str(item_data.unit_cost_base))
-                    # unit_cost_used stored as cost per retail (same as unit_cost_base) for COGS consistency
-                    if it:
-                        inv_item.unit_cost_used = inv_item.unit_cost_base
-                        mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
-                    if getattr(item_data, "margin_percent", None) is not None:
-                        inv_item.margin_percent = Decimal(str(item_data.margin_percent))
-                    elif it:
-                        mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
-                        if mult is not None and mult > 0:
-                            cost_per_sale_unit = float(inv_item.unit_cost_base) * float(mult)
-                            price = float(inv_item.unit_price_exclusive or 0)
-                            if price > 0:
-                                inv_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
-                else:
-                    try:
-                        inv_item.unit_cost_base = PricingService.get_item_cost_from_snapshot(db, inv_item.item_id, invoice.branch_id, invoice.company_id)
-                        if inv_item.unit_cost_base is None:
-                            inv_item.unit_cost_base = PricingService.get_item_cost(db, inv_item.item_id, invoice.branch_id, use_fefo=True)
-                    except Exception:
-                        inv_item.unit_cost_base = None
-                if getattr(inv_item, "unit_cost_base", None) is not None and float(inv_item.unit_cost_base) > 0 and it:
+                ref_base = getattr(inv_item, "margin_reference_unit_cost_base", None)
+                if ref_base is None:
+                    ref_base = _sales_margin_reference_unit_cost_base(
+                        db, invoice.company_id, invoice.branch_id, inv_item.item_id,
+                        getattr(item_data, "unit_cost_base", None),
+                    )
+                inv_item.unit_cost_base = ref_base
+                if getattr(item_data, "margin_percent", None) is not None:
+                    inv_item.margin_percent = Decimal(str(item_data.margin_percent))
+                elif ref_base is not None and it and float(ref_base or 0) >= 0:
                     mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
                     if mult is not None and mult > 0:
-                        cost_per_sale_unit = float(inv_item.unit_cost_base) * float(mult)
+                        cost_per_sale_unit = float(ref_base) * float(mult)
                         price = float(inv_item.unit_price_exclusive or 0)
                         if price > 0:
                             inv_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
@@ -1976,33 +1966,39 @@ def batch_sales_invoice(
             qty_base_dec = Decimal(str(quantity_base))
             total_line_ledger_cost = _total_cost_from_allocations(allocations)
 
-            # Model B: post-allocation margin and floor price validation (blended cost across FEFO layers)
+            # Model B: landed COGS per base from allocations; margin/floor checks vs catalog list economics
             if allocations and qty_base_dec > 0:
                 cost_per_base_unit = total_line_ledger_cost / qty_base_dec
+                ref_base = getattr(invoice_item, "margin_reference_unit_cost_base", None)
+                if ref_base is None:
+                    ref_base = PricingService.get_margin_reference_cost_per_base(
+                        db, invoice_item.item_id, invoice.branch_id, invoice.company_id
+                    )
+                    invoice_item.margin_reference_unit_cost_base = ref_base
+
                 mult = get_unit_multiplier_from_item(item, invoice_item.unit_name)
-                if mult is not None and mult > 0:
-                    cost_per_sale_unit = cost_per_base_unit * mult
+                if mult is not None and mult > 0 and ref_base is not None:
+                    cost_per_sale_unit_ref = ref_base * mult
                     unit_price_val = invoice_item.unit_price_exclusive or Decimal("0")
-                    if cost_per_sale_unit > 0:
-                        user_has_override = _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id)
-                        is_promo = is_line_price_at_promo(
-                            db, invoice_item.item_id, invoice_item.unit_name or "", unit_price_val
+                    user_has_override = _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id)
+                    is_promo = is_line_price_at_promo(
+                        db, invoice_item.item_id, invoice_item.unit_name or "", unit_price_val
+                    )
+                    validation = validate_line_price(
+                        db,
+                        invoice.company_id,
+                        invoice_item.item_id,
+                        unit_price_val,
+                        cost_per_sale_unit_ref,
+                        user_has_override,
+                        branch_id=invoice.branch_id,
+                        is_promo_price=is_promo,
+                    )
+                    if not validation.get("allowed"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=validation.get("message", "Price validation failed.")
                         )
-                        validation = validate_line_price(
-                            db,
-                            invoice.company_id,
-                            invoice_item.item_id,
-                            unit_price_val,
-                            cost_per_sale_unit,
-                            user_has_override,
-                            branch_id=invoice.branch_id,
-                            is_promo_price=is_promo,
-                        )
-                        if not validation.get("allowed"):
-                            raise HTTPException(
-                                status_code=400,
-                                detail=validation.get("message", "Price validation failed.")
-                            )
 
                 # Snapshot: per retail/base unit so qty×mult×unit_cost_used == sum(SALE ledger total_cost)
                 old_uc = invoice_item.unit_cost_used

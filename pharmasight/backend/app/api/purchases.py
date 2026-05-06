@@ -80,6 +80,23 @@ import httpx
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 
+def _supplier_invoice_net_unit_cost_base(inv_item: SupplierInvoiceItem, mult: Decimal) -> Decimal:
+    """True landed cost per base unit after supplier line discount (matches payable totals)."""
+    qty = inv_item.quantity
+    if qty is None:
+        return Decimal("0")
+    q = Decimal(str(qty))
+    if q <= 0:
+        return Decimal("0")
+    net_per_purchase_unit = Decimal(str(inv_item.line_total_exclusive or 0)) / q
+    return net_per_purchase_unit / mult
+
+
+def _supplier_invoice_gross_unit_cost_base(inv_item: SupplierInvoiceItem, mult: Decimal) -> Decimal:
+    """Pre-discount list cost per base unit (purchase snapshot / pricing reference — not inventory COGS)."""
+    return Decimal(str(inv_item.unit_cost_exclusive or 0)) / mult
+
+
 def _user_can_cost_outlier_override(db: Session, user_id: UUID) -> bool:
     """Explicit permission or owner/admin (same idea as short-expiry override on batch)."""
     if _user_has_permission(db, user_id, "inventory.cost_override"):
@@ -1721,7 +1738,8 @@ def batch_supplier_invoice(
         multiplier = get_unit_multiplier_from_item(item, invoice_item.unit_name)
         if multiplier is None or multiplier <= 0:
             continue
-        unit_costs_base = []
+        mult_dec = Decimal(str(multiplier))
+        gross_cost_bases_sample = []
         if invoice_item.batch_data:
             try:
                 batches = json.loads(invoice_item.batch_data)
@@ -1730,21 +1748,26 @@ def batch_supplier_invoice(
                         qty = batch.get("quantity", 0)
                         uc = batch.get("unit_cost")
                         if uc is not None and float(qty) > 0:
-                            unit_cost_base = Decimal(str(uc)) / multiplier
-                            unit_costs_base.append(float(unit_cost_base))
+                            unit_cost_base_gross = Decimal(str(uc)) / mult_dec
+                            gross_cost_bases_sample.append(float(unit_cost_base_gross))
                 else:
-                    unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
-                    unit_costs_base.append(float(unit_cost_base))
+                    gross_cost_bases_sample.append(
+                        float(_supplier_invoice_gross_unit_cost_base(invoice_item, mult_dec))
+                    )
             except (json.JSONDecodeError, TypeError):
-                unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
-                unit_costs_base.append(float(unit_cost_base))
+                gross_cost_bases_sample.append(
+                    float(_supplier_invoice_gross_unit_cost_base(invoice_item, mult_dec))
+                )
         else:
-            unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
-            unit_costs_base.append(float(unit_cost_base))
+            gross_cost_bases_sample.append(
+                float(_supplier_invoice_gross_unit_cost_base(invoice_item, mult_dec))
+            )
 
-        # Cost outlier control per item/branch before creating ledger entries
+        net_unit_cost_base = _supplier_invoice_net_unit_cost_base(invoice_item, mult_dec)
+
+        # Cost outlier: compare landed (net) cost to branch weighted average inventory economics
         outlier = is_cost_outlier_vs_weighted_average(
-            db, invoice.company_id, invoice.branch_id, invoice_item.item_id, unit_cost_base
+            db, invoice.company_id, invoice.branch_id, invoice_item.item_id, net_unit_cost_base
         )
         if outlier.get("is_outlier"):
             if not _user_can_cost_outlier_override(db, user.id):
@@ -1753,7 +1776,7 @@ def batch_supplier_invoice(
                 threshold = outlier.get("threshold_pct")
                 item_name = getattr(item, "name", None) or str(invoice_item.item_id)
                 detail_msg = (
-                    f"Invoice unit cost {unit_cost_base} for item '{item_name}' deviates "
+                    f"Invoice net unit cost {net_unit_cost_base} for item '{item_name}' deviates "
                     f"{deviation:.1f}% from branch weighted average {baseline}. Manager override required."
                 )
                 if threshold is not None:
@@ -1764,7 +1787,7 @@ def batch_supplier_invoice(
                 )
 
         item_name = getattr(item, "name", None) or str(invoice_item.item_id)
-        for uc in unit_costs_base:
+        for uc in gross_cost_bases_sample:
             if uc <= 0:
                 continue
             key = (str(invoice_item.item_id), round(uc, 4))
@@ -1874,7 +1897,21 @@ def batch_supplier_invoice(
                 override=short_expiry_override_batch,
                 from_dict=True,
             )
-        
+
+        mult_dec = Decimal(str(multiplier))
+        qty_base_line = Decimal(
+            str(
+                InventoryService.convert_to_base_units(
+                    db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
+                )
+            )
+        )
+        net_per_base = (
+            (Decimal(str(invoice_item.line_total_exclusive or 0)) / qty_base_line)
+            if qty_base_line > 0
+            else Decimal("0")
+        )
+
         # Parse batch data from JSON
         if invoice_item.batch_data:
             try:
@@ -1884,7 +1921,7 @@ def batch_supplier_invoice(
                     quantity_base = InventoryService.convert_to_base_units(
                         db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
                     )
-                    unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
+                    qb_dec = Decimal(str(quantity_base))
                     ledger_entry = InventoryLedger(
                         company_id=invoice.company_id,
                         branch_id=invoice.branch_id,
@@ -1896,9 +1933,9 @@ def batch_supplier_invoice(
                         reference_id=invoice.id,
                         document_number=invoice.invoice_number,
                         quantity_delta=quantity_base,
-                        unit_cost=unit_cost_base,
-                        total_cost=unit_cost_base * quantity_base,
-                        batch_cost=unit_cost_base,
+                        unit_cost=net_per_base,
+                        total_cost=net_per_base * qb_dec,
+                        batch_cost=net_per_base,
                         remaining_quantity=quantity_base,
                         is_batch_tracked=False,
                         created_by=invoice.created_by
@@ -1912,16 +1949,16 @@ def batch_supplier_invoice(
                         status_code=400,
                         detail=f"Sum of batch quantities ({total_batch_quantity}) must equal item quantity ({invoice_item.quantity}) for item {item.name}"
                     )
-                
-                # Create ledger entries for each batch
+
+                # Create ledger entries for each batch (uniform landed net cost per base unit for the line)
                 for batch_idx, batch in enumerate(batches):
                     expiry_date = None
                     if batch.get("expiry_date"):
                         expiry_date = datetime.fromisoformat(batch["expiry_date"]).date()
-                    
+
                     quantity_base = int(float(batch["quantity"]) * float(multiplier))
-                    unit_cost_base = Decimal(str(batch["unit_cost"])) / multiplier
-                    
+                    qb_dec = Decimal(str(quantity_base))
+
                     ledger_entry = InventoryLedger(
                         company_id=invoice.company_id,
                         branch_id=invoice.branch_id,
@@ -1933,9 +1970,9 @@ def batch_supplier_invoice(
                         reference_id=invoice.id,
                         document_number=invoice.invoice_number,
                         quantity_delta=quantity_base,  # Positive = add stock
-                        unit_cost=unit_cost_base,
-                        total_cost=unit_cost_base * quantity_base,
-                        batch_cost=unit_cost_base,
+                        unit_cost=net_per_base,
+                        total_cost=net_per_base * qb_dec,
+                        batch_cost=net_per_base,
                         remaining_quantity=quantity_base,
                         is_batch_tracked=bool(batch.get("batch_number")),
                         split_sequence=batch_idx,
@@ -1947,8 +1984,8 @@ def batch_supplier_invoice(
                 quantity_base = InventoryService.convert_to_base_units(
                     db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
                 )
-                unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
-                
+                qb_dec = Decimal(str(quantity_base))
+
                 ledger_entry = InventoryLedger(
                     company_id=invoice.company_id,
                     branch_id=invoice.branch_id,
@@ -1960,9 +1997,9 @@ def batch_supplier_invoice(
                     reference_id=invoice.id,
                     document_number=invoice.invoice_number,
                     quantity_delta=quantity_base,
-                    unit_cost=unit_cost_base,
-                    total_cost=unit_cost_base * quantity_base,
-                    batch_cost=unit_cost_base,
+                    unit_cost=net_per_base,
+                    total_cost=net_per_base * qb_dec,
+                    batch_cost=net_per_base,
                     remaining_quantity=quantity_base,
                     is_batch_tracked=False,
                     created_by=invoice.created_by
@@ -1973,8 +2010,8 @@ def batch_supplier_invoice(
             quantity_base = InventoryService.convert_to_base_units(
                 db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
             )
-            unit_cost_base = Decimal(str(invoice_item.unit_cost_exclusive)) / multiplier
-            
+            qb_dec = Decimal(str(quantity_base))
+
             ledger_entry = InventoryLedger(
                 company_id=invoice.company_id,
                 branch_id=invoice.branch_id,
@@ -1986,9 +2023,9 @@ def batch_supplier_invoice(
                 reference_id=invoice.id,
                 document_number=invoice.invoice_number,
                 quantity_delta=quantity_base,
-                unit_cost=unit_cost_base,
-                total_cost=unit_cost_base * quantity_base,
-                batch_cost=unit_cost_base,
+                unit_cost=net_per_base,
+                total_cost=net_per_base * qb_dec,
+                batch_cost=net_per_base,
                 remaining_quantity=quantity_base,
                 is_batch_tracked=False,
                 created_by=invoice.created_by
@@ -2008,7 +2045,7 @@ def batch_supplier_invoice(
                 db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
                 document_number=getattr(entry, "document_number", None) or invoice.invoice_number,
             )
-        # Update last unit cost per item from invoice (cost per base unit; purchase snapshot for reporting)
+        # Purchase snapshot: list / pre-discount cost per base (POS margin baseline — not landed inventory COGS)
         items_updated_for_cost = set()
         for inv_item in invoice.items:
             item = inv_item.item

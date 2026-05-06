@@ -1,7 +1,8 @@
 """
 Settings and Configuration models
 """
-from sqlalchemy import Column, String, Text, Integer, ForeignKey
+from sqlalchemy import Column, String, Text, Integer, ForeignKey, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -49,4 +50,24 @@ class DocumentSequence(Base):
     __table_args__ = (
         {"comment": "BRANCH-SPECIFIC document numbering. Invoice numbers MUST include branch code."},
     )
+
+
+class PublicSiteSettings(Base):
+    """
+    Platform-level public marketing settings (singleton row: id=1).
+
+    Used by /marketing/* pages to avoid hardcoding public contact details.
+    """
+
+    __tablename__ = "public_site_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    support_email = Column(Text, nullable=True)
+    sales_email = Column(Text, nullable=True)
+    phone = Column(Text, nullable=True)
+    whatsapp = Column(Text, nullable=True)
+    address = Column(Text, nullable=True)
+    logo_url = Column(Text, nullable=True)
+    marketing_images = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

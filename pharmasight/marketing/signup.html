@@ -4,21 +4,27 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <base href="/marketing/">
-  <title>Start free trial — PharmaSight</title>
-  <link rel="stylesheet" href="site.css">
   <script src="config.js"></script>
+  <title>Sign up — PharmaSight</title>
+  <link rel="icon" type="image/png" href="logo.png" data-marketing-link="favicon">
+  <meta property="og:image" content="" data-marketing-meta="og_image">
+  <link rel="stylesheet" href="site.css">
 </head>
 <body>
   <header>
-    <a class="logo" href="index.html">PharmaSight</a>
+    <a class="logo" href="index.html">
+      <img src="logo.png" alt="" data-marketing-logo="" style="height:28px;width:auto;display:block;margin-right:8px;" onerror="this.style.display='none'">
+      <span style="font-weight:800;">PharmaSight</span>
+    </a>
     <nav>
       <a href="index.html">Home</a>
       <a href="pricing.html">Pricing</a>
       <a href="help.html">Help</a>
     </nav>
+    <button id="themeToggle" class="theme-toggle-btn" type="button" aria-label="Toggle theme">🌙</button>
   </header>
   <main>
-    <h1>Start free trial</h1>
+    <h1>Start using PharmaSight now</h1>
     <p style="color:var(--muted); max-width:36rem;">Creates your organization and admin user. After you submit, we send an invitation email with a link to finish setup—check your inbox and spam folder.</p>
 
     <form id="signupForm" class="card" style="max-width:420px; margin-top:1.5rem;">
@@ -36,7 +42,7 @@
       </div>
       <div class="form-group">
         <label for="country">Country / region</label>
-        <select id="country" name="country" required style="width:100%;max-width:420px;padding:0.55rem 0.65rem;border-radius:0.4rem;border:1px solid #475569;background:#0f172a;color:var(--text);">
+        <select id="country" name="country" required>
           <option value="254" selected>Kenya (+254)</option>
           <option value="256">Uganda (+256)</option>
           <option value="255">Tanzania (+255)</option>
@@ -182,5 +188,6 @@
       });
     })();
   </script>
+  <script src="chat-widget.js"></script>
 </body>
 </html>

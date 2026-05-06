@@ -278,6 +278,7 @@ from app.api.impersonation import router as impersonation_router
 from app.api.admin_metrics import router as admin_metrics_router
 from app.api.admin_platform_licensing import router as admin_platform_licensing_router
 from app.api.platform_admin import router as platform_admin_router
+from app.api.admin_site_settings import router as admin_site_settings_router
 
 app.include_router(invite_router, prefix="/api", tags=["User Invitation & Setup"])
 app.include_router(startup_router, prefix="/api", tags=["Startup & Initialization"])
@@ -308,6 +309,7 @@ if tenants_router:
 app.include_router(impersonation_router, prefix="/api/admin", tags=["Admin Impersonation"])
 app.include_router(admin_metrics_router, prefix="/api/admin", tags=["Platform Admin Dashboard"])
 app.include_router(admin_platform_licensing_router, prefix="/api/admin", tags=["Platform Licensing (Admin)"])
+app.include_router(admin_site_settings_router, prefix="/api/admin", tags=["Admin Site Settings"])
 app.include_router(platform_admin_router, prefix="/api", tags=["Platform Admin (RBAC)"])
 app.include_router(onboarding_router, prefix="/api", tags=["Client Onboarding"])
 if migrations_router:

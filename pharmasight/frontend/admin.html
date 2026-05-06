@@ -106,6 +106,7 @@
         <div class="admin-tabs">
             <button type="button" class="admin-tab active" data-tab="licensing">Licensing</button>
             <button type="button" class="admin-tab" data-tab="platform-dashboard">Platform Dashboard</button>
+            <button type="button" class="admin-tab" data-tab="marketing-settings">Marketing Settings</button>
         </div>
 
         <div id="licensing-content-wrap" class="admin-tab-content active">
@@ -114,6 +115,10 @@
 
         <div id="platform-dashboard-content-wrap" class="admin-tab-content">
             <div id="platform-dashboard-mount"></div>
+        </div>
+
+        <div id="marketing-settings-content-wrap" class="admin-tab-content">
+            <div id="marketing-settings-mount"></div>
         </div>
     </div>
 
@@ -131,7 +136,7 @@
             document.querySelectorAll('.admin-tab-content').forEach(el => {
                 const id = el.id === 'platform-dashboard-content-wrap'
                     ? 'platform-dashboard'
-                    : (el.id === 'licensing-content-wrap' ? 'licensing' : null);
+                    : (el.id === 'licensing-content-wrap' ? 'licensing' : (el.id === 'marketing-settings-content-wrap' ? 'marketing-settings' : null));
                 el.classList.toggle('active', id === tabId);
             });
             if (tabId === 'platform-dashboard') {
@@ -139,6 +144,9 @@
             }
             if (tabId === 'licensing') {
                 window.initPlatformLicensing?.();
+            }
+            if (tabId === 'marketing-settings') {
+                window.initMarketingSettings?.();
             }
         }
 
@@ -176,6 +184,11 @@
                 const { init: initDashboard } = await import('/js/pages/admin_dashboard.js?v=9');
                 window.initPlatformDashboard = async () => {
                     await initDashboard();
+                };
+
+                const { init: initMarketingSettings } = await import('/js/pages/admin_marketing_settings.js?v=1');
+                window.initMarketingSettings = async () => {
+                    await initMarketingSettings();
                 };
             } catch (error) {
                 console.error('Error loading admin panel:', error);

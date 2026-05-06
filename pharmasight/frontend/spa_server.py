@@ -245,7 +245,7 @@ def run(port=3000):
         print(f"[Frontend] SPA server running on http://127.0.0.1:{bound_port}")
         print(f"[Frontend] Frontend dir: {FRONTEND_ROOT}")
         print(f"[Frontend] Marketing root: {MARKETING_ROOT} (exists={MARKETING_ROOT.is_dir()})")
-        print(f"[Frontend] URLs: / → marketing home | /app → ERP | /css /js → frontend assets")
+        print("[Frontend] URLs: / -> marketing home | /app -> ERP | /css /js -> frontend assets")
         print(f"[Frontend] Press Ctrl+C to stop")
         try:
             httpd.serve_forever()

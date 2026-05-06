@@ -3,12 +3,15 @@ Public marketing site API: trial signup entry point (same behaviour as /api/auth
 """
 import logging
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status, Depends
 from pydantic import BaseModel, EmailStr, Field
 
 from app.rate_limit import limiter
 from app.services.demo_signup_service import create_demo_tenant
 from app.api.auth import StartDemoRequest, start_demo_api_response
+from app.models import PublicSiteSettings
+from app.dependencies import get_tenant_db
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,32 @@ class PublicSignupRequest(BaseModel):
     email: EmailStr
     phone: str = Field(..., min_length=5, max_length=50)
     password: str = Field(..., min_length=8)
+
+
+class PublicSiteSettingsResponse(BaseModel):
+    support_email: str = ""
+    sales_email: str = ""
+    phone: str = ""
+    whatsapp: str = ""
+    address: str = ""
+    logo_url: str = ""
+    marketing_images: dict = Field(default_factory=dict)
+
+
+@router.get("/public/site-settings", response_model=PublicSiteSettingsResponse)
+def public_site_settings(db: Session = Depends(get_tenant_db)):
+    row = db.query(PublicSiteSettings).filter(PublicSiteSettings.id == 1).first()
+    if not row:
+        return PublicSiteSettingsResponse()
+    return PublicSiteSettingsResponse(
+        support_email=(row.support_email or "").strip(),
+        sales_email=(row.sales_email or "").strip(),
+        phone=(row.phone or "").strip(),
+        whatsapp=(row.whatsapp or "").strip(),
+        address=(row.address or "").strip(),
+        logo_url=(row.logo_url or "").strip(),
+        marketing_images=dict(row.marketing_images or {}),
+    )
 
 
 @router.post("/public/signup", status_code=status.HTTP_201_CREATED)

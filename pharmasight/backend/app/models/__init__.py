@@ -26,7 +26,7 @@ from .cashbook import CashbookEntry
 PurchaseInvoice = SupplierInvoice
 PurchaseInvoiceItem = SupplierInvoiceItem
 from .sale import SalesInvoice, SalesInvoiceItem, Payment, CreditNote, CreditNoteItem, Quotation, QuotationItem, InvoicePayment
-from .settings import DocumentSequence, CompanySetting
+from .settings import DocumentSequence, CompanySetting, PublicSiteSettings
 from .stock_take import StockTakeSession, StockTakeCount, StockTakeCounterLock, StockTakeAdjustment
 from .order_book import DailyOrderBook, OrderBookHistory
 from .import_job import ImportJob
@@ -83,6 +83,7 @@ __all__ = [
     "InvoicePayment",
     "DocumentSequence",
     "CompanySetting",
+    "PublicSiteSettings",
     "StockTakeSession",
     "StockTakeCount",
     "StockTakeCounterLock",

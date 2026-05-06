@@ -256,8 +256,8 @@ def get_quotation(
                 quotation_item.item, quotation_item.unit_name or ''
             )
         # Margin calculation: cost per sale unit and margin %
-        cost_base = PricingService.get_item_cost(
-            db, quotation_item.item_id, quotation.branch_id
+        cost_base = PricingService.get_margin_reference_cost_per_base(
+            db, quotation_item.item_id, quotation.branch_id, quotation.company_id
         )
         if cost_base is not None:
             # Expose base-unit cost for UI to calculate margins consistently across unit tiers
@@ -517,9 +517,9 @@ def add_quotation_item(
                     if price > 0 and getattr(line, "unit_cost_used", None) and float(line.unit_cost_used) > 0:
                         line.margin_percent = (price - line.unit_cost_used) / price * Decimal("100")
             else:
-                cost_base = PricingService.get_item_cost_from_snapshot(db, line.item_id, quotation.branch_id, quotation.company_id)
-                if cost_base is None:
-                    cost_base = PricingService.get_item_cost(db, line.item_id, quotation.branch_id, use_fefo=True)
+                cost_base = PricingService.get_margin_reference_cost_per_base(
+                    db, line.item_id, quotation.branch_id, quotation.company_id
+                )
                 if cost_base is not None:
                     line.unit_cost_base = cost_base
                     mult = get_unit_multiplier_from_item(it, line.unit_name or '') if it else None

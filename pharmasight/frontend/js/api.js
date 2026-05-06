@@ -1449,6 +1449,16 @@ const API = {
     },
     // Admin - Tenant Management
     admin: {
+        siteSettings: {
+            get: () => api.get('/api/admin/site-settings'),
+            put: (data) => api.put('/api/admin/site-settings', data),
+            uploadMarketingImage: (kind, file) => {
+                const formData = new FormData();
+                formData.append('kind', kind);
+                formData.append('file', file);
+                return api.post('/api/admin/site-settings/marketing-image', formData, { headers: {} });
+            },
+        },
         tenants: {
             list: (params = {}) => api.get('/api/admin/tenants', params),
             get: (tenantId) => api.get(`/api/admin/tenants/${tenantId}`),

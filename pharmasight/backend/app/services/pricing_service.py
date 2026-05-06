@@ -13,6 +13,7 @@ from app.models import (
 )
 from app.services.inventory_service import InventoryService
 from app.services.item_units_helper import get_unit_multiplier_from_item
+from app.services.canonical_pricing import CanonicalPricingService
 
 # Cache for company default markup + margin tiers (per company_id); TTL 60s to cut search markup latency
 _MARKUP_CACHE_TTL_S = 60
@@ -87,7 +88,6 @@ class PricingService:
             return Decimal(str(last_purchase.unit_cost))
         
         # No fallback to items table — cost from ledger only (CanonicalPricingService)
-        from app.services.canonical_pricing import CanonicalPricingService
         item = db.query(Item).filter(Item.id == item_id).first()
         if not item:
             return None
@@ -117,6 +117,30 @@ class PricingService:
         )
         if row and row[0] is not None:
             return Decimal(str(row[0]))
+        return None
+
+    @staticmethod
+    def get_margin_reference_cost_per_base(
+        db: Session,
+        item_id: UUID,
+        branch_id: UUID,
+        company_id: UUID,
+    ) -> Optional[Decimal]:
+        """
+        Cost basis for min-margin validation and customer-facing margin % vs catalog economics.
+
+        Prefers item_branch_purchase_snapshot.last_purchase_price (list / pre-supplier-discount),
+        not FEFO inventory layers (which carry discounted landed cost after receipt).
+        """
+        snap = PricingService.get_item_cost_from_snapshot(db, item_id, branch_id, company_id)
+        if snap is not None:
+            return snap
+        item = db.query(Item).filter(Item.id == item_id, Item.company_id == company_id).first()
+        if item and item.default_cost_per_base is not None:
+            return Decimal(str(item.default_cost_per_base))
+        wac = CanonicalPricingService.get_weighted_average_cost(db, item_id, branch_id, company_id)
+        if wac is not None:
+            return wac
         return None
 
     @staticmethod
@@ -341,9 +365,9 @@ class PricingService:
                     recommended_unit_price = Decimal(str(tier_pricing["price"]))
                 pricing_unit = unit_name
             
-            # Get cost for margin calculation (Model B: optional batch-scoped cost)
-            unit_cost = PricingService.get_item_cost(db, item_id, branch_id, use_fefo=True, batch_id=batch_id)
-            if not unit_cost:
+            # Margin vs catalog/list economics (not discounted landed inventory cost)
+            unit_cost = PricingService.get_margin_reference_cost_per_base(db, item_id, branch_id, company_id)
+            if unit_cost is None:
                 unit_cost = Decimal("0")
             
             # Calculate base unit price from recommended price (items table)
@@ -386,9 +410,9 @@ class PricingService:
         if multiplier is None:
             raise ValueError(f"Unit '{unit_name}' not found for item {item_id}")
         
-        # Get cost (Model B: optional batch-scoped; else FEFO batch preferred)
-        unit_cost = PricingService.get_item_cost(db, item_id, branch_id, use_fefo=True, batch_id=batch_id)
-        if not unit_cost:
+        # Markup from list/reference cost (supplier discounts do not shrink displayed markup baseline)
+        unit_cost = PricingService.get_margin_reference_cost_per_base(db, item_id, branch_id, company_id)
+        if unit_cost is None:
             return None
         
         # Get markup

@@ -95,12 +95,7 @@ def _get_last_purchase_price_from_ledger(
     db: Session, company_id: UUID, branch_id: UUID, item_id: UUID
 ) -> tuple[float | None, datetime | None]:
     """
-    Last purchase-like unit cost from inventory ledger (single source of truth).
-    Considers the most recent row where:
-    - transaction_type is PURCHASE or ADJUSTMENT
-    - quantity_delta > 0 (stock added)
-    - unit_cost > 0 (ignore zero-cost adjustments)
-    Same transaction sees just-written rows.
+    Most recent purchase-like ledger row (cost + timestamp). Includes zero landed cost (e.g. 100% supplier discount).
     """
     row = (
         db.query(InventoryLedger.unit_cost, InventoryLedger.created_at)
@@ -110,7 +105,8 @@ def _get_last_purchase_price_from_ledger(
             InventoryLedger.item_id == item_id,
             InventoryLedger.transaction_type.in_(["PURCHASE", "ADJUSTMENT"]),
             InventoryLedger.quantity_delta > 0,
-            InventoryLedger.unit_cost > 0,
+            InventoryLedger.unit_cost.isnot(None),
+            InventoryLedger.unit_cost >= 0,
         )
         .order_by(InventoryLedger.created_at.desc())
         .limit(1)
@@ -131,10 +127,8 @@ def refresh_pos_snapshot_for_item(
 ) -> None:
     """
     Compute and upsert one row in item_branch_snapshot.
-    Uses: inventory_balances (current_stock), ledger (average_cost, next_expiry, last_purchase_price),
-    pricing (selling_price, margin_percent), item (name, pack_size, base_unit, sku, vat_rate, vat_category, search_text).
-    Last purchase price comes from the ledger (latest PURCHASE for item/branch)—single source of truth; same
-    transaction sees the row we just wrote, so no read-from-another-table or read-after-write issues.
+    Uses: inventory_balances (current_stock), ledger (next_expiry), item_branch_purchase_snapshot (list/reference
+    cost for POS markup — not overwritten from discounted landed ledger costs), pricing inputs, item master fields.
     Call in same transaction as the write that changed data.
     """
     item = db.query(Item).filter(
@@ -158,15 +152,10 @@ def refresh_pos_snapshot_for_item(
     )
     current_stock = float(bal.current_stock or 0) if bal else 0
 
-    # last_purchase_price from ledger (latest costed movement)
-    ledger_last_purchase_price, ledger_last_purchase_created_at = _get_last_purchase_price_from_ledger(
+    # Ledger: latest PURCHASE timestamp (metadata only — do not overwrite purchase snapshot from landed COGS).
+    _, ledger_last_purchase_created_at = _get_last_purchase_price_from_ledger(
         db, company_id, branch_id, item_id
     )
-    # Prefer purchase snapshot cost when present: manual cost corrections can update historical
-    # ledger rows in place (same created_at). However, we still must avoid stale purchase snapshots
-    # overriding the ledger after unrelated refreshes (e.g. batching sales).
-    # We solve this by always preferring ledger-derived cost when available, and then writing
-    # back to item_branch_purchase_snapshot so future fast snapshot reads stay consistent.
     purchase_snap_full = (
         db.query(
             ItemBranchPurchaseSnapshot.last_purchase_price,
@@ -180,45 +169,20 @@ def refresh_pos_snapshot_for_item(
         )
         .first()
     )
-    last_purchase_price = None
-    if ledger_last_purchase_price is not None and ledger_last_purchase_price > 0:
-        last_purchase_price = ledger_last_purchase_price
-    elif (
-        purchase_snap_full
-        and purchase_snap_full.last_purchase_price is not None
-        and float(purchase_snap_full.last_purchase_price) > 0
-    ):
-        last_purchase_price = float(purchase_snap_full.last_purchase_price)
+    # List / catalog reference for POS markup (pre-supplier-discount); snapshot is authoritative.
+    reference_list_price = None
+    if purchase_snap_full and purchase_snap_full.last_purchase_price is not None:
+        reference_list_price = float(purchase_snap_full.last_purchase_price)
 
-    # Write-through: if ledger-derived cost exists and differs from purchase snapshot, fix snapshot.
-    # This prevents stale item_branch_purchase_snapshot values from reverting UI prices
-    # after refreshes triggered by batching sales/inventory writes.
-    if last_purchase_price is not None and last_purchase_price > 0:
-        purchase_snap_price = (
-            float(purchase_snap_full.last_purchase_price)
-            if purchase_snap_full and purchase_snap_full.last_purchase_price is not None
-            else None
-        )
-        should_fix = (
-            purchase_snap_price is None or abs(purchase_snap_price - last_purchase_price) > 0.0001
-        )
-        if should_fix:
-            from app.services.snapshot_service import SnapshotService
+    last_purchase_price = reference_list_price
 
-            SnapshotService.upsert_purchase_snapshot(
-                db=db,
-                company_id=company_id,
-                branch_id=branch_id,
-                item_id=item_id,
-                last_purchase_price=Decimal(str(last_purchase_price)),
-                last_purchase_date=ledger_last_purchase_created_at,
-                last_supplier_id=purchase_snap_full.last_supplier_id if purchase_snap_full else None,
-            )
-
-    # average_cost: prefer last_purchase_price; else get_best_available_cost (which can fall back
-    # to items.default_cost_per_base when there is no ledger history for this branch).
+    # average_cost & markup: use reference list cost when set; else economic fallbacks (inventory-weighted / default).
     cost = CanonicalPricingService.get_best_available_cost(db, item_id, branch_id, company_id)
-    average_cost = float(last_purchase_price) if last_purchase_price is not None else (float(cost) if cost is not None else None)
+    average_cost = (
+        float(last_purchase_price)
+        if last_purchase_price is not None
+        else (float(cost) if cost is not None else None)
+    )
     # When there is no ledger movement yet for this branch but we have a default cost from Excel
     # (items.default_cost_per_base via CanonicalPricingService), promote that into last_purchase_price
     # so branch snapshots and item search always have a cost for pricing/UI.

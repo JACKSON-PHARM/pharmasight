@@ -1,6 +1,7 @@
 """
 Supabase Storage for tenant assets (logos, stamps, signatures, PO PDFs).
 
+Platform marketing images use bucket `marketing-public` (public read URLs).
 Supports company-based and user-based paths (no tenant required) plus legacy tenant paths:
 - company-assets/{company_id}/logo.png, company-assets/{company_id}/stamp.png
 - user-assets/{user_id}/signature.png
@@ -37,6 +38,10 @@ ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg"}
 MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2MB
 # Signed URL expiry: 5–15 min (10 min default). Never expose raw paths to frontend.
 SIGNED_URL_EXPIRY_SECONDS = 600  # 10 minutes
+
+# Platform marketing images (public bucket; readable via /storage/v1/object/public/...).
+MARKETING_BUCKET = "marketing-public"
+MARKETING_IMAGE_KINDS = frozenset({"logo", "favicon", "hero", "og_image"})
 
 
 def _tenant_storage_overrides_enabled() -> bool:
@@ -285,10 +290,12 @@ def _list_buckets_via_rest(*, base_url: str, service_role_key: str) -> Optional[
         return None
 
 
-def _create_bucket_via_rest(*, base_url: str, service_role_key: str, bucket_name: str) -> bool:
+def _create_bucket_via_rest(
+    *, base_url: str, service_role_key: str, bucket_name: str, public: bool = False
+) -> bool:
     endpoint = f"{base_url.rstrip('/')}/storage/v1/bucket"
     headers = {**_storage_rest_auth_headers(service_role_key, include_authorization=True), "Content-Type": "application/json"}
-    payload = {"name": bucket_name, "public": False}
+    payload = {"name": bucket_name, "public": bool(public)}
     try:
         with httpx.Client(timeout=15.0) as client:
             resp = client.post(endpoint, headers=headers, json=payload)
@@ -531,9 +538,100 @@ def ensure_bucket(tenant: Optional[Any], bucket_name: Optional[str] = None) -> N
             bucket_names.append(bn)
 
     if name not in bucket_names:
-        ok = _create_bucket_via_rest(base_url=base_url, service_role_key=key, bucket_name=name)
+        ok = _create_bucket_via_rest(base_url=base_url, service_role_key=key, bucket_name=name, public=False)
         if ok:
             logger.info("Created storage bucket %s (private)", name)
+
+
+def ensure_marketing_bucket() -> None:
+    """Ensure marketing-public bucket exists (public read). Uses global Supabase env."""
+    name = MARKETING_BUCKET
+    base_url, key = _build_effective_storage_config(None)
+    if not base_url or not key:
+        logger.warning("ensure_marketing_bucket: missing storage config; cannot ensure bucket %s", name)
+        return
+
+    buckets = _list_buckets_via_rest(base_url=base_url, service_role_key=key)
+    if buckets is None:
+        return
+    bucket_names = []
+    for b in buckets:
+        bn = b.get("name") if isinstance(b, dict) else None
+        if not bn and isinstance(b, dict):
+            bn = b.get("id")
+        if bn:
+            bucket_names.append(bn)
+
+    if name not in bucket_names:
+        ok = _create_bucket_via_rest(base_url=base_url, service_role_key=key, bucket_name=name, public=True)
+        if ok:
+            logger.info("Created storage bucket %s (public)", name)
+
+
+def marketing_public_object_url(object_path: str) -> str:
+    """HTTPS URL for a public object in MARKETING_BUCKET (no signed URL)."""
+    base_url, _ = _build_effective_storage_config(None)
+    if not base_url:
+        return ""
+    raw = (object_path or "").lstrip("/")
+    safe_bucket = quote((MARKETING_BUCKET or "").strip(), safe="-._~")
+    segments = [quote(seg, safe="-._~") for seg in raw.split("/") if seg != ""]
+    encoded_object = "/".join(segments)
+    return f"{base_url.rstrip('/')}/storage/v1/object/public/{safe_bucket}/{encoded_object}"
+
+
+def upload_platform_marketing_image(*, kind: str, content: bytes, content_type: str) -> Tuple[Optional[str], str]:
+    """
+    Upload a validated PNG/JPEG to the public marketing bucket at site/{kind}.{ext}.
+    Returns (public_url, error_message).
+    """
+    k = (kind or "").strip().lower()
+    if k not in MARKETING_IMAGE_KINDS:
+        return None, "Invalid kind. Use: logo, favicon, hero, og_image"
+
+    ok, err = validate_image_upload(content, content_type or "")
+    if not ok:
+        return None, err
+
+    ct = content_type if content_type in ALLOWED_IMAGE_CONTENT_TYPES else "image/png"
+    ext = ".png" if ct == "image/png" else ".jpg"
+    object_path = f"site/{k}{ext}"
+
+    base_url, key = _build_effective_storage_config(None)
+    if not base_url or not key:
+        return None, "Storage is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)"
+
+    ensure_marketing_bucket()
+    upload_ok = _upload_object_via_rest(
+        base_url=base_url,
+        service_role_key=key,
+        bucket_name=MARKETING_BUCKET,
+        object_path=object_path,
+        content=content,
+        content_type=ct,
+    )
+    if upload_ok:
+        return marketing_public_object_url(object_path), ""
+
+    if not (key and key.startswith("eyJ")):
+        return None, "Upload failed"
+
+    try:
+        client = _client(None)
+        if client:
+            client.storage.from_(MARKETING_BUCKET).upload(
+                object_path,
+                content,
+                file_options={
+                    "content-type": ct,
+                    "cache-control": "public, max-age=3600",
+                    "x-upsert": "true",
+                },
+            )
+            return marketing_public_object_url(object_path), ""
+    except Exception as e:
+        logger.exception("upload_platform_marketing_image SDK fallback %s: %s", object_path, e)
+    return None, "Upload failed"
 
 
 def validate_image_upload(

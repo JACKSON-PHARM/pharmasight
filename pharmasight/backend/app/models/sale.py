@@ -90,7 +90,8 @@ class SalesInvoiceItem(Base):
     vat_amount = Column(Numeric(20, 4), default=0)
     line_total_exclusive = Column(Numeric(20, 4), nullable=False)
     line_total_inclusive = Column(Numeric(20, 4), nullable=False)
-    unit_cost_used = Column(Numeric(20, 4))  # For margin calculation
+    unit_cost_used = Column(Numeric(20, 4))  # Actual COGS per base unit after batch (ledger/FEFO)
+    margin_reference_unit_cost_base = Column(Numeric(20, 4), nullable=True)  # List / pricing-ref cost for margin UI vs discounts
     # Cached item details for display (snapshot at time of sale)
     item_name = Column(String(255), nullable=True)
     item_code = Column(String(100), nullable=True)

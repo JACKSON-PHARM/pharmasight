@@ -38,7 +38,7 @@ class CanonicalPricingService:
         Uses the most recent ledger row where:
         - transaction_type is PURCHASE or ADJUSTMENT
         - quantity_delta > 0 (stock added)
-        - unit_cost > 0 (ignore zero-cost adjustments)
+        - unit_cost is non-null (includes zero-cost purchases e.g. 100% discount)
         
         Returns:
             Decimal: unit_cost from most recent matching row, or None if none
@@ -52,7 +52,8 @@ class CanonicalPricingService:
                     InventoryLedger.company_id == company_id,
                     InventoryLedger.transaction_type.in_(["PURCHASE", "ADJUSTMENT"]),
                     InventoryLedger.quantity_delta > 0,
-                    InventoryLedger.unit_cost > 0,
+                    InventoryLedger.unit_cost.isnot(None),
+                    InventoryLedger.unit_cost >= 0,
                 )
             )
             .order_by(desc(InventoryLedger.created_at))

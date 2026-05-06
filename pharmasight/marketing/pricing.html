@@ -4,28 +4,34 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <base href="/marketing/">
-  <title>Pricing — PharmaSight</title>
-  <link rel="stylesheet" href="site.css">
   <script src="config.js"></script>
+  <title>Pricing — PharmaSight</title>
+  <link rel="icon" type="image/png" href="logo.png" data-marketing-link="favicon">
+  <meta property="og:image" content="" data-marketing-meta="og_image">
+  <link rel="stylesheet" href="site.css">
 </head>
 <body>
   <header>
-    <a class="logo" href="index.html">PharmaSight</a>
+    <a class="logo" href="index.html">
+      <img src="logo.png" alt="" data-marketing-logo="" style="height:28px;width:auto;display:block;margin-right:8px;" onerror="this.style.display='none'">
+      <span style="font-weight:800;">PharmaSight</span>
+    </a>
     <nav>
       <a href="index.html">Home</a>
       <a href="help.html">Help</a>
-      <a href="signup.html">Start free trial</a>
+      <a href="signup.html">Start using PharmaSight now</a>
     </nav>
+    <button id="themeToggle" class="theme-toggle-btn" type="button" aria-label="Toggle theme">🌙</button>
   </header>
   <main>
     <h1>Pricing</h1>
     <p style="color:var(--muted); max-width:40rem;">Plans are billed per company. Trial length and limits follow your trial configuration. Upgrade flows connect to your <code>companies</code> subscription fields.</p>
     <div class="grid-3" style="margin-top:2rem;">
       <div class="card pricing-tier">
-        <span class="badge">Trial</span>
-        <h2>Free trial</h2>
-        <p>Full exploration with sensible demo limits. Start from the marketing signup.</p>
-        <p><a class="btn btn-primary" href="signup.html">Start free trial</a></p>
+        <span class="badge">Start</span>
+        <h2>Get started</h2>
+        <p>Full exploration with sensible demo limits. Create your account from the signup page.</p>
+        <p><a class="btn btn-primary" href="signup.html">Start using PharmaSight now</a></p>
       </div>
       <div class="card pricing-tier">
         <span class="badge">Growth</span>
@@ -52,5 +58,6 @@
       });
     })();
   </script>
+  <script src="chat-widget.js"></script>
 </body>
 </html>
