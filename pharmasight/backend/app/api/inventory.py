@@ -249,32 +249,10 @@ def get_expiring_count(
     if not _user_has_permission(db, current_user.id, "inventory.view"):
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    cutoff = date.today() + timedelta(days=days)
-
-    # Subquery: batches with positive remaining quantity and expiry in range
-    batch_agg = (
-        db.query(
-            InventoryLedger.item_id,
-            InventoryLedger.batch_number,
-            InventoryLedger.expiry_date,
-            func.sum(InventoryLedger.quantity_delta).label("remaining")
-        )
-        .filter(
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.expiry_date.isnot(None),
-            InventoryLedger.expiry_date <= cutoff,
-            InventoryLedger.expiry_date >= date.today()
-        )
-        .group_by(
-            InventoryLedger.item_id,
-            InventoryLedger.batch_number,
-            InventoryLedger.expiry_date
-        )
-        .having(func.sum(InventoryLedger.quantity_delta) > 0)
-        .subquery()
-    )
-    count = db.query(func.count()).select_from(batch_agg).scalar() or 0
-    return {"count": count}
+    pools = _get_reconciled_expiring_pools(db, branch_id, branch.company_id, days)
+    count = len(pools)
+    total_value = sum(float(p.get("value") or 0) for p in pools)
+    return {"count": count, "total_value": float(total_value)}
 
 
 @router.get("/branch/{branch_id}/expiring", response_model=List[dict])
@@ -297,54 +275,23 @@ def get_expiring_list(
     if not _user_has_permission(db, current_user.id, "inventory.view"):
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    cutoff = date.today() + timedelta(days=days)
-
-    batch_agg = (
-        db.query(
-            InventoryLedger.item_id,
-            InventoryLedger.batch_number,
-            InventoryLedger.expiry_date,
-            func.sum(InventoryLedger.quantity_delta).label("quantity"),
-        )
-        .filter(
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.expiry_date.isnot(None),
-            InventoryLedger.expiry_date <= cutoff,
-            InventoryLedger.expiry_date >= date.today(),
-        )
-        .group_by(
-            InventoryLedger.item_id,
-            InventoryLedger.batch_number,
-            InventoryLedger.expiry_date,
-        )
-        .having(func.sum(InventoryLedger.quantity_delta) > 0)
-        .order_by(InventoryLedger.expiry_date.asc())
-        .all()
-    )
-
-    if not batch_agg:
-        return []
-
-    item_ids = list({r.item_id for r in batch_agg})
-    items = {item.id: item for item in db.query(Item).filter(Item.id.in_(item_ids)).all()}
-
+    pools = _get_reconciled_expiring_pools(db, branch_id, branch.company_id, days)
     result = []
-    for r in batch_agg:
-        item = items.get(r.item_id)
-        qty_retail = float(r.quantity or 0)
-        # quantity is in retail/base units (tablets, pieces); display with proper breakdown
+    for p in pools:
+        item = p.get("_item")
+        qty_retail = float(p.get("quantity") or 0)
         display_str = (
             InventoryService.format_quantity_display(qty_retail, item)
             if item
             else f"{qty_retail}"
         )
         result.append({
-            "item_id": str(r.item_id),
-            "item_name": item.name if item else "—",
+            "item_id": str(p.get("item_id")),
+            "item_name": p.get("item_name") or "—",
             "quantity_display": display_str,
             "quantity": qty_retail,
-            "batch_number": r.batch_number or "",
-            "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None,
+            "batch_number": p.get("batch_number") or "",
+            "expiry_date": p.get("expiry_date").isoformat() if p.get("expiry_date") else None,
         })
     return result
 
@@ -376,45 +323,16 @@ def get_expiry_report(
     if not _user_has_permission(db, current_user.id, "inventory.view"):
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    cutoff = date.today() + timedelta(days=days)
-
-    batch_agg = (
-        db.query(
-            InventoryLedger.item_id,
-            InventoryLedger.batch_number,
-            InventoryLedger.expiry_date,
-            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("quantity"),
-            func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("value"),
-        )
-        .filter(
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.company_id == branch.company_id,
-            InventoryLedger.expiry_date.isnot(None),
-            InventoryLedger.expiry_date <= cutoff,
-            InventoryLedger.expiry_date >= date.today(),
-        )
-        .group_by(
-            InventoryLedger.item_id,
-            InventoryLedger.batch_number,
-            InventoryLedger.expiry_date,
-        )
-        .having(func.sum(InventoryLedger.quantity_delta) > 0)
-        .order_by(InventoryLedger.expiry_date.asc())
-        .all()
-    )
-
-    if not batch_agg:
+    pools = _get_reconciled_expiring_pools(db, branch_id, branch.company_id, days)
+    if not pools:
         return {"days": days, "rows": []}
-
-    item_ids = list({r.item_id for r in batch_agg})
-    items = {item.id: item for item in db.query(Item).filter(Item.id.in_(item_ids)).all()}
 
     rows = []
     total_value = 0.0
-    for r in batch_agg:
-        item = items.get(r.item_id)
-        qty = float(r.quantity or 0)
-        val = float(r.value or 0)
+    for p in pools:
+        item = p.get("_item")
+        qty = float(p.get("quantity") or 0)
+        val = float(p.get("value") or 0)
         total_value += val
         unit_cost = (val / qty) if qty > 0 else 0.0
         display_str = (
@@ -424,10 +342,10 @@ def get_expiry_report(
         )
         rows.append(
             {
-                "item_id": str(r.item_id),
-                "item_name": item.name if item else "—",
-                "batch_number": r.batch_number or "",
-                "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None,
+                "item_id": str(p.get("item_id")),
+                "item_name": p.get("item_name") if p.get("item_name") else "—",
+                "batch_number": p.get("batch_number") or "",
+                "expiry_date": p.get("expiry_date").isoformat() if p.get("expiry_date") else None,
                 "quantity": qty,
                 "quantity_display": display_str,
                 "unit_cost": unit_cost,
@@ -442,6 +360,109 @@ def get_expiry_report(
         "total_value": total_value,
         "row_count": len(rows),
     }
+
+
+def _get_reconciled_expiring_pools(
+    db: Session,
+    branch_id: UUID,
+    company_id: UUID,
+    days: int,
+) -> List[dict]:
+    """
+    Build expiry pools and reconcile them against true current stock per item.
+
+    Why reconciliation:
+    - Some historical adjustments may have been posted without batch/expiry metadata.
+    - That can make raw batch-expiry aggregation overstate quantities versus item-level stock.
+    - We cap reported batch-expiry quantities so total in expiry pools never exceeds current stock.
+    """
+    cutoff = date.today() + timedelta(days=days)
+    raw_rows = (
+        db.query(
+            InventoryLedger.item_id,
+            InventoryLedger.batch_number,
+            InventoryLedger.expiry_date,
+            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("quantity"),
+            func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("value"),
+        )
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.company_id == company_id,
+            InventoryLedger.expiry_date.isnot(None),
+            InventoryLedger.expiry_date <= cutoff,
+            InventoryLedger.expiry_date >= date.today(),
+        )
+        .group_by(
+            InventoryLedger.item_id,
+            InventoryLedger.batch_number,
+            InventoryLedger.expiry_date,
+        )
+        .having(func.sum(InventoryLedger.quantity_delta) > 0)
+        .order_by(InventoryLedger.expiry_date.asc())
+        .all()
+    )
+    if not raw_rows:
+        return []
+
+    item_ids = list({r.item_id for r in raw_rows})
+    items = {item.id: item for item in db.query(Item).filter(Item.id.in_(item_ids)).all()}
+
+    current_rows = (
+        db.query(
+            InventoryLedger.item_id,
+            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("current_stock"),
+        )
+        .filter(
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.company_id == company_id,
+            InventoryLedger.item_id.in_(item_ids),
+        )
+        .group_by(InventoryLedger.item_id)
+        .all()
+    )
+    current_by_item = {r.item_id: float(r.current_stock or 0) for r in current_rows}
+
+    pools_by_item: dict = {}
+    for r in raw_rows:
+        pools_by_item.setdefault(r.item_id, []).append(
+            {
+                "item_id": r.item_id,
+                "item_name": items.get(r.item_id).name if items.get(r.item_id) else "—",
+                "batch_number": r.batch_number,
+                "expiry_date": r.expiry_date,
+                "quantity": float(r.quantity or 0),
+                "value": float(r.value or 0),
+                "_item": items.get(r.item_id),
+            }
+        )
+
+    reconciled: List[dict] = []
+    for iid, pools in pools_by_item.items():
+        total_qty = sum(float(p.get("quantity") or 0) for p in pools)
+        current_qty = max(0.0, float(current_by_item.get(iid, 0)))
+        if total_qty > current_qty:
+            excess = total_qty - current_qty
+            # Reduce from farthest expiry first to preserve near-expiry visibility.
+            pools_sorted = sorted(
+                pools,
+                key=lambda p: (p.get("expiry_date") is None, p.get("expiry_date")),
+                reverse=True,
+            )
+            for p in pools_sorted:
+                if excess <= 0:
+                    break
+                q = float(p.get("quantity") or 0)
+                if q <= 0:
+                    continue
+                take = min(q, excess)
+                unit_cost = (float(p.get("value") or 0) / q) if q > 0 else 0.0
+                p["quantity"] = q - take
+                p["value"] = float(p.get("value") or 0) - (unit_cost * take)
+                excess -= take
+        reconciled.extend([p for p in pools if float(p.get("quantity") or 0) > 1e-9])
+
+    reconciled.sort(key=lambda p: (p.get("expiry_date") is None, p.get("expiry_date")))
+    return reconciled
 
 
 @router.get("/branch/{branch_id}/total-value", response_model=dict)

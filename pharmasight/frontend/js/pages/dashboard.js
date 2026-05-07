@@ -282,8 +282,11 @@ async function applyDashboardFilters() {
             if (API.inventory && typeof API.inventory.getExpiringCount === 'function') {
                 promises.push(Promise.resolve().then(function () {
                     return API.inventory.getExpiringCount(branchId, cachedExpiringSoonDays)
-                        .then(function (d) { kpis.expiringCount = (d.count != null ? d.count : 0); })
-                        .catch(function () { kpis.expiringCount = 0; });
+                        .then(function (d) {
+                            kpis.expiringCount = (d.count != null ? d.count : 0);
+                            kpis.expiringValue = (d.total_value != null ? Number(d.total_value) : 0);
+                        })
+                        .catch(function () { kpis.expiringCount = 0; kpis.expiringValue = 0; });
                 }));
             }
             if (API.orderBook && typeof API.orderBook.getTodaySummary === 'function') {
@@ -306,6 +309,7 @@ async function applyDashboardFilters() {
         const todayGrossProfitEl = document.getElementById('todayGrossProfit');
         const todayGrossProfitMetaEl = document.getElementById('todayGrossProfitMeta');
         const expiringItemsEl = document.getElementById('expiringItems');
+        const expiringItemsMetaEl = document.getElementById('expiringItemsMeta');
         const orderBookPendingEl = document.getElementById('orderBookPendingToday');
         const belowMarginEl = document.getElementById('belowMarginCount');
 
@@ -318,6 +322,11 @@ async function applyDashboardFilters() {
         if (todayGrossProfitEl) todayGrossProfitEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(rangeData.gross_profit) : rangeData.gross_profit;
         if (todayGrossProfitMetaEl) todayGrossProfitMetaEl.textContent = 'Gross Profit • Margin ' + (rangeData.margin_percent != null ? rangeData.margin_percent.toFixed(1) : '0') + '%';
         if (expiringItemsEl) expiringItemsEl.textContent = (kpisData.expiringCount != null ? kpisData.expiringCount : '—');
+        if (expiringItemsMetaEl) {
+            const ev = (kpisData.expiringValue != null ? Number(kpisData.expiringValue) : 0);
+            const valueText = (typeof formatCurrency === 'function') ? formatCurrency(ev) : String(ev);
+            expiringItemsMetaEl.textContent = 'Expiring Soon • Value: ' + valueText;
+        }
         if (orderBookPendingEl) orderBookPendingEl.textContent = (kpisData.orderBookPending != null ? kpisData.orderBookPending : '—');
         if (belowMarginEl) belowMarginEl.textContent = (rangeData.below_margin_lines != null ? rangeData.below_margin_lines : '—');
 
