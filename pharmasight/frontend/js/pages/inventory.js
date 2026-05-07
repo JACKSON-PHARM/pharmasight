@@ -2501,9 +2501,24 @@ async function loadBatchTrackingData() {
     }
     if (typeof window.renderMovementReportInto === 'function') {
         window.renderMovementReportInto(container, 'batch');
-    } else {
-        container.innerHTML = '<div class="alert alert-info">Batch tracking report is loading. If this message persists, refresh the page.</div>';
+        return;
     }
+    // reports.js may initialize slightly later than inventory.js on first load; retry briefly.
+    let attempts = 0;
+    const maxAttempts = 8;
+    const retry = () => {
+        attempts += 1;
+        if (typeof window.renderMovementReportInto === 'function') {
+            window.renderMovementReportInto(container, 'batch');
+            return;
+        }
+        if (attempts < maxAttempts) {
+            setTimeout(retry, 150);
+            return;
+        }
+        container.innerHTML = '<div class="alert alert-info">Batch tracking report is loading. If this message persists, refresh the page.</div>';
+    };
+    retry();
 }
 
 async function loadExpiryReportData() {
@@ -2681,9 +2696,26 @@ function printExpiryReport() {
 
 async function loadItemMovementData() {
     const container = document.getElementById('inventoryMovementContainer');
-    if (container && typeof window.renderItemMovementReportInto === 'function') {
+    if (!container) return;
+    if (typeof window.renderItemMovementReportInto === 'function') {
         window.renderItemMovementReportInto(container);
+        return;
     }
+    let attempts = 0;
+    const maxAttempts = 8;
+    const retry = () => {
+        attempts += 1;
+        if (typeof window.renderItemMovementReportInto === 'function') {
+            window.renderItemMovementReportInto(container);
+            return;
+        }
+        if (attempts < maxAttempts) {
+            setTimeout(retry, 150);
+            return;
+        }
+        container.innerHTML = '<div class="alert alert-info">Item movement report is loading. If this message persists, refresh the page.</div>';
+    };
+    retry();
 }
 
 async function loadCurrentStockData() {
