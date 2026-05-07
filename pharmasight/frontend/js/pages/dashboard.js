@@ -416,6 +416,79 @@ function openOrderBookFromDashboard() {
     }
 }
 
+async function showOrdersProcessedModal() {
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
+        if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
+        return;
+    }
+    if (!API.sales || typeof API.sales.getOrdersProcessedItemsSummary !== 'function') {
+        if (typeof showToast === 'function') showToast('Orders summary not available.', 'warning');
+        return;
+    }
+
+    const params = getDashboardParams();
+    const qp = {};
+    if (params && params.preset && params.preset !== 'custom') qp.preset = params.preset;
+    if (params && params.preset === 'custom') {
+        if (params.startDate) qp.start_date = params.startDate;
+        if (params.endDate) qp.end_date = params.endDate;
+    }
+    qp.limit = 400;
+
+    const content = '<div class="spinner" style="margin: 2rem auto;"></div><p style="text-align: center;">Loading order items...</p>';
+    const footer = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
+    if (typeof showModal === 'function') showModal('Orders Processed — Item Summary', content, footer, 'modal-large');
+
+    try {
+        const res = await API.sales.getOrdersProcessedItemsSummary(branchId, qp);
+        const rows = (res && Array.isArray(res.rows)) ? res.rows : [];
+        if (!rows.length) {
+            const empty = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No processed order items in this range.</p>';
+            if (typeof showModal === 'function') showModal('Orders Processed — Item Summary', empty, footer, 'modal-large');
+            return;
+        }
+        const tr = rows.map(function (r) {
+            const item = (typeof escapeHtml === 'function') ? escapeHtml(r.item_name || '—') : (r.item_name || '—');
+            const unit = (typeof escapeHtml === 'function') ? escapeHtml(r.unit_name || '') : (r.unit_name || '');
+            const qty = (typeof formatNumber === 'function') ? formatNumber(r.quantity || 0) : String(r.quantity || 0);
+            const freq = (r.frequency != null ? Number(r.frequency) : 0);
+            const up = (typeof formatCurrency === 'function') ? formatCurrency(r.unit_price || 0) : String(r.unit_price || 0);
+            const tp = (typeof formatCurrency === 'function') ? formatCurrency(r.total_price || 0) : String(r.total_price || 0);
+            return `
+                <tr>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">${item}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${qty} ${unit}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${freq}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${up}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${tp}</td>
+                </tr>
+            `;
+        }).join('');
+        const table = `
+            <div style="max-height: 65vh; overflow:auto;">
+                <table style="width:100%; border-collapse: collapse;">
+                    <thead style="position: sticky; top: 0; background: white;">
+                        <tr>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:left;">Item</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Quantities</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Frequency</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Unit price</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Total price</th>
+                        </tr>
+                    </thead>
+                    <tbody>${tr}</tbody>
+                </table>
+            </div>
+        `;
+        if (typeof showModal === 'function') showModal('Orders Processed — Item Summary', table, footer, 'modal-large');
+    } catch (e) {
+        console.error('Orders processed summary failed:', e);
+        const msg = `<p style="color: var(--danger-color); padding: 1rem;">Failed to load summary.</p>`;
+        if (typeof showModal === 'function') showModal('Orders Processed — Item Summary', msg, footer, 'modal-large');
+    }
+}
+
 /**
  * Show drill-down modal for Expiring Soon card.
  */
@@ -608,6 +681,7 @@ window.loadDashboard = loadDashboard;
 window.applyDashboardFilters = applyDashboardFilters;
 window.showOrderBookPendingTodayModal = showOrderBookPendingTodayModal;
 window.openOrderBookFromDashboard = openOrderBookFromDashboard;
+window.showOrdersProcessedModal = showOrdersProcessedModal;
 window.showExpiringSoonModal = showExpiringSoonModal;
 window.exportExpiringToCsv = exportExpiringToCsv;
 window.openFinancialReportsFromDashboard = openFinancialReportsFromDashboard;

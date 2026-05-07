@@ -747,6 +747,8 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/below-margin/summary`, params),
         getBelowMarginDetails: (branchId, params = {}) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/below-margin/details`, params),
+        getOrdersProcessedItemsSummary: (branchId, params = {}) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/orders-processed/items-summary`, params),
         updateInvoice: (invoiceId, data) => 
             api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
         addInvoiceItem: (invoiceId, item) =>

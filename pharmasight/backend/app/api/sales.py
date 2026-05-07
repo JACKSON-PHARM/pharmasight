@@ -1411,6 +1411,72 @@ def get_branch_gross_profit(
     return out
 
 
+@router.get("/branch/{branch_id}/orders-processed/items-summary", response_model=dict)
+def get_orders_processed_items_summary(
+    branch_id: UUID,
+    preset: Optional[str] = Query(None, description="today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year"),
+    start_date: Optional[date] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
+    limit: int = Query(300, ge=1, le=2000),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Item-level summary of processed orders (batched/paid invoices) for dashboard drill-down."""
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    sd, ed = _resolve_date_range(preset, start_date, end_date)
+
+    rows = (
+        db.query(
+            SalesInvoiceItem.item_id.label("item_id"),
+            func.coalesce(func.max(SalesInvoiceItem.item_name), "").label("item_name"),
+            SalesInvoiceItem.unit_name.label("unit_name"),
+            func.coalesce(func.sum(SalesInvoiceItem.quantity), 0).label("total_qty"),
+            func.count(SalesInvoiceItem.id).label("frequency"),
+            func.coalesce(func.avg(SalesInvoiceItem.unit_price_exclusive), 0).label("avg_unit_price"),
+            func.coalesce(func.sum(SalesInvoiceItem.line_total_exclusive), 0).label("total_price"),
+        )
+        .join(SalesInvoice, SalesInvoice.id == SalesInvoiceItem.sales_invoice_id)
+        .filter(
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.status.in_(["BATCHED", "PAID"]),
+            SalesInvoice.invoice_date.between(sd, ed),
+        )
+        .group_by(SalesInvoiceItem.item_id, SalesInvoiceItem.unit_name)
+        .order_by(func.coalesce(func.sum(SalesInvoiceItem.line_total_exclusive), 0).desc())
+        .limit(limit)
+        .all()
+    )
+
+    out_rows = [
+        {
+            "item_id": str(r.item_id),
+            "item_name": r.item_name or "—",
+            "unit_name": r.unit_name or "",
+            "quantity": float(r.total_qty or 0),
+            "frequency": int(r.frequency or 0),
+            "unit_price": float(r.avg_unit_price or 0),
+            "total_price": float(r.total_price or 0),
+        }
+        for r in rows
+    ]
+    return {
+        "start_date": sd.isoformat(),
+        "end_date": ed.isoformat(),
+        "rows": out_rows,
+        "count": len(out_rows),
+    }
+
+
 @router.get("/branch/{branch_id}/invoices", response_model=List[SalesInvoiceResponse])
 def get_branch_invoices(
     branch_id: UUID,
