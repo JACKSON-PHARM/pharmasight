@@ -1466,6 +1466,23 @@
             typeof window !== 'undefined' && window.__clinicDeptStoreId ? String(window.__clinicDeptStoreId) : '';
         if (lockStoreId && (stores || []).some(function (s) { return String(s.id) === lockStoreId; })) {
             clinicUiState.triage.deptSupplySelectedStoreId = lockStoreId;
+        } else if (isRaise) {
+            var selectedStoreId = clinicUiState.triage.deptSupplySelectedStoreId
+                ? String(clinicUiState.triage.deptSupplySelectedStoreId)
+                : '';
+            var selectedExists =
+                selectedStoreId &&
+                (stores || []).some(function (s) {
+                    return String(s.id) === selectedStoreId;
+                });
+            if (!selectedExists) {
+                var triageStore = (stores || []).find(function (s) {
+                    return String(s.code || '').trim().toUpperCase() === 'TRIAGE';
+                });
+                if (triageStore && triageStore.id) {
+                    clinicUiState.triage.deptSupplySelectedStoreId = String(triageStore.id);
+                }
+            }
         }
         if (triageDeptSupplyOrderTable && typeof triageDeptSupplyOrderTable.getItems === 'function') {
             try {

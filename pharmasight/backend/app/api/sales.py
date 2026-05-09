@@ -691,7 +691,7 @@ def add_sales_invoice_item(
     Returns 400 "Item already exists in this invoice" if that item is already on the invoice.
     O(1) w.r.t. line count; single load with joinedload/selectinload.
     """
-    from sqlalchemy.orm import selectinload, joinedload
+    from sqlalchemy.orm import selectinload
     from sqlalchemy.exc import IntegrityError
 
     t0 = time.perf_counter()
@@ -700,9 +700,6 @@ def add_sales_invoice_item(
     invoice = (
         db.query(SalesInvoice)
         .options(
-            joinedload(SalesInvoice.company),
-            joinedload(SalesInvoice.branch),
-            joinedload(SalesInvoice.creator),
             selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item),
         )
         .filter(SalesInvoice.id == invoice_id)

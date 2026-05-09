@@ -153,6 +153,13 @@
         return Math.round(parseFloat(value) * 100) / 100;
     };
 
+    /** Inventory quantities are whole-number units across sales/purchase/inventory flows. */
+    TransactionItemsTable.prototype.normalizeQuantity = function(value) {
+        const n = parseFloat(value);
+        if (!isFinite(n) || n <= 0) return 1;
+        return Math.max(1, Math.round(n));
+    };
+
     /**
      * Single source of truth for line nett/VAT/total (2 dp) — matches printed documents and API.
      */
@@ -227,7 +234,7 @@
                 item_sku: code,
                 item_code: code,
                 unit_name: item.unit_name || item.unit || '',
-                quantity: item.quantity || 1,
+                quantity: this.normalizeQuantity(item.quantity),
                 unit_price: item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : (item.price || (item.unit_price_exclusive != null ? Number(item.unit_price_exclusive) : 0)),
                 purchase_price: costBase, // Cost per base (wholesale) unit (from API unit_cost_base or purchase_price)
                 unit_cost_used: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null, // Cost per sale unit when from API (reload)
@@ -427,7 +434,7 @@
                                ${!this.canEdit ? 'disabled' : ''}>
                     </td>
                     <td style="padding: 0.2rem 0.35rem;"><input type="text" class="form-input add-row-code" value="${escapeHtml(ar.item_code || ar.item_sku || '')}" readonly style="width: 100%; padding: 0.35rem 0.5rem; font-size: 0.8rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="add"></td>
-                    <td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-qty qty-input" value="${ar.quantity || 1}" step="0.01" min="0.01" data-row="add" data-field="quantity" style="width: 100%; text-align: center; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
+                    <td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-qty qty-input" value="${ar.quantity || 1}" step="1" min="1" data-row="add" data-field="quantity" style="width: 100%; text-align: center; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
                     <td style="padding: 0.2rem 0.35rem;">${ar.item_id && (ar.available_units && ar.available_units.length) ? (() => {
                         const units = ar.available_units;
                         const opts = units.map(u => `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${u.multiplier_to_base || 1}" ${(ar.unit_name || '') === (u.unit_name || '') ? 'selected' : ''}>${escapeHtml(u.unit_name || '')}</option>`).join('');
@@ -558,7 +565,7 @@
                     <td style="padding: 0.25rem; text-align: right;"><span class="price-display" data-row="${index}">${formatCurrency(item.unit_price != null ? Number(item.unit_price) : 0)}</span></td>`;
             const branchCellsEditable = this.isBranchOrderStyleMode()
                 ? `<td style="padding: 0.25rem;"><input type="text" class="form-input" value="${escapeHtml(item.item_code || item.item_sku || '')}" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="item_code"></td>
-                    <td style="padding: 0.25rem;"><input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="0.01" min="0.01" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${!this.canEdit ? 'disabled' : ''}></td>
+                    <td style="padding: 0.25rem;"><input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="1" min="1" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${!this.canEdit ? 'disabled' : ''}></td>
                     <td style="padding: 0.25rem;">${item.item_id && (item.available_units && item.available_units.length) ? (() => {
                         const units = item.available_units;
                         let opts = units.map(u => `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${escapeHtml(String(u.multiplier_to_base || 1))}" ${(item.unit_name || '') === (u.unit_name || '') ? 'selected' : ''}>${escapeHtml(u.unit_name || '')}</option>`).join('');
@@ -566,7 +573,7 @@
                         return `<select class="form-input unit-select" data-row="${index}" data-field="unit_name" style="width: 100%; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" ${!this.canEdit ? 'disabled' : ''}>${opts}</select>`;
                     })() : `<input type="text" class="form-input unit-display" value="${escapeHtml(item.unit_name || '')}" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="unit_name">`}</td>`
                 : `<td style="padding: 0.25rem;"><input type="text" class="form-input" value="${escapeHtml(item.item_code || item.item_sku || '')}" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="item_code"></td>
-                    <td style="padding: 0.25rem;"><input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="0.01" min="0.01" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${(!this.canEdit || (this.isBranchReceiptMode() && !this.branchReceiptQtyEditable)) ? 'disabled' : ''}></td>
+                    <td style="padding: 0.25rem;"><input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="1" min="1" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${(!this.canEdit || (this.isBranchReceiptMode() && !this.branchReceiptQtyEditable)) ? 'disabled' : ''}></td>
                     <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>
                     <td style="padding: 0.25rem; text-align: right;"><span class="price-display" data-row="${index}">${formatCurrency(item.unit_price != null ? Number(item.unit_price) : 0)}</span></td>`;
             const readOnlyCells = this.isBranchMode()
@@ -605,7 +612,7 @@
                     </td>
                     <td style="padding: 0.25rem;">
                         <div style="display: flex; flex-direction: column; gap: 0.15rem;">
-                            <input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="0.01" min="0.01" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${!this.canEdit ? 'disabled' : ''}>
+                            <input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="1" min="1" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${!this.canEdit ? 'disabled' : ''}>
                             ${this.mode === 'sale' && (item.stock_display || typeof item.available_stock === 'number') ? (() => {
                                 if (item.stock_display) {
                                     const stockNum = typeof item.available_stock === 'number' ? item.available_stock : 0;
@@ -2022,15 +2029,19 @@
         if (isNaN(newTotal) || newTotal < 0) return;
         const item = this.items[rowIndex];
         if (!item) return;
-        const qty = item.quantity || 0;
+        const qty = this.normalizeQuantity(item.quantity);
         if (qty <= 0) return;
+        item.quantity = qty;
         const discountPct = (item.discount_percent || 0) / 100;
         const taxPct = (item.tax_percent || 0) / 100;
         const factor = qty * (1 - discountPct) * (1 + taxPct);
         if (factor <= 0) return;
-        const unitPrice = newTotal / factor;
-        item.unit_price = this.roundMoney(unitPrice);
-        this.recalculateRow(rowIndex);
+        const typedTotal = this.roundMoney(newTotal);
+        const unitPrice = typedTotal / factor;
+        item.unit_price = Number(unitPrice.toFixed(6));
+        item.total = typedTotal;
+        item.nett = this.roundMoney(typedTotal / (1 + taxPct));
+        item.vat_amount = this.roundMoney(typedTotal - item.nett);
         this.updateRowDisplay(rowIndex);
         this.updateMarginDisplay(rowIndex);
         this.notifyChange();
@@ -2048,7 +2059,8 @@
         // Real-time stock validation for quantity in sales mode (limit = available in selected unit)
         const availableInSelected = this.mode === 'sale' ? this.getAvailableInSelectedUnit(item) : null;
         if (this.mode === 'sale' && field === 'quantity' && availableInSelected != null) {
-            if (numValue > availableInSelected) {
+            const qtyValue = this.normalizeQuantity(numValue);
+            if (qtyValue > availableInSelected) {
                 const clamped = availableInSelected > 0 ? availableInSelected : 0;
                 this.items[rowIndex][field] = clamped;
 
@@ -2064,10 +2076,10 @@
                     window.showToast('Quantity cannot exceed available stock', 'warning');
                 }
             } else {
-                this.items[rowIndex][field] = numValue;
+                this.items[rowIndex][field] = qtyValue;
             }
         } else {
-            this.items[rowIndex][field] = numValue;
+            this.items[rowIndex][field] = field === 'quantity' ? this.normalizeQuantity(numValue) : numValue;
         }
         if (field === 'unit_price') {
             this.items[rowIndex][field] = this.roundMoney(this.items[rowIndex][field]);
@@ -2132,19 +2144,19 @@
      * total = nett + vat, nett = total / (1 + tax/100), unit_price = nett / (qty * (1 - discount/100)).
      */
     TransactionItemsTable.prototype.reverseCalcUnitPriceFromTotal = function(item, total) {
-        const qty = (item.quantity || 0) || 1;
+        const qty = this.normalizeQuantity(item.quantity);
         const taxPct = (item.tax_percent || 0) / 100;
         const discountPct = (item.discount_percent || 0) / 100;
         const nett = total / (1 + taxPct);
-        const denom = qty * (1 - discountPct / 100);
+        const denom = qty * (1 - discountPct);
         if (denom <= 0) return 0;
         return this.roundMoney(nett / denom);
     };
     
     TransactionItemsTable.prototype.reverseCalcUnitPriceFromNett = function(item, nett) {
-        const qty = (item.quantity || 0) || 1;
+        const qty = this.normalizeQuantity(item.quantity);
         const discountPct = (item.discount_percent || 0) / 100;
-        const denom = qty * (1 - discountPct / 100);
+        const denom = qty * (1 - discountPct);
         if (denom <= 0) return 0;
         return this.roundMoney(nett / denom);
     };
@@ -2350,7 +2362,7 @@
         let didRecalcUnitPriceFromUnitChange = false;
         let oldMultForDebug = null;
         let newMultForDebug = null;
-        if (qtyEl) this.addRowItem.quantity = parseFloat(qtyEl.value) || 1;
+        if (qtyEl) this.addRowItem.quantity = this.normalizeQuantity(qtyEl.value);
         if (discountEl) this.addRowItem.discount_percent = this.roundMoney(parseFloat(discountEl.value) || 0);
         if (unitSelect && unitSelect.tagName === 'SELECT') {
             const opt = unitSelect.options[unitSelect.selectedIndex];
@@ -2432,7 +2444,7 @@
             item_name: this.addRowItem.item_name,
             item_code: this.addRowItem.item_code || this.addRowItem.item_sku,
             unit_name: this.addRowItem.unit_name || '',
-            quantity: this.addRowItem.quantity || 1,
+            quantity: this.normalizeQuantity(this.addRowItem.quantity),
             unit_price: this.addRowItem.unit_price || 0,
             discount_percent: this.addRowItem.discount_percent || 0,
             tax_percent: this.addRowItem.tax_percent || 0,
@@ -2520,6 +2532,7 @@
     TransactionItemsTable.prototype.setItems = function(items, options) {
         options = options || {};
         const focusNewRowQty = options.focusNewRowQty === true;
+        const emitItemsChange = options.emitItemsChange === true;
         this.items = this.normalizeItems(Array.isArray(items) ? items : []);
         this.editingRowIndex = null;
         if (!this.useAddRow) this.addRowItem = null;
@@ -2544,7 +2557,9 @@
                 }
             }
         }
-        if (this.onItemsChange) this.onItemsChange(this.getItems());
+        // IMPORTANT: do not emit onItemsChange on programmatic setItems() by default.
+        // Parent pages call setItems() after API sync; emitting here can cause PATCH/GET loops.
+        if (emitItemsChange && this.onItemsChange) this.onItemsChange(this.getItems());
         if (this.onTotalChange) this.onTotalChange(this.calculateTotal());
     };
 

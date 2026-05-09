@@ -1610,11 +1610,17 @@ function getSalesInvoiceFormData() {
     };
 }
 
+function normalizeSalesInvoiceQuantity(value) {
+    var n = parseFloat(value);
+    if (!isFinite(n) || n <= 0) return 1;
+    return Math.max(1, Math.round(n));
+}
+
 function mapTableItemToApiItem(item) {
     var payload = {
         item_id: item.item_id,
         unit_name: item.unit_name,
-        quantity: parseFloat(item.quantity) || 1,
+        quantity: normalizeSalesInvoiceQuantity(item.quantity),
         unit_price_exclusive: item.unit_price,
         discount_percent: item.discount_percent || 0,
         discount_amount: item.discount_amount || 0
@@ -1626,7 +1632,7 @@ function mapTableItemToApiItem(item) {
 
 /** Map table/add-row item to document line shape for optimistic UI update (no extra API). */
 function mapTableItemToDocumentItem(item) {
-    var qty = parseFloat(item.quantity) || 1;
+    var qty = normalizeSalesInvoiceQuantity(item.quantity);
     var unitPrice = parseFloat(item.unit_price) || 0;
     var discountPct = parseFloat(item.discount_percent) || 0;
     var taxPct = parseFloat(item.tax_percent) || 0;
@@ -1816,9 +1822,9 @@ function mapInvoiceItemsToSync(items) {
     const out = {};
     (items || []).forEach(i => {
         out[i.item_id] = {
-            quantity: i.quantity,
+            quantity: normalizeSalesInvoiceQuantity(i.quantity),
             unit_name: i.unit_name,
-            unit_price: i.unit_price,
+            unit_price: parseFloat(i.unit_price) || 0,
             discount_percent: i.discount_percent || 0
         };
     });
@@ -1885,11 +1891,14 @@ async function onSalesInvoiceItemsChange(validItems) {
         for (const it of validItems) {
             if (!it.item_id || !salesInvoiceSyncedItemIds.has(it.item_id)) continue;
             const prev = lastSalesInvoiceItemsSync[it.item_id];
-            const q = parseFloat(it.quantity) || 1;
+            const q = normalizeSalesInvoiceQuantity(it.quantity);
             const p = parseFloat(it.unit_price) || 0;
             const d = parseFloat(it.discount_percent) || 0;
             const u = (it.unit_name || '').trim();
-            if (!prev || prev.quantity !== q || prev.unit_name !== u || Math.abs((prev.unit_price || 0) - p) > 0.001 || Math.abs((prev.discount_percent || 0) - d) > 0.001) {
+            const prevQ = normalizeSalesInvoiceQuantity(prev && prev.quantity);
+            const prevP = parseFloat(prev && prev.unit_price) || 0;
+            const prevD = parseFloat(prev && prev.discount_percent) || 0;
+            if (!prev || prevQ !== q || prev.unit_name !== u || Math.abs(prevP - p) > 0.001 || Math.abs(prevD - d) > 0.001) {
                 try {
                     await API.sales.updateInvoiceItem(draftId, it.item_id, {
                         quantity: q,
