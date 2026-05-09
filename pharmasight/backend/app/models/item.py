@@ -69,6 +69,13 @@ class Item(Base):
     kra_pkg_unit_cd = Column(String(20), nullable=True)
     kra_qty_unit_cd = Column(String(20), nullable=True)
     kra_tax_ty_cd = Column(String(20), nullable=True)
+    kra_sync_status = Column(String(30), nullable=False, default="not_synced")
+    kra_sync_error = Column(String(4000), nullable=True)
+    kra_synced_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    kra_last_attempt_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    kra_sync_attempt_count = Column(Integer, nullable=False, default=0)
+    kra_payload_hash = Column(String(64), nullable=True)
+    kra_needs_resync = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

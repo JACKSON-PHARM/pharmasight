@@ -69,6 +69,8 @@ from app.schemas.clinic import (
     DepartmentStoreIssueRequest,
     DepartmentStoreReconcileRequest,
     DepartmentStoreReturnRequest,
+    PatientChartResponse,
+    PatientChartEntry,
 )
 from app.services.clinic_billing_service import ensure_draft_invoice_for_encounter
 from app.services.inventory_service import InventoryService
@@ -483,6 +485,80 @@ def get_patient(
     return _get_patient_scoped(db, patient_id, company_id)
 
 
+@router.get("/patients/{patient_id}/chart", response_model=PatientChartResponse)
+def get_patient_chart(
+    patient_id: UUID,
+    exclude_encounter_id: Optional[UUID] = Query(None),
+    limit: int = Query(8, ge=1, le=20),
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    _get_patient_scoped(db, patient_id, company_id)
+
+    q = (
+        db.query(Encounter)
+        .options(joinedload(Encounter.patient))
+        .filter(
+            Encounter.company_id == company_id,
+            Encounter.patient_id == patient_id,
+        )
+    )
+    if exclude_encounter_id is not None:
+        q = q.filter(Encounter.id != exclude_encounter_id)
+    encounters = q.order_by(Encounter.created_at.desc()).limit(limit).all()
+    entries: List[PatientChartEntry] = []
+    for enc in encounters:
+        triage = (
+            db.query(EncounterTriage)
+            .filter(
+                EncounterTriage.company_id == company_id,
+                EncounterTriage.encounter_id == enc.id,
+            )
+            .first()
+        )
+        notes = (
+            db.query(EncounterNote)
+            .filter(EncounterNote.encounter_id == enc.id)
+            .order_by(EncounterNote.created_at.desc())
+            .limit(10)
+            .all()
+        )
+        orders = (
+            db.query(ClinicOrder)
+            .filter(ClinicOrder.company_id == company_id, ClinicOrder.encounter_id == enc.id)
+            .order_by(ClinicOrder.created_at.desc())
+            .all()
+        )
+        for o in orders:
+            o.items = (
+                db.query(ClinicOrderItem)
+                .filter(ClinicOrderItem.order_id == o.id)
+                .all()
+            )
+        entries.append(
+            PatientChartEntry(
+                encounter=enc,
+                triage=triage,
+                notes=notes,
+                orders=orders,
+                service_executions=(
+                    db.query(EncounterServiceExecution)
+                    .options(joinedload(EncounterServiceExecution.lines))
+                    .filter(
+                        EncounterServiceExecution.company_id == company_id,
+                        EncounterServiceExecution.encounter_id == enc.id,
+                    )
+                    .order_by(EncounterServiceExecution.performed_at.desc())
+                    .limit(20)
+                    .all()
+                ),
+            )
+        )
+    return PatientChartResponse(patient_id=patient_id, entries=entries)
+
+
 # ---------------------------------------------------------------------------
 # Encounters
 # ---------------------------------------------------------------------------
@@ -655,8 +731,10 @@ def upsert_encounter_triage(
         s = str(v).strip()
         return s or None
 
-    existing.payment_mode = _clean(body.payment_mode)
-    existing.insurance_scheme = _clean(body.insurance_scheme)
+    # Insurance/payment source of truth is reception intake on encounter.
+    # Keep triage view as read-only context and do not allow triage edits.
+    existing.payment_mode = _clean(enc.intake_payment_mode)
+    existing.insurance_scheme = _clean(enc.intake_insurance_scheme)
     existing.chief_complaint = _clean(body.chief_complaint)
     existing.allergies = _clean(body.allergies)
     existing.symptoms = _clean(body.symptoms)

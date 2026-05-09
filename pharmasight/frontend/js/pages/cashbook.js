@@ -20,6 +20,7 @@ function _sourceLabel(sourceType) {
     if (s === 'expense') return 'Expense';
     if (s === 'supplier_payment') return 'Supplier Payment';
     if (s === 'sale') return 'Sale';
+    if (s === 'insurance_settlement') return 'Insurance Settlement';
     return sourceType || '—';
 }
 
@@ -69,6 +70,7 @@ async function loadCashbook() {
                             <option value="expense">Expense</option>
                             <option value="supplier_payment">Supplier Payment</option>
                             <option value="sale">Sale</option>
+                            <option value="insurance_settlement">Insurance Settlement</option>
                         </select>
                     </div>
                     <div class="form-group" style="min-width: 220px; margin:0; opacity: 0.95;">
@@ -198,14 +200,16 @@ async function renderCashbook() {
     summaryParams.source_type = st || null;
 
     try {
-        const [list, summary] = await Promise.all([
+        const [list, summary, claims] = await Promise.all([
             API.cashbook.list(params),
             API.cashbook.summary(summaryParams),
+            API.insurance.listClaims({}),
         ]);
 
         const entries = Array.isArray(list) ? list : [];
         const s = summary || {};
 
+        const pendingInsurance = (claims || []).reduce((sum, c) => sum + parseFloat(c.outstanding_amount || 0), 0);
         wrapSummary.innerHTML = `
             <div style="display:flex; flex-wrap:wrap; gap:0.75rem; margin-bottom: 1rem;">
                 <div class="stat-card" style="flex: 1; min-width: 200px;">
@@ -227,6 +231,13 @@ async function renderCashbook() {
                     <div class="stat-info">
                         <h3>${_fmtMoney(s.net_cashflow)}</h3>
                         <p>Net Cashflow</p>
+                    </div>
+                </div>
+                <div class="stat-card" style="flex: 1; min-width: 200px;">
+                    <div class="stat-icon"><i class="fas fa-file-medical"></i></div>
+                    <div class="stat-info">
+                        <h3>${_fmtMoney(pendingInsurance)}</h3>
+                        <p>Pending Insurance Receivables</p>
                     </div>
                 </div>
             </div>

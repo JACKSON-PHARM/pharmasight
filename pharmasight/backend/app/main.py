@@ -229,6 +229,34 @@ def run_tenant_migrations():
         # Do not re-raise: allow app to start so health/docs work; API will fail until DB is reachable
 
 
+@app.on_event("startup")
+def start_kra_outbox_worker_if_enabled():
+    if not (settings.KRA_OUTBOX_ENABLED and settings.KRA_OUTBOX_WORKER_ENABLED):
+        logger.info(
+            "KRA outbox worker disabled (KRA_OUTBOX_ENABLED=%s, KRA_OUTBOX_WORKER_ENABLED=%s)",
+            bool(settings.KRA_OUTBOX_ENABLED),
+            bool(settings.KRA_OUTBOX_WORKER_ENABLED),
+        )
+        return
+    try:
+        from app.services.etims.kra_outbox_worker import start_kra_outbox_worker
+
+        start_kra_outbox_worker()
+        logger.info("KRA outbox worker startup requested")
+    except Exception:
+        logger.exception("Failed to start KRA outbox worker")
+
+
+@app.on_event("shutdown")
+def stop_kra_outbox_worker_if_running():
+    try:
+        from app.services.etims.kra_outbox_worker import stop_kra_outbox_worker
+
+        stop_kra_outbox_worker()
+    except Exception:
+        logger.exception("Failed to stop KRA outbox worker cleanly")
+
+
 # Import and include routers
 from app.api import (
     items_router,
@@ -252,6 +280,7 @@ from app.api.suppliers import router as suppliers_router
 from app.api.supplier_management import router as supplier_management_router
 from app.api.expenses import router as expenses_router
 from app.api.cashbook import router as cashbook_router
+from app.api.insurance_management import router as insurance_management_router
 from app.api.excel_import import router as excel_import_router
 _enable_tenant_admin = os.getenv("ENABLE_TENANT_ADMIN", "").lower() in ("true", "1", "yes")
 if _enable_tenant_admin:
@@ -293,6 +322,7 @@ app.include_router(inventory_router, prefix="/api/inventory", tags=["Inventory"]
 app.include_router(expenses_router, prefix="/api/expenses", tags=["Expenses"])
 # Cashbook (money movement tracking; sourced from expenses + supplier payments)
 app.include_router(cashbook_router, prefix="/api", tags=["Cashbook"])
+app.include_router(insurance_management_router, prefix="/api/insurance", tags=["Insurance Management"])
 # Supplier management (payments, returns, etc.) must come before suppliers_router so /payments matches before /{supplier_id}
 app.include_router(supplier_management_router, prefix="/api/suppliers", tags=["Supplier Management"])
 app.include_router(suppliers_router, prefix="/api/suppliers", tags=["Suppliers"])

@@ -1152,7 +1152,10 @@ window.subNavItems = {
         { page: 'triage', subPage: 'raise-order', label: 'Raise Order', icon: 'fa-file-medical' },
         { page: 'triage', subPage: 'transfer', label: 'Transfer', icon: 'fa-random' },
         { page: 'triage', subPage: 'manage-assets', label: 'Manage Assets', icon: 'fa-box-open' },
-    ]
+    ],
+    'module-coming-soon': [
+        { page: 'module-coming-soon', subPage: 'billing-insurance', label: 'Insurance Management', icon: 'fa-file-invoice-dollar' },
+    ],
 };
 
 // Global navigation state
@@ -1928,7 +1931,9 @@ async function loadPage(pageName) {
             if (window.loadLanding) window.loadLanding();
             break;
         case 'module-coming-soon':
-            if (typeof window.loadModuleComingSoon === 'function') {
+            if (subPage === 'billing-insurance' && typeof window.loadBillingInsurance === 'function') {
+                window.loadBillingInsurance();
+            } else if (typeof window.loadModuleComingSoon === 'function') {
                 window.loadModuleComingSoon();
             }
             break;

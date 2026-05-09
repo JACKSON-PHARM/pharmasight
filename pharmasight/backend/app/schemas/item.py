@@ -87,6 +87,11 @@ class ItemBase(BaseModel):
     track_expiry: bool = Field(default=False, description="Whether item requires expiry date tracking")
     is_controlled: bool = Field(default=False, description="Whether item is a controlled substance")
     is_cold_chain: bool = Field(default=False, description="Whether item requires cold chain storage")
+    # Optional KRA item master mapping hints
+    kra_item_cls_cd: Optional[str] = Field(None, description="KRA item class code")
+    kra_pkg_unit_cd: Optional[str] = Field(None, description="KRA package unit code")
+    kra_qty_unit_cd: Optional[str] = Field(None, description="KRA quantity unit code")
+    kra_tax_ty_cd: Optional[str] = Field(None, description="KRA tax type code override")
 
 
 class ItemCreate(ItemBase):
@@ -167,6 +172,12 @@ class ItemResponse(ItemBase):
     promo_price_retail: Optional[float] = Field(None, description="Temporary promo price (retail)")
     promo_start_date: Optional[date] = Field(None, description="Promo start date")
     promo_end_date: Optional[date] = Field(None, description="Promo end date")
+    kra_sync_status: Optional[str] = Field(None, description="KRA item sync status")
+    kra_sync_error: Optional[str] = Field(None, description="Last KRA sync error")
+    kra_synced_at: Optional[datetime] = Field(None, description="Last successful KRA sync timestamp")
+    kra_last_attempt_at: Optional[datetime] = Field(None, description="Last KRA sync attempt timestamp")
+    kra_sync_attempt_count: Optional[int] = Field(None, description="KRA sync attempts")
+    kra_needs_resync: Optional[bool] = Field(None, description="Whether item requires KRA resync")
 
     @model_validator(mode="after")
     def coerce_numeric_base_unit_for_display(self):

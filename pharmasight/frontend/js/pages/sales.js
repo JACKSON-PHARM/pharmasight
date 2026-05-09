@@ -3647,12 +3647,18 @@ function showSplitPaymentModal(invoice) {
                 <form id="splitPaymentForm" onsubmit="submitSplitPayment(event, '${invoice.id}')">
                     <div style="margin-bottom: 1rem;">
                         <label class="form-label">Payment Mode *</label>
-                        <select class="form-select" id="paymentMode" required>
+                        <select class="form-select" id="paymentMode" required onchange="toggleInsuranceProviderField()">
                             <option value="cash">Cash</option>
                             <option value="mpesa">M-Pesa</option>
                             <option value="card">Card</option>
                             <option value="credit">Credit</option>
                             <option value="insurance">Insurance</option>
+                        </select>
+                    </div>
+                    <div style="margin-bottom: 1rem; display:none;" id="insuranceProviderWrap">
+                        <label class="form-label">Insurance Provider *</label>
+                        <select class="form-select" id="insuranceProviderId">
+                            <option value="">— Select insurer —</option>
                         </select>
                     </div>
                     
@@ -3692,6 +3698,17 @@ function showSplitPaymentModal(invoice) {
                 amountInput.value = balance.toFixed(2);
             }
         }
+        toggleInsuranceProviderField();
+        API.insurance.listProviders(true).then((providers) => {
+            const sel = document.getElementById('insuranceProviderId');
+            if (!sel) return;
+            for (const p of (providers || [])) {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = p.name || p.code || 'Unnamed insurer';
+                sel.appendChild(opt);
+            }
+        }).catch(() => {});
     }).catch(error => {
         console.error('Error loading payments:', error);
         showToast('Error loading payment details', 'error');
@@ -3702,6 +3719,7 @@ async function submitSplitPayment(event, invoiceId) {
     event.preventDefault();
     
     const paymentMode = document.getElementById('paymentMode').value;
+    const insuranceProviderId = document.getElementById('insuranceProviderId')?.value || null;
     const amount = parseFloat(document.getElementById('paymentAmount').value);
     const reference = document.getElementById('paymentReference').value;
     const userId = CONFIG.USER_ID;
@@ -3715,7 +3733,13 @@ async function submitSplitPayment(event, invoiceId) {
         // Load invoice to check payment mode and balance
         const invoice = await API.sales.getInvoice(invoiceId);
         const existingPayments = await API.sales.getPayments(invoiceId);
-        const paidSoFar = existingPayments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+        const paidSoFar = existingPayments
+            .filter((p) => String(p.payment_mode || '').toLowerCase() !== 'insurance')
+            .reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+        if (paymentMode === 'insurance' && !insuranceProviderId) {
+            showToast('Select insurance provider', 'error');
+            return;
+        }
         const balance = parseFloat(invoice.total_inclusive || 0) - paidSoFar;
         const isCreditInvoice = invoice.payment_mode === 'credit';
         
@@ -3742,6 +3766,7 @@ async function submitSplitPayment(event, invoiceId) {
             payment_mode: paymentMode,
             amount: amount,
             payment_reference: reference || null,
+            insurance_provider_id: paymentMode === 'insurance' ? insuranceProviderId : null,
             paid_by: userId
         });
         
@@ -3763,6 +3788,13 @@ async function submitSplitPayment(event, invoiceId) {
         const errorMsg = error.message || 'Failed to add payment';
         showToast(errorMsg, 'error');
     }
+}
+
+function toggleInsuranceProviderField() {
+    const mode = document.getElementById('paymentMode')?.value || '';
+    const wrap = document.getElementById('insuranceProviderWrap');
+    if (!wrap) return;
+    wrap.style.display = mode === 'insurance' ? 'block' : 'none';
 }
 
 // Check if current user is admin or manager

@@ -60,6 +60,7 @@ from app.services.order_book_service import OrderBookService
 from app.services.order_book_service import OrderBookService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.item_search_service import ItemSearchService
+from app.services.etims.kra_outbox_service import KraOutboxService
 from app.services.pricing_config_service import (
     check_stock_adjustment_requires_confirmation,
     is_cost_outlier_vs_weighted_average,
@@ -75,6 +76,7 @@ from app.services.item_movement_report_service import get_item_batches
 from pydantic import BaseModel, Field
 from app.models.company import Company
 from app.utils.company_plan_limits import company_is_demo_plan, company_product_limit
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
@@ -382,6 +384,18 @@ def create_item(
         # Same transaction: insert into item_branch_snapshot for every branch so the item appears in search.
         # If this fails, we roll back so the item is never committed (no gaps between items and snapshot).
         SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, db_item.company_id, db_item.id)
+        if settings.KRA_OUTBOX_ENABLED:
+            branch = db.query(Branch).filter(Branch.company_id == db_item.company_id).order_by(Branch.created_at.asc()).first()
+            if branch:
+                db_item.kra_needs_resync = True
+                db_item.kra_sync_status = "queued"
+                KraOutboxService.enqueue_item_updated(
+                    db,
+                    item=db_item,
+                    branch_id=branch.id,
+                    source="items.create",
+                    max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
+                )
         db.commit()
         db.refresh(db_item)
         return db_item
@@ -1523,6 +1537,18 @@ def update_item(
     
     # Refresh snapshot in same transaction (e.g. floor_price, name, search_text) so search/stocks stay in sync
     SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, item.company_id, item_id)
+    if settings.KRA_OUTBOX_ENABLED:
+        branch = db.query(Branch).filter(Branch.company_id == item.company_id).order_by(Branch.created_at.asc()).first()
+        if branch:
+            item.kra_needs_resync = True
+            item.kra_sync_status = "queued"
+            KraOutboxService.enqueue_item_updated(
+                db,
+                item=item,
+                branch_id=branch.id,
+                source="items.update",
+                max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
+            )
     db.commit()
     db.refresh(item)
     return item

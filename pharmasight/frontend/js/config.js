@@ -67,6 +67,7 @@ const CONFIG = {
         companies: '/api/companies',
         branches: '/api/branches',
         suppliers: '/api/suppliers',
+        insurance: '/api/insurance',
         branchInventory: '/api/branch-inventory',
     },
     // Default values (should be set from settings or user selection)

@@ -38,6 +38,13 @@
             deptSupplySearchResults: [],
             deptSupplySearchTimer: null,
             deptSupplySelectedStoreId: null,
+            medSearchQuery: '',
+            medSearchResults: [],
+            medSelectedItemId: null,
+            medDose: '',
+            medFrequency: '',
+            medDuration: '',
+            medInstructions: '',
         },
         registerLookup: {
             query: '',
@@ -953,7 +960,11 @@
                                 <option value="">—</option><option value="cash">Cash</option><option value="insurance">Insurance</option><option value="other">Other</option>
                             </select>
                         </div>
-                        <div><label>Insurance type</label><input type="text" id="regInsurance" class="form-input" placeholder="NHIF, Jubilee, ..." /></div>
+                        <div><label>Insurance provider</label>
+                            <select id="regInsuranceProvider" class="form-input">
+                                <option value="">— Select insurer —</option>
+                            </select>
+                        </div>
                         <div><label>Schedule date/time</label><input type="datetime-local" id="regSchedule" class="form-input" /></div>
                         <div><label>Initial destination</label>
                             <select id="regDestination" class="form-input">
@@ -982,6 +993,22 @@
             window.location.hash = '#patients';
             if (typeof window.loadPage === 'function') void window.loadPage('patients');
         });
+
+        (async () => {
+            const sel = document.getElementById('regInsuranceProvider');
+            if (!sel) return;
+            try {
+                const providers = await API.insurance.listProviders(true);
+                for (const p of providers || []) {
+                    const opt = document.createElement('option');
+                    opt.value = String(p.id || '');
+                    opt.textContent = p.name || p.code || 'Unnamed insurer';
+                    sel.appendChild(opt);
+                }
+            } catch (_) {
+                // Do not block registration when insurance list fails.
+            }
+        })();
 
         document.getElementById('regSaveBtn')?.addEventListener('click', async () => {
             const btn = document.getElementById('regSaveBtn');
@@ -1013,7 +1040,9 @@
                     throw new Error('Patient already exists with same name and phone. Use Register search and edit.');
                 }
                 const payment_mode = (document.getElementById('regPaymentMode')?.value || '').trim() || null;
-                const insurance_scheme = (document.getElementById('regInsurance')?.value || '').trim() || null;
+                const providerSel = document.getElementById('regInsuranceProvider');
+                const selectedOption = providerSel?.options?.[providerSel.selectedIndex];
+                const insurance_scheme = (selectedOption?.textContent || '').trim() || null;
                 const scheduledRaw = (document.getElementById('regSchedule')?.value || '').trim();
                 const initial_destination = (document.getElementById('regDestination')?.value || '').trim() || 'triage';
                 const start_visit = !!document.getElementById('regStartVisit')?.checked;
@@ -1261,6 +1290,78 @@
             quantity: 1,
             notes: orderTypeLabel,
         };
+    }
+
+    function newMedicationLineItem(itemId, medState) {
+        var details = [];
+        if (medState && medState.dose) details.push('Dose: ' + medState.dose);
+        if (medState && medState.frequency) details.push('Frequency: ' + medState.frequency);
+        if (medState && medState.duration) details.push('Duration: ' + medState.duration);
+        if (medState && medState.instructions) details.push('Instructions: ' + medState.instructions);
+        return {
+            reference_type: 'item',
+            reference_id: itemId,
+            quantity: 1,
+            notes: details.join(' | ') || 'Medication order',
+        };
+    }
+
+    function parseProblemsFromNotes(notes) {
+        var list = [];
+        (notes || []).forEach(function (n) {
+            var dx = String(n && n.diagnosis || '').trim();
+            if (!dx) return;
+            var key = dx.toLowerCase();
+            if (!list.some(function (x) { return String(x.label || '').toLowerCase() === key; })) {
+                list.push({ label: dx, at: n.created_at || null });
+            }
+        });
+        return list;
+    }
+
+    function renderLabResultsPanel(executions) {
+        if (!executions || !executions.length) {
+            return '<p class="text-secondary" style="margin:0;">No lab/procedure results recorded yet.</p>';
+        }
+        var rows = executions
+            .filter(function (x) {
+                var dept = String(x.execution_department || '').toLowerCase();
+                return dept.indexOf('lab') >= 0 || String(x.service_name || '').toLowerCase().indexOf('lab') >= 0;
+            })
+            .slice(0, 12);
+        if (!rows.length) return '<p class="text-secondary" style="margin:0;">No lab results available.</p>';
+        return rows
+            .map(function (r) {
+                var lines = (r.lines || []).map(function (ln) {
+                    return escapeHtml(String(ln.item_name || 'Component')) + ': requested ' + escapeHtml(String(ln.requested_qty || 0)) + ', deducted ' + escapeHtml(String(ln.deducted_qty || 0));
+                }).join('<br>');
+                return '<div style="padding:0.45rem 0; border-bottom:1px solid var(--border-color);"><strong>' +
+                    escapeHtml(r.service_name || 'Lab service') + '</strong> · <em>' + escapeHtml(r.performed_at || '') + '</em><br>' +
+                    '<span style="font-size:0.9rem; color:var(--text-secondary);">' + (lines || 'No component lines') + '</span>' +
+                    '</div>';
+            })
+            .join('');
+    }
+
+    async function searchMedicationItems(query) {
+        var q = String(query || '').trim();
+        clinicUiState.triage.medSearchQuery = q;
+        if (q.length < 2) {
+            clinicUiState.triage.medSearchResults = [];
+            clinicUiState.triage.medSelectedItemId = null;
+            return;
+        }
+        var companyId = CONFIG.COMPANY_ID || null;
+        var branch = branchId();
+        if (!companyId || !branch || !API.items || typeof API.items.search !== 'function') {
+            clinicUiState.triage.medSearchResults = [];
+            return;
+        }
+        var rows = await API.items.search(q, companyId, 10, branch, false, 'clinic_medication', {}, true, false);
+        clinicUiState.triage.medSearchResults = Array.isArray(rows) ? rows : [];
+        if (!clinicUiState.triage.medSearchResults.some(function (r) { return String(r.id || '') === String(clinicUiState.triage.medSelectedItemId || ''); })) {
+            clinicUiState.triage.medSelectedItemId = null;
+        }
     }
 
     async function loadClinicConsultation() {
@@ -1963,6 +2064,8 @@
             const patient = enc.patient ? enc.patient : await API.clinic.patients.get(enc.patient_id);
             const triage = await API.clinic.encounters.triage.get(eid);
             const orders = await API.clinic.encounters.orders.list(eid);
+            const notes = await API.clinic.encounters.notes.list(eid);
+            const chart = await API.clinic.patients.chart(patient.id, { exclude_encounter_id: eid, limit: 8 });
             if (!shouldApplyClinicRender('triage', eid)) return;
             const completed = enc.status === 'completed';
             const t = triage || {};
@@ -1982,6 +2085,15 @@
                           intakeScheme ? ` · ${escapeHtml(intakeScheme)}` : ''
                       }</p>`
                     : '';
+            const isDeptDesk = isClinicDeptStoreWorkstation();
+            const patientChartEntries = Array.isArray(chart?.entries) ? chart.entries : [];
+            const allCurrentAndHistoryNotes = (notes || []).concat(
+                patientChartEntries.flatMap(function (e) { return Array.isArray(e.notes) ? e.notes : []; })
+            );
+            const problems = parseProblemsFromNotes(allCurrentAndHistoryNotes);
+            const historyExecutions = patientChartEntries.flatMap(function (e) {
+                return Array.isArray(e.service_executions) ? e.service_executions : [];
+            });
             el.innerHTML = `
                 <div class="card" style="padding:1rem;" id="clinicTriageCard">
                     ${triageTab === 'attend_patient' ? `
@@ -2006,9 +2118,46 @@
                     ${completed ? `<div class="alert alert-warning" style="margin:0.75rem 0;">This encounter is completed — triage cannot be edited.</div>` : ''}
 
                     <div style="display:${triageTab === 'attend_patient' ? 'block' : 'none'};">
+                    ${
+                        isDeptDesk
+                            ? `<div class="card" style="padding:0.75rem; margin-top:0.75rem; background:var(--surface-2, #f8fafc);">
+                                <h3 style="margin:0 0 0.5rem 0;">Patient File Snapshot</h3>
+                                <p style="margin:0 0 0.5rem 0; color:var(--text-secondary);">Review triage context, previous notes, diagnoses, tests, and orders before specialist decisions.</p>
+                                <div style="margin:0.5rem 0;">
+                                    <strong>Current triage context:</strong>
+                                    <div style="font-size:0.9rem; color:var(--text-secondary); margin-top:0.25rem;">
+                                        <div><strong>Chief complaint:</strong> ${escapeHtml(t.chief_complaint || '—')}</div>
+                                        <div><strong>Allergies:</strong> ${escapeHtml(t.allergies || '—')}</div>
+                                        <div><strong>Symptoms:</strong> ${escapeHtml(t.symptoms || '—')}</div>
+                                        <div><strong>Triage notes:</strong> ${escapeHtml(t.triage_notes || '—')}</div>
+                                    </div>
+                                </div>
+                                <h4 style="margin:0.75rem 0 0.35rem 0;">Previous encounters</h4>
+                                <div style="max-height:280px; overflow:auto; border:1px solid var(--border-color); border-radius:0.4rem; padding:0.5rem;">
+                                    ${renderPatientChartEntries(patientChartEntries)}
+                                </div>
+                                <h4 style="margin:0.75rem 0 0.35rem 0;">Problems / Diagnosis List</h4>
+                                <div style="max-height:140px; overflow:auto; border:1px solid var(--border-color); border-radius:0.4rem; padding:0.5rem;">
+                                    ${
+                                        problems.length
+                                            ? problems.map(function (p) {
+                                                  return '<div style="padding:0.2rem 0;"><strong>' + escapeHtml(p.label) + '</strong>' +
+                                                      (p.at ? ' <span style="color:var(--text-secondary);">(' + escapeHtml(String(p.at)) + ')</span>' : '') +
+                                                      '</div>';
+                                              }).join('')
+                                            : '<p class="text-secondary" style="margin:0;">No diagnosis history yet.</p>'
+                                    }
+                                </div>
+                                <h4 style="margin:0.75rem 0 0.35rem 0;">Lab Results Viewer</h4>
+                                <div style="max-height:180px; overflow:auto; border:1px solid var(--border-color); border-radius:0.4rem; padding:0.5rem;">
+                                    ${renderLabResultsPanel(historyExecutions)}
+                                </div>
+                            </div>`
+                            : ''
+                    }
                     <div style="margin-top:1rem;">
                             <label>Insurance scheme</label>
-                            <input id="triageInsurance" class="form-input" placeholder="e.g. NHIF, Jubilee…" value="${escapeHtml(t.insurance_scheme || '')}" ${completed ? 'disabled' : ''} />
+                            <input id="triageInsurance" class="form-input" value="${escapeHtml(t.insurance_scheme || '')}" disabled />
                     </div>
 
                     <div style="margin-top:1rem;">
@@ -2066,6 +2215,48 @@
                         }).join('') || '<div class="text-secondary" style="padding:0.25rem;">Type at least 2 letters to search services.</div>'}
                     </div>
                     <ul id="clinicTriageOrderList">${formatOrderList(orders)}</ul>
+                    ${
+                        isDeptDesk && !completed
+                            ? `<div class="card" style="padding:0.75rem; margin-top:0.75rem;">
+                                <h3 style="margin:0 0 0.5rem 0;">Specialist Workspace</h3>
+                                <textarea id="deptSpecialistAssessment" class="form-input" rows="3" placeholder="Assessment / clinical interpretation"></textarea>
+                                <textarea id="deptSpecialistDx" class="form-input" rows="2" style="margin-top:0.5rem;" placeholder="Diagnosis"></textarea>
+                                <textarea id="deptSpecialistPlan" class="form-input" rows="3" style="margin-top:0.5rem;" placeholder="Plan / tests / treatment"></textarea>
+                                <div style="margin-top:0.75rem; padding:0.6rem; border:1px solid var(--border-color); border-radius:0.45rem;">
+                                    <h4 style="margin:0 0 0.5rem 0;">Medication Composer</h4>
+                                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:0.45rem;">
+                                        <div style="grid-column:span 2;">
+                                            <label style="font-size:0.8rem; color:var(--text-secondary);">Search medication</label>
+                                            <input type="text" id="deptMedSearch" class="form-input" placeholder="Type drug name..." value="${escapeHtml(clinicUiState.triage.medSearchQuery || '')}" />
+                                            <div id="deptMedSearchResults" style="max-height:120px; overflow:auto; border:1px solid var(--border-color); border-radius:0.35rem; margin-top:0.35rem; padding:0.3rem;">
+                                                ${(clinicUiState.triage.medSearchResults || []).map(function (r) {
+                                                    var selected = String(clinicUiState.triage.medSelectedItemId || '') === String(r.id || '');
+                                                    return '<button type="button" class="btn btn-sm ' + (selected ? 'btn-primary' : 'btn-outline') + '" data-med-item-id="' + escapeHtml(String(r.id || '')) + '" style="margin:0.15rem;">' +
+                                                        escapeHtml(r.name || r.item_name || 'Item') + '</button>';
+                                                }).join('') || '<span class="text-secondary">Search to select medication.</span>'}
+                                            </div>
+                                        </div>
+                                        <div><label style="font-size:0.8rem; color:var(--text-secondary);">Dose</label><input id="deptMedDose" class="form-input" placeholder="e.g. 500mg" value="${escapeHtml(clinicUiState.triage.medDose || '')}" /></div>
+                                        <div><label style="font-size:0.8rem; color:var(--text-secondary);">Frequency</label><input id="deptMedFreq" class="form-input" placeholder="e.g. BID" value="${escapeHtml(clinicUiState.triage.medFrequency || '')}" /></div>
+                                        <div><label style="font-size:0.8rem; color:var(--text-secondary);">Duration</label><input id="deptMedDur" class="form-input" placeholder="e.g. 5 days" value="${escapeHtml(clinicUiState.triage.medDuration || '')}" /></div>
+                                        <div><label style="font-size:0.8rem; color:var(--text-secondary);">Instructions</label><input id="deptMedInst" class="form-input" placeholder="e.g. after meals" value="${escapeHtml(clinicUiState.triage.medInstructions || '')}" /></div>
+                                    </div>
+                                    <button type="button" class="btn btn-primary btn-sm" id="deptAddMedicationBtn" style="margin-top:0.5rem;">Add Medication Order</button>
+                                </div>
+                                <div style="margin-top:0.5rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+                                    <button type="button" class="btn btn-secondary btn-sm" data-ot="prescription">+ Medication</button>
+                                    <button type="button" class="btn btn-secondary btn-sm" data-ot="lab">+ Lab Test</button>
+                                    <button type="button" class="btn btn-secondary btn-sm" data-ot="procedure">+ Procedure</button>
+                                    <button type="button" class="btn btn-primary btn-sm" id="deptSpecialistSave">Save specialist note</button>
+                                </div>
+                                <div style="margin-top:0.5rem; font-size:0.9rem; color:var(--text-secondary);">
+                                    ${(notes || []).slice(0, 5).map(function (n) {
+                                        return '<p style="margin:0.25rem 0;"><em>' + escapeHtml(n.created_at || '') + '</em> — ' + escapeHtml(n.diagnosis || '') + '</p>';
+                                    }).join('') || '<p style="margin:0.25rem 0;">No specialist notes yet for this encounter.</p>'}
+                                </div>
+                            </div>`
+                            : ''
+                    }
 
                     <div style="margin-top:1rem; display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
                         <button type="button" class="btn btn-primary" id="triageSave" ${completed ? 'disabled' : ''}>Save triage</button>
@@ -2153,7 +2344,7 @@
 
             const save = async () => {
                 const payment_mode = (t.payment_mode || '').trim() || null;
-                const insurance_scheme = (document.getElementById('triageInsurance')?.value || '').trim() || null;
+                const insurance_scheme = (t.insurance_scheme || '').trim() || null;
                 const chief_complaint = (document.getElementById('triageChief')?.value || '').trim() || null;
                 const allergies = (document.getElementById('triageAllergies')?.value || '').trim() || null;
                 const symptoms = (document.getElementById('triageSymptoms')?.value || '').trim() || null;
@@ -2222,6 +2413,92 @@
                     showErr(err.message || 'Failed to add service');
                 }
             });
+            document.getElementById('deptSpecialistSave')?.addEventListener('click', async function () {
+                var assessment = (document.getElementById('deptSpecialistAssessment')?.value || '').trim();
+                var dx = (document.getElementById('deptSpecialistDx')?.value || '').trim();
+                var plan = (document.getElementById('deptSpecialistPlan')?.value || '').trim();
+                var noteBody = [assessment, plan ? ('Plan: ' + plan) : ''].filter(Boolean).join('\n\n');
+                if (!noteBody && !dx) {
+                    showErr('Enter assessment, diagnosis, or plan before saving');
+                    return;
+                }
+                try {
+                    await runBusy(async function () {
+                        await API.clinic.encounters.notes.add(eid, { notes: noteBody || null, diagnosis: dx || null });
+                        if (typeof window.showToast === 'function') window.showToast('Specialist note saved', 'success');
+                        await loadClinicTriage();
+                    });
+                } catch (err) {
+                    showErr(err.message || 'Failed to save specialist note');
+                }
+            });
+            document.getElementById('deptMedSearch')?.addEventListener('input', async function (event) {
+                try {
+                    await searchMedicationItems(event.target?.value || '');
+                    await loadClinicTriage();
+                } catch (_) {}
+            });
+            ['deptMedDose', 'deptMedFreq', 'deptMedDur', 'deptMedInst'].forEach(function (id) {
+                document.getElementById(id)?.addEventListener('input', function () {
+                    clinicUiState.triage.medDose = (document.getElementById('deptMedDose')?.value || '').trim();
+                    clinicUiState.triage.medFrequency = (document.getElementById('deptMedFreq')?.value || '').trim();
+                    clinicUiState.triage.medDuration = (document.getElementById('deptMedDur')?.value || '').trim();
+                    clinicUiState.triage.medInstructions = (document.getElementById('deptMedInst')?.value || '').trim();
+                });
+            });
+            el.querySelectorAll('[data-med-item-id]').forEach(function (b) {
+                b.addEventListener('click', function () {
+                    clinicUiState.triage.medSelectedItemId = b.getAttribute('data-med-item-id');
+                    void loadClinicTriage();
+                });
+            });
+            document.getElementById('deptAddMedicationBtn')?.addEventListener('click', async function () {
+                var itemId = String(clinicUiState.triage.medSelectedItemId || '').trim();
+                if (!itemId) {
+                    showErr('Select a medication first');
+                    return;
+                }
+                var medState = {
+                    dose: (document.getElementById('deptMedDose')?.value || '').trim(),
+                    frequency: (document.getElementById('deptMedFreq')?.value || '').trim(),
+                    duration: (document.getElementById('deptMedDur')?.value || '').trim(),
+                    instructions: (document.getElementById('deptMedInst')?.value || '').trim(),
+                };
+                try {
+                    await runBusy(async function () {
+                        await API.clinic.encounters.orders.create(eid, {
+                            order_type: 'prescription',
+                            items: [newMedicationLineItem(itemId, medState)],
+                        });
+                        clinicUiState.triage.medDose = '';
+                        clinicUiState.triage.medFrequency = '';
+                        clinicUiState.triage.medDuration = '';
+                        clinicUiState.triage.medInstructions = '';
+                        clinicUiState.triage.medSelectedItemId = null;
+                        if (typeof window.showToast === 'function') window.showToast('Medication order added', 'success');
+                        await loadClinicTriage();
+                    });
+                } catch (err) {
+                    showErr(err.message || 'Failed to add medication order');
+                }
+            });
+            el.querySelectorAll('[data-ot]').forEach(function (b) {
+                b.addEventListener('click', async function () {
+                    var ot = b.getAttribute('data-ot');
+                    try {
+                        await runBusy(async function () {
+                            await API.clinic.encounters.orders.create(eid, {
+                                order_type: ot,
+                                items: [newServiceLineItem(ot)],
+                            });
+                            if (typeof window.showToast === 'function') window.showToast('Order added', 'success');
+                            await loadClinicTriage();
+                        });
+                    } catch (err) {
+                        showErr(err.message || 'Failed to add order');
+                    }
+                });
+            });
         } catch (e) {
             if (!shouldApplyClinicRender('triage', eid)) return;
             el.innerHTML = `<div class="card" style="padding:1rem;"><p class="text-danger">Could not load triage. ${escapeHtml(e.message || '')}</p></div>`;
@@ -2237,6 +2514,34 @@
                 });
                 var detail = parts.length ? ' (' + parts.join(', ') + ')' : '';
                 return '<li>' + escapeHtml(o.order_type) + ' — ' + escapeHtml(o.status) + detail + '</li>';
+            })
+            .join('');
+    }
+
+    function renderPatientChartEntries(entries) {
+        if (!entries || !entries.length) {
+            return '<p class="text-secondary" style="margin:0;">No previous encounter history found.</p>';
+        }
+        return entries
+            .map(function (entry) {
+                var enc = entry && entry.encounter ? entry.encounter : {};
+                var tri = entry && entry.triage ? entry.triage : {};
+                var notes = Array.isArray(entry && entry.notes) ? entry.notes : [];
+                var orders = Array.isArray(entry && entry.orders) ? entry.orders : [];
+                var recentNotes = notes.slice(0, 2).map(function (n) {
+                    return '<div style="margin:0.2rem 0;"><strong>Dx:</strong> ' + escapeHtml(n.diagnosis || '—') + '<br><span>' + escapeHtml(n.notes || '—') + '</span></div>';
+                }).join('');
+                return `
+                    <div style="padding:0.5rem; border-bottom:1px solid var(--border-color);">
+                        <div><strong>Encounter:</strong> <code>${escapeHtml(String(enc.id || '').slice(0, 8))}…</code> · <strong>Status:</strong> ${escapeHtml(enc.status || '—')}</div>
+                        <div style="font-size:0.9rem; color:var(--text-secondary);">
+                            <strong>Chief complaint:</strong> ${escapeHtml(tri.chief_complaint || '—')} ·
+                            <strong>Symptoms:</strong> ${escapeHtml(tri.symptoms || '—')}
+                        </div>
+                        <div style="font-size:0.9rem; color:var(--text-secondary);">${recentNotes || '<span>No notes.</span>'}</div>
+                        <div style="font-size:0.85rem; color:var(--text-secondary); margin-top:0.2rem;"><strong>Orders:</strong> ${escapeHtml(String(orders.length || 0))}</div>
+                    </div>
+                `;
             })
             .join('');
     }

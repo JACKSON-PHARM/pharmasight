@@ -95,8 +95,8 @@ def _normalize_source_type(v: Optional[str]) -> Optional[str]:
     s = (v or "").strip().lower()
     if not s:
         return None
-    if s not in ("expense", "supplier_payment", "sale"):
-        raise HTTPException(status_code=400, detail="source_type must be one of: expense, supplier_payment, sale")
+    if s not in ("expense", "supplier_payment", "sale", "insurance_settlement"):
+        raise HTTPException(status_code=400, detail="source_type must be one of: expense, supplier_payment, sale, insurance_settlement")
     return s
 
 

@@ -5,6 +5,7 @@ from app.database import Base
 
 # Import all models
 from .company import Company, Branch, BranchSetting
+from .company_kra_profile import CompanyKraProfile
 from .company_module import CompanyModule
 from .user import User, UserRole, UserBranchRole
 from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier, PricingSettings
@@ -19,6 +20,13 @@ from .supplier_financial import (
     SupplierReturn,
     SupplierReturnLine,
     SupplierLedgerEntry,
+)
+from .insurance_financial import (
+    InsuranceProvider,
+    InsuranceClaim,
+    InsuranceSettlement,
+    InsuranceSettlementAllocation,
+    InsuranceLedgerEntry,
 )
 # Cashbook (money movement tracking)
 from .cashbook import CashbookEntry
@@ -64,12 +72,15 @@ from .department_supply import (
     DepartmentSupplyReceiptLine,
 )
 from .etims_sync_cursor import EtimsSyncCursor
+from .kra_audit_event import KraAuditEvent
+from .kra_event_outbox import KraEventOutbox
 
 __all__ = [
     "Base",
     "Company",
     "Branch",
     "BranchSetting",
+    "CompanyKraProfile",
     "CompanyModule",
     "User",
     "UserRole",
@@ -127,6 +138,11 @@ __all__ = [
     "SupplierReturn",
     "SupplierReturnLine",
     "SupplierLedgerEntry",
+    "InsuranceProvider",
+    "InsuranceClaim",
+    "InsuranceSettlement",
+    "InsuranceSettlementAllocation",
+    "InsuranceLedgerEntry",
     "CashbookEntry",
     "Patient",
     "Encounter",
@@ -149,4 +165,6 @@ __all__ = [
     "DepartmentSupplyReceipt",
     "DepartmentSupplyReceiptLine",
     "EtimsSyncCursor",
+    "KraAuditEvent",
+    "KraEventOutbox",
 ]

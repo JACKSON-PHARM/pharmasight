@@ -254,6 +254,7 @@ class InvoicePayment(Base):
     payment_mode = Column(String(20), nullable=False)  # 'cash', 'mpesa', 'card', 'credit', 'insurance'
     amount = Column(Numeric(15, 4), nullable=False, default=0)
     payment_reference = Column(String(100))  # M-Pesa code, transaction ID, etc.
+    insurance_provider_id = Column(UUID(as_uuid=True), ForeignKey("insurance_providers.id"), nullable=True)
     paid_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     paid_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
@@ -261,6 +262,7 @@ class InvoicePayment(Base):
     # Relationships
     sales_invoice = relationship("SalesInvoice", back_populates="invoice_payments")
     user = relationship("User", foreign_keys=[paid_by])
+    insurance_provider = relationship("InsuranceProvider", foreign_keys=[insurance_provider_id])
 
     __table_args__ = (
         {"comment": "Split payment tracking for sales invoices. Supports multiple payment modes per invoice."},

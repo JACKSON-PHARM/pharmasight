@@ -33,10 +33,12 @@ from app.services.item_units_helper import get_unit_multiplier_from_item, get_un
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.etims.invoice_etims_snapshot import apply_etims_snapshots_on_batch
+from app.services.etims.kra_outbox_service import KraOutboxService
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
 from app.services.tenant_storage_service import get_signed_url
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
+from app.config import settings
 
 from app.services.document_pdf_generator import build_quotation_pdf
 from app.services.tenant_storage_service import download_file
@@ -863,6 +865,21 @@ def convert_quotation_to_invoice(
         if getattr(inv_item, "item", None) is None:
             inv_item.item = db.query(Item).filter(Item.id == inv_item.item_id).first()
     apply_etims_snapshots_on_batch(db_invoice)
+    if settings.KRA_OUTBOX_ENABLED:
+        from app.models.company import BranchEtimsCredentials
+
+        creds = (
+            db.query(BranchEtimsCredentials)
+            .filter(BranchEtimsCredentials.branch_id == db_invoice.branch_id)
+            .first()
+        )
+        if creds and bool(getattr(creds, "enabled", False)):
+            KraOutboxService.enqueue_sale_completed(
+                db,
+                invoice=db_invoice,
+                source="quotations.convert",
+                max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
+            )
     db.flush()
 
     db.commit()

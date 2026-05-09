@@ -361,6 +361,7 @@ class InvoicePaymentBase(BaseModel):
     payment_mode: str = Field(..., description="cash, mpesa, card, credit, insurance")
     amount: Decimal = Field(..., gt=0)
     payment_reference: Optional[str] = None
+    insurance_provider_id: Optional[UUID] = None
 
 
 class InvoicePaymentCreate(InvoicePaymentBase):

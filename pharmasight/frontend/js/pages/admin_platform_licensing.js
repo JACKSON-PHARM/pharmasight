@@ -778,79 +778,109 @@ export async function init() {
                     </div>
 
                     <div style="border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-top:16px;">
-                        <h3 style="margin:0 0 10px 0;">eTIMS (KRA OSCU)</h3>
-                        <p style="margin:0 0 10px 0; color:#666; font-size:0.9rem;">
-                            Platform Admin manages per-branch eTIMS credentials. Company owners only see a status badge in-app.
+                        <h3 style="margin:0 0 10px 0;">eTIMS (KRA / Gava Connect onboarding)</h3>
+                        <p style="margin:0 0 10px 0; color:#666; font-size:0.9rem; line-height:1.45;">
+                            Paste values from <strong>developer.go.ke</strong> validation / test screens. Credentials are stored per company and branch and are used for OAuth and OSCU calls.
+                            <strong> Save branch fields</strong> before <strong>Test connection</strong> (the server reads stored values).
                         </p>
-                        <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:12px;">
-                            <div style="min-width:260px; flex: 1 1 320px;">
-                                <label style="display:block; font-weight:600; margin-bottom:6px;">Company PIN (TIN)</label>
-                                <input id="lic-etims-pin" value="${esc((etims && etims.company_pin) || c.pin || '')}" placeholder="e.g. P123456789A" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin-bottom:14px; padding:12px; background:#f8fafc; border-radius:10px; border:1px solid #e2e8f0;">
+                            <div style="grid-column: 1 / -1;">
+                                <label style="display:block; font-weight:600; margin-bottom:6px;">Company PIN (TIN / client PIN)</label>
+                                <input id="lic-etims-pin" value="${esc((etims && etims.company_pin) || c.pin || '')}" placeholder="e.g. P123456789A" style="width:100%; max-width:420px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                             </div>
-                            <button id="lic-etims-save-pin" class="btn btn-secondary">Save PIN</button>
+                            <div style="grid-column: 1 / -1;">
+                                <label style="display:block; font-weight:600; margin-bottom:6px;">Trader invoicing system name <span style="font-weight:400;color:#64748b;">(KRA app label — for PharmaSight ops traceability)</span></label>
+                                <input id="lic-etims-trader-name" value="${esc((etims && etims.trader_invoicing_system_name) || '')}" placeholder="e.g. PharmaSight ERP (as registered on developer.go.ke)" style="width:100%; max-width:520px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                            </div>
+                            <div>
+                                <label style="display:block; font-weight:600; margin-bottom:6px;">Integrator PIN</label>
+                                <input id="lic-etims-integrator" type="password" autocomplete="new-password" placeholder="${etims && etims.has_company_integrator_pin ? '•••• stored — paste to replace' : 'Paste from KRA validation'}" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                <label style="display:flex; gap:8px; align-items:center; margin-top:8px; font-size:0.88rem; color:#475569;">
+                                    <input type="checkbox" id="lic-etims-clear-integrator">
+                                    Clear stored integrator PIN
+                                </label>
+                            </div>
+                            <div style="display:flex; align-items:flex-end;">
+                                <button type="button" id="lic-etims-save-company" class="btn btn-secondary">Save company eTIMS identity</button>
+                            </div>
                         </div>
 
                         ${
                             etims && Array.isArray(etims.branches) && etims.branches.length
-                                ? `<div style="overflow:auto;">
-                            <table style="width:100%; border-collapse:collapse;">
-                                <thead>
-                                    <tr>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Branch</th>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Env</th>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">BHF ID</th>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Device serial</th>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">CMC key</th>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Status</th>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Last test</th>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Enabled</th>
-                                        <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                ${etims.branches
-                                    .map((b) => {
-                                        const bid = esc(b.branch_id);
-                                        const st = String(b.connection_status || 'not_configured');
-                                        const verified = st.toLowerCase() === 'verified';
-                                        return `
-                                    <tr data-etims-branch="${bid}">
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">
-                                            <div style="font-weight:600;">${esc(b.branch_name || '—')}</div>
-                                            <div style="color:#666; font-size:0.85rem;">${esc(b.branch_code || '')}</div>
-                                        </td>
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">
-                                            <select data-etims-env style="padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
-                                                <option value="sandbox" ${String(b.environment || 'sandbox') === 'sandbox' ? 'selected' : ''}>sandbox</option>
-                                                <option value="production" ${String(b.environment || '') === 'production' ? 'selected' : ''}>production</option>
-                                            </select>
-                                        </td>
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;"><input data-etims-bhf value="${esc(b.kra_bhf_id || '')}" style="width:160px; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;"></td>
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;"><input data-etims-dvc value="${esc(b.device_serial || '')}" style="width:190px; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;"></td>
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">
-                                            <input data-etims-cmc type="password" value="" placeholder="${b.has_cmc_key ? '•••••••• (stored)' : 'paste key'}" style="width:170px; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
-                                        </td>
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${etimsBadge(st, !!b.enabled)}</td>
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9; color:#666; font-size:0.9rem;">${esc(fmtIso(b.last_tested_at))}</td>
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">
-                                            <label style="display:flex; gap:6px; align-items:center;">
-                                                <input data-etims-enabled type="checkbox" ${b.enabled ? 'checked' : ''} ${verified ? '' : 'disabled'} />
-                                                <span style="color:#666; font-size:0.9rem;">On</span>
-                                            </label>
-                                        </td>
-                                        <td style="padding:10px; border-bottom:1px solid #f1f5f9; white-space:nowrap;">
-                                            <button type="button" class="btn btn-secondary btn-sm" data-etims-save>Save</button>
-                                            <button type="button" class="btn btn-primary btn-sm" data-etims-test ${b.has_oauth_config ? '' : 'disabled'}>Test</button>
-                                        </td>
-                                    </tr>
-                                `;
-                                    })
-                                    .join('')}
-                                </tbody>
-                            </table>
-                        </div>
+                                ? `${etims.branches
+                                      .map((b) => {
+                                          const bid = esc(b.branch_id);
+                                          const st = String(b.connection_status || 'not_configured');
+                                          const verified = st.toLowerCase() === 'verified';
+                                          const sol = esc((b.etims_solution || 'OSCU').toUpperCase());
+                                          return `
+                            <div data-lic-etims-branch="${bid}" style="margin-bottom:12px; border:1px solid #e2e8f0; border-radius:10px; padding:12px; background:#fff;">
+                                <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px;">
+                                    <div>
+                                        <div style="font-weight:700;">${esc(b.branch_name || '—')}</div>
+                                        <div style="color:#64748b; font-size:0.85rem;">Branch code <code>${esc(b.branch_code || '—')}</code></div>
+                                    </div>
+                                    <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                                        ${etimsBadge(st, !!b.enabled)}
+                                        <span style="color:#64748b; font-size:0.85rem;">Last test: ${esc(fmtIso(b.last_tested_at))}</span>
+                                    </div>
+                                </div>
+                                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">Environment</label>
+                                        <select data-etims-env class="form-input" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
+                                            <option value="sandbox" ${String(b.environment || 'sandbox') === 'sandbox' ? 'selected' : ''}>sandbox</option>
+                                            <option value="production" ${String(b.environment || '') === 'production' ? 'selected' : ''}>production</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">eTIMS solution</label>
+                                        <input data-etims-solution value="${sol}" placeholder="OSCU" maxlength="50" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">KRA Branch Id (bhfId)</label>
+                                        <input data-etims-bhf value="${esc(b.kra_bhf_id || '')}" placeholder="e.g. 00" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">Device serial</label>
+                                        <input data-etims-dvc value="${esc(b.device_serial || '')}" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">Apigee App ID</label>
+                                        <input data-etims-apigee value="${esc(b.apigee_app_id || '')}" placeholder="UUID from validation" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">Application test PIN</label>
+                                        <input data-etims-client-tax value="${esc(b.client_tax_pin || '')}" placeholder="e.g. P600003213A" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">Consumer Key</label>
+                                        <input data-etims-consumer-key value="${esc(b.consumer_key || '')}" autocomplete="off" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px; font-family:monospace; font-size:11px;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">Consumer Secret</label>
+                                        <input data-etims-consumer-secret type="password" value="" autocomplete="new-password" placeholder="${b.has_consumer_secret ? '•••••••• (stored)' : 'paste secret'}" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-weight:600; font-size:0.8rem; margin-bottom:4px;">CMC key</label>
+                                        <input data-etims-cmc type="password" value="" placeholder="${b.has_cmc_key ? '•••••••• (stored)' : 'Optional — leave blank to let Test fetch & save from KRA'}" style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px;">
+                                    </div>
+                                    <div style="display:flex; flex-direction:column; justify-content:flex-end; gap:8px;">
+                                        <label style="display:flex; gap:8px; align-items:center; font-size:0.88rem;">
+                                            <input data-etims-enabled type="checkbox" ${b.enabled ? 'checked' : ''} ${verified ? '' : 'disabled'} />
+                                            Submission enabled
+                                        </label>
+                                        <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                                            <button type="button" class="btn btn-secondary btn-sm" data-etims-save>Save branch</button>
+                                            <button type="button" class="btn btn-primary btn-sm" data-etims-test>Test connection</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>`;
+                                      })
+                                      .join('')}
                         <div style="margin-top:10px; color:#64748b; font-size:0.85rem;">
-                            “Enabled” can only be turned on after the branch is <strong>Verified</strong> (Test Connection success).
+                            Turn on <strong>Submission enabled</strong> only after <strong>Verified</strong>. <strong>CMC key</strong> is persisted automatically when KRA returns it during Test (same idea as gavaetims); you can still paste one manually if needed (e.g. resultCd 902 without key).
                         </div>`
                                 : `<div style="color:#666;">No branches found (or eTIMS endpoint unavailable).</div>`
                         }
@@ -942,41 +972,96 @@ export async function init() {
                 });
             });
 
-            document.getElementById('lic-etims-save-pin')?.addEventListener('click', async () => {
+            document.getElementById('lic-etims-save-company')?.addEventListener('click', async () => {
                 try {
                     const pin = (document.getElementById('lic-etims-pin')?.value || '').trim() || null;
+                    const trader_invoicing_system_name =
+                        (document.getElementById('lic-etims-trader-name')?.value || '').trim() || null;
+                    const integratorRaw = (document.getElementById('lic-etims-integrator')?.value || '').trim();
+                    const clear_integrator_pin = !!document.getElementById('lic-etims-clear-integrator')?.checked;
                     if (typeof api.etimsPatchCompanyPin !== 'function') throw new Error('eTIMS API not available');
-                    await api.etimsPatchCompanyPin(companyId, { pin });
-                    toast('Saved eTIMS PIN', 'success');
+                    const body = { pin, trader_invoicing_system_name };
+                    if (clear_integrator_pin) body.clear_integrator_pin = true;
+                    else if (integratorRaw) body.integrator_pin = integratorRaw;
+                    await api.etimsPatchCompanyPin(companyId, body);
+                    toast('Saved company eTIMS identity', 'success');
                     await loadCompanyDetail(companyId);
                 } catch (e) {
-                    toast(e.message || 'Failed to save PIN', 'error');
+                    toast(e.message || 'Failed to save company eTIMS fields', 'error');
                 }
             });
 
-            // eTIMS row actions (save + test)
-            mount.querySelectorAll('tr[data-etims-branch]').forEach((tr) => {
-                const branchId = tr.getAttribute('data-etims-branch');
-                const saveBtn = tr.querySelector('[data-etims-save]');
-                const testBtn = tr.querySelector('[data-etims-test]');
-                const runSave = async () => {
+            mount.querySelectorAll('[data-lic-etims-branch]').forEach((panel) => {
+                const branchId = panel.getAttribute('data-lic-etims-branch');
+                const saveBtn = panel.querySelector('[data-etims-save]');
+                const testBtn = panel.querySelector('[data-etims-test]');
+                const runSave = async (opts) => {
+                    const silent = !!(opts && opts.silent);
                     if (!branchId) return;
                     if (typeof api.etimsPatchBranch !== 'function') throw new Error('eTIMS API not available');
-                    const environment = tr.querySelector('[data-etims-env]')?.value || null;
-                    const kra_bhf_id = (tr.querySelector('[data-etims-bhf]')?.value || '').trim() || null;
-                    const device_serial = (tr.querySelector('[data-etims-dvc]')?.value || '').trim() || null;
-                    const cmc_key = (tr.querySelector('[data-etims-cmc]')?.value || '').trim() || null;
-                    const enabled = !!tr.querySelector('[data-etims-enabled]')?.checked;
-                    await api.etimsPatchBranch(branchId, { environment, kra_bhf_id, device_serial, cmc_key, enabled });
-                    toast('Saved branch eTIMS', 'success');
-                    await loadCompanyDetail(companyId);
+                    const environment = panel.querySelector('[data-etims-env]')?.value || null;
+                    const kra_bhf_id = (panel.querySelector('[data-etims-bhf]')?.value || '').trim() || null;
+                    const device_serial = (panel.querySelector('[data-etims-dvc]')?.value || '').trim() || null;
+                    const etims_solution = (panel.querySelector('[data-etims-solution]')?.value || '').trim() || null;
+                    const apigee_app_id = (panel.querySelector('[data-etims-apigee]')?.value || '').trim() || null;
+                    const client_tax_pin = (panel.querySelector('[data-etims-client-tax]')?.value || '').trim() || null;
+                    const consumer_key = (panel.querySelector('[data-etims-consumer-key]')?.value || '').trim() || null;
+                    const consumer_secret_raw = (panel.querySelector('[data-etims-consumer-secret]')?.value || '').trim();
+                    const cmc_key = (panel.querySelector('[data-etims-cmc]')?.value || '').trim() || null;
+                    const enabled = !!panel.querySelector('[data-etims-enabled]')?.checked;
+                    const payload = {
+                        environment,
+                        kra_bhf_id,
+                        device_serial,
+                        etims_solution,
+                        apigee_app_id,
+                        client_tax_pin,
+                        consumer_key,
+                        enabled,
+                    };
+                    if (cmc_key) payload.cmc_key = cmc_key;
+                    if (consumer_secret_raw) payload.consumer_secret = consumer_secret_raw;
+                    await api.etimsPatchBranch(branchId, payload);
+                    if (!silent) {
+                        toast('Saved branch eTIMS', 'success');
+                        await loadCompanyDetail(companyId);
+                    }
                 };
                 const runTest = async () => {
                     if (!branchId) return;
                     if (typeof api.etimsTestBranchConnection !== 'function') throw new Error('eTIMS API not available');
-                    toast('Testing eTIMS connection…', 'info');
-                    await api.etimsTestBranchConnection(branchId);
-                    toast('eTIMS test done', 'success');
+                    const kra_bhf_chk = (panel.querySelector('[data-etims-bhf]')?.value || '').trim();
+                    const dvc_chk = (panel.querySelector('[data-etims-dvc]')?.value || '').trim();
+                    const env_chk = (panel.querySelector('[data-etims-env]')?.value || '').trim();
+                    if (!kra_bhf_chk) {
+                        throw new Error(
+                            'KRA Branch Id (bhfId) is empty — use the value from developer.go.ke (often 00), click Save branch, then Test.'
+                        );
+                    }
+                    if (!dvc_chk) {
+                        throw new Error('Device serial is empty — fill it from your Gava validation screen, Save branch, then Test.');
+                    }
+                    if (env_chk === 'production') {
+                        const ok = window.confirm(
+                            'Environment is set to production. Gava Connect validation is sandbox — tests usually fail against production. Switch Environment to sandbox and Save branch, unless you intend production.'
+                        );
+                        if (!ok) return;
+                    }
+                    toast('Saving branch, then testing…', 'info');
+                    await runSave({ silent: true });
+                    const res = await api.etimsTestBranchConnection(branchId);
+                    if (!res || res.success !== true) {
+                        const hint = res && res.hint ? String(res.hint) : '';
+                        const msg =
+                            (res && res.response && (res.response.resultMsg || res.response.message)) ||
+                            (res && res.response_text) ||
+                            hint ||
+                            'KRA did not return success — check credentials and sandbox vs production.';
+                        throw new Error(typeof msg === 'string' ? msg : 'eTIMS test failed');
+                    }
+                    let okMsg = 'eTIMS test succeeded (verified)';
+                    if (res.cmc_extracted_from_response) okMsg += ' — CMC key returned by KRA and saved.';
+                    toast(okMsg, 'success');
                     await loadCompanyDetail(companyId);
                 };
                 saveBtn?.addEventListener('click', async (ev) => {
@@ -993,6 +1078,9 @@ export async function init() {
                         await runTest();
                     } catch (e) {
                         toast(e.message || 'Failed to test connection', 'error');
+                        try {
+                            await loadCompanyDetail(companyId);
+                        } catch (_) {}
                     }
                 });
             });

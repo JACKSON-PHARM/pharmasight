@@ -51,6 +51,11 @@ class Company(Base):
         back_populates="company",
         cascade="all, delete-orphan",
     )
+    kra_profile = relationship(
+        "CompanyKraProfile",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 
 class Branch(Base):
@@ -113,6 +118,7 @@ class BranchEtimsCredentials(Base):
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     kra_bhf_id = Column(String(50), nullable=True)
     device_serial = Column(String(100), nullable=True)
+    etims_solution = Column(String(50), nullable=False, default="OSCU")
     cmc_key_encrypted = Column(Text, nullable=True)
     environment = Column(String(20), nullable=False, default="sandbox")
     enabled = Column(Boolean, nullable=False, default=False)
@@ -120,6 +126,23 @@ class BranchEtimsCredentials(Base):
     kra_oauth_password = Column(Text, nullable=True)
     connection_status = Column(String(30), nullable=False, default="not_configured")
     last_tested_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    activation_status = Column(String(30), nullable=False, default="draft")
+    validation_status = Column(String(30), nullable=False, default="unknown")
+    last_validation_error = Column(Text, nullable=True)
+    last_validation_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    last_successful_sync_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    apigee_app_id = Column(String(255), nullable=True)
+    client_tax_pin = Column(String(50), nullable=True)
+    integrator_pin = Column(Text, nullable=True)
+    consumer_key = Column(String(255), nullable=True)
+    consumer_secret_encrypted = Column(Text, nullable=True)
+    credential_version = Column(Integer, nullable=False, default=1)
+    credential_updated_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    token_last_checked_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    token_status = Column(String(30), nullable=False, default="unknown")
+    token_expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    failed_validation_count = Column(Integer, nullable=False, default=0)
+    activation_blockers = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

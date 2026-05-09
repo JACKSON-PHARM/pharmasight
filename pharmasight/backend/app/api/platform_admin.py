@@ -8,7 +8,7 @@ This is distinct from tenant admin settings:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -16,6 +16,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.platform_etims_common import (
+    PatchBranchEtimsRequest,
+    PatchCompanyPinRequest,
+    PlatformEtimsBranchRow,
+    PlatformEtimsCompanyResponse,
+    branch_etims_credential_material_changed,
+    branch_etims_row,
+    company_etims_profile_labels,
+    invalidate_branch_etims_verification,
+    norm_etims_env,
+    norm_etims_solution,
+)
 from app.dependencies import get_current_user, get_tenant_db
 from app.dependencies import get_effective_company_id_for_user
 from app.models.company import Company
@@ -27,8 +39,15 @@ from app.utils.company_plan_limits import sync_demo_plan_slug_with_subscription_
 from app.module_metadata import get_core_modules
 from app.services.etims.branch_credentials import effective_etims_environment, get_cmc_key_plain, get_oauth_username_password
 from app.services.etims.constants import SELECT_INIT_OSDC_PATH
-from app.services.etims.etims_invoice_submitter import api_base_for_branch_credentials, find_etims_result_cd
+from app.services.etims.etims_invoice_submitter import api_base_for_branch_credentials
 from app.services.etims.etims_oauth_client import get_access_token
+from app.services.etims.credential_crypto import encrypt_secret
+from app.services.etims.select_init_osdc_client import (
+    post_select_init_osdc_info_with_retries,
+    summarize_select_init_probe,
+)
+from app.models.company_kra_profile import CompanyKraProfile
+from app.services.etims.kra_profile_service import KraProfileService
 
 import requests
 
@@ -54,57 +73,6 @@ def require_platform_super_admin(
     return user_db
 
 
-class PlatformEtimsBranchRow(BaseModel):
-    branch_id: UUID
-    branch_name: str
-    branch_code: Optional[str] = None
-    environment: str = "sandbox"
-    enabled: bool = False
-    connection_status: str = "not_configured"
-    last_tested_at: Optional[datetime] = None
-    kra_bhf_id: Optional[str] = None
-    device_serial: Optional[str] = None
-    has_cmc_key: bool = False
-    has_oauth_config: bool = False
-
-
-class PlatformEtimsCompanyResponse(BaseModel):
-    company_id: UUID
-    company_name: str
-    company_pin: Optional[str] = None
-    branches: List[PlatformEtimsBranchRow] = Field(default_factory=list)
-
-
-class PatchCompanyPinRequest(BaseModel):
-    pin: Optional[str] = None
-
-
-class PatchBranchEtimsRequest(BaseModel):
-    kra_bhf_id: Optional[str] = None
-    device_serial: Optional[str] = None
-    cmc_key: Optional[str] = None
-    environment: Optional[str] = None
-    enabled: Optional[bool] = None
-
-
-def _norm_env(v: Optional[str]) -> str:
-    e = (v or "sandbox").strip().lower()
-    if e not in ("sandbox", "production"):
-        raise HTTPException(status_code=400, detail="environment must be sandbox or production")
-    return e
-
-
-def _test_http_success(r: requests.Response, parsed: Optional[dict]) -> bool:
-    if not (200 <= r.status_code < 300):
-        return False
-    if not isinstance(parsed, dict):
-        return True
-    rc = find_etims_result_cd(parsed)
-    if rc is None:
-        return True
-    return rc == "000"
-
-
 @router.get("/company/{company_id}/etims", response_model=PlatformEtimsCompanyResponse)
 def platform_get_company_etims(
     company_id: UUID,
@@ -115,39 +83,18 @@ def platform_get_company_etims(
     c = db.query(Company).filter(Company.id == company_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Company not found")
+    trader_name, has_int = company_etims_profile_labels(db, company_id)
     branches = db.query(Branch).filter(Branch.company_id == company_id).order_by(Branch.name.asc()).all()
     out_rows: List[PlatformEtimsBranchRow] = []
     for b in branches:
         creds = db.query(BranchEtimsCredentials).filter(BranchEtimsCredentials.branch_id == b.id).first()
-        if not creds:
-            out_rows.append(
-                PlatformEtimsBranchRow(
-                    branch_id=b.id,
-                    branch_name=b.name,
-                    branch_code=b.code,
-                )
-            )
-            continue
-        u, p = get_oauth_username_password(creds)
-        out_rows.append(
-            PlatformEtimsBranchRow(
-                branch_id=b.id,
-                branch_name=b.name,
-                branch_code=b.code,
-                environment=effective_etims_environment(creds),
-                enabled=bool(creds.enabled),
-                connection_status=creds.connection_status or "not_configured",
-                last_tested_at=creds.last_tested_at,
-                kra_bhf_id=creds.kra_bhf_id,
-                device_serial=creds.device_serial,
-                has_cmc_key=bool(get_cmc_key_plain(creds)),
-                has_oauth_config=bool(u and p),
-            )
-        )
+        out_rows.append(branch_etims_row(b, creds))
     return PlatformEtimsCompanyResponse(
         company_id=c.id,
         company_name=c.name,
         company_pin=c.pin,
+        trader_invoicing_system_name=trader_name,
+        has_company_integrator_pin=has_int,
         branches=out_rows,
     )
 
@@ -163,7 +110,31 @@ def platform_patch_company_pin(
     c = db.query(Company).filter(Company.id == company_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Company not found")
-    c.pin = (body.pin or "").strip() or None
+    data = body.model_dump(exclude_unset=True)
+    if "pin" in data:
+        c.pin = (body.pin or "").strip() or None
+    prof: Optional[CompanyKraProfile] = None
+
+    def _prof() -> CompanyKraProfile:
+        nonlocal prof
+        if prof is None:
+            prof = KraProfileService.get_or_create_company_profile(db, company_id=c.id)
+            KraProfileService.migrate_company_secret_fields(prof)
+        return prof
+
+    if "trader_invoicing_system_name" in data:
+        p = _prof()
+        p.kra_trader_invoicing_system_name = (body.trader_invoicing_system_name or "").strip() or None
+    if data.get("clear_integrator_pin"):
+        p = _prof()
+        p.integrator_pin = None
+        p.credential_updated_at = datetime.now(timezone.utc)
+    elif "integrator_pin" in data:
+        p = _prof()
+        v = (body.integrator_pin or "").strip()
+        p.integrator_pin = encrypt_secret(v) if v else None
+        p.credential_updated_at = datetime.now(timezone.utc)
+
     db.commit()
     return platform_get_company_etims(company_id, auth=auth, db=db)
 
@@ -181,41 +152,70 @@ def platform_patch_branch_etims(
         raise HTTPException(status_code=404, detail="Branch not found")
     creds = db.query(BranchEtimsCredentials).filter(BranchEtimsCredentials.branch_id == branch_id).first()
     if not creds:
-        creds = BranchEtimsCredentials(branch_id=branch_id, company_id=branch.company_id, environment="sandbox", enabled=False)
+        creds = BranchEtimsCredentials(
+            branch_id=branch_id,
+            company_id=branch.company_id,
+            environment="sandbox",
+            enabled=False,
+            etims_solution="OSCU",
+        )
         db.add(creds)
+
+    data = body.model_dump(exclude_unset=True)
+    credential_material_changed = branch_etims_credential_material_changed(creds, body, data)
 
     if body.kra_bhf_id is not None:
         creds.kra_bhf_id = (body.kra_bhf_id or "").strip() or None
     if body.device_serial is not None:
         creds.device_serial = (body.device_serial or "").strip() or None
     if body.cmc_key is not None:
-        # write-only; never returned
         v = (body.cmc_key or "").strip()
         if v:
-            creds.cmc_key_encrypted = v
+            creds.cmc_key_encrypted = encrypt_secret(v)
     if body.environment is not None:
-        creds.environment = _norm_env(body.environment)
+        creds.environment = norm_etims_env(body.environment)
+    if body.etims_solution is not None:
+        creds.etims_solution = norm_etims_solution(body.etims_solution)
+    if body.apigee_app_id is not None:
+        creds.apigee_app_id = (body.apigee_app_id or "").strip() or None
+    if body.client_tax_pin is not None:
+        creds.client_tax_pin = (body.client_tax_pin or "").strip() or None
+    if body.consumer_key is not None:
+        creds.consumer_key = (body.consumer_key or "").strip() or None
+    if "consumer_secret" in data:
+        v = (body.consumer_secret or "").strip()
+        if v:
+            creds.consumer_secret_encrypted = encrypt_secret(v)
+
+    KraProfileService.migrate_branch_secret_fields(creds)
+    invalidate_branch_etims_verification(creds, dirty=credential_material_changed)
+
+    _oauth_u, _oauth_p = get_oauth_username_password(creds)
+    _hardware_ok = bool(
+        (creds.kra_bhf_id and str(creds.kra_bhf_id).strip())
+        and (creds.device_serial and str(creds.device_serial).strip())
+        and get_cmc_key_plain(creds)
+    )
+    if creds.enabled and (
+        (creds.connection_status or "").strip().lower() == "not_configured"
+        or not _hardware_ok
+        or not (_oauth_u and _oauth_p)
+    ):
+        creds.enabled = False
+
     if body.enabled is not None:
-        if body.enabled and (creds.connection_status or "") != "verified":
+        if body.enabled and (creds.connection_status or "").strip().lower() != "verified":
             raise HTTPException(status_code=400, detail="Branch must be VERIFIED before enabling submission.")
         creds.enabled = bool(body.enabled)
+        if creds.enabled:
+            KraProfileService.get_or_create_company_profile(db, company_id=branch.company_id).module_enabled = True
+
+    if credential_material_changed:
+        creds.credential_updated_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(creds)
-    u, p = get_oauth_username_password(creds)
-    return PlatformEtimsBranchRow(
-        branch_id=branch.id,
-        branch_name=branch.name,
-        branch_code=branch.code,
-        environment=effective_etims_environment(creds),
-        enabled=bool(creds.enabled),
-        connection_status=creds.connection_status or "not_configured",
-        last_tested_at=creds.last_tested_at,
-        kra_bhf_id=creds.kra_bhf_id,
-        device_serial=creds.device_serial,
-        has_cmc_key=bool(get_cmc_key_plain(creds)),
-        has_oauth_config=bool(u and p),
-    )
+    return branch_etims_row(branch, creds)
 
 
 @router.post("/branch/{branch_id}/etims/test-connection", response_model=Dict[str, Any])
@@ -228,23 +228,35 @@ def platform_test_branch_etims_connection(
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
-    creds = db.query(BranchEtimsCredentials).filter(BranchEtimsCredentials.branch_id == branch_id).first()
-    if not creds:
-        raise HTTPException(status_code=400, detail="No branch_etims_credentials row. Save branch eTIMS fields first.")
+    try:
+        creds = KraProfileService.get_or_create_branch_profile(db, branch_id=branch_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Branch not found") from None
+    KraProfileService.migrate_branch_secret_fields(creds)
+    db.commit()
+    db.refresh(creds)
+
     company = db.query(Company).filter(Company.id == branch.company_id).first()
     tin = (company.pin or "").strip() if company else ""
+    missing: List[str] = []
     if not tin:
-        raise HTTPException(status_code=400, detail="Company PIN (TIN) is not configured.")
+        missing.append("Company PIN (TIN)")
     if not (creds.kra_bhf_id and str(creds.kra_bhf_id).strip()):
-        raise HTTPException(status_code=400, detail="Branch kra_bhf_id is not configured.")
+        missing.append("KRA Branch Id (bhfId)")
     if not (creds.device_serial and str(creds.device_serial).strip()):
-        raise HTTPException(status_code=400, detail="Branch device_serial is not configured.")
-    cmc = get_cmc_key_plain(creds)
-    if not cmc:
-        raise HTTPException(status_code=400, detail="Branch CMC key is not configured.")
-    u, p = get_oauth_username_password(creds)
-    if not u or not p:
-        raise HTTPException(status_code=400, detail="OAuth is not configured on server for eTIMS (ETIMS_APP_CONSUMER_*).")
+        missing.append("Device serial")
+    u_chk, p_chk = get_oauth_username_password(creds)
+    if not u_chk or not p_chk:
+        missing.append(
+            "OAuth — Consumer Key + Consumer Secret on the branch or ETIMS_APP_CONSUMER_* on server"
+        )
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot run Test until these are saved: " + " · ".join(missing),
+        )
+    cmc_for_request = get_cmc_key_plain(creds) or None
+    u, p = u_chk, p_chk
 
     env_eff = effective_etims_environment(creds)
     base = api_base_for_branch_credentials(env_eff)
@@ -254,45 +266,61 @@ def platform_test_branch_etims_connection(
     except Exception as e:
         creds.connection_status = "failed"
         creds.last_tested_at = now
+        creds.validation_status = "failed"
+        creds.last_validation_error = "OAUTH_FAILED"
+        creds.token_status = "failed"
+        creds.activation_status = "invalid_credentials"
         db.commit()
         raise HTTPException(status_code=502, detail=f"eTIMS OAuth failed: {e}") from e
 
     bhf = str(creds.kra_bhf_id).strip()
     dvc = str(creds.device_serial).strip()
-    url = f"{base}{SELECT_INIT_OSDC_PATH}"
-    body = {"tin": tin, "bhfId": bhf, "dvcSrlNo": dvc}
+    apigee = (creds.apigee_app_id or "").strip() or None
     try:
-        r = requests.post(
-            url,
-            json=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-                "tin": tin,
-                "bhfId": bhf,
-                "cmcKey": cmc,
-            },
-            timeout=45,
+        r, parsed = post_select_init_osdc_info_with_retries(
+            api_base=base,
+            tin=tin,
+            bhf_id=bhf,
+            dvc_serial=dvc,
+            bearer_token=token,
+            apigee_app_id=apigee,
+            cmc_key_plain=cmc_for_request,
+            timeout=90,
         )
     except requests.RequestException as e:
         creds.connection_status = "failed"
         creds.last_tested_at = now
+        creds.validation_status = "failed"
+        creds.last_validation_error = "INITIALIZE_REQUEST_FAILED"
+        creds.activation_status = "connection_failed"
         db.commit()
         raise HTTPException(status_code=502, detail=f"eTIMS request failed: {e}") from e
 
     text = (r.text or "")[:8000]
-    parsed: Optional[dict] = None
-    try:
-        parsed = r.json()
-    except Exception:
-        parsed = None
-
-    ok = _test_http_success(r, parsed)
+    summary = summarize_select_init_probe(parsed=parsed, response=r, creds=creds)
+    KraProfileService.migrate_branch_secret_fields(creds)
+    verified = bool(summary.get("verified"))
     creds.last_tested_at = now
-    creds.connection_status = "verified" if ok else "failed"
+    creds.connection_status = "verified" if verified else "failed"
+    creds.validation_status = "passed" if verified else "failed"
+    creds.last_validation_error = None if verified else (
+        "INITIALIZE_NO_CMC"
+        if summary.get("envelope_ok") and not summary.get("has_cmc_key")
+        else "INITIALIZE_FAILED"
+    )
+    creds.token_last_checked_at = now
+    creds.token_status = "ok" if verified else "failed"
+    if verified:
+        creds.last_validation_at = now
+    if verified and KraProfileService.can_activate_branch(creds) and creds.enabled:
+        creds.activation_status = "active"
+    elif verified:
+        creds.activation_status = "validated"
+    else:
+        creds.activation_status = "connection_failed"
     db.commit()
     return {
-        "ok": ok,
+        "ok": verified,
         "http_status": r.status_code,
         "environment": env_eff,
         "api_base": base,
@@ -301,6 +329,18 @@ def platform_test_branch_etims_connection(
         "last_tested_at": creds.last_tested_at.isoformat() if creds.last_tested_at else None,
         "response_excerpt": text,
         "response_json": parsed,
+        "result_cd": summary.get("result_cd"),
+        "cmc_extracted_from_response": summary.get("cmc_extracted_from_response"),
+        "has_cmc_key": summary.get("has_cmc_key"),
+        "hint": (
+            None
+            if verified
+            else (
+                "KRA did not return a CMC key and none is stored. For resultCd=902 paste CMC from the OSCU portal."
+                if summary.get("envelope_ok") and not summary.get("has_cmc_key")
+                else None
+            )
+        ),
     }
 
 

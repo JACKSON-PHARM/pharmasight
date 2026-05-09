@@ -271,7 +271,7 @@ def submit_sales_invoice(
     )
     if not creds or not creds.enabled:
         raise EtimsSubmissionSkipped("branch eTIMS credentials missing or disabled")
-    if getattr(creds, "connection_status", None) != "verified":
+    if (getattr(creds, "connection_status", None) or "").strip().lower() != "verified":
         raise EtimsSubmissionSkipped(
             "branch eTIMS connection is not verified; run Test eTIMS Connection in Settings"
         )

@@ -242,6 +242,19 @@ class Settings(BaseSettings):
     ETIMS_VAT_CAT_ZERO: str = os.getenv("ETIMS_VAT_CAT_ZERO", "B").strip() or "B"
     ETIMS_TAX_TY_STANDARD: str = os.getenv("ETIMS_TAX_TY_STANDARD", "V").strip() or "V"
     ETIMS_TAX_TY_ZERO: str = os.getenv("ETIMS_TAX_TY_ZERO", "B").strip() or "B"
+    # Credential encryption for KRA secrets. If key is unset, derive a deterministic key from SECRET_KEY.
+    # Supports Fernet key format or plain text derivation input.
+    KRA_CREDENTIAL_ENCRYPTION_KEY: str = os.getenv("KRA_CREDENTIAL_ENCRYPTION_KEY", "").strip()
+    # Comma-separated legacy keys accepted for decrypt-only rotation windows.
+    KRA_CREDENTIAL_ENCRYPTION_OLD_KEYS: str = os.getenv("KRA_CREDENTIAL_ENCRYPTION_OLD_KEYS", "").strip()
+    # Execution-plane phase 1 toggles (sale.completed outbox + lightweight worker)
+    KRA_OUTBOX_ENABLED: bool = os.getenv("KRA_OUTBOX_ENABLED", "false").lower() in ("true", "1", "yes")
+    KRA_OUTBOX_WORKER_ENABLED: bool = os.getenv("KRA_OUTBOX_WORKER_ENABLED", "false").lower() in ("true", "1", "yes")
+    KRA_OUTBOX_SHADOW_MODE: bool = os.getenv("KRA_OUTBOX_SHADOW_MODE", "false").lower() in ("true", "1", "yes")
+    KRA_OUTBOX_POLL_SECONDS: int = int(os.getenv("KRA_OUTBOX_POLL_SECONDS", "5"))
+    KRA_OUTBOX_BATCH_SIZE: int = int(os.getenv("KRA_OUTBOX_BATCH_SIZE", "10"))
+    KRA_OUTBOX_LEASE_SECONDS: int = int(os.getenv("KRA_OUTBOX_LEASE_SECONDS", "60"))
+    KRA_OUTBOX_MAX_ATTEMPTS: int = int(os.getenv("KRA_OUTBOX_MAX_ATTEMPTS", "12"))
 
 
 settings = Settings()

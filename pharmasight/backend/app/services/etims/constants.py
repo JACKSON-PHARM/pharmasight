@@ -15,6 +15,7 @@ OAUTH_TOKEN_PATH_LEGACY = "/oauth2/v1/generate"
 # OSCU endpoints relative to ETIMS_*_API_BASE (sandbox default ends with /etims-oscu/api/v1)
 SELECT_INIT_OSDC_PATH = "/initialize"
 SEND_SALES_TRANSACTION_PATH = "/sendSalesTransaction"
+SAVE_ITEM_PATH = "/saveItem"
 
 # Back-compat name used by older docs / forks
 SEND_SALES_TRNS_PATH = SEND_SALES_TRANSACTION_PATH

@@ -85,7 +85,12 @@
             },
         ],
         lab: [],
-        billing: [], // sidebar built from CORE_MANAGEMENT_SIDEBAR_BLOCKS in flattenSidebarConfig
+        billing: [
+            {
+                section: 'Billing',
+                items: [{ page: 'module-coming-soon', label: 'Insurance Management', icon: 'fa-file-invoice-dollar', hasSub: true }],
+            },
+        ],
         finance: [
             { page: 'cashbook', label: 'Cashbook', icon: 'fa-cash-register', hasSub: false },
             { page: 'expenses', label: 'Expenses', icon: 'fa-money-bill-wave', hasSub: true },

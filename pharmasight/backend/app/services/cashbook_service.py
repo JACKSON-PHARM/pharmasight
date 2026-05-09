@@ -21,6 +21,7 @@ from app.models import CashbookEntry, Expense, SupplierPayment, SalesInvoice, In
 SOURCE_TYPE_EXPENSE = "expense"
 SOURCE_TYPE_SUPPLIER_PAYMENT = "supplier_payment"
 SOURCE_TYPE_SALE = "sale"
+SOURCE_TYPE_INSURANCE_SETTLEMENT = "insurance_settlement"
 
 
 def _normalize_cashbook_payment_mode(payment_mode: str) -> str:
@@ -48,7 +49,8 @@ def _normalize_sale_payment_mode_to_cashbook(payment_mode: str) -> Optional[str]
     For sales payments:
     - credit => None (no real cash inflow)
     - cash/mpesa => mapped directly
-    - card/insurance/other => bank
+    - insurance => None (receivable until settlement)
+    - card/other => bank
     """
     m = (payment_mode or "").strip().lower()
     if m == "credit":
@@ -57,8 +59,27 @@ def _normalize_sale_payment_mode_to_cashbook(payment_mode: str) -> Optional[str]
         return "cash"
     if m == "mpesa":
         return "mpesa"
-    # card/insurance/bank/cheque => bank (cashless inflow)
+    if m == "insurance":
+        return None
+    # card/bank/cheque => bank (cashless inflow)
     return "bank"
+
+
+def ensure_cashbook_entry_for_insurance_settlement(db: Session, *, settlement) -> Optional[CashbookEntry]:
+    return create_cashbook_entry_if_missing(
+        db,
+        company_id=settlement.company_id,
+        branch_id=settlement.branch_id,
+        entry_date=settlement.settlement_date,
+        amount=settlement.amount,
+        payment_mode=_normalize_supplier_method_to_cashbook_payment_mode(getattr(settlement, "method", None)),
+        source_type=SOURCE_TYPE_INSURANCE_SETTLEMENT,
+        source_id=settlement.id,
+        reference_number=getattr(settlement, "reference", None),
+        description=f"Insurance settlement ({settlement.settlement_number})",
+        created_by=settlement.created_by,
+        entry_type="inflow",
+    )
 
 def create_cashbook_entry_if_missing(
     db: Session,

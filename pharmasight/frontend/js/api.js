@@ -534,6 +534,7 @@ const API = {
         patients: {
             list: (q) => api.get('/api/clinic/patients', q ? { q } : {}),
             get: (id) => api.get(`/api/clinic/patients/${id}`),
+            chart: (id, params = {}) => api.get(`/api/clinic/patients/${id}/chart`, params),
             create: (data) => api.post('/api/clinic/patients', data),
             update: (id, data) => api.patch(`/api/clinic/patients/${id}`, data),
         },
@@ -1169,6 +1170,31 @@ const API = {
         },
     },
 
+    insurance: {
+        listProviders: (activeOnly = false) => {
+            const qs = new URLSearchParams();
+            if (activeOnly) qs.append('active_only', 'true');
+            return api.get(`${CONFIG.API_ENDPOINTS.insurance}/providers${qs.toString() ? `?${qs.toString()}` : ''}`);
+        },
+        createProvider: (data) => api.post(`${CONFIG.API_ENDPOINTS.insurance}/providers`, data),
+        updateProvider: (providerId, data) => api.put(`${CONFIG.API_ENDPOINTS.insurance}/providers/${providerId}`, data),
+        listClaims: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.provider_id) qs.append('provider_id', params.provider_id);
+            if (params.status_filter) qs.append('status_filter', params.status_filter);
+            return api.get(`${CONFIG.API_ENDPOINTS.insurance}/claims${qs.toString() ? `?${qs.toString()}` : ''}`);
+        },
+        updateClaimStatus: (claimId, data) => api.patch(`${CONFIG.API_ENDPOINTS.insurance}/claims/${claimId}/status`, data),
+        listSettlements: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.provider_id) qs.append('provider_id', params.provider_id);
+            return api.get(`${CONFIG.API_ENDPOINTS.insurance}/settlements${qs.toString() ? `?${qs.toString()}` : ''}`);
+        },
+        createSettlement: (data) => api.post(`${CONFIG.API_ENDPOINTS.insurance}/settlements`, data),
+        getStatement: (providerId) => api.get(`${CONFIG.API_ENDPOINTS.insurance}/statement?provider_id=${providerId}`),
+        getAging: () => api.get(`${CONFIG.API_ENDPOINTS.insurance}/aging`),
+    },
+
     // Expenses (OPEX only)
     expenses: {
         listCategories: (params = {}) => {
@@ -1561,7 +1587,8 @@ const API = {
             etimsCompany: (companyId) => api.get(`/api/admin/platform-licensing/company/${companyId}/etims`),
             etimsPatchCompanyPin: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/etims/pin`, data),
             etimsPatchBranch: (branchId, data) => api.patch(`/api/admin/platform-licensing/branch/${branchId}/etims`, data),
-            etimsTestBranchConnection: (branchId) => api.post(`/api/admin/platform-licensing/branch/${branchId}/etims/test-connection`, {}),
+            etimsTestBranchConnection: (branchId) =>
+                api.post(`/api/admin/platform-licensing/branch/${branchId}/etims/test-connection`, {}, { timeout: 180000 }),
         },
         plans: {
             list: () => api.get('/api/admin/plans'),

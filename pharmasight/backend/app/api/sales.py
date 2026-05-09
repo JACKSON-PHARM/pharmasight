@@ -30,6 +30,7 @@ from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
     Item, InvoicePayment, UserBranchRole, UserRole,
     CreditNote, CreditNoteItem,
+    InsuranceProvider, InsuranceClaim, InsuranceLedgerEntry,
 )
 from app.models.company import Company, Branch
 from app.models.user import User
@@ -49,6 +50,8 @@ from app.services.item_units_helper import get_unit_display_short, get_unit_mult
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
+from app.services.etims.invoice_etims_snapshot import apply_etims_snapshots_on_batch
+from app.services.etims.kra_outbox_service import KraOutboxService
 from app.utils.vat import vat_rate_to_percent
 from app.models.settings import CompanySetting
 from app.config import settings
@@ -2240,6 +2243,26 @@ def batch_sales_invoice(
         else:
             invoice.status = "BATCHED"
 
+        # Phase 1 execution-plane foundation:
+        # create immutable KRA snapshot + transactional outbox only when outbox mode is enabled
+        # and this branch is explicitly KRA-enabled.
+        if settings.KRA_OUTBOX_ENABLED:
+            from app.models.company import BranchEtimsCredentials
+
+            creds = (
+                db.query(BranchEtimsCredentials)
+                .filter(BranchEtimsCredentials.branch_id == invoice.branch_id)
+                .first()
+            )
+            if creds and bool(getattr(creds, "enabled", False)):
+                apply_etims_snapshots_on_batch(invoice)
+                KraOutboxService.enqueue_sale_completed(
+                    db,
+                    invoice=invoice,
+                    source="sales.batch",
+                    max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
+                )
+
         for entry in ledger_entries:
             db.add(entry)
 
@@ -2668,14 +2691,27 @@ def add_invoice_payment(
             detail=f"Cannot add payment to invoice with status {invoice.status}. Invoice must be BATCHED."
         )
     existing_payments = db.query(func.sum(InvoicePayment.amount)).filter(
-        InvoicePayment.invoice_id == invoice_id
+        InvoicePayment.invoice_id == invoice_id,
+        InvoicePayment.payment_mode != "insurance",
     ).scalar() or Decimal("0")
     total_paid = existing_payments + payment.amount
-    if total_paid > invoice.total_inclusive:
+    effective_total_after = existing_payments + (Decimal("0") if payment.payment_mode == "insurance" else payment.amount)
+    if effective_total_after > invoice.total_inclusive:
         raise HTTPException(
             status_code=400,
             detail=f"Payment amount exceeds invoice total. Invoice: {invoice.total_inclusive}, Total paid: {total_paid}"
         )
+    provider = None
+    if payment.payment_mode == "insurance":
+        if not payment.insurance_provider_id:
+            raise HTTPException(status_code=400, detail="insurance_provider_id is required for insurance receivable")
+        provider = db.query(InsuranceProvider).filter(
+            InsuranceProvider.id == payment.insurance_provider_id,
+            InsuranceProvider.company_id == invoice.company_id,
+            InsuranceProvider.is_active == True,
+        ).first()
+        if not provider:
+            raise HTTPException(status_code=404, detail="Insurance provider not found")
     # Reject duplicate identical payment within same request window (e.g. double submit)
     duplicate_window = datetime.now(timezone.utc) - timedelta(seconds=5)
     recent_same = (
@@ -2699,6 +2735,7 @@ def add_invoice_payment(
         payment_mode=payment.payment_mode,
         amount=payment.amount,
         payment_reference=payment.payment_reference,
+        insurance_provider_id=payment.insurance_provider_id,
         paid_by=payment.paid_by
     )
     db.add(db_payment)
@@ -2715,15 +2752,44 @@ def add_invoice_payment(
         invoice_no=invoice.invoice_no,
         created_by=payment.paid_by,
     )
+    if payment.payment_mode == "insurance" and provider is not None:
+        claim = InsuranceClaim(
+            company_id=invoice.company_id,
+            branch_id=invoice.branch_id,
+            insurance_provider_id=provider.id,
+            sales_invoice_id=invoice.id,
+            claim_number=f"ICL-{str(invoice.company_id)[:8].upper()}-{int(time.time())}",
+            status="submitted",
+            billed_amount=payment.amount,
+            approved_amount=Decimal("0"),
+            settled_amount=Decimal("0"),
+            outstanding_amount=payment.amount,
+            due_date=(invoice.invoice_date + timedelta(days=int(provider.terms_days or 30))),
+            notes=payment.payment_reference or "Insurance receivable from split payment",
+            created_by=payment.paid_by,
+        )
+        db.add(claim)
+        db.flush()
+        db.add(InsuranceLedgerEntry(
+            company_id=invoice.company_id,
+            branch_id=invoice.branch_id,
+            insurance_provider_id=provider.id,
+            date=invoice.invoice_date,
+            entry_type="claim",
+            reference_id=claim.id,
+            debit=payment.amount,
+            credit=Decimal("0"),
+            notes=f"Claim against invoice {invoice.invoice_no}",
+        ))
 
     # Update invoice payment status
-    if total_paid >= invoice.total_inclusive:
+    if effective_total_after >= invoice.total_inclusive:
         invoice.payment_status = "PAID"
         invoice.status = "PAID"
         invoice.cashier_approved = True
         invoice.approved_by = payment.paid_by
         invoice.approved_at = datetime.now(timezone.utc)
-    elif total_paid > 0:
+    elif effective_total_after > 0:
         invoice.payment_status = "PARTIAL"
     
     db.commit()
@@ -2787,7 +2853,8 @@ def delete_invoice_payment(
     
     # Recalculate payment status
     remaining_payments = db.query(func.sum(InvoicePayment.amount)).filter(
-        InvoicePayment.invoice_id == invoice.id
+        InvoicePayment.invoice_id == invoice.id,
+        InvoicePayment.payment_mode != "insurance",
     ).scalar() or Decimal("0")
     
     if remaining_payments <= 0:
