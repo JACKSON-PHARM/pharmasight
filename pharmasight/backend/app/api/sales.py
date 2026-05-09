@@ -12,6 +12,7 @@ from decimal import Decimal
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from fastapi import Query
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from app.dependencies import (
     get_tenant_db,
     get_current_user,
@@ -50,12 +51,30 @@ from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
 from app.utils.vat import vat_rate_to_percent
 from app.models.settings import CompanySetting
+from app.config import settings
 
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 # Log when draft snapshot COGS (qty×mult×unit_cost_used) would differ from batched ledger by
 # more than this fraction of line revenue (before overwriting unit_cost_used at batch).
 SNAPSHOT_VS_LEDGER_WARN_THRESHOLD = Decimal("0.01")  # 1% of line_total_exclusive
+
+
+class DevInvoiceMovementRepairItem(BaseModel):
+    item_id: UUID
+    quantity: Optional[Decimal] = Field(default=None, gt=0)
+    unit_name: Optional[str] = None
+    unit_price_exclusive: Optional[Decimal] = Field(default=None, ge=0)
+    discount_percent: Decimal = Field(default=0, ge=0, le=100)
+    discount_amount: Decimal = Field(default=0, ge=0)
+
+
+class DevInvoiceMovementRepairRequest(BaseModel):
+    """
+    Dev-only repair payload.
+    If items is omitted/empty, missing invoice lines are inferred from SALE ledger rows.
+    """
+    items: Optional[List[DevInvoiceMovementRepairItem]] = None
 
 
 def _get_company_setting_decimal(db: Session, company_id: UUID, key: str) -> Decimal | None:
@@ -159,6 +178,16 @@ def _resolve_date_range(
     if sd > ed:
         sd, ed = ed, sd
     return sd, ed
+
+
+def _assert_dev_mode() -> None:
+    # Strict guard: never allow this repair endpoint in production.
+    env = (getattr(settings, "ENVIRONMENT", "") or "").strip().lower()
+    if env == "production" and not bool(getattr(settings, "DEBUG", False)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This repair endpoint is available in development mode only.",
+        )
 
 
 def _user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID) -> bool:
@@ -677,6 +706,7 @@ def add_sales_invoice_item(
             selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item),
         )
         .filter(SalesInvoice.id == invoice_id)
+        .with_for_update()
         .first()
     )
     request.state.timings["LoadMs"] = round((time.perf_counter() - t0) * 1000, 1)
@@ -895,6 +925,7 @@ def delete_sales_invoice_item(
         db.query(SalesInvoice)
         .options(selectinload(SalesInvoice.items))
         .filter(SalesInvoice.id == invoice_id)
+        .with_for_update()
         .first()
     )
     if not invoice:
@@ -943,6 +974,7 @@ def update_sales_invoice_item(
         db.query(SalesInvoice)
         .options(selectinload(SalesInvoice.items))
         .filter(SalesInvoice.id == invoice_id)
+        .with_for_update()
         .first()
     )
     if not invoice:
@@ -2283,6 +2315,190 @@ def batch_sales_invoice(
         logging.getLogger(__name__).warning("Order book auto-add failed for invoice %s: %s", invoice_id, e)
 
     return invoice
+
+
+@router.post("/invoice/{invoice_id}/dev-repair-from-movement", response_model=SalesInvoiceResponse)
+def dev_repair_invoice_from_movement(
+    invoice_id: UUID,
+    body: Optional[DevInvoiceMovementRepairRequest] = None,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    DEV-ONLY:
+    Repair a batched invoice by adding missing sales_invoice_items inferred from
+    inventory_ledger SALE movements (reference_type=sales_invoice, reference_id=invoice_id).
+    Excludes returns by design (SALE_RETURN is ignored).
+    """
+    from sqlalchemy.orm import selectinload
+
+    _assert_dev_mode()
+
+    user = current_user_and_db[0]
+    invoice = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+        .filter(SalesInvoice.id == invoice_id)
+        .with_for_update()
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if invoice.status not in ("BATCHED", "PAID"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Repair is intended for processed invoices only. Current status: {invoice.status}",
+        )
+
+    # Group SALE ledger quantity (base units) and cost by item for this invoice.
+    sale_rows = (
+        db.query(
+            InventoryLedger.item_id.label("item_id"),
+            func.sum(-InventoryLedger.quantity_delta).label("qty_base"),
+            func.sum(-InventoryLedger.total_cost).label("total_cost_base"),
+        )
+        .filter(
+            InventoryLedger.company_id == invoice.company_id,
+            InventoryLedger.branch_id == invoice.branch_id,
+            InventoryLedger.reference_type == "sales_invoice",
+            InventoryLedger.reference_id == invoice.id,
+            InventoryLedger.transaction_type == "SALE",
+        )
+        .group_by(InventoryLedger.item_id)
+        .all()
+    )
+    if not sale_rows:
+        raise HTTPException(status_code=400, detail="No SALE movement rows found for this invoice.")
+
+    ledger_by_item = {str(r.item_id): r for r in sale_rows}
+    existing_ids = {str(line.item_id) for line in invoice.items}
+    missing_ids = [iid for iid in ledger_by_item.keys() if iid not in existing_ids]
+
+    payload_by_item: dict[str, DevInvoiceMovementRepairItem] = {}
+    if body and body.items:
+        for it in body.items:
+            payload_by_item[str(it.item_id)] = it
+
+    if not missing_ids and not payload_by_item:
+        raise HTTPException(status_code=400, detail="No missing invoice lines detected from SALE movement.")
+
+    ids_to_add = set(missing_ids) | set(payload_by_item.keys())
+    added_count = 0
+
+    sales_type = getattr(invoice, "sales_type", "RETAIL") or "RETAIL"
+    pricing_tier = "wholesale" if sales_type == "WHOLESALE" else ("supplier" if sales_type == "SUPPLIER" else "retail")
+
+    for sid in ids_to_add:
+        if sid in existing_ids:
+            continue
+        led = ledger_by_item.get(sid)
+        if not led:
+            # Allow explicit payload items only if they really exist in movement for this invoice.
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item {sid} has no SALE movement on this invoice; cannot add it through this repair.",
+            )
+
+        item = db.query(Item).filter(Item.id == led.item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Item {sid} not found")
+
+        patch = payload_by_item.get(sid)
+        unit_name = (patch.unit_name.strip() if patch and patch.unit_name else None) or (item.retail_unit or item.base_unit or "piece")
+        try:
+            mult = get_unit_multiplier_from_item(item, unit_name)
+        except Exception:
+            mult = None
+        if mult is None or float(mult) <= 0:
+            raise HTTPException(status_code=400, detail=f"Invalid unit '{unit_name}' for item {item.name}.")
+
+        qty_base = Decimal(str(led.qty_base or 0))
+        if qty_base <= 0:
+            continue
+        quantity = patch.quantity if (patch and patch.quantity is not None) else (qty_base / Decimal(str(mult)))
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail=f"Computed quantity is invalid for item {item.name}.")
+
+        unit_price = patch.unit_price_exclusive if (patch and patch.unit_price_exclusive is not None) else None
+        if unit_price is None:
+            price_info = PricingService.calculate_recommended_price(
+                db, item.id, invoice.branch_id, invoice.company_id, unit_name, tier=pricing_tier
+            )
+            if not price_info and pricing_tier == "supplier":
+                price_info = PricingService.calculate_recommended_price(
+                    db, item.id, invoice.branch_id, invoice.company_id, unit_name, tier="wholesale"
+                )
+            if not price_info:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Price not available for missing item '{item.name}'. Provide unit_price_exclusive in repair payload.",
+                )
+            unit_price = Decimal(str(price_info["recommended_unit_price"]))
+
+        discount_percent = patch.discount_percent if patch else Decimal("0")
+        discount_amount = patch.discount_amount if patch else Decimal("0")
+        vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
+
+        line_total_exclusive = Decimal(str(unit_price)) * Decimal(str(quantity))
+        line_total_exclusive -= (line_total_exclusive * Decimal(str(discount_percent)) / Decimal("100"))
+        line_total_exclusive -= Decimal(str(discount_amount))
+        line_vat = line_total_exclusive * vat_rate / Decimal("100")
+        line_total_inclusive = line_total_exclusive + line_vat
+
+        unit_cost_used = None
+        total_cost_base = Decimal(str(led.total_cost_base or 0))
+        if qty_base > 0:
+            unit_cost_used = total_cost_base / qty_base
+
+        line = SalesInvoiceItem(
+            sales_invoice_id=invoice.id,
+            item_id=item.id,
+            batch_id=None,
+            unit_name=unit_name,
+            quantity=quantity,
+            unit_price_exclusive=unit_price,
+            discount_percent=discount_percent,
+            discount_amount=discount_amount,
+            vat_rate=vat_rate,
+            vat_amount=line_vat,
+            line_total_exclusive=line_total_exclusive,
+            line_total_inclusive=line_total_inclusive,
+            unit_cost_used=unit_cost_used,
+            margin_reference_unit_cost_base=_sales_margin_reference_unit_cost_base(
+                db, invoice.company_id, invoice.branch_id, item.id, None
+            ),
+            item_name=item.name,
+            item_code=item.sku or "",
+        )
+        db.add(line)
+        added_count += 1
+
+    if added_count == 0:
+        raise HTTPException(status_code=400, detail="No new invoice lines were added by repair.")
+
+    db.flush()
+
+    # Recompute header totals from invoice lines.
+    invoice = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items))
+        .filter(SalesInvoice.id == invoice.id)
+        .with_for_update()
+        .first()
+    )
+    total_exclusive = sum(Decimal(str(l.line_total_exclusive or 0)) for l in invoice.items)
+    total_vat = sum(Decimal(str(l.vat_amount or 0)) for l in invoice.items)
+    invoice.total_exclusive = total_exclusive
+    invoice.vat_amount = total_vat
+    invoice.total_inclusive = total_exclusive + total_vat
+    invoice.vat_rate = (total_vat / total_exclusive * Decimal("100")) if total_exclusive > 0 else Decimal("0")
+
+    db.commit()
+    return _get_sales_invoice_response(invoice.id, db, user)
 
 
 @router.delete("/invoice/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)

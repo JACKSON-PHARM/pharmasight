@@ -61,7 +61,8 @@
         this.onAddItem = options.onAddItem || null; // (item) => {} when user clicks Add in add row; parent creates doc or adds line
         this.onUpdateItem = options.onUpdateItem || null; // (rowIndex, itemData) => {} when user updates an existing line from add row
         this.onBatchSaved = options.onBatchSaved || null; // (itemId, batches) => Promise when user saves batch distribution for a committed row (e.g. supplier invoice)
-        
+        this.mergeAddRowDuplicates = options.mergeAddRowDuplicates === true; // Merge qty when same item+unit (e.g. department supply requisitions)
+
         // Internal state
         this.items = this.normalizeItems(this.itemsSource);
         this.addRowItem = null; // When useAddRow: current selection in the add row (one item or empty)
@@ -314,11 +315,25 @@
     };
 
     TransactionItemsTable.prototype.isBranchMode = function() {
-        return this.mode === 'branch_order' || this.mode === 'branch_transfer' || this.mode === 'branch_receipt';
+        return (
+            this.mode === 'branch_order' ||
+            this.mode === 'branch_transfer' ||
+            this.mode === 'branch_receipt' ||
+            this.mode === 'department_supply'
+        );
     };
 
     TransactionItemsTable.prototype.isBranchOrderMode = function() {
         return this.mode === 'branch_order';
+    };
+
+    /** Same 5-column layout as branch order (ITEM, CODE, QTY, UNIT, ACTIONS); full item search like sales. */
+    TransactionItemsTable.prototype.isDepartmentSupplyMode = function() {
+        return this.mode === 'department_supply';
+    };
+
+    TransactionItemsTable.prototype.isBranchOrderStyleMode = function() {
+        return this.isBranchOrderMode() || this.isDepartmentSupplyMode();
     };
 
     TransactionItemsTable.prototype.isBranchTransferMode = function() {
@@ -344,7 +359,7 @@
         const thStyleRight = 'padding: 0.3rem 0.4rem; text-align: right; font-weight: 600; font-size: 0.75rem;';
         const thStyleCenter = 'padding: 0.3rem 0.4rem; text-align: center; font-weight: 600; font-size: 0.75rem;';
         const headerRow = this.isBranchMode()
-            ? (this.isBranchOrderMode()
+            ? (this.isBranchOrderStyleMode()
                 ? `<tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
                     <th style="${thStyle} width: 45%; min-width: 200px;">ITEM</th>
                     <th style="${thStyle} width: 15%;">ITEM CODE</th>
@@ -462,7 +477,7 @@
         const thStyleRight = 'padding: 0.3rem 0.4rem; text-align: right; font-weight: 600; font-size: 0.75rem;';
         const thStyleCenter = 'padding: 0.3rem 0.4rem; text-align: center; font-weight: 600; font-size: 0.75rem;';
         const headerRow = this.isBranchMode()
-            ? (this.isBranchOrderMode()
+            ? (this.isBranchOrderStyleMode()
                 ? `<tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
                     <th style="${thStyle} width: 45%; min-width: 200px;">ITEM</th>
                     <th style="${thStyle} width: 15%;">ITEM CODE</th>
@@ -533,7 +548,7 @@
             const marginColor = marginNum >= 0 ? 'var(--success-color, #10b981)' : 'var(--danger-color, #ef4444)';
             const discountVal = this.roundMoney(item.discount_percent);
             const costVal = (item.unit_price != null && !isNaN(Number(item.unit_price)) ? this.roundMoney(Number(item.unit_price)) : 0).toFixed(2);
-            const branchCellsAddRow = this.isBranchOrderMode()
+            const branchCellsAddRow = this.isBranchOrderStyleMode()
                 ? `<td style="padding: 0.25rem;"><span class="item-code-display" data-row="${index}">${escapeHtml(item.item_code || item.item_sku || '')}</span></td>
                     <td style="padding: 0.25rem; text-align: center;"><span class="qty-display" data-row="${index}">${qtyVal}</span></td>
                     <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>`
@@ -541,7 +556,7 @@
                     <td style="padding: 0.25rem; text-align: center;"><span class="qty-display" data-row="${index}">${qtyVal}</span></td>
                     <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>
                     <td style="padding: 0.25rem; text-align: right;"><span class="price-display" data-row="${index}">${formatCurrency(item.unit_price != null ? Number(item.unit_price) : 0)}</span></td>`;
-            const branchCellsEditable = this.isBranchOrderMode()
+            const branchCellsEditable = this.isBranchOrderStyleMode()
                 ? `<td style="padding: 0.25rem;"><input type="text" class="form-input" value="${escapeHtml(item.item_code || item.item_sku || '')}" readonly style="width: 100%; padding: 0.5rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="item_code"></td>
                     <td style="padding: 0.25rem;"><input type="number" class="form-input input-direct qty-input" value="${qtyVal}" step="0.01" min="0.01" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="quantity" ${!this.canEdit ? 'disabled' : ''}></td>
                     <td style="padding: 0.25rem;">${item.item_id && (item.available_units && item.available_units.length) ? (() => {
@@ -672,7 +687,7 @@
             `;
         });
         const summary = this.calculateSummary();
-        const branchFooter = this.isBranchOrderMode()
+        const branchFooter = this.isBranchOrderStyleMode()
             ? `<tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;"><td colspan="4" style="padding: 0.75rem; text-align: right;">Total units:</td><td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total_units">${this.getFormatNumber()(this.items.reduce(function(s, i) { return s + (parseFloat(i.quantity) || 0); }, 0))}</td></tr>`
             : `<tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;"><td colspan="5" style="padding: 0.75rem; text-align: right;">Total:</td><td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total">${formatCurrency(summary.total)}</td></tr>`;
         tableHtml += `
@@ -1126,7 +1141,12 @@
             if (cached !== null && cached !== undefined) {
                 this.activeSearchRow = rowIndex;
                 if (cached.length === 0) {
-                    this.showSuggestions(rowIndex, [{ type: 'create', query: queryTrimmed, message: 'Create new item: "' + queryTrimmed + '"' }]);
+                    this.showSuggestions(
+                        rowIndex,
+                        this.isDepartmentSupplyMode()
+                            ? [{ type: 'hint', message: 'No items match this search.' }]
+                            : [{ type: 'create', query: queryTrimmed, message: 'Create new item: "' + queryTrimmed + '"' }]
+                    );
                 } else {
                     this.showSuggestions(rowIndex, cached.map(item => ({ type: 'item', ...item })));
                 }
@@ -1189,19 +1209,33 @@
                     if (!hasConversion) {
                         // ignore cache
                     } else {
-                    if (cached.length === 0) {
-                        applyResults([{ type: 'create', query: query, message: 'Create new item: "' + query + '"' }]);
-                    } else {
-                        applyResults(cached.map(item => ({ type: 'item', ...item })));
-                    }
-                    return;
+                        if (cached.length === 0) {
+                            applyResults(
+                                this.isDepartmentSupplyMode()
+                                    ? [{ type: 'hint', message: 'No items match this search.' }]
+                                    : [{ type: 'create', query: query, message: 'Create new item: "' + query + '"' }]
+                            );
+                        } else {
+                            applyResults(cached.map(item => ({ type: 'item', ...item })));
+                        }
+                        return;
                     }
                 }
             }
             
             const requestOptions = signal ? { signal } : {};
             const searchLimit = 50;
-            const items = await api.items.search(query, config.COMPANY_ID, searchLimit, config.BRANCH_ID || null, includePricing, this.context, requestOptions);
+            const items = await api.items.search(
+                query,
+                config.COMPANY_ID,
+                searchLimit,
+                config.BRANCH_ID || null,
+                includePricing,
+                this.context,
+                requestOptions,
+                false,
+                false
+            );
             
             if (cache && items) {
                 cache.set(query, config.COMPANY_ID, config.BRANCH_ID, searchLimit, items);
@@ -1209,17 +1243,25 @@
             
             if (searchId !== this._searchId) return;
             if (items.length === 0) {
-                applyResults([{ type: 'create', query: query, message: 'Create new item: "' + query + '"' }]);
+                applyResults(
+                    this.isDepartmentSupplyMode()
+                        ? [{ type: 'hint', message: 'No items match this search.' }]
+                        : [{ type: 'create', query: query, message: 'Create new item: "' + query + '"' }]
+                );
             } else {
                 applyResults(items.map(item => ({ type: 'item', ...item })));
             }
         } catch (error) {
             if (error.name === 'AbortError') return; // Cancelled, do nothing
             if (searchId !== this._searchId) return;
-            applyResults([
-                { type: 'error', message: error.message || 'Search failed' },
-                { type: 'create', query: query, message: 'Create new item: "' + query + '"' }
-            ]);
+            if (this.isDepartmentSupplyMode()) {
+                applyResults([{ type: 'error', message: error.message || 'Search failed' }]);
+            } else {
+                applyResults([
+                    { type: 'error', message: error.message || 'Search failed' },
+                    { type: 'create', query: query, message: 'Create new item: "' + query + '"' }
+                ]);
+            }
         }
     };
     
@@ -1310,6 +1352,12 @@
                         <i class="fas fa-exclamation-triangle"></i> ${suggestion.message}
                     </div>
                 `;
+            } else if (suggestion.type === 'hint') {
+                html += `
+                    <div style="padding: 0.75rem 1rem; color: var(--text-secondary, #666); font-size: 0.85rem;">
+                        ${escapeHtml(suggestion.message || '')}
+                    </div>
+                `;
             } else if (suggestion.type === 'create') {
                 html += `
                     <div class="suggestion-item suggestion-create" 
@@ -1351,8 +1399,8 @@
                 const effectiveSalePrice = (this.mode === 'sale' || this.mode === 'quotation') && (!salePrice || salePrice === 0) && purchasePrice > 0
                     ? Math.round(purchasePrice * (1 + DEFAULT_MARGIN_PERCENT / 100) * 100) / 100
                     : salePrice;
-                // Unit for the line: retail for sale/quotation (from search), else base
-                const lineUnit = (this.mode === 'sale' || this.mode === 'quotation') ? retailUnit : baseUnit;
+                // Unit for the line: retail for sale/quotation/department supply (from search), else base
+                const lineUnit = (this.mode === 'sale' || this.mode === 'quotation' || this.mode === 'department_supply') ? retailUnit : baseUnit;
                 // Determine which price to show based on mode (quotation uses selling price like sale)
                 const displayPrice = (this.mode === 'sale' || this.mode === 'quotation') ? effectiveSalePrice : purchasePrice;
                 const priceLabel = (this.mode === 'sale' || this.mode === 'quotation') ? 'Price' : 'Cost';
@@ -1456,6 +1504,55 @@
                             </div>
                         </div>
                     `;
+                } else if (this.isDepartmentSupplyMode()) {
+                    const stockNum = typeof stock === 'number' ? stock : parseFloat(stock);
+                    const stockZeroOrUnknown = !isFinite(stockNum) || stockNum <= 0;
+                    const obBtn = stockZeroOrUnknown
+                        ? `<button type="button" class="btn btn-outline btn-sm dept-sup-orderbook-btn" style="margin-top:0.35rem; white-space:nowrap;"
+                            data-item-id="${escapeHtml(String(suggestion.id || ''))}"
+                            data-item-name="${escapeHtml(sugName)}"
+                            data-unit-name="${escapeHtml(lineUnit)}">
+                            <i class="fas fa-clipboard-list"></i> Add to order book
+                        </button>`
+                        : '';
+                    html += `
+                        <div class="suggestion-item suggestion-item-option" 
+                             data-item-id="${suggestion.id}"
+                             data-item-name="${escapeHtml(sugName)}"
+                             data-item-sku="${escapeHtml(sugSku)}"
+                             data-item-code="${escapeHtml(sugCode)}"
+                             data-unit-name="${escapeHtml(lineUnit)}"
+                             data-retail-unit="${escapeHtml(retailUnit)}"
+                             data-wholesale-unit="${escapeHtml(suggestion.wholesale_unit || baseUnit || '')}"
+                             data-supplier-unit="${escapeHtml(suggestion.supplier_unit || '')}"
+                             data-pack-size="${escapeHtml(String(suggestion.pack_size != null ? suggestion.pack_size : ''))}"
+                             data-wups="${escapeHtml(String(suggestion.wholesale_units_per_supplier != null ? suggestion.wholesale_units_per_supplier : ''))}"
+                             data-base-unit="${escapeHtml(baseUnit)}"
+                             data-sale-price="${salePrice}"
+                             data-purchase-price="${purchasePrice}"
+                             data-vat-rate="${vatRate}"
+                             data-stock="${stock}"
+                             data-stock-display="${stockDisplayStr || ''}"
+                             style="padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color, #dee2e6); cursor: pointer; min-height: 2.75rem;"
+                             onmouseover="this.style.background='#f8f9fa'" 
+                             onmouseout="this.style.background='white'">
+                            <div style="display: grid; grid-template-columns: 1fr auto; column-gap: 0.75rem; align-items: start;">
+                                <div>
+                                    <div style="font-weight: 600; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                        ${escapeHtml(sugName)}
+                                    </div>
+                                    <div style="font-size: 0.7rem; color: var(--text-secondary, #666); margin-top: 0.1rem;">
+                                        ${escapeHtml(sugCode || sugSku || '')}
+                                    </div>
+                                </div>
+                                <div style="text-align: right; min-width: 5rem;">
+                                    <div style="font-size: 0.65rem; color: var(--text-secondary, #666); margin-bottom: 0.1rem;">Pharmacy stock</div>
+                                    ${stockDisplay}
+                                    ${obBtn}
+                                </div>
+                            </div>
+                        </div>
+                    `;
                 } else {
                     // Standard display for other contexts
                     let additionalInfo = '';
@@ -1539,6 +1636,18 @@
         // Attach click handlers
         dropdown.querySelectorAll('.suggestion-item').forEach(item => {
             item.addEventListener('click', (e) => {
+                if (e.target.closest('.dept-sup-orderbook-btn')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const btn = e.target.closest('.dept-sup-orderbook-btn');
+                    const itemId = btn && btn.dataset ? btn.dataset.itemId : '';
+                    const itemName = btn && btn.dataset ? btn.dataset.itemName : '';
+                    const unitName = (btn && btn.dataset && btn.dataset.unitName) || 'unit';
+                    if (itemId && typeof window.addItemToOrderBookFromTransaction === 'function') {
+                        window.addItemToOrderBookFromTransaction(itemId, itemName, unitName, 'Clinic department supply (triage request)');
+                    }
+                    return;
+                }
                 if (item.dataset.action === 'create') {
                     this.handleCreateItem(item.dataset.query, rowIndex);
                 } else {
@@ -1554,8 +1663,8 @@
     TransactionItemsTable.prototype.handleSelectItem = function(suggestionEl, rowIndex) {
         const selectedItemId = suggestionEl.dataset.itemId;
         const isAddRow = rowIndex === 'add';
-        // Prevent duplicate item in same document
-        if (this.mode === 'sale' || this.mode === 'quotation' || isAddRow) {
+        // Prevent duplicate item in same document (add-row: allow re-pick when parent merges qty by item+unit)
+        if ((this.mode === 'sale' || this.mode === 'quotation' || isAddRow) && !(isAddRow && this.mergeAddRowDuplicates)) {
             for (let i = 0; i < this.items.length; i++) {
                 if (this.items[i].item_id === selectedItemId) {
                     this.closeSuggestions();
@@ -1627,7 +1736,9 @@
             const salesTypeEl = typeof document !== 'undefined' ? document.getElementById('salesTypeSelect') : null;
             const salesType = (salesTypeEl && salesTypeEl.value) ? salesTypeEl.value : 'RETAIL';
             let desiredUnit;
-            if (this.mode === 'purchase') {
+            if (this.isDepartmentSupplyMode()) {
+                desiredUnit = (item.base_unit || item.retail_unit || item.wholesale_unit || 'piece').toString().trim() || 'piece';
+            } else if (this.mode === 'purchase') {
                 desiredUnit = item.wholesale_unit || item.retail_unit || 'piece';
             } else {
                 desiredUnit = item.retail_unit || item.wholesale_unit || 'piece';
@@ -1645,7 +1756,16 @@
 
             // For purchase flows (purchase orders, supplier invoices), treat purchase_price from search as per BASE unit
             // and default the displayed unit_price to cost per SELECTED unit (e.g. packet).
-            if (this.mode === 'purchase') {
+            if (this.isDepartmentSupplyMode()) {
+                const mult = parseFloat(item.unit_multiplier) || 1;
+                item.unit_price = 0;
+                item.total = 0;
+                item._basis_unit_name = item.unit_name;
+                item._basis_unit_multiplier = mult;
+                item._basis_unit_price = 0;
+                item._basis_unit_cost = null;
+                delete item._price_is_per_retail;
+            } else if (this.mode === 'purchase') {
                 const mult = parseFloat(item.unit_multiplier) || 1;
                 const baseCost = item.purchase_price != null && !isNaN(Number(item.purchase_price))
                     ? Number(item.purchase_price)
@@ -1850,6 +1970,10 @@
      * Handle create item
      */
     TransactionItemsTable.prototype.handleCreateItem = function(query, rowIndex) {
+        if (this.isDepartmentSupplyMode()) {
+            this.closeSuggestions();
+            return;
+        }
         if (this.onItemCreate) {
             this.onItemCreate(query, rowIndex, (newItem) => {
                 // Item was created, select it
@@ -2365,7 +2489,7 @@
             return;
         }
         const existingIds = this.items.filter(i => i.item_id).map(i => i.item_id);
-        if (existingIds.indexOf(data.item_id) !== -1) {
+        if (!this.mergeAddRowDuplicates && existingIds.indexOf(data.item_id) !== -1) {
             if (typeof showToast === 'function') showToast('Item already in this document. Remove the existing line or choose a different item.', 'warning');
             return;
         }
@@ -2550,7 +2674,7 @@
                 <i class="fas fa-external-link-alt" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
                 <span>View full item details</span>
             </div>
-            ${(this.mode === 'sale' || this.mode === 'quotation') ? `
+            ${(this.mode === 'sale' || this.mode === 'quotation' || this.mode === 'department_supply') ? `
             <div class="suggestion-item selected-item-action" data-action="add-to-order-book" data-row="${rowIndex}" data-item-id="${item.item_id}" data-item-name="${escapeHtml(item.item_name || '')}" data-unit-name="${escapeHtml(item.unit_name || '')}" style="padding: 0.5rem 0.75rem; cursor: pointer; display: flex; align-items: center;" onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='white'">
                 <i class="fas fa-clipboard-list" style="color: var(--primary-color, #007bff); margin-right: 0.5rem;"></i>
                 <span>Add to Order Book</span>
@@ -2650,7 +2774,11 @@
                     const itemName = el.dataset.itemName || '';
                     const unitName = el.dataset.unitName || 'unit';
                     if (typeof window.addItemToOrderBookFromTransaction === 'function') {
-                        window.addItemToOrderBookFromTransaction(itemId, itemName, unitName);
+                        const note =
+                            this.mode === 'department_supply'
+                                ? 'Clinic department supply (triage request)'
+                                : undefined;
+                        window.addItemToOrderBookFromTransaction(itemId, itemName, unitName, note);
                     }
                 }
             });

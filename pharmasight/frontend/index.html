@@ -6,6 +6,19 @@
     <title>PharmaSight - Pharmacy Management System</title>
     <link rel="stylesheet" href="css/style.css?v=4">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* Shared with clinic.js renderClinicPageSpinner — neutral page-load ring (no caption). */
+        @keyframes ps-page-spin { to { transform: rotate(360deg); } }
+        .ps-page-load-ring {
+            display: inline-block;
+            width: 2.25rem;
+            height: 2.25rem;
+            border: 0.28rem solid #e5e7eb;
+            border-top-color: var(--primary-color, #0d6efd);
+            border-radius: 50%;
+            animation: ps-page-spin 0.7s linear infinite;
+        }
+    </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -203,8 +216,8 @@
             <!-- Page Content (position: relative so overlay positions correctly) -->
             <div class="page-content" id="pageContent" style="position: relative;">
                 <!-- Page load overlay: shown during navigation until target page is ready (smooth transitions) -->
-                <div id="pageLoadOverlay" class="page-load-overlay" style="display: none; position: absolute; inset: 0; background: rgba(255,255,255,0.7); align-items: center; justify-content: center; z-index: 10; pointer-events: none;">
-                    <div style="text-align: center;"><p style="margin-top: 0.5rem; font-size: 0.875rem;">Loading...</p></div>
+                <div id="pageLoadOverlay" class="page-load-overlay" style="display: none; position: absolute; inset: 0; background: rgba(255,255,255,0.82); align-items: center; justify-content: center; z-index: 10; pointer-events: auto;">
+                    <div class="ps-page-load-ring" role="status" aria-live="polite" aria-label="Loading"></div>
                 </div>
                 <!-- Loading indicator -->
                 <div id="appLoading" style="padding: 2rem; text-align: center; display: block;">
@@ -452,7 +465,7 @@
         });
     </script>
     <script src="js/config.js?v=9"></script>
-    <script src="js/api.js?v=16"></script>
+    <script src="js/api.js?v=22"></script>
     <!-- Global Supabase Client (must load before auth modules) -->
     <script src="js/services/supabase_client.js?v=1"></script>
     <!-- Legacy auth (backward compatibility) -->
@@ -462,6 +475,7 @@
     <script src="js/services/branch_context.js?v=1"></script>
     <script src="js/services/app_state.js?v=4"></script>
     <script src="js/services/optimistic_locking.js?v=1"></script>
+    <script src="js/services/workstation_ux.js?v=1"></script>
     <script src="js/utils.js?v=8"></script>
     <!-- QZ Tray for thermal ESC/POS printing (optional; thermal prints fall back to browser if not loaded) -->
     <script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2/qz-tray.js"></script>
@@ -479,11 +493,11 @@
     <script src="js/utils/permissions.js?v=1"></script>
     <script src="js/services/subscription_ui.js?v=3"></script>
     <!-- Module switcher + dynamic sidebar (UI-only visibility) -->
-    <script src="js/services/module_ui.js?v=5"></script>
+    <script src="js/services/module_ui.js?v=8"></script>
     <!-- Stock Take (before app.js so loadStockTake exists when router runs) -->
     <script src="js/pages/stock_take.js?v=11"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
-    <script src="js/app.js?v=22"></script>
+    <script src="js/app.js?v=33"></script>
     <script src="js/pages/login.js?v=3"></script>
     <script src="js/pages/password_reset.js?v=3"></script>
     <script src="js/pages/tenant_invite_setup.js?v=1"></script>
@@ -501,19 +515,19 @@
     <script src="js/pages/landing.js?v=1"></script>
     <script src="js/pages/dashboard.js?v=8"></script>
     <script src="js/pages/items.js?v=7"></script>
-    <script src="js/pages/sales.js?v=7"></script>
+    <script src="js/pages/sales.js?v=9"></script>
     <script src="js/utils/searchCache.js"></script>
-    <script src="js/components/TransactionItemsTable.js?v=1"></script>
+    <script src="js/components/TransactionItemsTable.js?v=3"></script>
     <script src="js/components/global_item_search.js"></script>
     <script src="js/components/batch-distribution.js"></script>
     <script src="js/pages/purchases.js?v=24"></script>
     <script src="js/pages/expenses.js?v=1"></script>
     <script src="js/pages/cashbook.js?v=1"></script>
-    <script src="js/pages/clinic.js?v=2"></script>
-    <script src="js/pages/inventory.js?v=9"></script>
+    <script src="js/pages/clinic.js?v=21"></script>
+    <script src="js/pages/inventory.js?v=10"></script>
     <script src="js/pages/reports.js?v=1"></script>
     <script src="js/pages/settings_etims.js?v=3"></script>
-    <script src="js/pages/settings.js?v=9"></script>
+    <script src="js/pages/settings.js?v=14"></script>
     <script src="js/pages/platform_admin_companies.js?v=1"></script>
     <script src="js/pages/platform_admin_company.js?v=1"></script>
     <script src="js/pages/change_password.js?v=1"></script>

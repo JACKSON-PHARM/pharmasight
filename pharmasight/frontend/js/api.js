@@ -535,12 +535,14 @@ const API = {
             list: (q) => api.get('/api/clinic/patients', q ? { q } : {}),
             get: (id) => api.get(`/api/clinic/patients/${id}`),
             create: (data) => api.post('/api/clinic/patients', data),
+            update: (id, data) => api.patch(`/api/clinic/patients/${id}`, data),
         },
         encounters: {
             list: (status) => api.get('/api/clinic/encounters', status ? { status } : {}),
             get: (id) => api.get(`/api/clinic/encounters/${id}`),
             create: (data) => api.post('/api/clinic/encounters', data),
             patchStatus: (id, status) => api.patch(`/api/clinic/encounters/${id}/status`, { status }),
+            executeService: (encounterId, data) => api.post(`/api/clinic/encounters/${encounterId}/services/execute`, data),
             triage: {
                 get: (encounterId) => api.get(`/api/clinic/encounters/${encounterId}/triage`),
                 upsert: (encounterId, data) => api.put(`/api/clinic/encounters/${encounterId}/triage`, data),
@@ -554,15 +556,41 @@ const API = {
                 create: (encounterId, data) => api.post(`/api/clinic/encounters/${encounterId}/orders`, data),
             },
         },
+        services: {
+            list: (params) => api.get('/api/clinic/services', params || {}),
+            create: (data) => api.post('/api/clinic/services', data),
+            update: (id, data) => api.put(`/api/clinic/services/${id}`, data),
+            remove: (id) => api.delete(`/api/clinic/services/${id}`),
+        },
+        departmentStores: {
+            list: (params) => api.get('/api/clinic/department-stores', params || {}),
+            create: (data) => api.post('/api/clinic/department-stores', data),
+            seedDefaults: (branchId) =>
+                api.post('/api/clinic/department-stores/seed-defaults', { branch_id: branchId }),
+            issue: (storeId, data) => api.post(`/api/clinic/department-stores/${storeId}/issue`, data),
+            reconcile: (storeId, data) => api.post(`/api/clinic/department-stores/${storeId}/reconcile`, data),
+            returnToPharmacy: (storeId, data) => api.post(`/api/clinic/department-stores/${storeId}/return`, data),
+        },
     },
 
     // Items
     items: {
-        search: (q, companyId, limit = 10, branchId = null, includePricing = false, context = null, requestOptions = {}, fast = false) => {
+        search: (
+            q,
+            companyId,
+            limit = 10,
+            branchId = null,
+            includePricing = false,
+            context = null,
+            requestOptions = {},
+            fast = false,
+            inStockOnly = false,
+        ) => {
             const params = { q, company_id: companyId, limit, include_pricing: includePricing };
             if (branchId) params.branch_id = branchId;
             if (context) params.context = context;
             if (fast) params.fast = true;
+            if (inStockOnly) params.in_stock_only = true;
             return api.get(`${CONFIG.API_ENDPOINTS.items}/search`, params, requestOptions);
         },
         stockBatch: (itemIds, branchId, companyId, requestOptions = {}) => {
@@ -724,6 +752,40 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/receipts/pending?receiving_branch_id=${receivingBranchId}`),
         getReceipt: (receiptId) => api.get(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/receipts/${receiptId}`),
         receiveReceipt: (receiptId) => api.post(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/receipts/${receiptId}/receive`),
+    },
+
+    /** Same-branch department mini-store supply (order → pharmacy transfer → department receipt). */
+    departmentSupply: {
+        createOrder: (data) => api.post('/api/department-supply/orders', data),
+        listOrders: (params) => {
+            const q = new URLSearchParams();
+            q.set('branch_id', params.branch_id);
+            if (params.department_store_id) q.set('department_store_id', params.department_store_id);
+            if (params.status) q.set('status', params.status);
+            return api.get(`/api/department-supply/orders?${q.toString()}`);
+        },
+        getOrder: (orderId) => api.get(`/api/department-supply/orders/${orderId}`),
+        submitOrder: (orderId) => api.post(`/api/department-supply/orders/${orderId}/submit`),
+        createTransferFromOrder: (orderId) =>
+            api.post('/api/department-supply/transfers/from-order', { department_supply_order_id: orderId }),
+        listTransfers: (params) => {
+            const q = new URLSearchParams();
+            q.set('branch_id', params.branch_id);
+            if (params.department_store_id) q.set('department_store_id', params.department_store_id);
+            if (params.status) q.set('status', params.status);
+            return api.get(`/api/department-supply/transfers?${q.toString()}`);
+        },
+        getTransfer: (transferId) => api.get(`/api/department-supply/transfers/${transferId}`),
+        completeTransfer: (transferId) => api.post(`/api/department-supply/transfers/${transferId}/complete`),
+        listReceipts: (params) => {
+            const q = new URLSearchParams();
+            q.set('branch_id', params.branch_id);
+            if (params.department_store_id) q.set('department_store_id', params.department_store_id);
+            if (params.status) q.set('status', params.status);
+            return api.get(`/api/department-supply/receipts?${q.toString()}`);
+        },
+        getReceipt: (receiptId) => api.get(`/api/department-supply/receipts/${receiptId}`),
+        receiveReceipt: (receiptId) => api.post(`/api/department-supply/receipts/${receiptId}/receive`),
     },
 
     // Sales

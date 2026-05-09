@@ -69,7 +69,7 @@ async function loadInventory(optionalSubPage) {
         }
         
         // Respect URL subpage so Current Stock (and others) persist and aren't overwritten by hashchange
-        const validSubPages = ['items', 'batch', 'expiry', 'movement', 'stock', 'manual-adjustments', 'branch-orders', 'branch-transfers', 'branch-receipts'];
+        const validSubPages = ['items', 'batch', 'expiry', 'movement', 'stock', 'manual-adjustments', 'branch-orders', 'branch-transfers', 'branch-receipts', 'department-transfers'];
         if (optionalSubPage && validSubPages.includes(optionalSubPage)) {
             currentInventorySubPage = optionalSubPage;
         } else {
@@ -145,6 +145,8 @@ function renderSubPageContent() {
                 return renderBranchTransfersSubPage();
             case 'branch-receipts':
                 return renderBranchReceiptsSubPage();
+            case 'department-transfers':
+                return renderDepartmentTransfersSubPage();
             default:
                 return '<p>Sub-page not found</p>';
         }
@@ -257,6 +259,9 @@ async function loadSubPageData() {
                 if (branchReceiptsView === 'view' && branchReceiptViewId) await loadBranchReceiptViewPage(branchReceiptViewId);
                 else await loadBranchReceiptsData();
                 break;
+            case 'department-transfers':
+                await loadDepartmentTransfersData();
+                break;
             case 'expiry':
                 await loadExpiryReportData();
                 break;
@@ -280,6 +285,134 @@ async function loadSubPageData() {
         }
     }
 }
+
+// ============================================
+// DEPARTMENT SUPPLY (same-branch pharmacy ↔ mini-stores)
+// ============================================
+function renderDepartmentTransfersSubPage() {
+    return `
+        <div>
+            <h2 style="margin-top:0;"><i class="fas fa-hospital"></i> Department transfers</h2>
+            <p style="color:var(--text-secondary); max-width:52rem;">
+                Departments submit <strong>orders</strong> from Clinic workstations. Pharmacy creates a <strong>draft transfer</strong>
+                from an order, completes it (FEFO deduct from pharmacy stock), then the department confirms <strong>receipt</strong>
+                into its mini-store — no re-keying of lines.
+            </p>
+            <div id="departmentTransfersWorkbench"><div class="spinner"></div></div>
+        </div>
+    `;
+}
+
+async function loadDepartmentTransfersData() {
+    const mount = document.getElementById('departmentTransfersWorkbench');
+    if (!mount) return;
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
+        mount.innerHTML = '<div class="alert alert-warning">Select a branch first.</div>';
+        return;
+    }
+    if (!API.departmentSupply) {
+        mount.innerHTML = '<div class="alert alert-danger">Department supply API not loaded. Refresh the app.</div>';
+        return;
+    }
+    mount.innerHTML = '<div class="spinner"></div>';
+    try {
+        const [openOrders, draftTransfers] = await Promise.all([
+            API.departmentSupply.listOrders({ branch_id: branchId, status: 'OPEN' }),
+            API.departmentSupply.listTransfers({ branch_id: branchId, status: 'DRAFT' }),
+        ]);
+        const orders = Array.isArray(openOrders) ? openOrders : [];
+        const transfers = Array.isArray(draftTransfers) ? draftTransfers : [];
+
+        const orderRows = orders.length
+            ? orders
+                  .map(function (o) {
+                      const dept = o.department_store_name || o.department_store_code || '—';
+                      const on = o.order_number || String(o.id).slice(0, 8);
+                      return `<tr>
+                        <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${escapeHtml(on)}</td>
+                        <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${escapeHtml(dept)}</td>
+                        <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${escapeHtml(o.status)}</td>
+                        <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">
+                          <button type="button" class="btn btn-sm btn-primary" data-ds-from-order="${escapeHtml(String(o.id))}">Create transfer</button>
+                        </td>
+                      </tr>`;
+                  })
+                  .join('')
+            : '<tr><td colspan="4" style="padding:0.75rem; color:var(--text-secondary);">No open department orders.</td></tr>';
+
+        const transferRows = transfers.length
+            ? transfers
+                  .map(function (t) {
+                      const tn = t.transfer_number || 'Draft';
+                      const dept = t.department_store_name || '—';
+                      return `<tr>
+                        <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${escapeHtml(tn)}</td>
+                        <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${escapeHtml(dept)}</td>
+                        <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">${escapeHtml(String((t.lines || []).length))} lines</td>
+                        <td style="padding:0.5rem; border-bottom:1px solid var(--border-color);">
+                          <button type="button" class="btn btn-sm btn-outline" data-ds-complete-transfer="${escapeHtml(String(t.id))}">Complete (issue stock)</button>
+                        </td>
+                      </tr>`;
+                  })
+                  .join('')
+            : '<tr><td colspan="4" style="padding:0.75rem; color:var(--text-secondary);">No draft transfers.</td></tr>';
+
+        mount.innerHTML = `
+            <div class="card" style="padding:1rem; margin-bottom:1rem;">
+              <h3 style="margin-top:0;">1 · Pending department orders</h3>
+              <table style="width:100%; border-collapse:collapse;">
+                <thead><tr><th style="text-align:left; padding:0.5rem;">Order</th><th style="text-align:left; padding:0.5rem;">Department</th><th style="text-align:left; padding:0.5rem;">Status</th><th></th></tr></thead>
+                <tbody>${orderRows}</tbody>
+              </table>
+            </div>
+            <div class="card" style="padding:1rem;">
+              <h3 style="margin-top:0;">2 · Draft transfers (pharmacy)</h3>
+              <p style="color:var(--text-secondary); font-size:0.9rem;">Completing a transfer runs FEFO from pharmacy stock and creates a pending receipt for the department.</p>
+              <table style="width:100%; border-collapse:collapse;">
+                <thead><tr><th style="text-align:left; padding:0.5rem;">Transfer</th><th style="text-align:left; padding:0.5rem;">Department</th><th style="text-align:left; padding:0.5rem;">Lines</th><th></th></tr></thead>
+                <tbody>${transferRows}</tbody>
+              </table>
+            </div>
+        `;
+
+        mount.onclick = async function (ev) {
+            const fromBtn = ev.target && ev.target.closest && ev.target.closest('[data-ds-from-order]');
+            const compBtn = ev.target && ev.target.closest && ev.target.closest('[data-ds-complete-transfer]');
+            if (fromBtn) {
+                const id = fromBtn.getAttribute('data-ds-from-order');
+                if (!id || !confirm('Create draft transfer from this order?')) return;
+                try {
+                    await API.departmentSupply.createTransferFromOrder(id);
+                    if (typeof window.showToast === 'function') window.showToast('Draft transfer created', 'success');
+                    await loadDepartmentTransfersData();
+                } catch (e) {
+                    if (typeof window.showToast === 'function') window.showToast(e.message || 'Failed', 'error');
+                }
+                return;
+            }
+            if (compBtn) {
+                const id = compBtn.getAttribute('data-ds-complete-transfer');
+                if (!id || !confirm('Complete transfer? Pharmacy stock will be deducted (FEFO).')) return;
+                try {
+                    await API.departmentSupply.completeTransfer(id);
+                    if (typeof window.showToast === 'function') window.showToast('Transfer completed — department can confirm receipt', 'success');
+                    await loadDepartmentTransfersData();
+                } catch (e) {
+                    if (typeof window.showToast === 'function') window.showToast(e.message || 'Failed', 'error');
+                }
+            }
+        };
+    } catch (err) {
+        console.error(err);
+        mount.innerHTML =
+            '<div class="alert alert-danger">' +
+            (err && err.message ? escapeHtml(err.message) : 'Failed to load department transfers') +
+            '</div>';
+    }
+}
+
+window.refreshDepartmentTransfersWorkbench = loadDepartmentTransfersData;
 
 // ============================================
 // BRANCH INVENTORY (Orders, Transfers, Receipts)

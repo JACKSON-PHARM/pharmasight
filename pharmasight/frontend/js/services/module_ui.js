@@ -78,8 +78,9 @@
             {
                 section: 'OPD',
                 items: [
-                    { page: 'patients', label: 'Patients', icon: 'fa-user-injured', hasSub: false },
-                    { page: 'encounters', label: 'Queue', icon: 'fa-stream', hasSub: false },
+                    { page: 'patients', label: 'Register', icon: 'fa-address-book', hasSub: false },
+                    { page: 'triage', label: 'Triage', icon: 'fa-notes-medical', hasSub: true },
+                    { page: 'consultation', label: 'Consultation', icon: 'fa-stethoscope', hasSub: false },
                 ],
             },
         ],
@@ -120,6 +121,67 @@
     let _modules = [];
     let _selected = null;
     let _initialized = false;
+    /** Extra clinic main-nav rows (department mini-stores), populated from API. */
+    let _clinicDeptNavRows = [];
+
+    function buildDeptStoreSubNavItems(storeId) {
+        const sid = String(storeId || '');
+        return [
+            { page: 'deptstore', subPage: `${sid}-attend-patient`, label: 'Attend Patient', icon: 'fa-user-nurse' },
+            { page: 'deptstore', subPage: `${sid}-raise-order`, label: 'Raise Order', icon: 'fa-file-medical' },
+            { page: 'deptstore', subPage: `${sid}-transfer`, label: 'Transfer', icon: 'fa-random' },
+            { page: 'deptstore', subPage: `${sid}-manage-assets`, label: 'Manage Assets', icon: 'fa-box-open' },
+        ];
+    }
+
+    /**
+     * Load active department mini-stores for the current branch and register sub-nav + sidebar rows.
+     * Skips the TRIAGE store row — classic **Triage** nav remains the full vitals workflow for that desk.
+     */
+    async function refreshClinicDepartmentStoresNav() {
+        _clinicDeptNavRows = [];
+        try {
+            if (window.subNavItems && typeof window.subNavItems === 'object') {
+                Object.keys(window.subNavItems).forEach((k) => {
+                    if (k.indexOf('deptnav-') === 0) delete window.subNavItems[k];
+                });
+            }
+        } catch (_) {}
+        if (normalizeModuleName(_selected) !== 'clinic') return;
+
+        const bid = typeof CONFIG !== 'undefined' && CONFIG && CONFIG.BRANCH_ID ? CONFIG.BRANCH_ID : null;
+        if (!bid || !window.API || !API.clinic || typeof API.clinic.departmentStores.list !== 'function') {
+            return;
+        }
+        try {
+            window.__clinicDeptNavMeta = {};
+            const list = (await API.clinic.departmentStores.list({ branch_id: bid, include_inactive: false })) || [];
+            const filtered = list.filter((s) => {
+                if (!s || !s.id) return false;
+                if (s.is_active === false) return false;
+                const c = String(s.code || '').trim().toUpperCase();
+                return c !== 'TRIAGE';
+            });
+            filtered.forEach((s) => {
+                const id = String(s.id);
+                window.__clinicDeptNavMeta[id] = {
+                    name: s.name || s.code || 'Department',
+                    code: s.code || '',
+                };
+                const key = 'deptnav-' + id;
+                if (!window.subNavItems) window.subNavItems = {};
+                window.subNavItems[key] = buildDeptStoreSubNavItems(id);
+                _clinicDeptNavRows.push({
+                    page: key,
+                    label: s.name || s.code || 'Department',
+                    icon: 'fa-warehouse',
+                    hasSub: true,
+                });
+            });
+        } catch (e) {
+            console.warn('[ModuleUI] Could not load department mini-stores for sidebar', e && e.message);
+        }
+    }
     /** Company-level enabled module names (from GET /api/company/modules). */
     let _enabledModules = new Set(['pharmacy']);
     let _companyModulesLoaded = false;
@@ -191,6 +253,12 @@
                 out.push({ kind: 'item', page: 'platform-admin-companies', label: 'Companies', icon: 'fa-building', hasSub: false });
             }
         } catch (_) {}
+        if (m === 'clinic' && _clinicDeptNavRows.length > 0) {
+            out.push({ kind: 'section', label: 'Departments' });
+            _clinicDeptNavRows.forEach((r) => {
+                if (r && r.page) out.push({ kind: 'item', ...r });
+            });
+        }
         return out;
     }
 
@@ -212,6 +280,8 @@
             'setup',
         ];
         if (authPages.includes(base)) return base;
+        const deptNavMatch = /^deptstore-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i.exec(base);
+        if (deptNavMatch) return 'deptnav-' + deptNavMatch[1];
         if (base === 'sales-history') return 'sales';
         if (base === 'cashbook') return 'reports';
         if (base === 'expenses-categories' || base === 'expenses-reports') return 'expenses';
@@ -259,7 +329,9 @@
             return false;
         }
         if (m === 'clinic') {
-            if (base === 'patients' || base === 'encounters' || base === 'triage' || base === 'consultation') return true;
+            if (base === 'patients' || base === 'encounters' || base === 'triage' || base === 'consultation' || base === 'register-new') return true;
+            if (base.startsWith('deptstore-')) return true;
+            if (base.startsWith('triage-')) return true;
             if (base.startsWith('settings')) return true;
             if (base.startsWith('reports')) return true;
             if (base.startsWith('expenses')) return true;
@@ -407,7 +479,7 @@
         }
     }
 
-    function setSelectedModule(moduleName, opts = {}) {
+    async function setSelectedModule(moduleName, opts = {}) {
         const m = normalizeModuleName(moduleName);
         if (!m) return;
         if (_modules && _modules.length > 0 && !_modules.includes(m)) return;
@@ -415,7 +487,8 @@
         _selected = m;
         safeWriteSelectedModule(m);
         renderModuleSwitcher();
-        renderSidebar(m);
+        await refreshClinicDepartmentStoresNav();
+        renderSidebar(_selected);
 
         if (opts.navigate === true) {
             enforceCurrentRouteAllowed({ fromSwitcher: Boolean(opts.fromSwitcher) });
@@ -501,6 +574,7 @@
         safeWriteSelectedModule(_selected);
 
         renderModuleSwitcher();
+        await refreshClinicDepartmentStoresNav();
         renderSidebar(_selected);
 
         return { modules: _modules, selected: _selected };
@@ -538,6 +612,10 @@
 
     window.loadModuleComingSoon = loadModuleComingSoon;
 
+    function rerenderAppSidebar() {
+        renderSidebar(_selected);
+    }
+
     window.ModuleUI = {
         loadCompanyModules,
         enabledModules: new Set(_enabledModules),
@@ -545,6 +623,8 @@
         getModules: () => _modules.slice(),
         getSelectedModule: () => _selected,
         setSelectedModule,
+        refreshClinicDepartmentStoresNav,
+        rerenderAppSidebar,
         getRedirectIfOutsideModule,
         defaultPageForModule,
         _bindComingSoonToast: bindComingSoonToast,

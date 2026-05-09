@@ -2,7 +2,7 @@
 
 console.log('[SETTINGS.JS] Script loading...');
 
-let currentSettingsSubPage = 'company'; // 'company', 'branches', 'users', 'transaction', 'print', 'documentBranding' (or 'general' via URL for API/IDs)
+let currentSettingsSubPage = 'company'; // 'company', 'branches', 'users', 'department-stores', …
 
 // Initialize settings page
 async function loadSettings(subPage = null) {
@@ -55,10 +55,17 @@ async function loadSettingsSubPage(subPage) {
             console.log('[SETTINGS] Case: branches');
             await renderBranchesPage();
             break;
+        case 'department-stores':
+            await renderDepartmentStoresSettingsPage();
+            break;
         case 'users':
             console.log('[SETTINGS] Case: users - calling renderUsersPage()');
             await renderUsersPage();
             console.log('[SETTINGS] renderUsersPage() completed');
+            break;
+        case 'catalogs-services':
+            console.log('[SETTINGS] Case: catalogs-services');
+            await renderServicesCatalogSettingsPage();
             break;
         case 'transaction':
             console.log('[SETTINGS] Case: transaction');
@@ -502,6 +509,9 @@ async function renderBranchesPage() {
                                             <button class="btn btn-outline btn-sm" data-branch-name="${escapeHtml(branch.name || '')}" onclick="openBranchInventorySettings('${branch.id}', this.getAttribute('data-branch-name'))" title="Branch inventory: allow cost adjustment, manual transfers &amp; receipts">
                                                 <i class="fas fa-truck-loading"></i> Inventory
                                             </button>
+                                            <button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation(); try{ window.location.hash = '#settings-department-stores?branch=' + encodeURIComponent('${branch.id}'); }catch(_){ } if(window.loadPage) window.loadPage('settings-department-stores');" title="Department mini-stores (triage, lab, wards…) for this branch">
+                                                <i class="fas fa-warehouse"></i> Dept stores
+                                            </button>
                                             ${branch.id !== CONFIG.BRANCH_ID ? `
                                                 <button class="btn btn-outline btn-sm" onclick="setCurrentBranch('${branch.id}')" title="Set as Current">
                                                     <i class="fas fa-check"></i>
@@ -517,6 +527,262 @@ async function renderBranchesPage() {
             </div>
         </div>
     `;
+}
+
+/** Query string on hash, e.g. #settings-department-stores?branch=uuid */
+function settingsHashQueryParam(name) {
+    const h = (window.location.hash || '').replace(/^#/, '');
+    const q = h.split('?')[1];
+    if (!q) return null;
+    try {
+        return new URLSearchParams(q).get(name);
+    } catch (_) {
+        return null;
+    }
+}
+
+async function renderDepartmentStoresSettingsPage() {
+    const page = document.getElementById('settings');
+    if (!page) return;
+    if (!CONFIG.COMPANY_ID) {
+        page.innerHTML =
+            '<div class="card"><div class="card-body"><p class="text-danger">Company context is required.</p></div></div>';
+        return;
+    }
+    const branchFromUrl = (settingsHashQueryParam('branch') || '').trim();
+    if (!branchFromUrl) {
+        page.innerHTML = `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-warehouse"></i> Department mini-stores</h3>
+            </div>
+            <div class="card-body">
+                <p class="text-secondary" style="margin-top:0;">Mini-stores are managed per branch.</p>
+                <p>Open <strong>Settings → Branches</strong> and click <strong>Dept stores</strong> on the branch you want.</p>
+                <button type="button" class="btn btn-primary" id="deptStoresGoBranchesBtn"><i class="fas fa-code-branch"></i> Go to Branches</button>
+            </div>
+        </div>`;
+        document.getElementById('deptStoresGoBranchesBtn')?.addEventListener('click', function () {
+            try {
+                window.location.hash = '#settings-branches';
+            } catch (_) {}
+            if (window.loadPage) window.loadPage('settings-branches');
+        });
+        return;
+    }
+    let branches = [];
+    try {
+        branches = (await API.branch.list(CONFIG.COMPANY_ID)) || [];
+    } catch (e) {
+        console.error(e);
+    }
+    let selectedBranchId = branchFromUrl;
+    if (!branches.some((b) => String(b.id) === String(selectedBranchId))) {
+        page.innerHTML = `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-warehouse"></i> Department mini-stores</h3>
+            </div>
+            <div class="card-body">
+                <p class="text-danger">That branch was not found for this company.</p>
+                <button type="button" class="btn btn-primary" id="deptStoresGoBranchesBadBranch"><i class="fas fa-code-branch"></i> Go to Branches</button>
+            </div>
+        </div>`;
+        document.getElementById('deptStoresGoBranchesBadBranch')?.addEventListener('click', function () {
+            try {
+                window.location.hash = '#settings-branches';
+            } catch (_) {}
+            if (window.loadPage) window.loadPage('settings-branches');
+        });
+        return;
+    }
+    const branchOptions = branches
+        .map(
+            (b) =>
+                `<option value="${escapeHtml(String(b.id))}"${String(b.id) === String(selectedBranchId) ? ' selected' : ''}>${escapeHtml(b.name || '')}</option>`
+        )
+        .join('');
+
+    let stores = [];
+    let loadErr = '';
+    if (selectedBranchId) {
+        try {
+            stores =
+                (await API.clinic.departmentStores.list({
+                    branch_id: selectedBranchId,
+                    include_inactive: true,
+                })) || [];
+        } catch (e) {
+            loadErr = e.message || 'Failed to load department stores';
+            console.error(e);
+        }
+    }
+
+    const defaultList = [
+        'TRIAGE — Triage',
+        'LAB — Lab',
+        'INPATIENT — Inpatient',
+        'DENTAL — Dental clinic',
+        'EYE — Eye clinic',
+        'ONCOLOGY — Oncology clinic',
+        'EMERGENCY — Emergency clinic',
+    ]
+        .map((t) => `<li style="margin:0.15rem 0;">${escapeHtml(t)}</li>`)
+        .join('');
+
+    page.innerHTML = `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-warehouse"></i> Department mini-stores</h3>
+            </div>
+            <div class="card-body">
+                <p class="text-secondary" style="margin-top:0;">
+                    Each branch has its own department mini-stores (triage, lab, wards, etc.). Stock issued from pharmacy into a store is tracked per store.
+                    Finance dashboards for stock value distribution by mini-store can follow; set up stores here first.
+                </p>
+                <div class="form-group" style="max-width:28rem;">
+                    <label class="form-label">Branch</label>
+                    <select id="deptStoresBranchSel" class="form-input">${branchOptions || '<option value="">No branches</option>'}</select>
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; margin:1rem 0;">
+                    <button type="button" class="btn btn-primary" id="deptStoresSeedBtn"${selectedBranchId ? '' : ' disabled'}>
+                        <i class="fas fa-magic"></i> Create default mini-stores
+                    </button>
+                    <span class="text-secondary" style="font-size:0.85rem;">Adds missing templates only (safe to run again).</span>
+                </div>
+                <details style="margin-bottom:1rem; font-size:0.85rem; color:var(--text-secondary);">
+                    <summary style="cursor:pointer;">Default templates</summary>
+                    <ul style="margin:0.35rem 0 0 1.1rem;">${defaultList}</ul>
+                </details>
+                ${loadErr ? `<p class="text-danger">${escapeHtml(loadErr)}</p>` : ''}
+                <h4 style="margin-top:0.5rem;">Add a custom mini-store</h4>
+                <form id="deptStoresCreateForm" style="max-width:28rem; display:grid; gap:0.65rem;" ${selectedBranchId ? '' : ' hidden'}>
+                    <div>
+                        <label class="form-label">Code</label>
+                        <input type="text" id="deptStoresNewCode" class="form-input" maxlength="40" placeholder="e.g. ICU" required />
+                        <small class="text-secondary">Unique per branch; stored uppercase.</small>
+                    </div>
+                    <div>
+                        <label class="form-label">Display name</label>
+                        <input type="text" id="deptStoresNewName" class="form-input" maxlength="120" placeholder="e.g. ICU satellite" required />
+                    </div>
+                    <div>
+                        <button type="submit" class="btn btn-secondary"><i class="fas fa-plus"></i> Create mini-store</button>
+                    </div>
+                </form>
+                <h4 style="margin-top:1.25rem;">Existing mini-stores</h4>
+                <div class="table-container">
+                    <table style="width:100%; border-collapse:collapse;">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left;padding:0.5rem;border-bottom:2px solid var(--border-color);">Code</th>
+                                <th style="text-align:left;padding:0.5rem;border-bottom:2px solid var(--border-color);">Name</th>
+                                <th style="text-align:left;padding:0.5rem;border-bottom:2px solid var(--border-color);">Active</th>
+                            </tr>
+                        </thead>
+                        <tbody id="deptStoresTableBody">
+                            ${
+                                !selectedBranchId
+                                    ? '<tr><td colspan="3" class="text-secondary" style="padding:0.75rem;">Select a branch.</td></tr>'
+                                    : (stores || []).length === 0
+                                      ? '<tr><td colspan="3" class="text-secondary" style="padding:0.75rem;">No mini-stores yet. Use defaults or add one above.</td></tr>'
+                                      : (stores || [])
+                                            .map(
+                                                (s) => `
+                                <tr>
+                                    <td style="padding:0.5rem;border-bottom:1px solid var(--border-color);"><code>${escapeHtml(s.code || '')}</code></td>
+                                    <td style="padding:0.5rem;border-bottom:1px solid var(--border-color);">${escapeHtml(s.name || '')}</td>
+                                    <td style="padding:0.5rem;border-bottom:1px solid var(--border-color);">${s.is_active ? 'Yes' : 'No'}</td>
+                                </tr>`
+                                            )
+                                            .join('')
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>`;
+
+    const branchSel = document.getElementById('deptStoresBranchSel');
+    branchSel?.addEventListener('change', function () {
+        const v = branchSel.value;
+        if (!v) {
+            try {
+                window.location.hash = '#settings-branches';
+            } catch (_) {}
+            if (window.loadPage) window.loadPage('settings-branches');
+            return;
+        }
+        try {
+            window.location.hash = '#settings-department-stores?branch=' + encodeURIComponent(v);
+        } catch (_) {}
+        if (window.loadSettingsSubPage) window.loadSettingsSubPage('department-stores');
+    });
+
+    document.getElementById('deptStoresSeedBtn')?.addEventListener('click', async function () {
+        const bid = branchSel && branchSel.value ? branchSel.value : selectedBranchId;
+        if (!bid || !API.clinic.departmentStores.seedDefaults) return;
+        try {
+            const res = await API.clinic.departmentStores.seedDefaults(bid);
+            const c = (res && res.created && res.created.length) || 0;
+            const sk = (res && res.skipped_codes && res.skipped_codes.length) || 0;
+            if (typeof showToast === 'function') {
+                showToast(`Created ${c} mini-store(s). Skipped (already present): ${sk}.`, c || sk ? 'success' : 'info');
+            }
+            await renderDepartmentStoresSettingsPage();
+            if (window.ModuleUI && typeof window.ModuleUI.refreshClinicDepartmentStoresNav === 'function') {
+                void window.ModuleUI.refreshClinicDepartmentStoresNav().then(() => {
+                    if (
+                        window.ModuleUI.getSelectedModule &&
+                        window.ModuleUI.getSelectedModule() === 'clinic' &&
+                        typeof window.ModuleUI.rerenderAppSidebar === 'function'
+                    ) {
+                        window.ModuleUI.rerenderAppSidebar();
+                    }
+                });
+            }
+        } catch (e) {
+            if (typeof showToast === 'function') showToast(e.message || 'Seed failed', 'error');
+        }
+    });
+
+    document.getElementById('deptStoresCreateForm')?.addEventListener('submit', async function (ev) {
+        ev.preventDefault();
+        const bid = branchSel && branchSel.value ? branchSel.value : selectedBranchId;
+        const code = (document.getElementById('deptStoresNewCode')?.value || '').trim();
+        const name = (document.getElementById('deptStoresNewName')?.value || '').trim();
+        if (!bid || !code || !name) {
+            if (typeof showToast === 'function') showToast('Branch, code and name are required', 'warning');
+            return;
+        }
+        try {
+            await API.clinic.departmentStores.create({
+                branch_id: bid,
+                code: code,
+                name: name,
+                is_active: true,
+            });
+            if (typeof showToast === 'function') showToast('Mini-store created', 'success');
+            const cEl = document.getElementById('deptStoresNewCode');
+            const nEl = document.getElementById('deptStoresNewName');
+            if (cEl) cEl.value = '';
+            if (nEl) nEl.value = '';
+            await renderDepartmentStoresSettingsPage();
+            if (window.ModuleUI && typeof window.ModuleUI.refreshClinicDepartmentStoresNav === 'function') {
+                void window.ModuleUI.refreshClinicDepartmentStoresNav().then(() => {
+                    if (
+                        window.ModuleUI.getSelectedModule &&
+                        window.ModuleUI.getSelectedModule() === 'clinic' &&
+                        typeof window.ModuleUI.rerenderAppSidebar === 'function'
+                    ) {
+                        window.ModuleUI.rerenderAppSidebar();
+                    }
+                });
+            }
+        } catch (e) {
+            if (typeof showToast === 'function') showToast(e.message || 'Create failed', 'error');
+        }
+    });
 }
 
 function showCreateBranchModal() {
@@ -3255,6 +3521,181 @@ function getPermissionDisplayLabel(perm) {
         return slug.charAt(0).toUpperCase() + slug.slice(1);
     }
     return (perm.action || '').replace(/_/g, ' ');
+}
+
+function buildServiceComponentRow(component, idx, items) {
+    const c = component || {};
+    const itemId = String(c.item_id || '');
+    const options = (Array.isArray(items) ? items : [])
+        .map((it) => `<option value="${escapeHtml(it.id)}" ${String(it.id) === itemId ? 'selected' : ''}>${escapeHtml(it.name || '')}</option>`)
+        .join('');
+    return `
+        <tr data-comp-row="${idx}">
+            <td><select class="form-input svc-item" style="min-width:220px;"><option value="">Select item...</option>${options}</select></td>
+            <td><input class="form-input svc-qty" type="number" step="0.0001" min="0.0001" value="${escapeHtml(String(c.quantity_per_service || 1))}" /></td>
+            <td><input class="form-input svc-unit" type="text" value="${escapeHtml(c.item_unit_name || '')}" placeholder="auto" /></td>
+            <td>
+                <select class="form-input svc-policy">
+                    <option value="immediate" ${c.deduction_policy === 'immediate' ? 'selected' : ''}>Immediate</option>
+                    <option value="accumulator" ${c.deduction_policy === 'accumulator' ? 'selected' : ''}>Accumulator</option>
+                </select>
+            </td>
+            <td><input class="form-input svc-threshold" type="number" step="0.0001" min="0.0001" value="${escapeHtml(String(c.accumulator_threshold_qty || ''))}" placeholder="for accumulator" /></td>
+            <td><input type="checkbox" class="svc-optional" ${c.is_optional ? 'checked' : ''} /></td>
+            <td><button type="button" class="btn btn-sm btn-outline svc-remove-row">Remove</button></td>
+        </tr>
+    `;
+}
+
+async function renderServicesCatalogSettingsPage() {
+    const page = document.getElementById('settings');
+    if (!page) return;
+    page.innerHTML = '<div class="card"><div class="card-body">Loading services catalog...</div></div>';
+    try {
+        const [services, items] = await Promise.all([
+            API.clinic.services.list({ include_inactive: true }),
+            API.items.list(CONFIG.COMPANY_ID, { limit: 500, offset: 0 }),
+        ]);
+        const serviceRows = (Array.isArray(services) ? services : []).map((s) => `
+            <tr>
+                <td><strong>${escapeHtml(s.name || '')}</strong><br><small>${escapeHtml(s.code || '—')}</small></td>
+                <td>
+                    ${escapeHtml((Array.isArray(s.allowed_departments) && s.allowed_departments.length ? s.allowed_departments.join(', ') : (s.department || '—')))}
+                    ${s.strict_department_only ? '<br><small class="text-danger">Strict</small>' : '<br><small class="text-secondary">Shared</small>'}
+                </td>
+                <td>${escapeHtml(String(s.fee || 0))}</td>
+                <td>${s.is_active ? '<span class="badge badge-success">Active</span>' : '<span class="badge">Inactive</span>'}</td>
+                <td>${(s.components || []).length}</td>
+                <td style="display:flex; gap:0.4rem;">
+                    <button type="button" class="btn btn-sm btn-outline svc-edit" data-id="${s.id}">Edit</button>
+                    <button type="button" class="btn btn-sm btn-outline svc-delete" data-id="${s.id}">Delete</button>
+                </td>
+            </tr>
+        `).join('');
+        page.innerHTML = `
+            <div class="card">
+                <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                    <h3 class="card-title"><i class="fas fa-notes-medical"></i> Catalogs • Services</h3>
+                    <button type="button" class="btn btn-primary" id="svcNewBtn">New Service</button>
+                </div>
+                <div class="card-body">
+                    <p style="margin-top:0; color:var(--text-secondary);">Company-level services shared by all branches. Billing charges service fee; inventory deductions follow component rules.</p>
+                    <div style="overflow:auto;">
+                        <table class="data-table" style="width:100%;">
+                            <thead><tr><th>Name</th><th>Department</th><th>Fee</th><th>Status</th><th>Components</th><th>Actions</th></tr></thead>
+                            <tbody>${serviceRows || '<tr><td colspan="6">No services yet</td></tr>'}</tbody>
+                        </table>
+                    </div>
+                    <div id="svcEditorMount" style="margin-top:1rem;"></div>
+                </div>
+            </div>
+        `;
+        const allItems = Array.isArray(items) ? items.filter((i) => String(i.product_category || '').toUpperCase() !== 'SERVICE') : [];
+        const svcMap = {};
+        (Array.isArray(services) ? services : []).forEach((s) => { svcMap[String(s.id)] = s; });
+
+        const renderEditor = (svc) => {
+            const model = svc || { name: '', code: '', department: '', allowed_departments: [], strict_department_only: false, description: '', fee: '0', is_active: true, components: [] };
+            const componentRows = (model.components || []).map((c, idx) => buildServiceComponentRow(c, idx, allItems)).join('');
+            const mount = document.getElementById('svcEditorMount');
+            if (!mount) return;
+            mount.innerHTML = `
+                <div class="card" style="border:1px solid var(--primary-color);">
+                    <div class="card-header"><h4 style="margin:0;">${model.id ? 'Edit Service' : 'Create Service'}</h4></div>
+                    <div class="card-body">
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:0.5rem;">
+                            <div><label>Name *</label><input id="svcName" class="form-input" value="${escapeHtml(model.name || '')}" /></div>
+                            <div><label>Code</label><input id="svcCode" class="form-input" value="${escapeHtml(model.code || '')}" placeholder="Auto-generated if blank" /></div>
+                            <div><label>Departments (comma separated)</label><input id="svcDepts" class="form-input" value="${escapeHtml((model.allowed_departments || []).join(', ') || model.department || '')}" placeholder="triage, lab, consultation" /></div>
+                            <div><label>Fee</label><input id="svcFee" type="number" min="0" step="0.01" class="form-input" value="${escapeHtml(String(model.fee || 0))}" /></div>
+                        </div>
+                        <div style="margin-top:0.5rem;"><label>Description</label><textarea id="svcDesc" class="form-input" rows="2">${escapeHtml(model.description || '')}</textarea></div>
+                        <div style="margin-top:0.45rem; display:flex; gap:1rem; flex-wrap:wrap;">
+                            <label style="display:inline-flex; gap:0.35rem; align-items:center;"><input id="svcActive" type="checkbox" ${model.is_active ? 'checked' : ''} /> Active</label>
+                            <label style="display:inline-flex; gap:0.35rem; align-items:center;"><input id="svcStrictDept" type="checkbox" ${model.strict_department_only ? 'checked' : ''} /> Restrict to listed departments only</label>
+                        </div>
+                        <hr />
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <h4 style="margin:0;">Consumable Rules</h4>
+                            <button type="button" class="btn btn-sm btn-outline" id="svcAddComp">Add Component</button>
+                        </div>
+                        <div style="overflow:auto; margin-top:0.5rem;">
+                            <table class="data-table" style="width:100%;">
+                                <thead><tr><th>Item</th><th>Qty/service</th><th>Unit</th><th>Policy</th><th>Threshold</th><th>Optional</th><th></th></tr></thead>
+                                <tbody id="svcCompBody">${componentRows || ''}</tbody>
+                            </table>
+                        </div>
+                        <div style="margin-top:0.75rem; display:flex; gap:0.5rem;">
+                            <button type="button" class="btn btn-primary" id="svcSaveBtn">${model.id ? 'Update Service' : 'Create Service'}</button>
+                            <button type="button" class="btn btn-outline" id="svcCancelBtn">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('svcAddComp')?.addEventListener('click', () => {
+                const body = document.getElementById('svcCompBody');
+                if (!body) return;
+                body.insertAdjacentHTML('beforeend', buildServiceComponentRow({}, Date.now(), allItems));
+            });
+            mount.addEventListener('click', (e) => {
+                const rm = e.target.closest('.svc-remove-row');
+                if (rm) rm.closest('tr')?.remove();
+            }, { once: true });
+            document.getElementById('svcCancelBtn')?.addEventListener('click', () => { mount.innerHTML = ''; });
+            document.getElementById('svcSaveBtn')?.addEventListener('click', async () => {
+                const rows = Array.from(document.querySelectorAll('#svcCompBody tr'));
+                const components = rows.map((r, i) => ({
+                    item_id: r.querySelector('.svc-item')?.value || '',
+                    quantity_per_service: Number(r.querySelector('.svc-qty')?.value || 0),
+                    item_unit_name: (r.querySelector('.svc-unit')?.value || '').trim() || null,
+                    deduction_policy: r.querySelector('.svc-policy')?.value || 'immediate',
+                    accumulator_threshold_qty: (r.querySelector('.svc-threshold')?.value || '').trim() || null,
+                    is_optional: !!r.querySelector('.svc-optional')?.checked,
+                    sort_order: i,
+                })).filter((c) => c.item_id && c.quantity_per_service > 0);
+                const payload = {
+                    name: (document.getElementById('svcName')?.value || '').trim(),
+                    code: (document.getElementById('svcCode')?.value || '').trim() || null,
+                    allowed_departments: (document.getElementById('svcDepts')?.value || '').split(',').map((x) => x.trim()).filter(Boolean),
+                    strict_department_only: !!document.getElementById('svcStrictDept')?.checked,
+                    fee: Number(document.getElementById('svcFee')?.value || 0),
+                    description: (document.getElementById('svcDesc')?.value || '').trim() || null,
+                    is_active: !!document.getElementById('svcActive')?.checked,
+                    components: components,
+                };
+                payload.department = payload.allowed_departments[0] || null;
+                if (!payload.name) return showToast('Service name is required', 'error');
+                try {
+                    if (model.id) await API.clinic.services.update(model.id, payload);
+                    else await API.clinic.services.create(payload);
+                    showToast('Service saved', 'success');
+                    await renderServicesCatalogSettingsPage();
+                } catch (err) {
+                    showToast(err.message || 'Failed to save service', 'error');
+                }
+            });
+        };
+        document.getElementById('svcNewBtn')?.addEventListener('click', () => renderEditor(null));
+        page.addEventListener('click', async (event) => {
+            const editBtn = event.target.closest('.svc-edit');
+            if (editBtn) return renderEditor(svcMap[String(editBtn.getAttribute('data-id'))] || null);
+            const delBtn = event.target.closest('.svc-delete');
+            if (delBtn) {
+                const id = delBtn.getAttribute('data-id');
+                if (!id) return;
+                if (!confirm('Delete this service?')) return;
+                try {
+                    await API.clinic.services.remove(id);
+                    showToast('Service deleted', 'success');
+                    await renderServicesCatalogSettingsPage();
+                } catch (err) {
+                    showToast(err.message || 'Failed to delete service', 'error');
+                }
+            }
+        });
+    } catch (e) {
+        page.innerHTML = `<div class="card"><div class="card-body"><p class="alert alert-danger">Failed to load service catalogs: ${escapeHtml(e.message || 'error')}</p></div></div>`;
+    }
 }
 
 // Switch settings sub-page

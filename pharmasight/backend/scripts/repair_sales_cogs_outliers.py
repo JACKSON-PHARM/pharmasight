@@ -72,6 +72,7 @@ class Candidate:
     ledger_qty_delta: Decimal
     ledger_total_cost_old: Decimal
     ledger_total_cost_new: Decimal
+    ledger_row_count: int
 
 
 def _load_candidates(
@@ -80,6 +81,8 @@ def _load_candidates(
     company_id: UUID,
     start_date: date,
     end_date: date,
+    allow_multi_row: bool = False,
+    max_sale_rows: int = 1,
 ) -> tuple[list[Candidate], list[str]]:
     warnings: list[str] = []
     candidates: list[Candidate] = []
@@ -148,43 +151,53 @@ def _load_candidates(
                 .order_by(InventoryLedger.created_at.asc())
                 .all()
             )
-            if len(sale_rows) != 1:
+            row_count = len(sale_rows)
+            if row_count == 0:
+                warnings.append(f"Skip {inv.invoice_no} {line.item_name}: has 0 SALE ledger rows.")
+                continue
+            if row_count > 1 and not allow_multi_row:
                 warnings.append(
-                    f"Skip {inv.invoice_no} {line.item_name}: has {len(sale_rows)} SALE ledger rows (expected 1)."
+                    f"Skip {inv.invoice_no} {line.item_name}: has {row_count} SALE ledger rows (expected 1)."
+                )
+                continue
+            if row_count > max_sale_rows:
+                warnings.append(
+                    f"Skip {inv.invoice_no} {line.item_name}: has {row_count} SALE ledger rows (> max {max_sale_rows})."
                 )
                 continue
 
-            sale_row = sale_rows[0]
             qty_sale = _d(line.quantity)
             qty_base = qty_sale * _d(mult)
             old_line_cogs = qty_base * old_uc
             new_line_cogs = qty_base * snap_cost
 
-            old_total = _d(sale_row.total_cost)
-            sign = Decimal("1") if old_total >= 0 else Decimal("-1")
-            new_total = sign * (abs(_d(sale_row.quantity_delta)) * snap_cost)
+            for sale_row in sale_rows:
+                old_total = _d(sale_row.total_cost)
+                sign = Decimal("1") if old_total >= 0 else Decimal("-1")
+                new_total = sign * (abs(_d(sale_row.quantity_delta)) * snap_cost)
 
-            candidates.append(
-                Candidate(
-                    invoice_id=inv.id,
-                    invoice_no=inv.invoice_no or str(inv.id),
-                    line_id=line.id,
-                    item_id=line.item_id,
-                    item_name=line.item_name or "?",
-                    unit_name=line.unit_name or "",
-                    qty_sale=qty_sale,
-                    qty_base=qty_base,
-                    unit_price_ex=sale_price,
-                    old_unit_cost=old_uc,
-                    new_unit_cost=snap_cost,
-                    old_line_cogs=old_line_cogs,
-                    new_line_cogs=new_line_cogs,
-                    ledger_id=sale_row.id,
-                    ledger_qty_delta=_d(sale_row.quantity_delta),
-                    ledger_total_cost_old=old_total,
-                    ledger_total_cost_new=new_total,
+                candidates.append(
+                    Candidate(
+                        invoice_id=inv.id,
+                        invoice_no=inv.invoice_no or str(inv.id),
+                        line_id=line.id,
+                        item_id=line.item_id,
+                        item_name=line.item_name or "?",
+                        unit_name=line.unit_name or "",
+                        qty_sale=qty_sale,
+                        qty_base=qty_base,
+                        unit_price_ex=sale_price,
+                        old_unit_cost=old_uc,
+                        new_unit_cost=snap_cost,
+                        old_line_cogs=old_line_cogs,
+                        new_line_cogs=new_line_cogs,
+                        ledger_id=sale_row.id,
+                        ledger_qty_delta=_d(sale_row.quantity_delta),
+                        ledger_total_cost_old=old_total,
+                        ledger_total_cost_new=new_total,
+                        ledger_row_count=row_count,
+                    )
                 )
-            )
 
     return candidates, warnings
 
@@ -211,6 +224,17 @@ def main() -> None:
     p.add_argument("--end-date", required=True, help="YYYY-MM-DD")
     p.add_argument("--database-url", default=os.getenv("MARGIN_ANALYSIS_DATABASE_URL", ""))
     p.add_argument("--apply", action="store_true", help="Persist changes (default: dry run).")
+    p.add_argument(
+        "--allow-multi-row",
+        action="store_true",
+        help="Allow repair for lines with multiple SALE ledger rows.",
+    )
+    p.add_argument(
+        "--max-sale-rows",
+        type=int,
+        default=1,
+        help="Max SALE ledger rows per line to consider (default: 1).",
+    )
     args = p.parse_args()
 
     branch_id = UUID(str(args.branch_id).strip())
@@ -226,7 +250,15 @@ def main() -> None:
 
     engine = create_engine(url, pool_pre_ping=True)
     with Session(engine) as db:
-        candidates, warnings = _load_candidates(db, branch_id, company_id, start_date, end_date)
+        candidates, warnings = _load_candidates(
+            db,
+            branch_id,
+            company_id,
+            start_date,
+            end_date,
+            allow_multi_row=bool(args.allow_multi_row),
+            max_sale_rows=max(1, int(args.max_sale_rows or 1)),
+        )
         total_sales = _sales_totals(db, branch_id, company_id, start_date, end_date)
 
         old_cogs = sum((c.ledger_total_cost_old for c in candidates), Decimal("0"))
@@ -238,6 +270,7 @@ def main() -> None:
         print(f"Branch: {branch_id}")
         print(f"Company: {company_id}")
         print(f"Mode: {'APPLY' if args.apply else 'DRY RUN'}")
+        print(f"Allow multi-row: {bool(args.allow_multi_row)}  |  Max SALE rows: {max(1, int(args.max_sale_rows or 1))}")
         print(f"Candidates: {len(candidates)}")
         print(f"Warnings/skips: {len(warnings)}")
         print(f"Current sales (exclusive) in range: {total_sales:.2f}")
@@ -263,7 +296,8 @@ def main() -> None:
                 print(
                     f"  {c.invoice_no} | {c.item_name[:50]} | qty={c.qty_sale} {c.unit_name} "
                     f"| price={c.unit_price_ex:.2f} | unit_cost {c.old_unit_cost:.2f}->{c.new_unit_cost:.2f} "
-                    f"| cogs {c.ledger_total_cost_old:.2f}->{c.ledger_total_cost_new:.2f}"
+                    f"| cogs {c.ledger_total_cost_old:.2f}->{c.ledger_total_cost_new:.2f} "
+                    f"| sale_rows={c.ledger_row_count}"
                 )
 
         if not args.apply:

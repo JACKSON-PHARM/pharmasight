@@ -20,6 +20,9 @@ DOC_TYPE_PR = "PR"
 DOC_TYPE_TRF = "TRF"
 DOC_TYPE_ADJ = "ADJ"
 DOC_TYPE_OPEN = "OPEN"
+DOC_TYPE_DSO = "DSO"
+DOC_TYPE_DST = "DST"
+DOC_TYPE_DSR = "DSR"
 
 
 def _branch_code_two_digit(branch: Branch) -> str:

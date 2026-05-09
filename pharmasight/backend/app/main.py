@@ -241,6 +241,7 @@ from app.api import (
     branch_inventory_router,
     modules_router,
     clinic_router,
+    department_supply_router,
 )
 from app.api import etims
 from app.api.company import router as company_router
@@ -300,6 +301,7 @@ app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotation
 app.include_router(stock_take_router, prefix="/api/stock-take", tags=["Stock Take"])
 app.include_router(order_book_router, prefix="/api/order-book", tags=["Order Book"])
 app.include_router(branch_inventory_router, prefix="/api/branch-inventory", tags=["Branch Inventory"])
+app.include_router(department_supply_router, prefix="/api/department-supply", tags=["Department Supply"])
 app.include_router(modules_router, prefix="/api", tags=["Modules"])
 app.include_router(clinic_router, prefix="/api", tags=["Clinic / OPD"])
 app.include_router(etims.router, prefix="/api/etims", tags=["ETIMS"])

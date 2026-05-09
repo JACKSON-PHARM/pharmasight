@@ -147,6 +147,17 @@ function initializeAppShell() {
                         updateStatusBar(user);
                     }
                 }
+                if (window.ModuleUI && typeof window.ModuleUI.refreshClinicDepartmentStoresNav === 'function') {
+                    void window.ModuleUI.refreshClinicDepartmentStoresNav().then(() => {
+                        if (
+                            typeof window.ModuleUI.rerenderAppSidebar === 'function' &&
+                            window.ModuleUI.getSelectedModule &&
+                            window.ModuleUI.getSelectedModule() === 'clinic'
+                        ) {
+                            window.ModuleUI.rerenderAppSidebar();
+                        }
+                    });
+                }
             });
         }
     } catch (error) {
@@ -297,7 +308,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Load appropriate auth page
             // Ensure hash is set to login if it's pointing to an app route
             let route = routeHash.replace('#', '').split('?')[0] || 'login';
-            const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'patients', 'encounters', 'triage', 'consultation'];
+            const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'patients', 'encounters', 'reception', 'queue', 'triage', 'consultation', 'register-new'];
             if (!isAuthRoute_ && appRoutes.includes(route)) {
                 // Hash is pointing to app route but not authenticated - force login
                 route = 'login';
@@ -374,7 +385,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     
                     // Force hash to login immediately (before any async operations)
                     const currentHash = window.location.hash.replace('#', '');
-                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set', 'setup', 'patients', 'encounters', 'triage', 'consultation'];
+                    const appRoutes = ['landing', 'dashboard', 'sales', 'purchases', 'inventory', 'settings', 'reports', 'expenses', 'branch-select', 'password-set', 'setup', 'patients', 'encounters', 'reception', 'queue', 'triage', 'consultation', 'register-new'];
                     
                     if (appRoutes.includes(currentHash) || !currentHash || currentHash === '') {
                         console.log('[AUTH STATE CHANGE] Redirecting from app route to login (tenant-free URL):', currentHash);
@@ -1110,6 +1121,7 @@ window.subNavItems = {
         { page: 'inventory', subPage: 'branch-orders', label: 'Branch Orders', icon: 'fa-list-alt' },
         { page: 'inventory', subPage: 'branch-transfers', label: 'Branch Transfers', icon: 'fa-truck-loading' },
         { page: 'inventory', subPage: 'branch-receipts', label: 'Branch Receipts', icon: 'fa-clipboard-check' },
+        { page: 'inventory', subPage: 'department-transfers', label: 'Department Transfers', icon: 'fa-hospital' },
         { page: 'stock-take', label: 'Stock Take', icon: 'fa-clipboard-list' }
     ],
     expenses: [
@@ -1130,9 +1142,16 @@ window.subNavItems = {
         { page: 'settings', subPage: 'company', label: 'Company', icon: 'fa-building' },
         { page: 'settings', subPage: 'branches', label: 'Branches', icon: 'fa-code-branch' },
         { page: 'settings', subPage: 'users', label: 'Users & Roles', icon: 'fa-users' },
+        { page: 'settings', subPage: 'catalogs-services', label: 'Catalogs • Services', icon: 'fa-notes-medical' },
         { page: 'settings', subPage: 'transaction', label: 'Transaction', icon: 'fa-receipt' },
         { page: 'settings', subPage: 'print', label: 'Print', icon: 'fa-print' },
         { page: 'settings', subPage: 'documentBranding', label: 'Document Branding', icon: 'fa-file-signature' }
+    ],
+    triage: [
+        { page: 'triage', subPage: 'attend-patient', label: 'Attend Patient', icon: 'fa-user-nurse' },
+        { page: 'triage', subPage: 'raise-order', label: 'Raise Order', icon: 'fa-file-medical' },
+        { page: 'triage', subPage: 'transfer', label: 'Transfer', icon: 'fa-random' },
+        { page: 'triage', subPage: 'manage-assets', label: 'Manage Assets', icon: 'fa-box-open' },
     ]
 };
 
@@ -1226,67 +1245,62 @@ function showSubNav(pageKey, title) {
     });
     subNavItemsContainer.innerHTML = html;
     
-    // Add click handlers to sub-nav items (use event delegation for better performance)
-    subNavItemsContainer.addEventListener('click', function subNavClickHandler(e) {
-        const subItem = e.target.closest('.sub-nav-item');
-        if (!subItem) return;
-        
-        e.preventDefault();
-        // Don't navigate when user was selecting text or dragged (e.g. from search box)
-        if (!isRealClick(e)) return;
-        
-        // Debounce rapid clicks
-        if (navigationDebounceTimer) {
-            clearTimeout(navigationDebounceTimer);
-        }
-        
-        navigationDebounceTimer = setTimeout(() => {
-            const page = subItem.dataset.page;
-            const subPage = subItem.dataset.subPage;
-            
-            // Update active state
-            subNavItemsContainer.querySelectorAll('.sub-nav-item').forEach(nav => nav.classList.remove('active'));
-            subItem.classList.add('active');
-            
-            // Load page
-            if (subPage) {
-                // For inventory, persist subpage in URL so hashchange doesn't overwrite with items
-                if (page === 'inventory') {
-                    loadPage(`${page}-${subPage}`);
-                } else if (page === 'purchases') {
-                    // Single loadPage so hash reflects sub-view (#purchases for PO list, #purchases-order-book, etc.)
-                    if (subPage === 'orders') {
-                        loadPage('purchases');
-                    } else if (subPage) {
-                        loadPage(`purchases-${subPage}`);
+    // One delegated listener for all sub-nav pages (showSubNav replaces innerHTML but not the container).
+    if (!subNavItemsContainer.dataset.subNavDelegated) {
+        subNavItemsContainer.dataset.subNavDelegated = '1';
+        subNavItemsContainer.addEventListener('click', function subNavClickHandler(e) {
+            const subItem = e.target.closest('.sub-nav-item');
+            if (!subItem) return;
+
+            e.preventDefault();
+            if (!isRealClick(e)) return;
+
+            if (navigationDebounceTimer) {
+                clearTimeout(navigationDebounceTimer);
+            }
+
+            navigationDebounceTimer = setTimeout(() => {
+                const page = subItem.dataset.page;
+                const subPage = subItem.dataset.subPage;
+
+                subNavItemsContainer.querySelectorAll('.sub-nav-item').forEach((nav) => nav.classList.remove('active'));
+                subItem.classList.add('active');
+
+                if (subPage) {
+                    if (page === 'inventory') {
+                        loadPage(`${page}-${subPage}`);
+                    } else if (page === 'purchases') {
+                        if (subPage === 'orders') {
+                            loadPage('purchases');
+                        } else if (subPage) {
+                            loadPage(`purchases-${subPage}`);
+                        } else {
+                            loadPage('purchases');
+                        }
+                    } else if (page === 'sales') {
+                        if (subPage === 'invoices') {
+                            loadPage('sales');
+                        } else if (subPage) {
+                            loadPage(`sales-${subPage}`);
+                        } else {
+                            loadPage('sales');
+                        }
+                    } else if (page === 'settings') {
+                        loadPage(subPage ? `${page}-${subPage}` : page);
+                        if (subPage && window.loadSettingsSubPage) {
+                            setTimeout(() => {
+                                window.loadSettingsSubPage(subPage);
+                            }, 100);
+                        }
                     } else {
-                        loadPage('purchases');
-                    }
-                } else if (page === 'sales') {
-                    // Single loadPage so hash reflects sub-view (#sales = invoices, #sales-quotations, etc.)
-                    if (subPage === 'invoices') {
-                        loadPage('sales');
-                    } else if (subPage) {
-                        loadPage(`sales-${subPage}`);
-                    } else {
-                        loadPage('sales');
-                    }
-                } else if (page === 'settings') {
-                    // For settings, load the page with sub-page
-                    loadPage(subPage ? `${page}-${subPage}` : page);
-                    if (subPage && window.loadSettingsSubPage) {
-                        setTimeout(() => {
-                            window.loadSettingsSubPage(subPage);
-                        }, 100);
+                        loadPage(subPage ? `${page}-${subPage}` : page);
                     }
                 } else {
                     loadPage(page);
                 }
-            } else {
-                loadPage(page);
-            }
-        }, 150);
-    }, { once: false, passive: false });
+            }, 80);
+        }, { passive: false });
+    }
     
     // Use requestAnimationFrame for smooth transitions
     requestAnimationFrame(() => {
@@ -1481,11 +1495,25 @@ async function canNavigateTo(page) {
     return true;
 }
 
+/** Run a navigation that was deferred while loadPage was busy (see loadPage). */
+function flushDeferredLoadPage() {
+    const pending = window.__pendingLoadPageName;
+    window.__pendingLoadPageName = null;
+    if (pending && pending !== currentPage && typeof window.loadPage === 'function') {
+        queueMicrotask(function () {
+            void window.loadPage(pending);
+        });
+    }
+}
+
 // Load page
 async function loadPage(pageName) {
-    // De-duplication: prevent concurrent loadPage calls
+    // If a navigation is already in flight, remember this target and run it right after (avoids dropped clicks).
     if (loadPageInProgress) {
-        console.log('[LOAD PAGE] Already in progress, skipping:', pageName);
+        const raw = String(pageName || '');
+        const qi0 = raw.indexOf('?');
+        window.__pendingLoadPageName = qi0 >= 0 ? raw.slice(0, qi0) : raw;
+        console.log('[LOAD PAGE] Busy, deferring:', pageName);
         return;
     }
     loadPageInProgress = true;
@@ -1493,12 +1521,18 @@ async function loadPage(pageName) {
     window.__suppressToasts = true;
 
     try {
+    // Hash may include a query (?branch=…). Routing keys must be path-only or main/sub split breaks (e.g. settings → company default).
+    if (typeof pageName === 'string') {
+        const qi = pageName.indexOf('?');
+        if (qi >= 0) pageName = pageName.slice(0, qi);
+    }
     console.log('📄 Loading page:', pageName);
     
     // Check navigation blocking
     if (!(await canNavigateTo(pageName))) {
         loadPageInProgress = false;
         window.__suppressToasts = false;
+        flushDeferredLoadPage();
         return; // Navigation blocked
     }
 
@@ -1609,12 +1643,38 @@ async function loadPage(pageName) {
     let subPage = null;
     // Pages that should NOT be split into main/sub by the '-' character
     // (includes auth pages and special app pages like 'branch-select', 'stock-take', 'setup')
-    const authPages = ['password-reset', 'password-set', 'reset-password', 'branch-select', 'stock-take', 'tenant-invite-setup', 'setup'];
-    if (pageName.includes('-') && !authPages.includes(pageName)) {
-        const parts = pageName.split('-');
-        mainPage = parts[0];
-        subPage = parts.slice(1).join('-');
+    const authPages = ['password-reset', 'password-set', 'reset-password', 'branch-select', 'stock-take', 'tenant-invite-setup', 'setup', 'register-new'];
+    const deptViewRe = '(attend-patient|raise-order|transfer|manage-assets)';
+    const deptStoreRouteRe = new RegExp(
+        `^deptstore-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-${deptViewRe}$`,
+        'i'
+    );
+    const deptStoreMatch = deptStoreRouteRe.exec(pageName);
+    if (deptStoreMatch) {
+        window.__clinicDeptStoreId = deptStoreMatch[1];
+        mainPage = 'triage';
+        subPage = deptStoreMatch[2];
+    } else if (/^deptstore-/i.test(pageName)) {
+        window.__clinicDeptStoreId = null;
+        try {
+            if (typeof window.showToast === 'function') window.showToast('Invalid department link.', 'warning');
+        } catch (_) {}
+        loadPageInProgress = false;
+        window.__suppressToasts = false;
+        flushDeferredLoadPage();
+        void loadPage('patients');
+        return;
+    } else {
+        window.__clinicDeptStoreId = null;
+        if (pageName.includes('-') && !authPages.includes(pageName)) {
+            const parts = pageName.split('-');
+            mainPage = parts[0];
+            subPage = parts.slice(1).join('-');
+        }
     }
+
+    const navActivePage =
+        window.__clinicDeptStoreId && deptStoreMatch ? 'deptnav-' + window.__clinicDeptStoreId : mainPage;
     
     // Layout debug logs
     try {
@@ -1682,7 +1742,7 @@ async function loadPage(pageName) {
     // For app pages, if the element doesn't exist yet, lazily create it for known special pages
     if (!pageElement && !isAuthPage) {
         const appLayout = document.getElementById('appLayout');
-        if (appLayout && (mainPage === 'branch-select')) {
+        if (appLayout && (mainPage === 'branch-select' || mainPage === 'register-new')) {
             console.log(`[APP PAGE] Creating ${mainPage} page element in app layout`);
             const pageDiv = document.createElement('div');
             pageDiv.id = mainPage;
@@ -1715,7 +1775,7 @@ async function loadPage(pageName) {
             const mainNav = document.getElementById('mainNav');
             if (mainNav) {
                 mainNav.querySelectorAll('.nav-item').forEach(function (nav) {
-                    nav.classList.toggle('active', nav.dataset.page === mainPage);
+                    nav.classList.toggle('active', nav.dataset.page === navActivePage);
                 });
             }
         }
@@ -1946,8 +2006,14 @@ async function loadPage(pageName) {
             }
             break;
         case 'patients':
+        case 'reception':
             if (typeof window.loadClinicPatients === 'function') {
                 window.loadClinicPatients();
+            }
+            break;
+        case 'register-new':
+            if (typeof window.loadClinicRegisterCreate === 'function') {
+                window.loadClinicRegisterCreate();
             }
             break;
         case 'platform-admin-companies':
@@ -1961,18 +2027,28 @@ async function loadPage(pageName) {
             }
             break;
         case 'encounters':
+        case 'queue':
             if (typeof window.loadClinicEncounters === 'function') {
-                window.loadClinicEncounters();
+                await window.loadClinicEncounters();
             }
             break;
         case 'triage':
             if (typeof window.loadClinicTriage === 'function') {
-                window.loadClinicTriage();
+                if (typeof subPage === 'string' && subPage.length) {
+                    window.__clinicTriageSubPage = subPage;
+                } else {
+                    window.__clinicTriageSubPage = null;
+                }
+                try {
+                    await window.loadClinicTriage();
+                } finally {
+                    window.__clinicTriageSubPage = null;
+                }
             }
             break;
         case 'consultation':
             if (typeof window.loadClinicConsultation === 'function') {
-                window.loadClinicConsultation();
+                await window.loadClinicConsultation();
             }
             break;
         case 'items':
@@ -2087,6 +2163,7 @@ async function loadPage(pageName) {
                 lastLoadedPage = rb;
             }
         } catch (_) {}
+        flushDeferredLoadPage();
     }
 }
 

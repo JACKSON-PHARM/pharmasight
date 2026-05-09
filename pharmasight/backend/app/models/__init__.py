@@ -39,7 +39,30 @@ from .branch_inventory import (
     BranchReceipt,
     BranchReceiptLine,
 )
-from .clinic import Patient, Encounter, EncounterNote, ClinicOrder, ClinicOrderItem, EncounterTriage
+from .clinic import (
+    Patient,
+    Encounter,
+    EncounterNote,
+    ClinicOrder,
+    ClinicOrderItem,
+    EncounterTriage,
+    ClinicalService,
+    ClinicalServiceComponent,
+    ClinicalServiceAccumulator,
+    EncounterServiceExecution,
+    EncounterServiceExecutionLine,
+    DepartmentStore,
+    DepartmentStoreStock,
+    DepartmentStoreMovement,
+)
+from .department_supply import (
+    DepartmentSupplyOrder,
+    DepartmentSupplyOrderLine,
+    DepartmentSupplyTransfer,
+    DepartmentSupplyTransferLine,
+    DepartmentSupplyReceipt,
+    DepartmentSupplyReceiptLine,
+)
 from .etims_sync_cursor import EtimsSyncCursor
 
 __all__ = [
@@ -111,5 +134,19 @@ __all__ = [
     "ClinicOrder",
     "ClinicOrderItem",
     "EncounterTriage",
+    "ClinicalService",
+    "ClinicalServiceComponent",
+    "ClinicalServiceAccumulator",
+    "EncounterServiceExecution",
+    "EncounterServiceExecutionLine",
+    "DepartmentStore",
+    "DepartmentStoreStock",
+    "DepartmentStoreMovement",
+    "DepartmentSupplyOrder",
+    "DepartmentSupplyOrderLine",
+    "DepartmentSupplyTransfer",
+    "DepartmentSupplyTransferLine",
+    "DepartmentSupplyReceipt",
+    "DepartmentSupplyReceiptLine",
     "EtimsSyncCursor",
 ]

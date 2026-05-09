@@ -288,8 +288,8 @@ async function renderSalesInvoicesPage() {
     const defaultFrom = range ? range.dateFrom : today;
     const defaultTo = range ? range.dateTo : today;
     
-    // Render page shell (compact: ~10% header/filters, rest for table)
-    page.innerHTML = `
+    // Render page shell instantly, then hydrate data in-place.
+    const shellHtml = `
         <div class="card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color);">
                 <h3 class="card-title" style="margin: 0; font-size: 1.1rem;">
@@ -363,14 +363,43 @@ async function renderSalesInvoicesPage() {
             </div>
         </div>
     `;
-    
-    if (range) {
-        const fromEl = document.getElementById('filterDateFrom');
-        const toEl = document.getElementById('filterDateTo');
-        if (fromEl) fromEl.value = defaultFrom;
-        if (toEl) toEl.value = defaultTo;
+    if (window.WorkstationUX && typeof window.WorkstationUX.runInstantShellHydrate === 'function') {
+        await window.WorkstationUX.runInstantShellHydrate({
+            container: page,
+            shellHtml: shellHtml,
+            hydrate: async function (ctx) {
+                if (!ctx.isCurrent()) return;
+                if (range) {
+                    const fromEl = document.getElementById('filterDateFrom');
+                    const toEl = document.getElementById('filterDateTo');
+                    if (fromEl) fromEl.value = defaultFrom;
+                    if (toEl) toEl.value = defaultTo;
+                }
+                if (!ctx.isCurrent()) return;
+                await fetchAndRenderSalesInvoicesData();
+            },
+            onError: function (error) {
+                const tbody = document.getElementById('salesInvoicesTableBody');
+                if (!tbody) return;
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8" style="padding: 1.5rem; text-align: center; color: var(--danger-color);">
+                            Could not load invoices. ${escapeHtml(error?.message || 'Unknown error')}
+                        </td>
+                    </tr>
+                `;
+            },
+        });
+    } else {
+        page.innerHTML = shellHtml;
+        if (range) {
+            const fromEl = document.getElementById('filterDateFrom');
+            const toEl = document.getElementById('filterDateTo');
+            if (fromEl) fromEl.value = defaultFrom;
+            if (toEl) toEl.value = defaultTo;
+        }
+        await fetchAndRenderSalesInvoicesData();
     }
-    await fetchAndRenderSalesInvoicesData();
 }
 
 function toggleSalesCustomDates() {
@@ -4427,18 +4456,22 @@ async function addQuotationItemsToOrderBook() {
 }
 
 // Add item to order book from transaction table (new sale/quotation form, before batching)
-async function addItemToOrderBookFromTransaction(itemId, itemName, unitName) {
+async function addItemToOrderBookFromTransaction(itemId, itemName, unitName, notesOverride) {
     try {
         if (!CONFIG.COMPANY_ID || !CONFIG.BRANCH_ID || !CONFIG.USER_ID) {
             showToast('Configuration error: Missing company, branch, or user ID', 'error');
             return;
         }
+        const notes =
+            notesOverride != null && String(notesOverride).trim() !== ''
+                ? String(notesOverride).trim()
+                : 'Added from sales/quotation page';
         const entryData = {
             item_id: itemId,
             quantity_needed: 1,
             unit_name: unitName || 'unit',
             reason: 'MANUAL_ADD',
-            notes: 'Added from sales/quotation page'
+            notes: notes
         };
         await API.orderBook.create(entryData, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, CONFIG.USER_ID);
         showToast(`${itemName || 'Item'} added to order book`, 'success');

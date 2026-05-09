@@ -471,6 +471,10 @@ def search_items(
     fast: bool = Query(False, description="Deprecated; ignored. Response shape is always canonical."),
     context: Optional[str] = Query(None, description="Context: 'purchase_order' for PO-specific fields"),
     validate_snapshot: bool = Query(False, description="Log snapshot vs heavy search values (debug); no client change"),
+    in_stock_only: bool = Query(
+        False,
+        description="When true with branch_id, exclude items with zero pharmacy snapshot stock",
+    ),
     current_user_and_db: tuple = Depends(get_current_user),
 ):
     """
@@ -492,7 +496,7 @@ def search_items(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     result, path, server_timing = ItemSearchService.search(
-        db, q, company_id, branch_id, limit, include_pricing, context
+        db, q, company_id, branch_id, limit, include_pricing, context, in_stock_only
     )
     if validate_snapshot and path == "item_branch_snapshot" and result and branch_id:
         _log_snapshot_validation(db, company_id, branch_id, result, limit, include_pricing, context)

@@ -44,12 +44,13 @@ class ItemSearchService:
         limit: int,
         include_pricing: bool,
         context: Optional[str],
+        in_stock_only: bool = False,
     ) -> Tuple[List[Dict[str, Any]], str, str]:
         """
         Snapshot-only item search. Returns (result_list, path, server_timing_str).
         path is always "item_branch_snapshot". Returns [] on failure or missing branch_id.
         """
-        return _search_impl(db, q, company_id, branch_id, limit, include_pricing, context)
+        return _search_impl(db, q, company_id, branch_id, limit, include_pricing, context, in_stock_only)
 
 
 def _format_stock_display(quantity_retail: float, item_like: Optional[Any]) -> str:
@@ -67,6 +68,7 @@ def _search_impl(
     limit: int,
     include_pricing: bool,
     context: Optional[str],
+    in_stock_only: bool = False,
 ) -> Tuple[List[Dict[str, Any]], str, str]:
     t_start = time.perf_counter()
     search_term_pattern = f"%{q.lower()}%"
@@ -74,14 +76,15 @@ def _search_impl(
     # Single-table snapshot path (no Item join): keeps search <100ms at 1.5M rows.
     if branch_id is not None:
         try:
+            snap_q = db.query(ItemBranchSnapshot).filter(
+                ItemBranchSnapshot.company_id == company_id,
+                ItemBranchSnapshot.branch_id == branch_id,
+                ItemBranchSnapshot.search_text.ilike(search_term_pattern),
+            )
+            if in_stock_only:
+                snap_q = snap_q.filter(ItemBranchSnapshot.current_stock > 0)
             rows = (
-                db.query(ItemBranchSnapshot)
-                .filter(
-                    ItemBranchSnapshot.company_id == company_id,
-                    ItemBranchSnapshot.branch_id == branch_id,
-                    ItemBranchSnapshot.search_text.ilike(search_term_pattern),
-                )
-                .order_by(
+                snap_q.order_by(
                     (ItemBranchSnapshot.current_stock <= 0).asc(),
                     ItemBranchSnapshot.name.asc(),
                 )

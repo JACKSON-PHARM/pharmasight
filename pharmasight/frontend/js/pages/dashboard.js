@@ -258,18 +258,27 @@ async function applyDashboardFilters() {
         if (!kpisData) {
             const promises = [];
             const kpis = {};
-            // Load company expiring window once per Apply (fallback 365)
-            promises.push(
+            // Load company expiring window once per Apply (fallback 365).
+            // NOTE: Expiring KPI requests must wait for this value to avoid
+            // race-condition fallback to 365 while drill-down later uses setting.
+            const expiringDaysPromise =
                 (API.company && typeof API.company.getSettings === 'function' && CONFIG && CONFIG.COMPANY_ID)
                     ? API.company.getSettings(CONFIG.COMPANY_ID, 'expiring_soon_days')
                         .then(function (d) {
                             const raw = d ? d.value : null;
                             const n = parseInt(raw, 10);
                             cachedExpiringSoonDays = (isFinite(n) && n >= 1 && n <= 3650) ? n : 365;
+                            return cachedExpiringSoonDays;
                         })
-                        .catch(function () { cachedExpiringSoonDays = 365; })
-                    : Promise.resolve().then(function () { cachedExpiringSoonDays = 365; })
-            );
+                        .catch(function () {
+                            cachedExpiringSoonDays = 365;
+                            return cachedExpiringSoonDays;
+                        })
+                    : Promise.resolve().then(function () {
+                        cachedExpiringSoonDays = 365;
+                        return cachedExpiringSoonDays;
+                    });
+            promises.push(expiringDaysPromise);
             if (API.items && typeof API.items.count === 'function') {
                 promises.push(API.items.count(CONFIG.COMPANY_ID).then(function (d) { kpis.itemsCount = (d.count != null ? d.count : 0); }).catch(function () { kpis.itemsCount = 0; }));
             }
@@ -280,8 +289,8 @@ async function applyDashboardFilters() {
                 promises.push(API.inventory.getTotalStockValue(branchId).then(function (d) { kpis.stockValue = d.total_value; }).catch(function () { kpis.stockValue = null; }));
             }
             if (API.inventory && typeof API.inventory.getExpiringCount === 'function') {
-                promises.push(Promise.resolve().then(function () {
-                    return API.inventory.getExpiringCount(branchId, cachedExpiringSoonDays)
+                promises.push(expiringDaysPromise.then(function (days) {
+                    return API.inventory.getExpiringCount(branchId, days)
                         .then(function (d) {
                             kpis.expiringCount = (d.count != null ? d.count : 0);
                             kpis.expiringValue = (d.total_value != null ? Number(d.total_value) : 0);

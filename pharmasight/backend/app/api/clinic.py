@@ -6,6 +6,8 @@ All routes gated by require_module("clinic"). All data scoped by company_id.
 from __future__ import annotations
 
 import logging
+import re
+from decimal import Decimal
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -23,7 +25,7 @@ from app.dependencies import (
     ensure_user_has_branch_access,
 )
 from app.module_enforcement import require_module
-from app.models import Branch, Item, User
+from app.models import Branch, Item, User, SalesInvoice, SalesInvoiceItem, InventoryLedger
 from app.models.clinic import (
     Patient,
     Encounter,
@@ -31,9 +33,18 @@ from app.models.clinic import (
     ClinicOrder,
     ClinicOrderItem,
     EncounterTriage,
+    ClinicalService,
+    ClinicalServiceComponent,
+    ClinicalServiceAccumulator,
+    EncounterServiceExecution,
+    EncounterServiceExecutionLine,
+    DepartmentStore,
+    DepartmentStoreStock,
+    DepartmentStoreMovement,
 )
 from app.schemas.clinic import (
     PatientCreate,
+    PatientUpdate,
     PatientResponse,
     EncounterCreate,
     EncounterResponse,
@@ -46,10 +57,37 @@ from app.schemas.clinic import (
     ClinicOrderItemCreate,
     EncounterTriageUpsert,
     EncounterTriageResponse,
+    ClinicalServiceCreate,
+    ClinicalServiceUpdate,
+    ClinicalServiceResponse,
+    ServiceExecutionRequest,
+    ServiceExecutionResponse,
+    DepartmentStoreCreate,
+    DepartmentStoreResponse,
+    DepartmentStoreSeedDefaultsRequest,
+    DepartmentStoreSeedDefaultsResponse,
+    DepartmentStoreIssueRequest,
+    DepartmentStoreReconcileRequest,
+    DepartmentStoreReturnRequest,
 )
 from app.services.clinic_billing_service import ensure_draft_invoice_for_encounter
+from app.services.inventory_service import InventoryService
+from app.services.snapshot_service import SnapshotService
+from app.services.order_book_service import OrderBookService
+from app.services.canonical_pricing import CanonicalPricingService
 
 logger = logging.getLogger(__name__)
+
+# Default department mini-stores per branch (codes unique per branch). Idempotent seed via API.
+_DEFAULT_DEPARTMENT_STORE_TEMPLATES: Tuple[Tuple[str, str], ...] = (
+    ("TRIAGE", "Triage"),
+    ("LAB", "Lab"),
+    ("INPATIENT", "Inpatient"),
+    ("DENTAL", "Dental clinic"),
+    ("EYE", "Eye clinic"),
+    ("ONCOLOGY", "Oncology clinic"),
+    ("EMERGENCY", "Emergency clinic"),
+)
 
 router = APIRouter(
     prefix="/clinic",
@@ -135,6 +173,206 @@ def _validate_order_items_company(
             )
 
 
+def _clean_text(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
+def _normalize_departments(raw: Optional[List[str]], fallback: Optional[str] = None) -> List[str]:
+    vals = []
+    if isinstance(raw, list):
+        vals.extend(raw)
+    if fallback:
+        vals.extend(str(fallback).split(","))
+    out = []
+    seen = set()
+    for d in vals:
+        s = str(d or "").strip().lower()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _service_dept_prefix(dept: Optional[str]) -> str:
+    d = str(dept or "").strip().lower()
+    mapping = {
+        "triage": "TRI",
+        "consultation": "CON",
+        "lab": "LAB",
+        "radiology": "RAD",
+        "procedure": "PRC",
+        "dental": "DEN",
+        "pharmacy": "PHR",
+    }
+    return mapping.get(d, "GEN")
+
+
+def _service_name_code_fragment(name: str) -> str:
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", str(name or "").upper()) if w]
+    if not words:
+        return "SRV"
+    if len(words) == 1:
+        return words[0][:4]
+    frag = "".join(w[0] for w in words[:4])
+    return frag[:4] or "SRV"
+
+
+def _generate_service_code(db: Session, company_id: UUID, name: str, departments: List[str]) -> str:
+    primary = departments[0] if departments else None
+    prefix = _service_dept_prefix(primary)
+    frag = _service_name_code_fragment(name)
+    base = f"{prefix}-{frag}"
+    existing = (
+        db.query(ClinicalService.code)
+        .filter(ClinicalService.company_id == company_id, ClinicalService.code.ilike(f"{base}-%"))
+        .all()
+    )
+    nums = []
+    for row in existing:
+        code = str(row[0] or "")
+        m = re.match(rf"^{re.escape(base)}-(\d+)$", code, flags=re.IGNORECASE)
+        if m:
+            nums.append(int(m.group(1)))
+    nxt = (max(nums) + 1) if nums else 1
+    return f"{base}-{nxt:03d}"
+
+
+def _service_billing_item_sku(service_id: UUID) -> str:
+    return f"__CLINIC_SERVICE__{service_id}__"
+
+
+def _get_or_create_service_billing_item(db: Session, service: ClinicalService) -> Item:
+    if service.billing_item_id:
+        existing = db.query(Item).filter(Item.id == service.billing_item_id).first()
+        if existing:
+            return existing
+    sku = _service_billing_item_sku(service.id)
+    existing = (
+        db.query(Item)
+        .filter(Item.company_id == service.company_id, Item.sku == sku)
+        .first()
+    )
+    if existing:
+        service.billing_item_id = existing.id
+        db.add(service)
+        db.flush()
+        return existing
+    fee_item = Item(
+        company_id=service.company_id,
+        name=service.name,
+        description=service.description or "Clinical service charge",
+        sku=sku,
+        category="Clinic",
+        product_category="SERVICE",
+        pricing_tier="SERVICE",
+        base_unit="service",
+        retail_unit="service",
+        wholesale_unit="service",
+        supplier_unit="service",
+        pack_size=1,
+        wholesale_units_per_supplier=Decimal("1"),
+        can_break_bulk=False,
+        vat_category="ZERO_RATED",
+        vat_rate=Decimal("0"),
+        is_active=True,
+        setup_complete=True,
+        track_expiry=False,
+    )
+    db.add(fee_item)
+    db.flush()
+    service.billing_item_id = fee_item.id
+    db.add(service)
+    db.flush()
+    return fee_item
+
+
+def _apply_service_charge_line(
+    db: Session,
+    *,
+    invoice_id: UUID,
+    service: ClinicalService,
+    quantity: Decimal,
+) -> Decimal:
+    if quantity <= 0:
+        return Decimal("0")
+    unit_price = Decimal(str(service.fee or 0))
+    billed_amount = unit_price * quantity
+    if billed_amount <= 0:
+        return Decimal("0")
+    fee_item = _get_or_create_service_billing_item(db, service)
+    line = SalesInvoiceItem(
+        sales_invoice_id=invoice_id,
+        item_id=fee_item.id,
+        batch_id=None,
+        unit_name=fee_item.retail_unit or "service",
+        quantity=quantity,
+        unit_price_exclusive=unit_price,
+        discount_percent=Decimal("0"),
+        discount_amount=Decimal("0"),
+        vat_rate=Decimal("0"),
+        vat_amount=Decimal("0"),
+        line_total_exclusive=billed_amount,
+        line_total_inclusive=billed_amount,
+        unit_cost_used=None,
+        item_name=fee_item.name,
+        item_code=fee_item.sku or "",
+    )
+    db.add(line)
+    return billed_amount
+
+
+def _recompute_invoice_totals(db: Session, invoice_id: UUID) -> None:
+    lines = db.query(SalesInvoiceItem).filter(SalesInvoiceItem.sales_invoice_id == invoice_id).all()
+    invoice = (
+        db.query(SalesInvoice)
+        .filter(SalesInvoice.id == invoice_id)
+        .with_for_update()
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    total_excl = sum(Decimal(str(l.line_total_exclusive or 0)) for l in lines)
+    total_inc = sum(Decimal(str(l.line_total_inclusive or 0)) for l in lines)
+    total_vat = sum(Decimal(str(l.vat_amount or 0)) for l in lines)
+    invoice.total_exclusive = total_excl
+    invoice.total_inclusive = total_inc
+    invoice.vat_amount = total_vat
+    invoice.vat_rate = (total_vat / total_excl * Decimal("100")) if total_excl > 0 else Decimal("0")
+    db.add(invoice)
+
+
+def _get_department_store_scoped(db: Session, store_id: UUID, company_id: UUID, branch_id: Optional[UUID] = None) -> DepartmentStore:
+    q = db.query(DepartmentStore).filter(DepartmentStore.id == store_id, DepartmentStore.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(DepartmentStore.branch_id == branch_id)
+    s = q.first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Department store not found")
+    return s
+
+
+def _upsert_department_store_stock(db: Session, store_id: UUID, item_id: UUID, qty_delta_base: Decimal) -> DepartmentStoreStock:
+    row = (
+        db.query(DepartmentStoreStock)
+        .filter(DepartmentStoreStock.store_id == store_id, DepartmentStoreStock.item_id == item_id)
+        .with_for_update()
+        .first()
+    )
+    if not row:
+        row = DepartmentStoreStock(store_id=store_id, item_id=item_id, quantity_base=Decimal("0"))
+        db.add(row)
+        db.flush()
+    next_qty = Decimal(str(row.quantity_base or 0)) + Decimal(str(qty_delta_base or 0))
+    if next_qty < 0:
+        raise HTTPException(status_code=400, detail="Insufficient department stock")
+    row.quantity_base = next_qty
+    db.add(row)
+    return row
+
 # ---------------------------------------------------------------------------
 # Patients
 # ---------------------------------------------------------------------------
@@ -146,14 +384,67 @@ def create_patient(
 ):
     user, _ = auth
     company_id = _company_id(db, user)
+    normalized_phone = (body.phone or "").strip() or None
+    first = (body.first_name or "").strip()
+    last = (body.last_name or "").strip()
+    if normalized_phone:
+        dup = (
+            db.query(Patient)
+            .filter(
+                Patient.company_id == company_id,
+                Patient.phone == normalized_phone,
+                Patient.first_name.ilike(first),
+                Patient.last_name.ilike(last),
+            )
+            .first()
+        )
+        if dup:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Patient already exists with same name and phone",
+            )
     p = Patient(
         company_id=company_id,
-        first_name=body.first_name,
-        last_name=body.last_name,
-        phone=body.phone,
+        first_name=first,
+        last_name=last,
+        phone=normalized_phone,
         gender=body.gender,
         date_of_birth=body.date_of_birth,
+        id_number=(body.id_number or "").strip() or None,
+        residence=(body.residence or "").strip() or None,
     )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.patch("/patients/{patient_id}", response_model=PatientResponse)
+def update_patient(
+    patient_id: UUID,
+    body: PatientUpdate,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    p = _get_patient_scoped(db, patient_id, company_id)
+
+    if body.first_name is not None:
+        p.first_name = (body.first_name or "").strip() or p.first_name
+    if body.last_name is not None:
+        p.last_name = (body.last_name or "").strip() or p.last_name
+    if body.phone is not None:
+        p.phone = (body.phone or "").strip() or None
+    if body.gender is not None:
+        p.gender = (body.gender or "").strip() or None
+    if body.date_of_birth is not None:
+        p.date_of_birth = body.date_of_birth
+    if body.id_number is not None:
+        p.id_number = (body.id_number or "").strip() or None
+    if body.residence is not None:
+        p.residence = (body.residence or "").strip() or None
+
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -231,6 +522,10 @@ def create_encounter(
         branch_id=body.branch_id,
         patient_id=body.patient_id,
         status="waiting",
+        scheduled_for=body.scheduled_for,
+        initial_destination=body.initial_destination,
+        intake_payment_mode=(body.payment_mode or "").strip() or None,
+        intake_insurance_scheme=(body.insurance_scheme or "").strip() or None,
         created_by=user.id,
     )
     db.add(enc)
@@ -363,6 +658,7 @@ def upsert_encounter_triage(
     existing.payment_mode = _clean(body.payment_mode)
     existing.insurance_scheme = _clean(body.insurance_scheme)
     existing.chief_complaint = _clean(body.chief_complaint)
+    existing.allergies = _clean(body.allergies)
     existing.symptoms = _clean(body.symptoms)
     existing.triage_notes = _clean(body.triage_notes)
     existing.vitals = body.vitals or None
@@ -579,3 +875,689 @@ def list_clinic_orders(
             )
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Shared services catalog (company-level, cross-branch)
+# ---------------------------------------------------------------------------
+@router.get("/services", response_model=List[ClinicalServiceResponse])
+def list_clinical_services(
+    q: Optional[str] = Query(None, description="Search service name/code"),
+    department: Optional[str] = Query(None),
+    include_inactive: bool = Query(False),
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    query = (
+        db.query(ClinicalService)
+        .options(joinedload(ClinicalService.components))
+        .filter(ClinicalService.company_id == company_id)
+    )
+    if not include_inactive:
+        query = query.filter(ClinicalService.is_active.is_(True))
+    if department and department.strip():
+        query = query.filter(ClinicalService.department.ilike(department.strip()))
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        query = query.filter(or_(ClinicalService.name.ilike(term), ClinicalService.code.ilike(term)))
+    return query.order_by(ClinicalService.name.asc()).all()
+
+
+@router.post("/services", response_model=ClinicalServiceResponse, status_code=status.HTTP_201_CREATED)
+def create_clinical_service(
+    body: ClinicalServiceCreate,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    allowed_departments = _normalize_departments(body.allowed_departments, body.department)
+    service_code = _clean_text(body.code)
+    if not service_code:
+        service_code = _generate_service_code(db, company_id, body.name, allowed_departments)
+    svc = ClinicalService(
+        company_id=company_id,
+        name=(body.name or "").strip(),
+        code=service_code,
+        department=allowed_departments[0] if allowed_departments else _clean_text(body.department),
+        allowed_departments=allowed_departments,
+        strict_department_only=bool(body.strict_department_only),
+        description=_clean_text(body.description),
+        fee=body.fee,
+        is_active=body.is_active,
+        created_by=user.id,
+    )
+    db.add(svc)
+    db.flush()
+    _get_or_create_service_billing_item(db, svc)
+    for idx, c in enumerate(body.components):
+        db.add(
+            ClinicalServiceComponent(
+                service_id=svc.id,
+                item_id=c.item_id,
+                item_unit_name=_clean_text(c.item_unit_name),
+                quantity_per_service=c.quantity_per_service,
+                is_optional=bool(c.is_optional),
+                deduction_policy=c.deduction_policy,
+                accumulator_threshold_qty=c.accumulator_threshold_qty if c.deduction_policy == "accumulator" else None,
+                sort_order=c.sort_order if c.sort_order is not None else idx,
+                notes=_clean_text(c.notes),
+            )
+        )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Service with same name/code already exists for this company")
+    db.refresh(svc)
+    return (
+        db.query(ClinicalService)
+        .options(joinedload(ClinicalService.components))
+        .filter(ClinicalService.id == svc.id, ClinicalService.company_id == company_id)
+        .first()
+    )
+
+
+@router.put("/services/{service_id}", response_model=ClinicalServiceResponse)
+def update_clinical_service(
+    service_id: UUID,
+    body: ClinicalServiceUpdate,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    svc = (
+        db.query(ClinicalService)
+        .options(joinedload(ClinicalService.components))
+        .filter(ClinicalService.id == service_id, ClinicalService.company_id == company_id)
+        .with_for_update()
+        .first()
+    )
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if body.name is not None:
+        svc.name = (body.name or "").strip()
+    if body.code is not None:
+        next_code = _clean_text(body.code)
+        if next_code:
+            svc.code = next_code
+        else:
+            depts = _normalize_departments(body.allowed_departments, body.department if body.department is not None else svc.department)
+            svc.code = _generate_service_code(db, company_id, svc.name, depts)
+    if body.department is not None:
+        svc.department = _clean_text(body.department)
+    if body.allowed_departments is not None or body.department is not None:
+        depts = _normalize_departments(body.allowed_departments if body.allowed_departments is not None else (svc.allowed_departments or []), svc.department)
+        svc.allowed_departments = depts
+        svc.department = depts[0] if depts else svc.department
+    if body.strict_department_only is not None:
+        svc.strict_department_only = bool(body.strict_department_only)
+    if body.description is not None:
+        svc.description = _clean_text(body.description)
+    if body.fee is not None:
+        if body.fee < 0:
+            raise HTTPException(status_code=400, detail="Service fee must be >= 0")
+        svc.fee = body.fee
+    if body.is_active is not None:
+        svc.is_active = bool(body.is_active)
+    _get_or_create_service_billing_item(db, svc)
+    if body.components is not None:
+        for old in list(svc.components or []):
+            db.delete(old)
+        db.flush()
+        for idx, c in enumerate(body.components):
+            db.add(
+                ClinicalServiceComponent(
+                    service_id=svc.id,
+                    item_id=c.item_id,
+                    item_unit_name=_clean_text(c.item_unit_name),
+                    quantity_per_service=c.quantity_per_service,
+                    is_optional=bool(c.is_optional),
+                    deduction_policy=c.deduction_policy,
+                    accumulator_threshold_qty=c.accumulator_threshold_qty if c.deduction_policy == "accumulator" else None,
+                    sort_order=c.sort_order if c.sort_order is not None else idx,
+                    notes=_clean_text(c.notes),
+                )
+            )
+    db.add(svc)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Service with same name/code already exists for this company")
+    return (
+        db.query(ClinicalService)
+        .options(joinedload(ClinicalService.components))
+        .filter(ClinicalService.id == service_id, ClinicalService.company_id == company_id)
+        .first()
+    )
+
+
+@router.delete("/services/{service_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_clinical_service(
+    service_id: UUID,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    svc = (
+        db.query(ClinicalService)
+        .filter(ClinicalService.id == service_id, ClinicalService.company_id == company_id)
+        .with_for_update()
+        .first()
+    )
+    if not svc:
+        return None
+    db.delete(svc)
+    db.commit()
+    return None
+
+
+@router.get("/department-stores", response_model=List[DepartmentStoreResponse])
+def list_department_stores(
+    branch_id: Optional[UUID] = Query(None),
+    include_inactive: bool = Query(False),
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    q = db.query(DepartmentStore).filter(DepartmentStore.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(DepartmentStore.branch_id == branch_id)
+    if not include_inactive:
+        q = q.filter(DepartmentStore.is_active.is_(True))
+    return q.order_by(DepartmentStore.branch_id.asc(), DepartmentStore.code.asc()).all()
+
+
+@router.post("/department-stores", response_model=DepartmentStoreResponse, status_code=status.HTTP_201_CREATED)
+def create_department_store(
+    body: DepartmentStoreCreate,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    branch = db.query(Branch).filter(Branch.id == body.branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    require_company_match(branch.company_id, company_id)
+    ensure_user_has_branch_access(db, user.id, body.branch_id)
+    row = DepartmentStore(
+        company_id=company_id,
+        branch_id=body.branch_id,
+        code=(body.code or "").strip().upper(),
+        name=(body.name or "").strip(),
+        is_active=bool(body.is_active),
+        created_by=user.id,
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Department store code already exists for this branch")
+    db.refresh(row)
+    return row
+
+
+@router.post(
+    "/department-stores/seed-defaults",
+    response_model=DepartmentStoreSeedDefaultsResponse,
+    status_code=status.HTTP_200_OK,
+)
+def seed_default_department_stores(
+    body: DepartmentStoreSeedDefaultsRequest,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Create standard department mini-stores for a branch when missing (same codes are skipped)."""
+    user, _ = auth
+    company_id = _company_id(db, user)
+    branch = db.query(Branch).filter(Branch.id == body.branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    require_company_match(branch.company_id, company_id)
+    ensure_user_has_branch_access(db, user.id, body.branch_id)
+
+    existing = (
+        db.query(DepartmentStore)
+        .filter(DepartmentStore.company_id == company_id, DepartmentStore.branch_id == body.branch_id)
+        .all()
+    )
+    existing_codes = {(r.code or "").strip().upper() for r in existing if r.code}
+
+    created_models: List[DepartmentStore] = []
+    skipped: List[str] = []
+    for code, name in _DEFAULT_DEPARTMENT_STORE_TEMPLATES:
+        uc = (code or "").strip().upper()
+        if not uc:
+            continue
+        if uc in existing_codes:
+            skipped.append(uc)
+            continue
+        row = DepartmentStore(
+            company_id=company_id,
+            branch_id=body.branch_id,
+            code=uc,
+            name=(name or "").strip() or uc,
+            is_active=True,
+            created_by=user.id,
+        )
+        db.add(row)
+        created_models.append(row)
+        existing_codes.add(uc)
+
+    if created_models:
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Could not create defaults (duplicate code). Refresh and try again.")
+        for r in created_models:
+            db.refresh(r)
+
+    return DepartmentStoreSeedDefaultsResponse(
+        created=[DepartmentStoreResponse.model_validate(r) for r in created_models],
+        skipped_codes=skipped,
+    )
+
+
+@router.post("/department-stores/{store_id}/issue", status_code=status.HTTP_200_OK)
+def issue_stock_to_department_store(
+    store_id: UUID,
+    body: DepartmentStoreIssueRequest,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    store = _get_department_store_scoped(db, store_id, company_id)
+    ensure_user_has_branch_access(db, user.id, store.branch_id)
+    out_ledger: List[InventoryLedger] = []
+    issued_item_ids: List[UUID] = []
+    for line in body.lines:
+        item = db.query(Item).filter(Item.id == line.item_id, Item.company_id == company_id).first()
+        if not item:
+            raise HTTPException(status_code=400, detail="Invalid item in issue request")
+        unit_name = _clean_text(line.unit_name) or item.retail_unit or item.base_unit or "piece"
+        qty_base = Decimal(str(InventoryService.convert_to_base_units(db, line.item_id, float(line.quantity), unit_name)))
+        if qty_base <= 0:
+            raise HTTPException(status_code=400, detail="Issue quantity must be > 0")
+        is_available, available_base, required_base = InventoryService.check_stock_availability(
+            db, line.item_id, store.branch_id, float(line.quantity), unit_name
+        )
+        if not is_available:
+            try:
+                OrderBookService.check_and_add_to_order_book(
+                    db=db,
+                    company_id=company_id,
+                    branch_id=store.branch_id,
+                    item_id=line.item_id,
+                    user_id=user.id,
+                    is_auto=False,
+                )
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=400,
+                detail=f"Pharmacy stock insufficient for issue. Required {required_base}, available {available_base}. Item flagged to order book.",
+            )
+        allocations = InventoryService.allocate_stock_fefo_with_lock(
+            db, item_id=line.item_id, branch_id=store.branch_id, quantity_needed_base=float(qty_base), exclude_expired=True
+        )
+        for alloc in allocations:
+            qd = Decimal(str(alloc["quantity"]))
+            uc = Decimal(str(alloc["unit_cost"]))
+            out_ledger.append(
+                InventoryLedger(
+                    company_id=company_id,
+                    branch_id=store.branch_id,
+                    item_id=line.item_id,
+                    batch_number=alloc["batch_number"],
+                    expiry_date=alloc["expiry_date"],
+                    transaction_type="DEPARTMENT_ISSUE",
+                    reference_type="department_store",
+                    reference_id=store.id,
+                    quantity_delta=-qd,
+                    unit_cost=uc,
+                    total_cost=uc * qd,
+                    created_by=user.id,
+                    notes=f"Issue to {store.code}: {line.notes or ''}".strip(),
+                )
+            )
+        _upsert_department_store_stock(db, store.id, line.item_id, qty_base)
+        issued_item_ids.append(line.item_id)
+        db.add(
+            DepartmentStoreMovement(
+                company_id=company_id,
+                branch_id=store.branch_id,
+                store_id=store.id,
+                item_id=line.item_id,
+                movement_type="ISSUE_IN",
+                quantity_delta_base=qty_base,
+                reference_type="department_issue",
+                reference_id=store.id,
+                notes=_clean_text(line.notes),
+                created_by=user.id,
+            )
+        )
+    for led in out_ledger:
+        db.add(led)
+    db.flush()
+    for led in out_ledger:
+        SnapshotService.upsert_inventory_balance(db, led.company_id, led.branch_id, led.item_id, led.quantity_delta, document_number=led.document_number)
+    db.commit()
+    # After issue, run low-stock trigger similar to sales.
+    for item_id in set(issued_item_ids):
+        try:
+            OrderBookService.check_and_add_to_order_book(
+                db=db,
+                company_id=company_id,
+                branch_id=store.branch_id,
+                item_id=item_id,
+                user_id=user.id,
+                is_auto=True,
+            )
+        except Exception:
+            logger.exception("Order-book check failed after department issue item_id=%s", item_id)
+    return {"status": "ok", "issued_lines": len(body.lines)}
+
+
+@router.post("/department-stores/{store_id}/reconcile", status_code=status.HTTP_200_OK)
+def reconcile_department_store_stock(
+    store_id: UUID,
+    body: DepartmentStoreReconcileRequest,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    store = _get_department_store_scoped(db, store_id, company_id)
+    ensure_user_has_branch_access(db, user.id, store.branch_id)
+    for line in body.lines:
+        item = db.query(Item).filter(Item.id == line.item_id, Item.company_id == company_id).first()
+        if not item:
+            raise HTTPException(status_code=400, detail="Invalid item in reconciliation request")
+        unit_name = _clean_text(line.unit_name) or item.retail_unit or item.base_unit or "piece"
+        delta_base = Decimal(str(InventoryService.convert_to_base_units(db, line.item_id, float(abs(line.quantity_delta)), unit_name)))
+        if line.quantity_delta < 0:
+            delta_base = -delta_base
+        _upsert_department_store_stock(db, store.id, line.item_id, delta_base)
+        db.add(
+            DepartmentStoreMovement(
+                company_id=company_id,
+                branch_id=store.branch_id,
+                store_id=store.id,
+                item_id=line.item_id,
+                movement_type="RECONCILE",
+                quantity_delta_base=delta_base,
+                reference_type="department_reconcile",
+                reference_id=store.id,
+                notes=_clean_text(line.reason),
+                created_by=user.id,
+            )
+        )
+    db.commit()
+    return {"status": "ok", "reconciled_lines": len(body.lines)}
+
+
+@router.post("/department-stores/{store_id}/return", status_code=status.HTTP_200_OK)
+def return_stock_from_department_store(
+    store_id: UUID,
+    body: DepartmentStoreReturnRequest,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    store = _get_department_store_scoped(db, store_id, company_id)
+    ensure_user_has_branch_access(db, user.id, store.branch_id)
+    in_ledger: List[InventoryLedger] = []
+    item_ids: List[UUID] = []
+    for line in body.lines:
+        item = db.query(Item).filter(Item.id == line.item_id, Item.company_id == company_id).first()
+        if not item:
+            raise HTTPException(status_code=400, detail="Invalid item in return request")
+        unit_name = _clean_text(line.unit_name) or item.retail_unit or item.base_unit or "piece"
+        qty_base = Decimal(str(InventoryService.convert_to_base_units(db, line.item_id, float(line.quantity), unit_name)))
+        if qty_base <= 0:
+            raise HTTPException(status_code=400, detail="Return quantity must be > 0")
+        _upsert_department_store_stock(db, store.id, line.item_id, -qty_base)
+        # Return adds stock back to pharmacy branch ledger. Cost defaults to best available.
+        unit_cost = Decimal(
+            str(
+                CanonicalPricingService.get_best_available_cost(
+                    db=db,
+                    item_id=line.item_id,
+                    branch_id=store.branch_id,
+                    company_id=company_id,
+                )
+                or 0
+            )
+        )
+        in_ledger.append(
+            InventoryLedger(
+                company_id=company_id,
+                branch_id=store.branch_id,
+                item_id=line.item_id,
+                batch_number=None,
+                expiry_date=None,
+                transaction_type="DEPARTMENT_RETURN",
+                reference_type="department_store",
+                reference_id=store.id,
+                quantity_delta=qty_base,
+                unit_cost=unit_cost,
+                total_cost=unit_cost * qty_base,
+                created_by=user.id,
+                notes=f"Return from {store.code}: {line.reason or ''}".strip(),
+            )
+        )
+        db.add(
+            DepartmentStoreMovement(
+                company_id=company_id,
+                branch_id=store.branch_id,
+                store_id=store.id,
+                item_id=line.item_id,
+                movement_type="RETURN_TO_PHARMACY",
+                quantity_delta_base=-qty_base,
+                reference_type="department_return",
+                reference_id=store.id,
+                notes=_clean_text(line.reason),
+                created_by=user.id,
+            )
+        )
+        item_ids.append(line.item_id)
+    for led in in_ledger:
+        db.add(led)
+    db.flush()
+    for led in in_ledger:
+        SnapshotService.upsert_inventory_balance(db, led.company_id, led.branch_id, led.item_id, led.quantity_delta, document_number=led.document_number)
+    try:
+        OrderBookService.mark_items_received(
+            db=db,
+            company_id=company_id,
+            branch_id=store.branch_id,
+            item_ids=list(set(item_ids)),
+        )
+    except Exception:
+        logger.exception("mark_items_received failed after department return")
+    db.commit()
+    return {"status": "ok", "returned_lines": len(body.lines)}
+
+
+@router.post("/encounters/{encounter_id}/services/execute", response_model=ServiceExecutionResponse, status_code=status.HTTP_201_CREATED)
+def execute_clinical_service(
+    encounter_id: UUID,
+    body: ServiceExecutionRequest,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    enc = (
+        db.query(Encounter)
+        .options(joinedload(Encounter.patient))
+        .filter(Encounter.id == encounter_id, Encounter.company_id == company_id)
+        .with_for_update()
+        .first()
+    )
+    if not enc:
+        raise HTTPException(status_code=404, detail="Encounter not found")
+    _assert_encounter_not_completed(enc)
+    ensure_user_has_branch_access(db, user.id, enc.branch_id)
+    store = None
+    if body.department_store_id:
+        store = _get_department_store_scoped(db, body.department_store_id, company_id, enc.branch_id)
+        if not store.is_active:
+            raise HTTPException(status_code=400, detail="Department store is inactive")
+    svc = (
+        db.query(ClinicalService)
+        .options(joinedload(ClinicalService.components))
+        .filter(ClinicalService.id == body.service_id, ClinicalService.company_id == company_id, ClinicalService.is_active.is_(True))
+        .with_for_update()
+        .first()
+    )
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found or inactive")
+    execution_dept = _clean_text(body.execution_department)
+    if svc.strict_department_only:
+        allowed = _normalize_departments(list(svc.allowed_departments or []), svc.department)
+        if execution_dept and allowed and execution_dept.lower() not in allowed:
+            raise HTTPException(status_code=400, detail="Service is restricted to configured department(s)")
+    qty_multiplier = Decimal(str(body.quantity))
+    invoice = ensure_draft_invoice_for_encounter(
+        db,
+        encounter_id=enc.id,
+        company_id=company_id,
+        patient=enc.patient,
+        user_id=user.id,
+    )
+    billed_amount = _apply_service_charge_line(db, invoice_id=invoice.id, service=svc, quantity=qty_multiplier)
+    execution = EncounterServiceExecution(
+        company_id=company_id,
+        branch_id=enc.branch_id,
+        encounter_id=enc.id,
+        service_id=svc.id,
+        quantity=qty_multiplier,
+        billed_amount=billed_amount,
+        notes=_clean_text(body.notes),
+        performed_by=user.id,
+    )
+    db.add(execution)
+    db.flush()
+
+    overrides = {str(c.service_component_id): c for c in (body.components or [])}
+    ledger_entries: List[InventoryLedger] = []
+    for c in sorted(list(svc.components or []), key=lambda x: (x.sort_order or 0, str(x.id))):
+        override = overrides.get(str(c.id))
+        selected_default = False if c.is_optional else True
+        selected = override.selected if override is not None else selected_default
+        requested_qty = (override.quantity_override if (override and override.quantity_override is not None) else c.quantity_per_service * qty_multiplier)
+        item = db.query(Item).filter(Item.id == c.item_id, Item.company_id == company_id).first()
+        if not item:
+            raise HTTPException(status_code=400, detail="Service component references invalid item")
+        unit_name = _clean_text(c.item_unit_name) or item.retail_unit or item.base_unit or "piece"
+        requested_base = Decimal(str(InventoryService.convert_to_base_units(db, c.item_id, float(requested_qty), unit_name))) if selected else Decimal("0")
+        deducted_base = Decimal("0")
+        deducted_qty_unit = Decimal("0")
+        accumulator_before = None
+        accumulator_after = None
+
+        if selected and requested_base > 0:
+            if c.deduction_policy == "immediate":
+                deducted_base = requested_base
+            else:
+                threshold_raw = c.accumulator_threshold_qty
+                if threshold_raw is None or Decimal(str(threshold_raw)) <= 0:
+                    raise HTTPException(status_code=400, detail="Accumulator policy requires threshold")
+                threshold_base = Decimal(str(InventoryService.convert_to_base_units(db, c.item_id, float(threshold_raw), unit_name)))
+                acc = (
+                    db.query(ClinicalServiceAccumulator)
+                    .filter(
+                        ClinicalServiceAccumulator.company_id == company_id,
+                        ClinicalServiceAccumulator.branch_id == enc.branch_id,
+                        ClinicalServiceAccumulator.service_component_id == c.id,
+                    )
+                    .with_for_update()
+                    .first()
+                )
+                if not acc:
+                    acc = ClinicalServiceAccumulator(
+                        company_id=company_id,
+                        branch_id=enc.branch_id,
+                        service_component_id=c.id,
+                        accumulated_qty_base=Decimal("0"),
+                    )
+                    db.add(acc)
+                    db.flush()
+                accumulator_before = Decimal(str(acc.accumulated_qty_base or 0))
+                total_base = accumulator_before + requested_base
+                cycles = int(total_base / threshold_base) if threshold_base > 0 else 0
+                deducted_base = threshold_base * cycles
+                accumulator_after = total_base - deducted_base
+                acc.accumulated_qty_base = accumulator_after
+                if deducted_base > 0:
+                    acc.last_deducted_at = datetime.now(timezone.utc)
+                db.add(acc)
+
+            if deducted_base > 0:
+                if store is None:
+                    raise HTTPException(status_code=400, detail="Department store is required to consume stocked components")
+                _upsert_department_store_stock(db, store.id, c.item_id, -deducted_base)
+                db.add(
+                    DepartmentStoreMovement(
+                        company_id=company_id,
+                        branch_id=enc.branch_id,
+                        store_id=store.id,
+                        item_id=c.item_id,
+                        movement_type="CONSUME_OUT",
+                        quantity_delta_base=-deducted_base,
+                        reference_type="encounter_service_execution",
+                        reference_id=execution.id,
+                        notes=f"Service consume: {svc.name}",
+                        created_by=user.id,
+                    )
+                )
+                # Consumption is deducted from department store stock.
+                # Branch pharmacy inventory is deducted at ISSUE_IN time.
+            if requested_base > 0:
+                unit_to_base_ratio = requested_base / requested_qty
+                if unit_to_base_ratio > 0:
+                    deducted_qty_unit = deducted_base / unit_to_base_ratio
+
+        line = EncounterServiceExecutionLine(
+            execution_id=execution.id,
+            service_component_id=c.id,
+            item_id=c.item_id,
+            policy=c.deduction_policy,
+            selected=selected,
+            requested_qty=requested_qty if selected else Decimal("0"),
+            deducted_qty=deducted_qty_unit,
+            item_unit_name=unit_name,
+            requested_qty_base=requested_base if selected else Decimal("0"),
+            deducted_qty_base=deducted_base,
+            accumulator_before_base=accumulator_before,
+            accumulator_after_base=accumulator_after,
+        )
+        db.add(line)
+
+    for led in ledger_entries:
+        db.add(led)
+    db.flush()
+    for led in ledger_entries:
+        SnapshotService.upsert_inventory_balance(
+            db, led.company_id, led.branch_id, led.item_id, led.quantity_delta, document_number=led.document_number
+        )
+    _recompute_invoice_totals(db, invoice.id)
+    db.commit()
+    return (
+        db.query(EncounterServiceExecution)
+        .options(joinedload(EncounterServiceExecution.lines))
+        .filter(EncounterServiceExecution.id == execution.id)
+        .first()
+    )
