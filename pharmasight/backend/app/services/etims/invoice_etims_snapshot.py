@@ -1,8 +1,9 @@
 """
 eTIMS sales line snapshot at batch time + immutability rules.
 
-No KRA HTTP. Populates line-level codes from map_vat_to_etims_category and optional
-item master KRA columns; sets invoice.submission_status = pending.
+No KRA HTTP. Snapshots use ``Item`` master VAT for ``vat_cat_cd`` / ``tax_ty_cd`` (see ``apply_etims_snapshots_on_batch``).
+Class and unit codes come from the item's KRA columns.
+Submit-time alignment with KRA catalogue is enforced in ``etims_invoice_submitter.assert_invoice_eligible_for_etims_submit``.
 """
 from __future__ import annotations
 
@@ -10,9 +11,9 @@ import logging
 from typing import Optional
 
 from sqlalchemy import event, inspect as sa_inspect
-from sqlalchemy.orm import Session as OrmSession
+from sqlalchemy.orm import Session
 
-from app.services.etims.codes_service import map_vat_to_etims_category
+from app.services.etims.codes_service import map_item_master_vat_to_etims_category, map_vat_to_etims_category
 
 logger = logging.getLogger(__name__)
 
@@ -42,21 +43,52 @@ def apply_etims_snapshots_on_batch(invoice) -> None:
     """
     Set line-level eTIMS snapshot fields from VAT mapping + item KRA columns,
     then mark invoice for async KRA submission.
+
+    ``vat_cat_cd`` / ``tax_ty_cd`` follow **item master** ``vat_category`` + ``vat_rate`` (not
+    ``sales_invoice_items.vat_rate``) so eTIMS codes stay aligned with KRA ``saveItem`` when POS lines are stale.
+    Class and unit codes still come from the item's KRA columns.
     """
     for line in invoice.items:
         item = line.item
-        mapping = map_vat_to_etims_category(
-            vat_category=getattr(item, "vat_category", None) if item else None,
-            vat_rate_percent=float(line.vat_rate or 0),
+        mapping = (
+            map_item_master_vat_to_etims_category(item)
+            if item is not None
+            else map_vat_to_etims_category(vat_category=None, vat_rate_percent=float(line.vat_rate or 0))
         )
         line.vat_cat_cd = mapping.vat_cat_cd
-        item_tax = _norm_optional_str(getattr(item, "kra_tax_ty_cd", None) if item else None)
-        line.tax_ty_cd = item_tax or mapping.tax_ty_cd
+        line.tax_ty_cd = mapping.tax_ty_cd
+
         line.item_cls_cd = _norm_optional_str(getattr(item, "kra_item_cls_cd", None) if item else None)
         line.pkg_unit_cd = _norm_optional_str(getattr(item, "kra_pkg_unit_cd", None) if item else None)
         line.qty_unit_cd = _norm_optional_str(getattr(item, "kra_qty_unit_cd", None) if item else None)
 
     invoice.submission_status = "pending"
+
+
+def refresh_etims_snapshots_for_kra_resubmit(db: Session, invoice) -> None:
+    """
+    Recompute eTIMS line snapshots from current ``Item`` master + KRA columns and clear failed submit headers
+    so a batched invoice can be sent to OSDC again (e.g. after fixing ``vatCatCd`` / ``taxTyCd`` mapping).
+
+    Clears ``submission_status`` briefly so the ORM ``before_flush`` guard allows updating snapshot columns
+    on ``SalesInvoiceItem``, then sets ``submission_status`` back to ``pending`` via ``apply_etims_snapshots_on_batch``.
+    """
+    inv_status = (getattr(invoice, "status", None) or "").strip().upper()
+    if inv_status not in ("BATCHED", "PAID"):
+        raise ValueError("invoice status must be BATCHED or PAID")
+    sub = (getattr(invoice, "submission_status", None) or "").strip().lower()
+    if sub == "submitted":
+        raise ValueError("invoice is already submitted to KRA; cannot refresh snapshots")
+
+    invoice.submission_status = None
+    invoice.kra_last_error = None
+    invoice.kra_receipt_number = None
+    invoice.kra_signature = None
+    invoice.kra_qr_code = None
+    invoice.kra_submitted_at = None
+    db.flush()
+    apply_etims_snapshots_on_batch(invoice)
+    db.flush()
 
 
 def ensure_invoice_etims_lines_mutable(invoice) -> None:
@@ -105,7 +137,7 @@ def _guard_sales_invoice_submitted_immutable(obj) -> None:
             ) from None
 
 
-def _before_flush_guard(session: OrmSession, flush_context, instances) -> None:
+def _before_flush_guard(session: Session, flush_context, instances) -> None:
     from app.models.sale import SalesInvoiceItem, SalesInvoice
 
     for obj in list(session.dirty):
@@ -144,6 +176,6 @@ def register_etims_invoice_orm_guards() -> None:
     global _GUARDS_REGISTERED
     if _GUARDS_REGISTERED:
         return
-    event.listen(OrmSession, "before_flush", _before_flush_guard, propagate=True)
+    event.listen(Session, "before_flush", _before_flush_guard, propagate=True)
     _GUARDS_REGISTERED = True
     logger.debug("eTIMS SalesInvoiceItem ORM snapshot guard registered")

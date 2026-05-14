@@ -21,7 +21,7 @@
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
@@ -88,8 +88,8 @@ main { max-width: var(--max); margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 }
 .card {
   background: var(--card);
-  border-radius: 0.75rem;
-  padding: 1.25rem;
+  border-radius: 14px;
+  padding: 1.35rem;
   border: 1px solid #334155;
 }
 .card h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
@@ -561,6 +561,34 @@ html[data-theme="dark"] .nav-cta {
   color: #374151;
 }
 
+.sightops-wordmark .sightops-w-sight,
+.sightops-footer-wordmark .sightops-w-sight {
+  font-weight: 800;
+  color: #0f172a;
+}
+.sightops-wordmark .sightops-w-ops,
+.sightops-footer-wordmark .sightops-w-ops {
+  font-weight: 800;
+  color: #15803d;
+}
+html[data-theme="dark"] .sightops-wordmark .sightops-w-sight,
+html[data-theme="dark"] .sightops-footer-wordmark .sightops-w-sight {
+  color: var(--text);
+}
+html[data-theme="dark"] .sightops-wordmark .sightops-w-ops,
+html[data-theme="dark"] .sightops-footer-wordmark .sightops-w-ops {
+  color: var(--accent);
+}
+
+.marketing-section-spaced {
+  margin-top: 3rem;
+}
+.marketing-section-title {
+  margin: 0 0 0.75rem;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
 html[data-theme="dark"] .logo-pharma,
 html[data-theme="dark"] .logo-sight {
   color: var(--text);
@@ -569,7 +597,10 @@ html[data-theme="dark"] .logo-sight {
 .logo-img {
   height: 32px;
   width: auto;
+  max-width: 40px;
   display: block;
+  border-radius: 0;
+  object-fit: contain;
 }
 
 .theme-toggle-btn {
@@ -1047,13 +1078,7 @@ html[data-theme="dark"] .dash-table-rows span {
 }
 
 .hero-product-decor {
-  position: absolute;
-  z-index: 3;
-  right: -4%;
-  bottom: -6%;
-  width: 140px;
-  height: 120px;
-  pointer-events: none;
+  display: none;
 }
 
 .decor-pills {
@@ -1113,6 +1138,9 @@ html[data-theme="dark"] .dash-table-rows span {
   .hero-cta {
     justify-content: center;
   }
+  .hero-secondary-links {
+    justify-content: center;
+  }
   .hero-features {
     justify-content: center;
   }
@@ -1123,10 +1151,6 @@ html[data-theme="dark"] .dash-table-rows span {
   .hero-visual {
     max-width: 540px;
     margin: 0 auto;
-  }
-  .hero-product-decor {
-    right: 0;
-    bottom: -4%;
   }
 }
 
@@ -1139,6 +1163,105 @@ html[data-theme="light"] body.marketing-home .card {
   box-shadow: 0 1px 3px rgba(17, 24, 39, 0.06);
 }
 
+html[data-theme="light"] .use-case-item {
+  background: #ffffff;
+  border-color: #e5e7eb;
+}
+
 body.marketing-home section h2 {
   letter-spacing: -0.02em;
+}
+
+/* Landing V2 — calmer below-the-fold */
+.hero-secondary-links {
+  margin: 0.85rem 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.hero-secondary-sep {
+  opacity: 0.55;
+  user-select: none;
+}
+.hero-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.hero-link-btn:hover {
+  color: var(--accent-dark);
+}
+
+.marketing-use-cases {
+  margin-top: 2.5rem;
+  padding-top: 2rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.35);
+}
+.marketing-lede-wide {
+  color: var(--muted);
+  margin: 0 0 1.75rem;
+  max-width: 46rem;
+  line-height: 1.6;
+  font-size: 1.02rem;
+}
+.use-case-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+.use-case-item {
+  border-radius: 14px;
+  padding: 1.25rem 1.35rem;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.03);
+}
+.use-case-item h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+.use-case-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1.55;
+}
+.workflow-block {
+  margin-top: 2.25rem;
+  padding: 1.35rem 1.5rem;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.25);
+}
+html[data-theme="light"] .workflow-block {
+  background: #f8fafc;
+  border-color: #e5e7eb;
+}
+.marketing-subhead {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+.workflow-ol {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  line-height: 1.65;
+  font-size: 0.95rem;
+}
+.workflow-ol li {
+  margin: 0.35rem 0;
+}
+@media (max-width: 900px) {
+  .use-case-strip {
+    grid-template-columns: 1fr;
+  }
 }

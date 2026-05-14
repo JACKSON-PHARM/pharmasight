@@ -3,9 +3,10 @@ Item schemas for request/response validation.
 3-tier UNIT system: supplier_unit (what we buy), wholesale_unit (what pharmacies buy),
 retail_unit (what customers buy), pack_size (retail units per packet).
 """
+from __future__ import annotations
 from decimal import Decimal
 from pydantic import BaseModel, Field, model_validator
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from datetime import datetime, date
 from uuid import UUID
 
@@ -92,6 +93,7 @@ class ItemBase(BaseModel):
     kra_pkg_unit_cd: Optional[str] = Field(None, description="KRA package unit code")
     kra_qty_unit_cd: Optional[str] = Field(None, description="KRA quantity unit code")
     kra_tax_ty_cd: Optional[str] = Field(None, description="KRA tax type code override")
+    kra_vat_cat_cd: Optional[str] = Field(None, description="KRA vatCatCd from catalog (selectItemList)")
 
 
 class ItemCreate(ItemBase):
@@ -173,11 +175,22 @@ class ItemResponse(ItemBase):
     promo_start_date: Optional[date] = Field(None, description="Promo start date")
     promo_end_date: Optional[date] = Field(None, description="Promo end date")
     kra_sync_status: Optional[str] = Field(None, description="KRA item sync status")
+    kra_item_code: Optional[str] = Field(None, description="Central company-level KRA item code")
     kra_sync_error: Optional[str] = Field(None, description="Last KRA sync error")
     kra_synced_at: Optional[datetime] = Field(None, description="Last successful KRA sync timestamp")
+    kra_last_sync_at: Optional[datetime] = Field(None, description="Last successful KRA sync timestamp (alias)")
     kra_last_attempt_at: Optional[datetime] = Field(None, description="Last KRA sync attempt timestamp")
     kra_sync_attempt_count: Optional[int] = Field(None, description="KRA sync attempts")
     kra_needs_resync: Optional[bool] = Field(None, description="Whether item requires KRA resync")
+    kra_catalog_snapshot: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Last KRA selectItemList row for this itemCd (full catalog metadata; updated on sync/refresh)",
+    )
+    kra_last_sync_detail: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Last sync audit: sync_path, save_item_called, PharmaSight vs catalogue VAT, user_hint",
+    )
+    branch_kra_sync: List["ItemBranchKraSyncResponse"] = Field(default_factory=list, description="Per-branch KRA sync state")
 
     @model_validator(mode="after")
     def coerce_numeric_base_unit_for_display(self):
@@ -259,6 +272,19 @@ class ItemOverviewResponse(ItemResponse):
     minimum_stock: Optional[float] = Field(default=None, description="Minimum stock level (if configured)")
 
 
+class ItemBranchKraSyncResponse(BaseModel):
+    branch_id: UUID
+    status: str
+    retry_count: int = 0
+    last_error: Optional[str] = None
+    http_status: Optional[int] = None
+    kra_result_cd: Optional[str] = None
+    kra_result_msg: Optional[str] = None
+    response_payload_json: Optional[dict] = None
+    synced_at: Optional[datetime] = None
+    last_attempt_at: Optional[datetime] = None
+
+
 class AdjustStockRequest(BaseModel):
     """Request body for manual stock adjustment (add or reduce). Always applies a delta; never overwrites."""
     branch_id: UUID = Field(..., description="Branch where stock is adjusted")
@@ -300,6 +326,107 @@ class AdjustStockResponse(BaseModel):
     new_stock_display: Optional[str] = Field(None, description="New stock in 3-tier form e.g. '1 packet + 1 sachet'")
     base_quantity: Optional[float] = Field(None, description="Numeric stock in retail units (same as new_stock)")
     retail_unit: Optional[str] = Field(None, description="Retail unit name for labeling base_quantity")
+    kra_stock_push_enqueued: bool = Field(
+        default=False,
+        description="True when a durable KRA OSCU stock-in outbox job was created (insertStockIO + saveStockMaster).",
+    )
+    kra_stock_push_note: Optional[str] = Field(
+        default=None,
+        description="Why KRA was or was not queued; KRA runs on the server, not in the browser Network tab.",
+    )
+    kra_stock_push_ok: Optional[bool] = Field(
+        default=None,
+        description="When a stock-in outbox row was processed in this request: True if OSCU stock update succeeded.",
+    )
+    kra_stock_push_error: Optional[str] = Field(
+        default=None,
+        description="When kra_stock_push_ok is False: last error from insertStockIO/saveStockMaster or readiness gate.",
+    )
+    kra_stock_push_skipped: Optional[str] = Field(
+        default=None,
+        description="When kra_stock_push_ok is True but no KRA call: e.g. shadow_mode, company_kra_disabled, already_processed.",
+    )
+    kra_stock_mirror_rsd_qty: Optional[float] = Field(
+        default=None,
+        description="After successful push: mirrored OSCU rsdQty saved on item_branch_kra_sync.",
+    )
+    kra_outbox_event_id: Optional[str] = Field(
+        default=None,
+        description="Durable outbox row id for inventory.stock_in when enqueued.",
+    )
+    kra_outbox_status: Optional[str] = Field(
+        default=None,
+        description="Outbox processing_status after inline processing (e.g. processed, retry, dead_letter).",
+    )
+    kra_item_code: Optional[str] = Field(
+        default=None,
+        description="items.kra_item_code at time of adjustment (server-side; not sent in request). Used for OSCU insertStockIO/saveStockMaster when stock-in is processed.",
+    )
+    kra_ledger_align_failed: Optional[str] = Field(
+        default=None,
+        description=(
+            "After insertStockIO+saveStockMaster: if a strict saveStockMaster at full PharmaSight ledger qty "
+            "failed, KRA error excerpt (OSCU rsdQty may still differ from local stock)."
+        ),
+    )
+    kra_user_delta: Optional[float] = Field(
+        default=None,
+        description="Raw user-entered movement delta in base units (before KRA reconciliation transform).",
+    )
+    kra_previous_rsd_qty: Optional[float] = Field(
+        default=None,
+        description="Previous OSCU/KRA rsdQty baseline used for reconciliation math.",
+    )
+    kra_target_local_qty: Optional[float] = Field(
+        default=None,
+        description="Authoritative PharmaSight ledger stock targeted for OSCU saveStockMaster.",
+    )
+    kra_reconciliation_delta: Optional[float] = Field(
+        default=None,
+        description="Computed convergence delta (target_local_qty - previous_kra_qty).",
+    )
+    kra_reconciliation_delta_used: Optional[float] = Field(
+        default=None,
+        description="Delta actually posted to insertStockIO (clamped to >= 0).",
+    )
+    kra_resulting_rsd_qty: Optional[float] = Field(
+        default=None,
+        description="rsdQty mirrored after KRA processing for this request.",
+    )
+    kra_insert_stock_sar_ty_cd: Optional[str] = Field(
+        default=None,
+        description="Root insertStockIO sarTyCd when OSCU stock-in ran in this request (ledger-mapped).",
+    )
+    kra_insert_stock_io_ty_cd: Optional[str] = Field(
+        default=None,
+        description="Line insertStockIO ioTyCd when OSCU stock-in ran in this request (ledger-mapped).",
+    )
+    kra_insert_stock_tax_ty_cd: Optional[str] = Field(
+        default=None,
+        description="insertStockIO itemList[0].taxTyCd sent to OSCU for this push (parity with sale line taxTyCd).",
+    )
+
+
+class KraStockReconcileResponse(BaseModel):
+    """Result of POST ``/items/{id}/kra-stock-reconcile`` (read OSCU master, re-post saveStockMaster, update mirror)."""
+    ok: bool = True
+    item_id: UUID
+    branch_id: UUID
+    kra_item_code: str = Field(..., description="KRA itemCd used for selectStockMaster / saveStockMaster")
+    rsd_qty_read: float = Field(
+        ...,
+        description="Target rsdQty before saveStockMaster (from KRA reads, last mirror, or ledger when align_with_ledger).",
+    )
+    rsd_qty_posted: float = Field(
+        ...,
+        description="rsdQty KRA accepted on saveStockMaster (may differ after rsdQty mismatch Expected: retry).",
+    )
+    rsd_qty_source: Optional[str] = Field(
+        default=None,
+        description="select_stock_master | select_stock_move_list | last_mirror | pharmasight_ledger | kra_mismatch_expected",
+    )
+    http_status: int = Field(..., description="HTTP status from saveStockMaster")
+    message: str = Field(..., description="Human summary for operators")
 
 
 # --- Inventory corrections (audit trail, no mutation of sales/FEFO) ---

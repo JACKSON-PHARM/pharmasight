@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
-from app.models.company import Branch, BranchEtimsCredentials
+from app.models.company import Branch, BranchEtimsCredentials, Company
 from app.services.etims.kra_policy_service import KraPolicyService
 from app.services.etims.kra_profile_service import KraProfileService
 
@@ -87,10 +87,15 @@ class BranchKraReadinessResolver:
             }
 
         company_profile = KraProfileService.get_or_create_company_profile(db, company_id=branch.company_id)
+        company = db.query(Company).filter(Company.id == branch.company_id).first()
         blockers = list(KraProfileService.activation_blockers(creds))
         warnings: List[str] = []
 
-        module_enabled = bool(getattr(company_profile, "module_enabled", False))
+        # Tenant execution authority is now companies.kra_enabled (DB, platform admin UI).
+        # Keep legacy company_kra_profiles.module_enabled only as compatibility fallback.
+        company_kra_enabled = bool(company and getattr(company, "kra_enabled", False))
+        legacy_module_enabled = bool(getattr(company_profile, "module_enabled", False))
+        module_enabled = bool(company_kra_enabled or legacy_module_enabled)
         if not module_enabled:
             blockers.append("company_module_disabled")
 

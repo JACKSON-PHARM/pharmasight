@@ -32,6 +32,7 @@ from app.api.platform_etims_common import (
     invalidate_branch_etims_verification,
     norm_etims_env,
     norm_etims_solution,
+    norm_kra_mode,
 )
 from app.models.company import Company
 from app.models.tenant import Tenant
@@ -539,6 +540,9 @@ def admin_get_company_etims(
         company_pin=c.pin,
         trader_invoicing_system_name=trader_name,
         has_company_integrator_pin=has_int,
+        kra_enabled=bool(getattr(c, "kra_enabled", False)),
+        kra_mode=(getattr(c, "kra_mode", None) or "sandbox"),
+        kra_onboarded_at=getattr(c, "kra_onboarded_at", None),
         branches=out_rows,
     )
 
@@ -577,6 +581,14 @@ def admin_patch_company_pin(
         v = (body.integrator_pin or "").strip()
         p.integrator_pin = encrypt_secret(v) if v else None
         p.credential_updated_at = datetime.now(timezone.utc)
+
+    if body.kra_enabled is not None:
+        was = bool(getattr(c, "kra_enabled", False))
+        c.kra_enabled = bool(body.kra_enabled)
+        if bool(body.kra_enabled) and not was and getattr(c, "kra_onboarded_at", None) is None:
+            c.kra_onboarded_at = datetime.now(timezone.utc)
+    if body.kra_mode is not None:
+        c.kra_mode = norm_kra_mode(body.kra_mode)
 
     db.commit()
     return admin_get_company_etims(company_id, _admin=_admin, db=db)

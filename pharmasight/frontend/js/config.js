@@ -1,4 +1,4 @@
-// PharmaSight Configuration
+// SightOps frontend configuration (storage keys may retain legacy `pharmasight_*` names).
 // Use relative URL when served from same origin (e.g. Render); localhost => explicit API URL for local dev.
 //
 // Bootstrap: start.py writes frontend/js/runtime_config.json with the active backend port (8000 vs 8001).

@@ -69,13 +69,14 @@ class EmailService:
             <p>Use this username to log in after you set your password.</p>
             """
 
+        brand = settings.APP_NAME
         html_body = f"""
         <!DOCTYPE html>
         <html>
         <body style="font-family:sans-serif;line-height:1.5;color:#333;">
-            <h2>You're invited to set up {safe_name} on PharmaSight</h2>
+            <h2>You're invited to set up {safe_name} on {brand}</h2>
             <p>Click the link below to complete your account setup:</p>
-            <p><a href="{setup_url}" style="background:#2563eb;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;display:inline-block;">Complete setup</a></p>
+            <p><a href="{safe_url}" style="background:#14b8a6;color:#0f172a;padding:10px 20px;text-decoration:none;border-radius:8px;display:inline-block;font-weight:600;">Complete setup</a></p>
             <p style="word-break:break-all;font-size:12px;color:#666;">Or copy this link: {safe_url}</p>
             {username_block}
             <p style="color:#666;font-size:14px;">This link expires in 7 days. If you didn't expect this email, you can ignore it.</p>
@@ -83,13 +84,13 @@ class EmailService:
         </html>
         """
 
-        plain = f"""You're invited to set up {tenant_name} on PharmaSight.\n\nComplete your setup: {setup_url}\n"""
+        plain = f"""You're invited to set up {tenant_name} on {settings.APP_NAME}.\n\nComplete your setup: {setup_url}\n"""
         if username:
             plain += f"\nYour username: {username}\nUse this to log in after setting your password.\n"
         plain += "\nThis link expires in 7 days.\n"
 
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Complete your PharmaSight setup – {tenant_name}"
+        msg["Subject"] = f"Complete your {settings.APP_NAME} setup – {tenant_name}"
         msg["From"] = settings.EMAIL_FROM
         msg["To"] = to_email
         msg.attach(MIMEText(plain, "plain"))
@@ -151,9 +152,9 @@ class EmailService:
         <!DOCTYPE html>
         <html>
         <body style="font-family:sans-serif;line-height:1.5;color:#333;">
-            <h2>Reset your PharmaSight password</h2>
+            <h2>Reset your {settings.APP_NAME} password</h2>
             <p>Click the link below to set a new password:</p>
-            <p><a href="{safe_url}" style="background:#2563eb;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;display:inline-block;">Reset password</a></p>
+            <p><a href="{safe_url}" style="background:#14b8a6;color:#0f172a;padding:10px 20px;text-decoration:none;border-radius:8px;display:inline-block;font-weight:600;">Reset password</a></p>
             <p style="word-break:break-all;font-size:12px;color:#666;">Or copy: {safe_url}</p>
             {username_block}
             {tenant_block}
@@ -161,13 +162,13 @@ class EmailService:
         </body>
         </html>
         """
-        plain = f"Reset your PharmaSight password: {reset_url}\n\nThis link expires in {expire_minutes} minutes.\n"
+        plain = f"Reset your {settings.APP_NAME} password: {reset_url}\n\nThis link expires in {expire_minutes} minutes.\n"
         if username:
             plain += f"\nYour username: {username}\nUse this username when signing in (with your new password).\n"
         if tenant_subdomain and sign_in_url:
             plain += f"\nYour organization sign-in link: {sign_in_url}\n"
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = "Reset your PharmaSight password"
+        msg["Subject"] = f"Reset your {settings.APP_NAME} password"
         msg["From"] = settings.EMAIL_FROM
         msg["To"] = to_email
         msg.attach(MIMEText(plain, "plain"))

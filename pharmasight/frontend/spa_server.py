@@ -50,6 +50,10 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         ".css": "text/css",
         ".html": "text/html",
         ".json": "application/json",
+        ".svg": "image/svg+xml",
+        ".webp": "image/webp",
+        ".png": "image/png",
+        ".ico": "image/x-icon",
     }
 
     def guess_type(self, path):
@@ -59,10 +63,24 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
             ext = path[i:].lower()
         return self.extensions_map.get(ext, "application/octet-stream")
 
+    def _content_type_for_file(self, full_path: Path) -> str:
+        """Reliable Content-Type for direct file responses (Windows mimetypes often miss .svg)."""
+        suf = full_path.suffix.lower()
+        if suf == ".svg":
+            return "image/svg+xml"
+        return self.guess_type(full_path.name)
+
     def end_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # Local dev: avoid stale sales/print bundles after edits (query ?v= still helps CDNs).
+        try:
+            p = (self.path or "").split("?")[0].lower()
+            if p.endswith((".js", ".html", ".json", ".css")):
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+        except Exception:
+            pass
         super().end_headers()
 
     def _parsed_path(self) -> str:
@@ -81,7 +99,7 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         except OSError:
             self.send_error(404)
             return
-        ctype = content_type or self.guess_type(full_path.name)
+        ctype = content_type or self._content_type_for_file(full_path)
         self.send_response(200)
         self.send_header("Content-type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -94,11 +112,30 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         except OSError:
             self.send_error(404)
             return
-        ctype = self.guess_type(full_path.name)
+        ctype = self._content_type_for_file(full_path)
         self.send_response(200)
         self.send_header("Content-type", ctype)
         self.send_header("Content-Length", str(n))
         self.end_headers()
+
+    def _resolve_frontend_static(self, parsed: str) -> Optional[Path]:
+        """
+        Map URL path to a file under FRONTEND_ROOT (no reliance on process cwd).
+        Returns None if not a safe static file under the frontend tree.
+        """
+        if not parsed:
+            return None
+        if parsed == "/app" or parsed.startswith("/app/"):
+            return None
+        rel = parsed.lstrip("/")
+        if not rel or ".." in rel.split("/"):
+            return None
+        try:
+            cand = (FRONTEND_ROOT / rel).resolve()
+            cand.relative_to(FRONTEND_ROOT.resolve())
+        except (ValueError, OSError):
+            return None
+        return cand if cand.is_file() else None
 
     def _marketing_response(self, parsed: str, head: bool) -> bool:
         """Handle GET/HEAD under /marketing/*. Return False if path is not marketing."""
@@ -155,14 +192,12 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
             return
 
-        # Existing frontend static file
-        file_path = Path(parsed.lstrip("/"))
-        if parsed.endswith(".js"):
-            print(f"[Frontend] JS Request: {self.path} -> {parsed}")
-            print(f"[Frontend] File exists: {file_path.is_file()}, Full path: {(FRONTEND_ROOT / file_path).resolve()}")
-
-        if file_path.is_file():
-            super().do_GET()
+        # Existing frontend static file (explicit path + MIME; avoids cwd / super().do_GET quirks)
+        static_path = self._resolve_frontend_static(parsed)
+        if static_path is not None:
+            if parsed.endswith(".js"):
+                print(f"[Frontend] JS static: {parsed} -> {static_path}")
+            self._send_bytes(static_path)
             return
 
         # SPA fallback for deep links (legacy dev URLs without /app)
@@ -197,10 +232,9 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
                 return
             self.send_error(404)
             return
-        file_path = Path(parsed.lstrip("/"))
-        if file_path.is_file():
-            self.path = parsed
-            super().do_HEAD()
+        static_path = self._resolve_frontend_static(parsed)
+        if static_path is not None:
+            self._send_head_file(static_path)
             return
         idx = FRONTEND_ROOT / "index.html"
         if idx.is_file():

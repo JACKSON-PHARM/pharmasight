@@ -35,6 +35,7 @@ from app.schemas.purchase import (
     GRNCreate, GRNResponse,
     SupplierInvoiceCreate, SupplierInvoiceResponse,
     SupplierInvoicePaymentAllocationInfo,
+    KraStockPushLedgerOutcome,
     SupplierInvoiceItemCreate, SupplierInvoiceItemUpdate,
     PurchaseOrderCreate, PurchaseOrderResponse,
     PurchaseOrderItemCreate,
@@ -73,6 +74,7 @@ from fastapi.responses import Response
 from app.services.document_pdf_generator import build_grn_pdf, build_supplier_invoice_pdf
 from app.services.canonical_pricing import CanonicalPricingService
 from app.config import settings
+from app.services.etims.item_kra_sync_policy import enqueue_item_sync_for_stock_event
 import json
 import sqlalchemy.exc
 import httpx
@@ -135,6 +137,59 @@ def _purchase_after_document(db: Session, user: User, document, permission: str)
 
 def _legacy_path_tenant_fallback_enabled() -> bool:
     return bool(getattr(settings, "ENABLE_LEGACY_PATH_TENANT_FALLBACK", False))
+
+
+def _enqueue_and_process_kra_stock_in_for_ledger_entries(
+    db: Session,
+    ledger_entries: list,
+    *,
+    source: str,
+) -> list[dict]:
+    """
+    Enqueue then immediately process ``inventory.stock_in`` (same pattern as item adjust-stock).
+
+    Without this, purchase/GRN batch only writes pending outbox rows; OSCU is unchanged until the
+    background worker runs.
+
+    Returns one dict per ledger row (for API response / support); KRA HTTP calls still occur server-side only.
+    """
+    from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
+    from app.services.etims.kra_outbox_worker import process_inventory_stock_in_outbox_row
+
+    results: list[dict] = []
+    for entry in ledger_entries:
+        enqueued, note, ob_row = enqueue_kra_stock_in_for_ledger(db, entry, source=source)
+        row: dict = {
+            "item_id": entry.item_id,
+            "inventory_ledger_id": entry.id,
+            "kra_enqueued": bool(ob_row is not None),
+            "kra_ok": None,
+            "kra_error": None,
+            "kra_skipped": None,
+            "kra_note": note,
+            "kra_insert_stock_sar_ty_cd": None,
+            "kra_insert_stock_io_ty_cd": None,
+            "kra_insert_stock_tax_ty_cd": None,
+            "kra_mirror_rsd_qty": None,
+        }
+        if ob_row is None:
+            results.append(row)
+            continue
+        push = process_inventory_stock_in_outbox_row(db, ob_row)
+        row["kra_ok"] = bool(push.get("ok"))
+        row["kra_error"] = push.get("error")
+        row["kra_skipped"] = push.get("skipped")
+        row["kra_insert_stock_sar_ty_cd"] = push.get("insert_stock_sar_ty_cd")
+        row["kra_insert_stock_io_ty_cd"] = push.get("insert_stock_io_ty_cd")
+        row["kra_insert_stock_tax_ty_cd"] = push.get("insert_stock_tax_ty_cd")
+        rq = push.get("kra_stock_rsd_qty")
+        if rq is not None:
+            try:
+                row["kra_mirror_rsd_qty"] = float(rq)
+            except (TypeError, ValueError):
+                row["kra_mirror_rsd_qty"] = None
+        results.append(row)
+    return results
 
 
 def _parse_expiry_date(expiry) -> Optional[date]:
@@ -488,6 +543,22 @@ def create_grn(
         db, db_grn.company_id, db_grn.branch_id, grn_item_ids,
         received_at=datetime.now(timezone.utc),
     )
+
+    # Stock-affecting event: enqueue KRA item sync for received items on this branch.
+    for iid in grn_item_ids:
+        item_row = grn_items_map.get(iid)
+        if not item_row:
+            item_row = db.query(Item).filter(Item.id == iid, Item.company_id == db_grn.company_id).first()
+        if item_row:
+            enqueue_item_sync_for_stock_event(
+                db,
+                item=item_row,
+                branch_id=db_grn.branch_id,
+                source="stock.grn",
+                max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
+            )
+
+    _enqueue_and_process_kra_stock_in_for_ledger_entries(db, ledger_entries, source="stock.grn")
 
     db.commit()
     db.refresh(db_grn)
@@ -2032,6 +2103,7 @@ def batch_supplier_invoice(
             )
             ledger_entries.append(ledger_entry)
 
+    kra_push_lines_out: list[dict] = []
     try:
         # Add all ledger entries
         for entry in ledger_entries:
@@ -2091,6 +2163,10 @@ def batch_supplier_invoice(
             received_at=datetime.now(timezone.utc),
         )
 
+        kra_push_lines_out = _enqueue_and_process_kra_stock_in_for_ledger_entries(
+            db, ledger_entries, source="stock.purchase_invoice"
+        )
+
         db.commit()
         db.refresh(invoice)
     except HTTPException:
@@ -2109,7 +2185,19 @@ def batch_supplier_invoice(
         invoice.created_by_name = invoice.creator.full_name or invoice.creator.email
 
     prepare_supplier_invoice_for_response(db, invoice)
-    return invoice
+    base = SupplierInvoiceResponse.model_validate(invoice)
+    lines = (
+        [KraStockPushLedgerOutcome(**row) for row in kra_push_lines_out]
+        if kra_push_lines_out
+        else None
+    )
+    summary_note = None
+    if kra_push_lines_out:
+        summary_note = (
+            "KRA OSCU (insertStockIO/saveStockMaster) runs inside the PharmaSight API process toward KRA — "
+            "not from the browser, so DevTools will not list kra.go.ke. See kra_stock_push_lines for each ledger line."
+        )
+    return base.model_copy(update={"kra_stock_push_lines": lines, "kra_stock_push_note": summary_note})
 
 
 @router.put("/invoice/{invoice_id}/payment", response_model=SupplierInvoiceResponse)

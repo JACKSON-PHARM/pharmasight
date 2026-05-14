@@ -91,6 +91,7 @@ const DASHBOARD_CARD_PERMISSIONS = {
     'totalStockValue': ['dashboard.view_stock_value', 'inventory.view', 'inventory.view_cost'],
     'todaySales': ['dashboard.view_sales', 'sales.view_own', 'sales.view_all'],
     'ordersProcessed': ['dashboard.view_sales', 'sales.view_own', 'sales.view_all'],
+    'creditReturnsCount': ['dashboard.view_sales', 'sales.view_own', 'sales.view_all'],
     // Gross profit reveals cost, so require cost-related permissions (or admin).
     'todayGrossProfit': ['inventory.view_cost', 'items.view_cost', 'admin.manage_company'],
     'expiringItems': ['dashboard.view_expiring', 'inventory.view'],

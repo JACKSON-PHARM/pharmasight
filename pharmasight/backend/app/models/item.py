@@ -1,8 +1,8 @@
 """
 Item and Unit models
 """
-from sqlalchemy import Column, String, Boolean, Numeric, ForeignKey, Integer, Date
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Boolean, Numeric, ForeignKey, Integer, Date, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.types import TIMESTAMP
@@ -69,6 +69,12 @@ class Item(Base):
     kra_pkg_unit_cd = Column(String(20), nullable=True)
     kra_qty_unit_cd = Column(String(20), nullable=True)
     kra_tax_ty_cd = Column(String(20), nullable=True)
+    kra_vat_cat_cd = Column(String(20), nullable=True)
+    # Full selectItemList row JSON from KRA (same transaction as scalar kra_* updates on sync/refresh).
+    kra_catalog_snapshot = Column(JSONB, nullable=True)
+    # Last sync_item_to_kra audit (HTTP path, whether saveItem ran, VAT alignment, UI hints).
+    kra_last_sync_detail = Column(JSONB, nullable=True)
+    kra_item_code = Column(String(64), nullable=True)
     kra_sync_status = Column(String(30), nullable=False, default="not_synced")
     kra_sync_error = Column(String(4000), nullable=True)
     kra_synced_at = Column(TIMESTAMP(timezone=True), nullable=True)
@@ -83,6 +89,42 @@ class Item(Base):
     company = relationship("Company", back_populates="items")
     default_supplier = relationship("Supplier", foreign_keys=[default_supplier_id])
     pricing = relationship("ItemPricing", back_populates="item", uselist=False, cascade="all, delete-orphan")
+    branch_kra_sync = relationship(
+        "ItemBranchKraSync",
+        back_populates="item",
+        cascade="all, delete-orphan",
+    )
+
+
+class ItemBranchKraSync(Base):
+    """Per-branch KRA sync state for a company-level item identity."""
+
+    __tablename__ = "item_branch_kra_sync"
+    __table_args__ = (
+        UniqueConstraint("item_id", "branch_id", name="uq_item_branch_kra_sync_item_branch"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    item_id = Column(UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    status = Column(String(30), nullable=False, default="pending")
+    retry_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(String(4000), nullable=True)
+    http_status = Column(Integer, nullable=True)
+    kra_result_cd = Column(String(32), nullable=True)
+    kra_result_msg = Column(String(4000), nullable=True)
+    response_payload_json = Column(JSONB, nullable=True)
+    synced_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    last_attempt_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Mirrored KRA saveStockMaster rsdQty for OSDC stock (insertStockIO + saveStockMaster pipeline).
+    kra_stock_rsd_qty = Column(Numeric(20, 4), nullable=True)
+    kra_stock_mirror_updated_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    item = relationship("Item", back_populates="branch_kra_sync")
+    branch = relationship("Branch")
 
 
 class ItemPricing(Base):

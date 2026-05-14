@@ -287,15 +287,15 @@ async function loadSubPageData() {
 }
 
 // ============================================
-// DEPARTMENT SUPPLY (same-branch pharmacy ↔ mini-stores)
+// DEPARTMENT SUPPLY (same-branch central stock ↔ mini-stores)
 // ============================================
 function renderDepartmentTransfersSubPage() {
     return `
         <div>
             <h2 style="margin-top:0;"><i class="fas fa-hospital"></i> Department transfers</h2>
             <p style="color:var(--text-secondary); max-width:52rem;">
-                Departments submit <strong>orders</strong> from Clinic workstations. Pharmacy creates a <strong>draft transfer</strong>
-                from an order, completes it (FEFO deduct from pharmacy stock), then the department confirms <strong>receipt</strong>
+                Departments submit <strong>orders</strong> from clinic workstations. Central stock creates a <strong>draft transfer</strong>
+                from an order, completes it (FEFO deduct from branch stock), then the department confirms <strong>receipt</strong>
                 into its mini-store — no re-keying of lines.
             </p>
             <div id="departmentTransfersWorkbench"><div class="spinner"></div></div>
@@ -367,8 +367,8 @@ async function loadDepartmentTransfersData() {
               </table>
             </div>
             <div class="card" style="padding:1rem;">
-              <h3 style="margin-top:0;">2 · Draft transfers (pharmacy)</h3>
-              <p style="color:var(--text-secondary); font-size:0.9rem;">Completing a transfer runs FEFO from pharmacy stock and creates a pending receipt for the department.</p>
+              <h3 style="margin-top:0;">2 · Draft transfers (central stock)</h3>
+              <p style="color:var(--text-secondary); font-size:0.9rem;">Completing a transfer runs FEFO from branch stock and creates a pending receipt for the department.</p>
               <table style="width:100%; border-collapse:collapse;">
                 <thead><tr><th style="text-align:left; padding:0.5rem;">Transfer</th><th style="text-align:left; padding:0.5rem;">Department</th><th style="text-align:left; padding:0.5rem;">Lines</th><th></th></tr></thead>
                 <tbody>${transferRows}</tbody>
@@ -393,7 +393,7 @@ async function loadDepartmentTransfersData() {
             }
             if (compBtn) {
                 const id = compBtn.getAttribute('data-ds-complete-transfer');
-                if (!id || !confirm('Complete transfer? Pharmacy stock will be deducted (FEFO).')) return;
+                if (!id || !confirm('Complete transfer? Branch stock will be deducted (FEFO).')) return;
                 try {
                     await API.departmentSupply.completeTransfer(id);
                     if (typeof window.showToast === 'function') window.showToast('Transfer completed — department can confirm receipt', 'success');
@@ -1266,6 +1266,19 @@ async function loadItemsData() {
     inventoryFilteredItemsList = [];
 }
 
+/**
+ * Item search uses a short-lived client cache; after ledger stock changes the DB snapshot is
+ * updated on the server but cached rows still show old stock until cache is cleared.
+ */
+function refreshItemsSearchAfterStockMutation() {
+    if (typeof window !== 'undefined' && window.searchCache && typeof window.searchCache.clear === 'function') {
+        window.searchCache.clear();
+    }
+    if (typeof filterItems === 'function') {
+        filterItems();
+    }
+}
+
 // OPTIMIZED: Use API search instead of client-side filtering
 async function filterItems() {
     const searchInput = document.getElementById('itemsSearchInput');
@@ -1798,10 +1811,17 @@ async function submitAdjustStock(itemId) {
     try {
         const res = await API.items.adjustStock(itemId, payload);
         if (typeof closeModal === 'function') closeModal();
-        const msg = (res && res.message) ? res.message : 'Stock adjusted successfully.';
-        if (typeof showToast === 'function') showToast(msg, 'success');
+        let msg = (res && res.message) ? res.message : 'Stock adjusted successfully.';
+        if (res && res.kra_stock_push_note) {
+            msg += ' ' + res.kra_stock_push_note;
+        }
+        let toastType = 'success';
+        if (res && res.kra_stock_push_enqueued && res.kra_stock_push_ok === false) {
+            toastType = 'warning';
+        }
+        if (typeof showToast === 'function') showToast(msg, toastType);
         else alert(msg);
-        if (typeof filterItems === 'function') filterItems();
+        refreshItemsSearchAfterStockMutation();
     } catch (err) {
         const data = err.data || err.response?.data || {};
         const detail = data.detail;
@@ -1899,10 +1919,17 @@ function showShortExpiryOverrideAdjustStockModal(itemId, detail, payload) {
                 const overridePayload = Object.assign({}, payload, { short_expiry_override: true });
                 const res = await API.items.adjustStock(itemId, overridePayload);
                 if (typeof closeModal === 'function') closeModal();
-                const msg = (res && res.message) ? res.message : 'Stock adjusted successfully.';
-                if (typeof showToast === 'function') showToast(msg, 'success');
+                let msg = (res && res.message) ? res.message : 'Stock adjusted successfully.';
+                if (res && res.kra_stock_push_note) {
+                    msg += ' ' + res.kra_stock_push_note;
+                }
+                let toastType = 'success';
+                if (res && res.kra_stock_push_enqueued && res.kra_stock_push_ok === false) {
+                    toastType = 'warning';
+                }
+                if (typeof showToast === 'function') showToast(msg, toastType);
                 else alert(msg);
-                if (typeof filterItems === 'function') filterItems();
+                refreshItemsSearchAfterStockMutation();
             } catch (e) {
                 const d = (e && (e.data || e.response?.data) && (e.data || e.response?.data).detail) || null;
                 if (d && typeof d === 'object' && d.code === 'SHORT_EXPIRY_OVERRIDE_FORBIDDEN') {
@@ -1977,13 +2004,20 @@ function showCostOverrideModal(message, itemId, payload, adjustSubmitBtn) {
                     btn.innerHTML = '<i class="fas fa-unlock-alt"></i> Authorize';
                     return;
                 }
-                await API.items.adjustStockWithOverrideToken(itemId, payload, token);
+                const adjRes = await API.items.adjustStockWithOverrideToken(itemId, payload, token);
                 if (typeof closeCostOverrideModal === 'function') closeCostOverrideModal();
                 if (typeof closeModal === 'function') closeModal();
-                const msg = (loginRes && loginRes.message) ? loginRes.message : 'Stock adjusted successfully with manager override.';
-                if (typeof showToast === 'function') showToast(msg || 'Stock adjusted successfully.', 'success');
-                else alert(msg || 'Stock adjusted successfully.');
-                if (typeof filterItems === 'function') filterItems();
+                let msg = (adjRes && adjRes.message) ? adjRes.message : 'Stock adjusted successfully with manager override.';
+                if (adjRes && adjRes.kra_stock_push_note) {
+                    msg += ' ' + adjRes.kra_stock_push_note;
+                }
+                let toastType = 'success';
+                if (adjRes && adjRes.kra_stock_push_enqueued && adjRes.kra_stock_push_ok === false) {
+                    toastType = 'warning';
+                }
+                if (typeof showToast === 'function') showToast(msg, toastType);
+                else alert(msg);
+                refreshItemsSearchAfterStockMutation();
             } catch (e) {
                 const errMsg = (e.data && e.data.detail && (typeof e.data.detail === 'string' ? e.data.detail : e.data.detail.message)) || e.message || 'Authorization failed.';
                 if (errEl) { errEl.style.display = 'block'; errEl.textContent = errMsg; }
@@ -2819,7 +2853,7 @@ function printExpiryReport() {
     var wrap = document.getElementById('expiryReportTableWrap');
     if (wrap) {
         var prevTitle = document.title;
-        document.title = 'Expiry Report - ' + (lastExpiryReport && lastExpiryReport.branch_name ? lastExpiryReport.branch_name : 'PharmaSight');
+        document.title = 'Expiry Report - ' + (lastExpiryReport && lastExpiryReport.branch_name ? lastExpiryReport.branch_name : 'SightOps');
         window.print();
         document.title = prevTitle;
     } else {
@@ -3056,7 +3090,7 @@ function printCurrentStock() {
     var wrap = document.getElementById('currentStockTableWrap');
     if (wrap) {
         var prevTitle = document.title;
-        document.title = 'Current Stock / Valuation - ' + (lastCurrentStockValuation && lastCurrentStockValuation.branch_name ? lastCurrentStockValuation.branch_name : 'PharmaSight');
+        document.title = 'Current Stock / Valuation - ' + (lastCurrentStockValuation && lastCurrentStockValuation.branch_name ? lastCurrentStockValuation.branch_name : 'SightOps');
         window.print();
         document.title = prevTitle;
     } else {

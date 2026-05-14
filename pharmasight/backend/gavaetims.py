@@ -33,6 +33,8 @@ Optional ``.env`` overrides **only**:
   after that attempt fails or for later retries.
   GAVAETIMS_LEDGER_CONTRACT_DIAGNOSTIC_ONLY_PRECHECK — if ``1``/``true``, ``--ledger-contract-test`` runs a
   stderr-only ``selectStockMaster`` line before insert (does not affect IO or verdict inputs).
+  GAVA_ETIMS_FORENSIC_SAVE_INVOICE_JSONL — if set to a file path, each ``saveInvoice`` (``saveTrnsSalesOsdc``)
+  POST appends one JSON line: ``url``, ``params``, ``headers``, ``payload`` (exact objects) for parity with Pharmasight ``ETIMS_OSDC_FORENSIC_JSONL_PATH``.
 
 ``--minimal-osdc-sale-test`` + ``--clean-run``: pin blob key ``minimal_osdc_item_cd_override`` in
 ``.test_state.json`` is **preserved** (other item/sequence keys are cleared) so you can pin the next
@@ -10272,6 +10274,21 @@ def main():
                         fallback_tin=effective_tin,
                         fallback_bhf=branch_id,
                     )
+                if endpoint_name == "saveInvoice" and (os.environ.get("GAVA_ETIMS_FORENSIC_SAVE_INVOICE_JSONL") or "").strip():
+                    _fp = (os.environ.get("GAVA_ETIMS_FORENSIC_SAVE_INVOICE_JSONL") or "").strip()
+                    _row = {
+                        "source": "gavaetims",
+                        "endpoint_name": endpoint_name,
+                        "url": url,
+                        "params": _post_params,
+                        "headers": dict(post_headers),
+                        "payload": payload,
+                    }
+                    try:
+                        with open(_fp, "a", encoding="utf-8") as _fj:
+                            _fj.write(json.dumps(_row, ensure_ascii=False, default=str) + "\n")
+                    except Exception as _ex:
+                        print(f"NOTE: GAVA_ETIMS_FORENSIC_SAVE_INVOICE_JSONL append failed: {_ex}")
                 resp = post_with_retry(
                     endpoint_name=endpoint_name,
                     url=url,

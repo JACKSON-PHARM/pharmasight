@@ -34,10 +34,18 @@ class SalesInvoiceItemUpdate(BaseModel):
 
 
 class BatchSalesInvoiceRequest(BaseModel):
-    """Optional body for batch endpoint: sync invoice lines from frontend before batching."""
+    """Optional body for batch endpoint: sync draft header + invoice lines from UI before batching."""
     items: Optional[List[SalesInvoiceItemCreate]] = Field(
         default=None,
-        description="Current line items from UI (quantity, unit_name, unit_price_exclusive, etc.). If provided, draft lines are updated to match before stock deduction."
+        description="Current line items from UI (quantity, unit_name, unit_price_exclusive, etc.). If provided, draft lines are updated to match before stock deduction.",
+    )
+    customer_name: Optional[str] = None
+    customer_pin: Optional[str] = None
+    customer_phone: Optional[str] = None
+    payment_mode: Optional[str] = None
+    invoice_date: Optional[date] = Field(
+        default=None,
+        description="When set, updates the invoice date on the draft before batch (same as saving the form).",
     )
 
 
@@ -62,6 +70,8 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
     margin_percent: Optional[Decimal] = None  # Margin % for UI display (sale/quotation)
     item_name: Optional[str] = None
     item_code: Optional[str] = None
+    # KRA-registered itemCd (items.kra_item_code); sent on eTIMS sales submit — not the same as item_code (SKU).
+    kra_item_code: Optional[str] = None
     unit_display_short: Optional[str] = None  # P/W/S for display/print only
     batch_number: Optional[str] = None  # From ledger when batched, for receipt print (first allocation)
     expiry_date: Optional[str] = None  # ISO date from ledger when batched, for receipt print
@@ -132,12 +142,17 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     # Print letterhead (populated by API when fetching single invoice)
     company_name: Optional[str] = None
     company_address: Optional[str] = None
+    company_pin: Optional[str] = None
     branch_name: Optional[str] = None
     branch_address: Optional[str] = None
     branch_phone: Optional[str] = None
     created_by_username: Optional[str] = None
     # Short-lived signed URL for company logo (for print/HTML); only when logo in tenant-assets
     logo_url: Optional[str] = None
+    # When true, fiscal receipts/PDF should only be issued after KRA submit succeeds (submission_status=submitted).
+    company_kra_enabled: Optional[bool] = False
+    # True when this invoice was taken down the KRA path at batch (company kra_enabled + branch eTIMS credentials enabled).
+    kra_fiscal_receipt_required: Optional[bool] = False
     # eTIMS / KRA (submission layer)
     kra_receipt_number: Optional[str] = None
     kra_signature: Optional[str] = None
@@ -145,6 +160,8 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     submission_status: Optional[str] = None
     kra_submitted_at: Optional[datetime] = None
     kra_last_error: Optional[str] = None
+    # Branch eTIMS hardware serial (for fiscal receipt line; not persisted on invoice row)
+    etims_device_serial: Optional[str] = None
 
     class Config:
         from_attributes = True

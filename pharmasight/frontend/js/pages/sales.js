@@ -3500,6 +3500,8 @@ async function batchSalesInvoice(invoiceId, buttonEl) {
         if (!userId) throw new Error('User ID not found. Please log in again.');
         // Send current table items so backend updates draft lines before batching (print matches what you see)
         let body = null;
+        const form = document.getElementById('salesInvoiceForm');
+        const canUseForm = form && form instanceof HTMLFormElement && currentInvoice && String(currentInvoice.id) === String(invoiceId);
         if (currentInvoice && currentInvoice.id === invoiceId && salesInvoiceItemsTable && typeof salesInvoiceItemsTable.getItems === 'function') {
             const validItems = salesInvoiceItemsTable.getItems();
             if (validItems && validItems.length > 0) {
@@ -3514,6 +3516,16 @@ async function batchSalesInvoice(invoiceId, buttonEl) {
                     }))
                 };
             }
+        }
+        if (canUseForm && body) {
+            const fd = new FormData(form);
+            body.customer_name = (fd.get('customer_name') || '').trim() || null;
+            body.customer_pin = (fd.get('customer_pin') || '').trim() || null;
+            body.customer_phone = (fd.get('customer_phone') || '').trim() || null;
+            const pm = (fd.get('payment_mode') || '').trim();
+            if (pm) body.payment_mode = pm;
+            const idate = (fd.get('invoice_date') || '').trim();
+            if (idate) body.invoice_date = idate;
         }
         const invoice = await API.sales.batchInvoice(invoiceId, userId, body);
         showToast('Invoice batched successfully! Stock has been reduced.', 'success');
@@ -3839,11 +3851,100 @@ async function checkIfAdminOrManager() {
     }
 }
 
+/** Matches backend batch gate: company kra_enabled + branch eTIMS credentials enabled (snapshot/outbox path). */
+function kraFiscalReceiptRequired(invoice) {
+    if (!invoice) return false;
+    const sub = (invoice.submission_status || '').trim().toLowerCase();
+    if (sub === 'pending' || sub === 'failed') return true;
+    return !!invoice.kra_fiscal_receipt_required;
+}
+
+/** When fiscal receipt is required, batched/paid invoices must be submission_status=submitted before print (no unsigned fiscal slip). */
+function salesInvoicePassesKraFiscalPrintGate(invoice) {
+    if (!invoice || !kraFiscalReceiptRequired(invoice)) return true;
+    const st = (invoice.status || '').toUpperCase();
+    if (st !== 'BATCHED' && st !== 'PAID') return true;
+    return (invoice.submission_status || '').toLowerCase() === 'submitted';
+}
+
+function formatApiErrorForDisplay(err) {
+    if (!err) return 'Unknown error';
+    if (err.message) return String(err.message);
+    if (err.detail) return String(err.detail);
+    try {
+        const d = err.data && err.data.detail;
+        if (d == null) return 'Request failed';
+        if (typeof d === 'string') return d;
+        return JSON.stringify(d);
+    } catch (_) {
+        return 'Request failed';
+    }
+}
+
+/** Ask backend to sign with KRA before browser/QZ print so receipt HTML includes fiscal fields when possible. */
+async function ensureSalesInvoiceKraSignedForFiscalPrint(invoiceId, invoice) {
+    if (!kraFiscalReceiptRequired(invoice)) return invoice;
+    const st = (invoice.status || '').toUpperCase();
+    if (st !== 'BATCHED' && st !== 'PAID') return invoice;
+
+    const subOk = (invoice.submission_status || '').trim().toLowerCase() === 'submitted';
+    const missingFiscal =
+        !invoice.kra_receipt_number || !invoice.kra_qr_code || !invoice.kra_signature;
+    if (
+        subOk &&
+        missingFiscal &&
+        typeof API !== 'undefined' &&
+        API.sales &&
+        typeof API.sales.kraReceiptFromSubmissionLog === 'function'
+    ) {
+        try {
+            await API.sales.kraReceiptFromSubmissionLog(invoiceId);
+            invoice = await API.sales.getInvoice(invoiceId);
+        } catch (_) {
+            /* Log may be missing or body shape unexpected; continue to submit path if needed */
+        }
+    }
+
+    if (invoice.kra_receipt_number) return invoice;
+    if (typeof API === 'undefined' || !API.sales || typeof API.sales.submitKraNow !== 'function') return invoice;
+    try {
+        await API.sales.submitKraNow(invoiceId);
+        return await API.sales.getInvoice(invoiceId);
+    } catch (e) {
+        const msg = formatApiErrorForDisplay(e);
+        if (typeof showToast === 'function') showToast('KRA signing failed: ' + msg, 'error');
+        try {
+            return await API.sales.getInvoice(invoiceId);
+        } catch (_) {
+            return invoice;
+        }
+    }
+}
+
 async function printSalesInvoice(invoiceId, printType) {
     const layout = printType != null ? printType : (typeof choosePrintLayout === 'function' ? await choosePrintLayout() : ((typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal'));
     if (layout == null) return;
     try {
-        const invoice = await API.sales.getInvoice(invoiceId);
+        let invoice = await API.sales.getInvoice(invoiceId);
+        invoice = await ensureSalesInvoiceKraSignedForFiscalPrint(invoiceId, invoice);
+        while (!salesInvoicePassesKraFiscalPrintGate(invoice)) {
+            const kraErr = invoice.kra_last_error ? String(invoice.kra_last_error) : '';
+            const summary =
+                'This invoice must be accepted by KRA before you can print a fiscal receipt.\n\n' +
+                (kraErr ? 'Last KRA error:\n' + kraErr.slice(0, 1200) + '\n\n' : '') +
+                'Fix eTIMS credentials or payload issues, then choose Retry to submit again.';
+            const retry =
+                typeof confirm === 'function' &&
+                confirm(summary + '\n\nClick OK to retry KRA submit now, or Cancel to stop without printing.');
+            if (!retry) {
+                if (typeof showToast === 'function') {
+                    showToast('Print cancelled — invoice is not KRA-signed.', 'warning');
+                }
+                return;
+            }
+            invoice = await ensureSalesInvoiceKraSignedForFiscalPrint(invoiceId, invoice);
+            invoice = await API.sales.getInvoice(invoiceId);
+        }
         const mode = (typeof window.PrintService !== 'undefined' && window.PrintService.getEffectiveMode)
             ? window.PrintService.getEffectiveMode(layout) : 'A4';
 
@@ -3953,6 +4054,19 @@ function money2(n) {
     return Math.round(x * 100) / 100;
 }
 
+/** KRA `kra_submitted_at` for print (local wall time DD/MM/YYYY HH:MM:SS). */
+function formatKraSubmittedForPrint(iso) {
+    if (!iso) return '';
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        const pad = (n) => (n < 10 ? '0' + n : String(n));
+        return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    } catch (_) {
+        return '';
+    }
+}
+
 function generateInvoicePrintHTML(invoice, printType) {
     const isThermal = (printType || (typeof CONFIG !== 'undefined' && CONFIG.PRINT_TYPE) || 'thermal') === 'thermal';
     const noMargin = getPrintOpt('PRINT_REMOVE_MARGIN', false);
@@ -4024,7 +4138,7 @@ function generateInvoicePrintHTML(invoice, printType) {
     const vatHeader = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const colSpanTotal = colCount - 1;
 
-    const companyName = invoice.company_name || 'PharmaSight';
+    const companyName = invoice.company_name || 'SightOps';
     const companyAddress = invoice.company_address || '';
     const branchName = invoice.branch_name || '';
     const branchAddress = invoice.branch_address || '';
@@ -4040,14 +4154,23 @@ function generateInvoicePrintHTML(invoice, printType) {
         ? `@page { size: ${pageWidthMm}mm auto; margin: 0; }
            html, body { height: auto !important; min-height: 0 !important; }
            body { font-size: ${thermalHeaderFontPt}pt; max-width: ${contentWidthMm}mm; width: ${contentWidthMm}mm; padding: ${bodyPadMm}; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
-           .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: ${headerAlign}; border-bottom: 1px solid #000; font-size: ${thermalHeaderFontPt}pt; }
+           .header { padding: 0 0 2mm 0; margin-bottom: 2mm; text-align: center; border-bottom: 1px solid #000; font-size: ${thermalHeaderFontPt}pt; }
            .header .company-name { font-size: ${thermalHeaderFontPt}pt; font-weight: bold; line-height: 1.2; }
            .header .company-details, .header p { margin: 0 !important; font-size: ${thermalHeaderFontPt - 1}pt; line-height: 1.25; word-wrap: break-word; overflow-wrap: break-word; }
            .invoice-info { margin: 2mm 0; font-size: ${thermalHeaderFontPt - 1}pt; line-height: 1.3; }
            .invoice-info p { margin: 0.5mm 0; }
            .footer { margin-top: 2mm; padding-top: 2mm; font-size: ${thermalItemFontPt}pt; border-top: 1px solid #ccc; }
            .footer p { margin: 0.5mm 0; }
-           .footer .powered-by { font-size: 6pt; color: #bbb; margin-top: 3mm; font-weight: normal; }
+           .footer .powered-by { font-size: 6pt; color: #333; margin-top: 3mm; font-weight: bold; opacity: 0.95; }
+           .kra-fiscal { text-align: center !important; width: 100%; box-sizing: border-box; }
+           .kra-fiscal .kra-fiscal-verify { text-align: center !important; width: 100%; max-width: 72mm; margin-left: auto; margin-right: auto; box-sizing: border-box; }
+           .kra-fiscal .kra-sig { text-align: center !important; word-break: break-all; overflow-wrap: anywhere; max-width: 72mm; width: 100%; margin: 1mm auto 0 auto; display: block; box-sizing: border-box; padding: 0 1mm; }
+           .kra-fiscal .kra-qr-wrap { text-align: center !important; width: 100%; margin-top: 2mm; }
+           .kra-fiscal .kra-qr-wrap img { display: block !important; margin-left: auto !important; margin-right: auto !important; }
+           .kra-fiscal .kra-internal-label { font-weight: bold; margin-top: 2mm; text-align: center !important; display: block; width: 100%; }
+           .kra-fiscal .kra-epilogue { margin-top: 2mm; font-weight: bold; font-size: 7pt; letter-spacing: 0.02em; text-align: center !important; display: block; width: 100%; }
+           .kra-fiscal .kra-thanks { margin-top: 1.5mm; text-align: center !important; display: block; width: 100%; font-weight: 600; }
+           .kra-fiscal .kra-powered { margin-top: 1mm; font-weight: bold; text-align: center !important; display: block; width: 100%; font-size: 6pt; color: #111; }
            table { margin: 2mm 0; table-layout: fixed; width: 100%; font-size: ${thermalItemFontPt}pt; }
            table.thermal-receipt th, table.thermal-receipt td { padding: 1mm 0.5mm; font-size: ${thermalItemFontPt}pt; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; white-space: normal; }
            ${colCount === 4 ? 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 45%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 15%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 20%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 20%; }' : colCount === 5 ? 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 38%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 12%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 18%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 12%; } table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 20%; }' : 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 35%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 10%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 14%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 10%; } table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 12%; } table.thermal-receipt th:nth-child(6), table.thermal-receipt td:nth-child(6) { width: 19%; }'}
@@ -4070,6 +4193,44 @@ function generateInvoicePrintHTML(invoice, printType) {
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
     const branchLine = (showAddress && (branchName || branchAddress || branchPhone)) ? `<div class="company-details"><strong>Branch:</strong> ${escapeHtml(branchName || '')}${branchAddress ? ' — ' + escapeHtml(branchAddress) : ''}${showPhone && branchPhone ? ' | Ph: ' + escapeHtml(branchPhone) : ''}</div>` : '';
+    const letterheadPin = (invoice.company_pin != null && String(invoice.company_pin).trim()) ? String(invoice.company_pin).trim() : '';
+    const letterheadTel = (branchPhone && String(branchPhone).trim()) ? String(branchPhone).trim() : '';
+    const letterheadAddrParts = [];
+    if (companyAddress && String(companyAddress).trim()) letterheadAddrParts.push(String(companyAddress).trim());
+    if (branchName || branchAddress) {
+        const bb = [branchName, branchAddress].filter(Boolean).map((s) => String(s).trim()).filter(Boolean);
+        if (bb.length) letterheadAddrParts.push(bb.join(' — '));
+    }
+    const letterheadAddr = letterheadAddrParts.join(' | ');
+    const branchLinePrint = letterheadAddr ? '' : branchLine;
+    const invMoment = invoice.approved_at || invoice.batched_at || invoice.created_at;
+    let invoiceTimeStr = '';
+    if (invMoment) {
+        try {
+            const tx = new Date(invMoment);
+            if (!isNaN(tx.getTime())) {
+                invoiceTimeStr = tx.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+            }
+        } catch (_) {}
+    }
+    const custDisplay = (invoice.customer_name && String(invoice.customer_name).trim()) ? String(invoice.customer_name).trim() : 'WALK-IN CUSTOMER';
+    const custPinDisplay = (invoice.customer_pin != null && String(invoice.customer_pin).trim()) ? String(invoice.customer_pin).trim() : '';
+    const invoiceInfoBlock = isThermal
+        ? `<div class="invoice-info" style="text-align:left;font-size:${Math.max(6, thermalHeaderFontPt - 1)}pt;line-height:1.35;">
+        <p style="margin:0.5mm 0;"><strong>Invoice No:</strong> ${escapeHtml(invoice.invoice_no)}</p>
+        <p style="margin:0.5mm 0;"><strong>Date:</strong> ${invoiceDate}${invoiceTimeStr ? ` &nbsp; <strong>Time:</strong> ${escapeHtml(invoiceTimeStr)}` : ''}</p>
+        <p style="margin:0.5mm 0;"><strong>Customer:</strong> ${escapeHtml(custDisplay)}</p>
+        ${custPinDisplay ? `<p style="margin:0.5mm 0;"><strong>Customer PIN:</strong> ${escapeHtml(custPinDisplay)}</p>` : '<p style="margin:0.5mm 0;"><strong>Customer PIN:</strong> <span style="opacity:0.8">OPTIONAL</span></p>'}
+        ${(invoice.customer_phone && String(invoice.customer_phone).trim()) ? `<p style="margin:0.5mm 0;"><strong>Phone:</strong> ${escapeHtml(String(invoice.customer_phone).trim())}</p>` : ''}
+        ${(invoice.payment_mode && String(invoice.payment_mode).trim()) ? `<p style="margin:0.5mm 0;"><strong>Payment:</strong> ${escapeHtml(String(invoice.payment_mode).trim())}</p>` : ''}
+    </div>`
+        : `<div class="invoice-info">
+        <p><strong>Invoice No:</strong> ${escapeHtml(invoice.invoice_no)} &nbsp; <strong>Date:</strong> ${invoiceDate}${invoiceTimeStr ? ` &nbsp; <strong>Time:</strong> ${escapeHtml(invoiceTimeStr)}` : ''}</p>
+        <p><strong>Customer:</strong> ${escapeHtml(custDisplay)}</p>
+        ${custPinDisplay ? `<p><strong>Customer PIN:</strong> ${escapeHtml(custPinDisplay)}</p>` : '<p><strong>Customer PIN:</strong> <span style="opacity:0.85">OPTIONAL</span></p>'}
+        ${(invoice.customer_phone && String(invoice.customer_phone).trim()) ? `<p><strong>Phone:</strong> ${escapeHtml(String(invoice.customer_phone).trim())}</p>` : ''}
+        ${(invoice.payment_mode && String(invoice.payment_mode).trim()) ? `<p><strong>Payment:</strong> ${escapeHtml(String(invoice.payment_mode).trim())}</p>` : ''}
+    </div>`;
     const invoiceFooterTotal = (invoice.total_inclusive != null && invoice.total_inclusive !== '')
         ? money2(invoice.total_inclusive)
         : money2(printTotalInv);
@@ -4089,8 +4250,8 @@ function generateInvoicePrintHTML(invoice, printType) {
     const logoWrapStyle = !isThermal && logoImg ? `flex-shrink: 0; position: relative; right: ${logoOx}px; top: ${logoOy}px;` : '';
     const companyBlockStyle = isThermal ? '' : `flex: 1; min-width: 0; text-align: ${headerAlign}; ${headerAlign === 'right' ? 'margin-left: auto;' : ''}`;
     const headerBlock = isThermal
-        ? `<div class="header">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLine}<p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p></div>`
-        : `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">${logoImg ? `<div class="print-header-logo-wrap" style="${logoWrapStyle}">${logoImg}</div>` : ''}<div style="${companyBlockStyle}">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLine}<p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p></div></div>`;
+        ? `<div class="header" style="text-align:center;">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${letterheadPin ? `<div class="company-details">PIN: ${escapeHtml(letterheadPin)}</div>` : ''}${letterheadTel ? `<div class="company-details">TEL: ${escapeHtml(letterheadTel)}</div>` : ''}${letterheadAddr ? `<div class="company-details">ADDRESS: ${escapeHtml(letterheadAddr)}</div>` : ''}${(!letterheadAddr && !letterheadPin && !letterheadTel) && showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}<div style="border-top:1px dashed #000;margin:2mm 0 0 0;padding-top:2mm;"></div><p style="margin:0;font-weight:bold;font-size:${thermalHeaderFontPt}pt;">TAX INVOICE</p></div>`
+        : `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">${logoImg ? `<div class="print-header-logo-wrap" style="${logoWrapStyle}">${logoImg}</div>` : ''}<div style="${companyBlockStyle}">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${letterheadPin ? `<div class="company-details">PIN: ${escapeHtml(letterheadPin)}</div>` : ''}${letterheadTel ? `<div class="company-details">TEL: ${escapeHtml(letterheadTel)}</div>` : ''}${letterheadAddr ? `<div class="company-details">ADDRESS: ${escapeHtml(letterheadAddr)}</div>` : ''}${(!letterheadAddr && !letterheadPin && !letterheadTel) && showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLinePrint}<div style="border-top:1px dashed #000;margin:8px 0 4px 0;padding-top:6px;"></div><p style="margin:0;font-weight:bold;font-size:1.1em;">TAX INVOICE</p></div></div>`;
 
     return `
 <!DOCTYPE html>
@@ -4107,7 +4268,16 @@ function generateInvoicePrintHTML(invoice, printType) {
         th { background: #f0f0f0; font-weight: bold; }
         .total { font-weight: bold; font-size: 14px; border-top: 2px solid #000; padding-top: 5px; }
         .footer { text-align: center; font-size: 10px; border-top: 1px solid #ddd; padding-top: 10px; }
-        .footer .powered-by { font-size: 6pt; color: #bbb; margin-top: 3mm; font-weight: normal; opacity: 0.85; }
+        .footer .powered-by { font-size: 6pt; color: #333; margin-top: 3mm; font-weight: bold; opacity: 0.95; }
+        .kra-fiscal { text-align: center !important; width: 100%; box-sizing: border-box; }
+        .kra-fiscal .kra-fiscal-verify { text-align: center !important; width: 100%; max-width: 56mm; margin-left: auto; margin-right: auto; box-sizing: border-box; }
+        .kra-fiscal .kra-sig { text-align: center !important; word-break: break-all; overflow-wrap: anywhere; max-width: 56mm; width: 100%; margin: 6px auto 0 auto; display: block; box-sizing: border-box; }
+        .kra-fiscal .kra-qr-wrap { text-align: center !important; width: 100%; margin-top: 6px; }
+        .kra-fiscal .kra-qr-wrap img { display: block !important; margin-left: auto !important; margin-right: auto !important; }
+        .kra-fiscal .kra-internal-label { font-weight: bold; margin-top: 6px; text-align: center !important; display: block; width: 100%; }
+        .kra-fiscal .kra-epilogue { margin-top: 6px; font-weight: bold; font-size: 7pt; letter-spacing: 0.02em; text-align: center !important; display: block; width: 100%; }
+        .kra-fiscal .kra-thanks { margin-top: 6px; text-align: center !important; display: block; width: 100%; font-weight: 600; }
+        .kra-fiscal .kra-powered { margin-top: 4px; font-weight: bold; text-align: center !important; display: block; width: 100%; font-size: 6pt; color: #111; }
     </style>
 </head>
 <body>
@@ -4124,11 +4294,7 @@ function generateInvoicePrintHTML(invoice, printType) {
     <div class="print-content-wrap" style="margin-top: 48px;">
     ${headerBlock}
 
-    <div class="invoice-info">
-        <p><strong>Invoice #:</strong> ${escapeHtml(invoice.invoice_no)} &nbsp; <strong>Date:</strong> ${invoiceDate}</p>
-        ${invoice.customer_name ? `<p><strong>Customer:</strong> ${escapeHtml(invoice.customer_name)}</p>` : ''}
-        ${invoice.customer_phone ? `<p><strong>Phone:</strong> ${escapeHtml(invoice.customer_phone)}</p>` : ''}
-    </div>
+    ${invoiceInfoBlock}
 
     <table${isThermal ? ' class="thermal-receipt"' : ''}>
         <thead>
@@ -4152,11 +4318,56 @@ function generateInvoicePrintHTML(invoice, printType) {
         </tfoot>
     </table>
 
+    ${(() => {
+        const r = invoice.kra_receipt_number;
+        const sig = invoice.kra_signature;
+        const qr = invoice.kra_qr_code;
+        const pin = (invoice.company_pin != null && String(invoice.company_pin).trim()) ? String(invoice.company_pin).trim() : '';
+        const cu = (invoice.etims_device_serial != null && String(invoice.etims_device_serial).trim()) ? String(invoice.etims_device_serial).trim() : '';
+        const verified = formatKraSubmittedForPrint(invoice.kra_submitted_at);
+        if (!r && !sig && !qr) return '';
+        const fs = isThermal ? '7pt' : '11px';
+        let html = `<div class="kra-fiscal" style="margin-top: 3mm; padding: 2mm 0; border-top: 1px dashed #000; font-size: ${fs}; line-height: 1.35; text-align: center;">`;
+        html += '<div style="font-weight: bold;">KRA eTIMS</div>';
+        if (pin) html += `<div>PIN: ${escapeHtml(pin)}</div>`;
+        if (r) html += `<div>CU Invoice No: ${escapeHtml(String(r))}</div>`;
+        if (cu) html += `<div>Control Unit Serial No: ${escapeHtml(cu)}</div>`;
+        if (sig || qr || verified) {
+            html += '<div class="kra-fiscal-verify">';
+            if (sig) {
+                const s = String(sig);
+                const short = s.length > 220 ? (s.slice(0, 217) + '…') : s;
+                html += '<div class="kra-internal-label">Internal Data:</div>';
+                html += `<div class="kra-sig">${escapeHtml(short)}</div>`;
+            }
+            if (qr) {
+                const enc = encodeURIComponent(String(qr));
+                const src = `https://quickchart.io/qr?size=240x240&margin=2&text=${enc}`;
+                html += '<div class="kra-qr-wrap">';
+                html += `<img src="${src}" alt="KRA fiscal QR" width="220" height="220" style="display: inline-block; max-width: 56mm; height: auto;" />`;
+                html += '</div>';
+            }
+            if (verified) {
+                html += '<div class="kra-internal-label">Date/Time Verified:</div>';
+                html += `<div>${escapeHtml(verified)}</div>`;
+            }
+            html += '</div>';
+        }
+        html += '<div class="kra-epilogue">END OF FISCAL RECEIPT</div>';
+        html += '<div class="kra-thanks">THANK YOU FOR SHOPPING WITH US</div>';
+        html += '<div class="kra-powered"><strong>Powered by</strong> SightOps</div>';
+        html += '</div>';
+        return html;
+    })()}
+
     <div class="footer">
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
         ${createdByUser ? `<p><strong>Served by:</strong> ${escapeHtml(createdByUser)}</p>` : ''}
         <p>Generated: ${generatedTime}</p>
-        <p class="powered-by">powered by pharmaSight solutions</p>
+        ${(() => {
+            const hasKra = !!(invoice.kra_receipt_number || invoice.kra_signature || invoice.kra_qr_code);
+            return hasKra ? '' : '<p class="powered-by"><strong>Powered by</strong> SightOps</p>';
+        })()}
     </div>
     ${autoCutSpacer}
     </div>
@@ -4275,7 +4486,7 @@ function generateQuotationPrintHTML(quotation, printType) {
     const validUntil = quotation.valid_until ? new Date(quotation.valid_until).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A';
     const generatedTime = new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 
-    const companyName = quotation.company_name || 'PharmaSight';
+    const companyName = quotation.company_name || 'SightOps';
     const companyAddress = quotation.company_address || '';
     const branchName = quotation.branch_name || '';
     const branchAddress = quotation.branch_address || '';
@@ -4438,7 +4649,7 @@ function generateQuotationPrintHTML(quotation, printType) {
         ${transactionMessage ? `<p>${escapeHtml(transactionMessage)}</p>` : ''}
         ${createdByUser ? `<p><strong>Served by:</strong> ${escapeHtml(createdByUser)}</p>` : ''}
         <p>Generated: ${generatedTime}</p>
-        <p class="powered-by">powered by pharmaSight solutions</p>
+        <p class="powered-by">Powered by SightOps</p>
     </div>
     ${autoCutSpacer}
 </body>

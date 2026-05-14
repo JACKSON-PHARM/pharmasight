@@ -25,14 +25,14 @@ from app.dependencies import (
 )
 from app.module_enforcement import require_module
 from app.services.document_pdf_generator import build_sales_invoice_pdf
-from app.services.tenant_storage_service import download_file, get_signed_url
+from app.services.tenant_storage_service import get_signed_url, resolve_company_logo_bytes
 from app.models import (
     SalesInvoice, SalesInvoiceItem, InventoryLedger,
     Item, InvoicePayment, UserBranchRole, UserRole,
     CreditNote, CreditNoteItem,
     InsuranceProvider, InsuranceClaim, InsuranceLedgerEntry,
 )
-from app.models.company import Company, Branch
+from app.models.company import Branch, BranchEtimsCredentials, Company
 from app.models.user import User
 from app.models.permission import Permission, RolePermission
 from app.schemas.sale import (
@@ -50,11 +50,15 @@ from app.services.item_units_helper import get_unit_display_short, get_unit_mult
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
-from app.services.etims.invoice_etims_snapshot import apply_etims_snapshots_on_batch
+from app.services.etims.invoice_etims_snapshot import (
+    apply_etims_snapshots_on_batch,
+    refresh_etims_snapshots_for_kra_resubmit,
+)
 from app.services.etims.kra_outbox_service import KraOutboxService
 from app.utils.vat import vat_rate_to_percent
 from app.models.settings import CompanySetting
 from app.config import settings
+from app.services.etims.kra_company_activation import company_kra_execution_enabled
 
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
@@ -474,6 +478,44 @@ def get_sales_invoice_pdf(
     ensure_user_has_branch_access(db, user.id, invoice.branch_id)
     if not _user_has_permission(db, user.id, "sales.view"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    # Best-effort fiscal sign before PDF bytes so downloads include KRA data when possible.
+    if company_kra_execution_enabled(db, invoice.company_id):
+        from app.services.etims.etims_invoice_submitter import EtimsSubmissionSkipped, submit_sales_invoice
+
+        try:
+            submit_sales_invoice(db, invoice_id)
+        except (EtimsSubmissionSkipped, ValueError):
+            pass
+        invoice = (
+            db.query(SalesInvoice)
+            .options(
+                selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item),
+            )
+            .filter(SalesInvoice.id == invoice_id)
+            .first()
+        )
+        fiscal_pdf_required = False
+        _co = db.query(Company).filter(Company.id == invoice.company_id).first()
+        if _co and bool(getattr(_co, "kra_enabled", False)):
+            _cred = (
+                db.query(BranchEtimsCredentials)
+                .filter(BranchEtimsCredentials.branch_id == invoice.branch_id)
+                .first()
+            )
+            fiscal_pdf_required = bool(_cred and getattr(_cred, "enabled", False))
+        inv_status = (invoice.status or "").strip().upper()
+        if fiscal_pdf_required and inv_status in ("BATCHED", "PAID"):
+            sub = (invoice.submission_status or "").strip().lower()
+            if sub != "submitted":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "kra_fiscal_signing_required",
+                        "message": "This invoice must be successfully submitted to KRA before a fiscal PDF can be downloaded.",
+                        "submission_status": invoice.submission_status,
+                        "kra_last_error": getattr(invoice, "kra_last_error", None),
+                    },
+                )
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     items_data = []
@@ -487,9 +529,7 @@ def get_sales_invoice_pdf(
             "line_total_exclusive": float(oi.line_total_exclusive or 0),
             "line_total_inclusive": float(oi.line_total_inclusive or 0),
         })
-    company_logo_bytes = None
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
-        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
+    company_logo_bytes = resolve_company_logo_bytes(getattr(company, "logo_url", None) if company else None, tenant=tenant)
     till_number = getattr(branch, "till_number", None) if branch else None
     paybill = getattr(branch, "paybill", None) if branch else None
     prepared_by = None
@@ -498,6 +538,16 @@ def get_sales_invoice_pdf(
     if creator:
         prepared_by = getattr(creator, "full_name", None) or getattr(creator, "username", None) or str(invoice.created_by)
         served_by = prepared_by
+    creds_pdf = (
+        db.query(BranchEtimsCredentials)
+        .filter(BranchEtimsCredentials.branch_id == invoice.branch_id)
+        .first()
+    )
+    cu_serial_pdf = (
+        str(creds_pdf.device_serial).strip()
+        if creds_pdf and getattr(creds_pdf, "device_serial", None)
+        else ""
+    ) or None
     try:
         pdf_bytes = build_sales_invoice_pdf(
             company_name=company.name if company else "—",
@@ -522,6 +572,11 @@ def get_sales_invoice_pdf(
             prepared_by=prepared_by,
             printed_by=None,
             served_by=served_by,
+            kra_receipt_number=getattr(invoice, "kra_receipt_number", None),
+            kra_signature=getattr(invoice, "kra_signature", None),
+            kra_qr_code=getattr(invoice, "kra_qr_code", None),
+            kra_submitted_at=getattr(invoice, "kra_submitted_at", None),
+            kra_cu_device_serial=cu_serial_pdf,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate sales invoice PDF: {str(e)}")
@@ -579,6 +634,7 @@ def _get_sales_invoice_response(
             if invoice_item.item:
                 invoice_item.item_code = invoice_item.item.sku or ''
         if invoice_item.item:
+            invoice_item.kra_item_code = (getattr(invoice_item.item, "kra_item_code", None) or None)
             invoice_item.unit_display_short = get_unit_display_short(
                 invoice_item.item, invoice_item.unit_name or ''
             )
@@ -596,6 +652,8 @@ def _get_sales_invoice_response(
                     price = float(invoice_item.unit_price_exclusive or 0)
                     if price > 0:
                         invoice_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
+        else:
+            invoice_item.kra_item_code = None
     if request is not None:
         request.state.timings["CostEnrichMs"] = round((time.perf_counter() - t2) * 1000, 1)
     t3 = time.perf_counter()
@@ -646,12 +704,29 @@ def _get_sales_invoice_response(
     if company:
         invoice.company_name = company.name
         invoice.company_address = getattr(company, "address", None) or ""
+        invoice.company_pin = getattr(company, "pin", None) or ""
+        invoice.company_kra_enabled = bool(getattr(company, "kra_enabled", False))
         logo_path = getattr(company, "logo_url", None)
         if logo_path and str(logo_path).strip():
             if str(logo_path).startswith("tenant-assets/") and tenant is not None:
                 invoice.logo_url = get_signed_url(logo_path, tenant=tenant)
             elif str(logo_path).startswith("http://") or str(logo_path).startswith("https://"):
                 invoice.logo_url = str(logo_path).strip()
+    else:
+        invoice.company_kra_enabled = False
+    # Align with batch gate: snapshot/outbox only when company KRA + branch eTIMS enabled.
+    invoice.kra_fiscal_receipt_required = False
+    invoice.etims_device_serial = None
+    _ec = (
+        db.query(BranchEtimsCredentials)
+        .filter(BranchEtimsCredentials.branch_id == invoice.branch_id)
+        .first()
+    )
+    if _ec and getattr(_ec, "device_serial", None):
+        _ds = str(_ec.device_serial).strip()
+        invoice.etims_device_serial = _ds or None
+    if company and bool(getattr(company, "kra_enabled", False)):
+        invoice.kra_fiscal_receipt_required = bool(_ec and getattr(_ec, "enabled", False))
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     if branch:
         invoice.branch_name = branch.name
@@ -677,6 +752,114 @@ def get_sales_invoice(
 ):
     """Get sales invoice by ID with full item details. Works without tenant (no tenant-assets logo URL)."""
     user = current_user_and_db[0]
+    return _get_sales_invoice_response(invoice_id, db, user, request=request, tenant=tenant)
+
+
+@router.post("/invoice/{invoice_id}/kra-submit-now", response_model=SalesInvoiceResponse)
+def kra_submit_sales_invoice_now(
+    invoice_id: UUID,
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
+    db: Session = Depends(get_tenant_db),
+):
+    """Synchronously submit a batched/paid invoice to KRA (same core path as the outbox worker)."""
+    user = current_user_and_db[0]
+    invoice = db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).first()
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if not company_kra_execution_enabled(db, invoice.company_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="KRA is not enabled for this company")
+    from app.services.etims.etims_invoice_submitter import EtimsSubmissionSkipped, submit_sales_invoice
+
+    try:
+        submit_sales_invoice(db, invoice_id)
+    except EtimsSubmissionSkipped as e:
+        if "already submitted" in str(e).lower():
+            return _get_sales_invoice_response(invoice_id, db, user, request=request, tenant=tenant)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return _get_sales_invoice_response(invoice_id, db, user, request=request, tenant=tenant)
+
+
+@router.post("/invoice/{invoice_id}/etims-refresh-snapshots-for-resubmit", response_model=SalesInvoiceResponse)
+def etims_refresh_snapshots_for_resubmit(
+    invoice_id: UUID,
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Re-apply eTIMS line snapshots from current item master (e.g. fixed zero-rated ``vatCatCd``) and clear
+    failed KRA submit fields so ``kra-submit-now`` can be retried. BATCHED/PAID only; not allowed after submitted.
+    """
+    from sqlalchemy.orm import selectinload
+
+    user = current_user_and_db[0]
+    invoice = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+        .filter(SalesInvoice.id == invoice_id)
+        .first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if not company_kra_execution_enabled(db, invoice.company_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="KRA is not enabled for this company")
+    try:
+        refresh_etims_snapshots_for_kra_resubmit(db, invoice)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    db.commit()
+    return _get_sales_invoice_response(invoice_id, db, user, request=request, tenant=tenant)
+
+
+@router.post("/invoice/{invoice_id}/kra-receipt-from-log", response_model=SalesInvoiceResponse)
+def kra_receipt_from_submission_log(
+    invoice_id: UUID,
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Copy KRA receipt number / signature / QR from the latest successful submit audit log when the invoice
+    row still has nulls (e.g. response used ``responseBody.data`` shape the extractor did not walk).
+    """
+    from app.services.etims.etims_invoice_submitter import apply_kra_receipt_from_latest_submitted_log
+
+    user = current_user_and_db[0]
+    invoice = db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if not company_kra_execution_enabled(db, invoice.company_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="KRA is not enabled for this company")
+    meta = apply_kra_receipt_from_latest_submitted_log(db, invoice)
+    if not meta.get("updated"):
+        r = meta.get("reason") or ""
+        if r in (
+            "invoice_not_submitted",
+            "no_submitted_log_body",
+            "log_body_not_json",
+            "log_body_not_object",
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=r,
+            )
+    db.commit()
     return _get_sales_invoice_response(invoice_id, db, user, request=request, tenant=tenant)
 
 
@@ -1231,10 +1414,12 @@ def get_branch_gross_profit(
     """
     Gross profit summary for a branch and date range.
 
-    Net sales = Sales (exclusive) − Credit notes (customer returns) in date range.
-    COGS = sum of SALE ledger total_cost for batched invoices in range (actual FEFO cost);
-           if no ledger rows (legacy), falls back to invoice-line qty × unit_cost_used.
-           Then subtract SALE_RETURN ledger total_cost linked to credit notes in range.
+    Net sales = Sales (invoice_date in range) − Credit notes attributed to those **sale** days:
+    each credit note reduces totals on the **original invoice's invoice_date** (not the credit
+    note document date), so back-dated returns still correct the day the sale was recorded.
+
+    COGS = SALE ledger for invoices in range, minus SALE_RETURN cost for returns linked to
+    credit notes on invoices whose invoice_date falls in the range (aligned with net sales).
     Gross profit = Net sales − COGS.
     """
     user, _ = current_user_and_db
@@ -1269,27 +1454,43 @@ def get_branch_gross_profit(
     sales_inclusive = (base_sales.sales_inclusive if base_sales else Decimal("0")) or Decimal("0")
     invoice_count = int(getattr(base_sales, "invoice_count", 0) or 0)
 
-    # Net sales: subtract credit notes (customer returns) in date range
+    # Net sales: subtract credit notes attributed to **original sale invoice_date** in range
+    _cn_join_inv = SalesInvoice.id == CreditNote.original_invoice_id
     credit_notes_sum = (
         db.query(func.coalesce(func.sum(CreditNote.total_exclusive), 0).label("cn_total"))
+        .join(SalesInvoice, _cn_join_inv)
         .filter(
             CreditNote.branch_id == branch_id,
-            CreditNote.credit_note_date >= sd,
-            CreditNote.credit_note_date <= ed,
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.invoice_date >= sd,
+            SalesInvoice.invoice_date <= ed,
         )
         .scalar()
     )
     credit_notes_total = Decimal(str(credit_notes_sum or 0))
     credit_notes_inclusive_sum = (
         db.query(func.coalesce(func.sum(CreditNote.total_inclusive), 0).label("cn_total_inclusive"))
+        .join(SalesInvoice, _cn_join_inv)
         .filter(
             CreditNote.branch_id == branch_id,
-            CreditNote.credit_note_date >= sd,
-            CreditNote.credit_note_date <= ed,
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.invoice_date >= sd,
+            SalesInvoice.invoice_date <= ed,
         )
         .scalar()
     )
     credit_notes_total_inclusive = Decimal(str(credit_notes_inclusive_sum or 0))
+    credit_note_document_count = int(
+        db.query(func.count(func.distinct(CreditNote.id)))
+        .join(SalesInvoice, _cn_join_inv)
+        .filter(
+            CreditNote.branch_id == branch_id,
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.invoice_date.between(sd, ed),
+        )
+        .scalar()
+        or 0
+    )
     net_sales_exclusive = sales_exclusive - credit_notes_total
     net_sales_inclusive = sales_inclusive - credit_notes_total_inclusive
 
@@ -1298,13 +1499,15 @@ def get_branch_gross_profit(
         db, branch_id, sd, ed, by_date=include_breakdown
     )
 
-    # Subtract SALE_RETURN cost (customer returns reduce COGS)
+    # Subtract SALE_RETURN cost for returns on invoices whose **sale date** is in range
     cn_ids_subq = (
         db.query(CreditNote.id)
+        .join(SalesInvoice, _cn_join_inv)
         .filter(
             CreditNote.branch_id == branch_id,
-            CreditNote.credit_note_date >= sd,
-            CreditNote.credit_note_date <= ed,
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.invoice_date >= sd,
+            SalesInvoice.invoice_date <= ed,
         )
     )
     return_cogs_result = (
@@ -1323,16 +1526,18 @@ def get_branch_gross_profit(
     if include_breakdown and return_cogs > 0:
         return_cogs_rows = (
             db.query(
-                func.date(InventoryLedger.created_at).label("d"),
+                SalesInvoice.invoice_date.label("d"),
                 func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("rc"),
             )
+            .join(CreditNote, CreditNote.id == InventoryLedger.reference_id)
+            .join(SalesInvoice, SalesInvoice.id == CreditNote.original_invoice_id)
             .filter(
                 InventoryLedger.branch_id == branch_id,
                 InventoryLedger.transaction_type == "SALE_RETURN",
                 InventoryLedger.reference_type == "credit_note",
                 InventoryLedger.reference_id.in_(cn_ids_subq),
             )
-            .group_by(func.date(InventoryLedger.created_at))
+            .group_by(SalesInvoice.invoice_date)
             .all()
         )
         return_cogs_by_day = {r.d: (r.rc or Decimal("0")) for r in (return_cogs_rows or [])}
@@ -1350,6 +1555,7 @@ def get_branch_gross_profit(
         "sales_inclusive": str(sales_inclusive),
         "credit_notes_exclusive": str(credit_notes_total),
         "credit_notes_inclusive": str(credit_notes_total_inclusive),
+        "credit_note_document_count": credit_note_document_count,
         "net_sales_exclusive": str(net_sales_exclusive),
         "net_sales_inclusive": str(net_sales_inclusive),
         "cogs": str(cogs),
@@ -1383,29 +1589,33 @@ def get_branch_gross_profit(
 
     cn_rows = (
         db.query(
-            CreditNote.credit_note_date.label("d"),
+            SalesInvoice.invoice_date.label("d"),
             func.coalesce(func.sum(CreditNote.total_exclusive), 0).label("cn_total"),
         )
+        .select_from(CreditNote)
+        .join(SalesInvoice, SalesInvoice.id == CreditNote.original_invoice_id)
         .filter(
             CreditNote.branch_id == branch_id,
-            CreditNote.credit_note_date >= sd,
-            CreditNote.credit_note_date <= ed,
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.invoice_date.between(sd, ed),
         )
-        .group_by(CreditNote.credit_note_date)
+        .group_by(SalesInvoice.invoice_date)
         .all()
     )
     credit_notes_by_day = {r.d: (r.cn_total or Decimal("0")) for r in (cn_rows or [])}
     cn_rows_inclusive = (
         db.query(
-            CreditNote.credit_note_date.label("d"),
+            SalesInvoice.invoice_date.label("d"),
             func.coalesce(func.sum(CreditNote.total_inclusive), 0).label("cn_total_inclusive"),
         )
+        .select_from(CreditNote)
+        .join(SalesInvoice, SalesInvoice.id == CreditNote.original_invoice_id)
         .filter(
             CreditNote.branch_id == branch_id,
-            CreditNote.credit_note_date >= sd,
-            CreditNote.credit_note_date <= ed,
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.invoice_date.between(sd, ed),
         )
-        .group_by(CreditNote.credit_note_date)
+        .group_by(SalesInvoice.invoice_date)
         .all()
     )
     credit_notes_inclusive_by_day = {r.d: (r.cn_total_inclusive or Decimal("0")) for r in (cn_rows_inclusive or [])}
@@ -1485,6 +1695,79 @@ def get_orders_processed_items_summary(
         )
         .group_by(SalesInvoiceItem.item_id, SalesInvoiceItem.unit_name)
         .order_by(func.coalesce(func.sum(SalesInvoiceItem.line_total_exclusive), 0).desc())
+        .limit(limit)
+        .all()
+    )
+
+    out_rows = [
+        {
+            "item_id": str(r.item_id),
+            "item_name": r.item_name or "—",
+            "unit_name": r.unit_name or "",
+            "quantity": float(r.total_qty or 0),
+            "frequency": int(r.frequency or 0),
+            "unit_price": float(r.avg_unit_price or 0),
+            "total_price": float(r.total_price or 0),
+        }
+        for r in rows
+    ]
+    return {
+        "start_date": sd.isoformat(),
+        "end_date": ed.isoformat(),
+        "rows": out_rows,
+        "count": len(out_rows),
+    }
+
+
+@router.get("/branch/{branch_id}/credit-notes/items-summary", response_model=dict)
+def get_credit_note_items_summary(
+    branch_id: UUID,
+    preset: Optional[str] = Query(None, description="today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year"),
+    start_date: Optional[date] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
+    limit: int = Query(300, ge=1, le=2000),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Item-level summary of customer credit note lines for dashboard drill-down.
+    Rows are filtered by **original sale invoice_date** (same attribution as gross-profit net sales),
+    so back-dated credit notes still appear on the day the sale was recorded.
+    """
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    sd, ed = _resolve_date_range(preset, start_date, end_date)
+
+    rows = (
+        db.query(
+            CreditNoteItem.item_id.label("item_id"),
+            func.coalesce(func.max(Item.name), "").label("item_name"),
+            CreditNoteItem.unit_name.label("unit_name"),
+            func.coalesce(func.sum(CreditNoteItem.quantity_returned), 0).label("total_qty"),
+            func.count(CreditNoteItem.id).label("frequency"),
+            func.coalesce(func.avg(CreditNoteItem.unit_price_exclusive), 0).label("avg_unit_price"),
+            func.coalesce(func.sum(CreditNoteItem.line_total_exclusive), 0).label("total_price"),
+        )
+        .select_from(CreditNoteItem)
+        .join(CreditNote, CreditNote.id == CreditNoteItem.credit_note_id)
+        .join(SalesInvoice, SalesInvoice.id == CreditNote.original_invoice_id)
+        .outerjoin(Item, Item.id == CreditNoteItem.item_id)
+        .filter(
+            CreditNote.branch_id == branch_id,
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.invoice_date.between(sd, ed),
+        )
+        .group_by(CreditNoteItem.item_id, CreditNoteItem.unit_name)
+        .order_by(func.coalesce(func.sum(CreditNoteItem.line_total_exclusive), 0).desc())
         .limit(limit)
         .all()
     )
@@ -1825,6 +2108,10 @@ def create_credit_note(
         SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
 
     try:
+        from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
+
+        for entry in ledger_entries:
+            enqueue_kra_stock_in_for_ledger(db, entry, source="stock.sale_return")
         db.commit()
         db.refresh(credit_note)
     except Exception as e:
@@ -1941,6 +2228,51 @@ def update_sales_invoice(
     return db_invoice
 
 
+def _apply_optional_batch_invoice_overrides(invoice: SalesInvoice, body: BatchSalesInvoiceRequest) -> None:
+    """
+    Apply draft header fields from the batch request body (excluding line items).
+    Ensures customer PIN / phone / payment mode and invoice date from the UI are persisted even when
+    the user never clicked Save before batching.
+    """
+    dump = body.model_dump(exclude_unset=True) if hasattr(body, "model_dump") else body.dict(exclude_unset=True)
+    dump.pop("items", None)
+    if not dump:
+        return
+    if "invoice_date" in dump and dump["invoice_date"] is not None:
+        invoice.invoice_date = dump["invoice_date"]
+    if "customer_name" in dump:
+        invoice.customer_name = dump["customer_name"]
+    if "customer_pin" in dump:
+        invoice.customer_pin = dump["customer_pin"]
+    if "customer_phone" in dump and hasattr(SalesInvoice, "customer_phone"):
+        invoice.customer_phone = dump["customer_phone"]
+    if "payment_mode" in dump and dump["payment_mode"] is not None:
+        invoice.payment_mode = dump["payment_mode"]
+
+    final_payment_mode = (invoice.payment_mode or "").strip().lower()
+    if final_payment_mode == "credit":
+        import re
+
+        customer_name = (invoice.customer_name or "").strip()
+        customer_phone = (getattr(invoice, "customer_phone", None) or "").strip()
+        if not customer_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Customer name is required when payment mode is credit",
+            )
+        if not customer_phone:
+            raise HTTPException(
+                status_code=400,
+                detail="Customer phone number is required when payment mode is credit",
+            )
+        phone_digits = re.sub(r"\D", "", customer_phone)
+        if len(phone_digits) < 9:
+            raise HTTPException(
+                status_code=400,
+                detail="Customer phone number must be a valid phone number (at least 9 digits)",
+            )
+
+
 @router.post("/invoice/{invoice_id}/batch", response_model=SalesInvoiceResponse)
 def batch_sales_invoice(
     invoice_id: UUID,
@@ -1993,6 +2325,9 @@ def batch_sales_invoice(
             status_code=400,
             detail="Invoice has no line items. Add items before batching."
         )
+
+    if body:
+        _apply_optional_batch_invoice_overrides(invoice, body)
 
     # Reject when the UI sends lines that never persisted as sales_invoice_items. Otherwise stock
     # would follow DB lines only while the cashier believed extra lines were included (silent mismatch).
@@ -2243,10 +2578,9 @@ def batch_sales_invoice(
         else:
             invoice.status = "BATCHED"
 
-        # Phase 1 execution-plane foundation:
-        # create immutable KRA snapshot + transactional outbox only when outbox mode is enabled
-        # and this branch is explicitly KRA-enabled.
-        if settings.KRA_OUTBOX_ENABLED:
+        # Immutable KRA snapshot + transactional outbox when the company has KRA execution enabled
+        # and this branch has submission enabled on stored credentials.
+        if company_kra_execution_enabled(db, invoice.company_id):
             from app.models.company import BranchEtimsCredentials
 
             creds = (

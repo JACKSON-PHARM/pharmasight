@@ -97,16 +97,17 @@
      * @param {string} text
      * @returns {Promise<string|null>}
      */
-    async function buildQrImageData(text) {
+    async function buildQrImageData(text, pixelWidth) {
         const value = (text != null && text !== '') ? String(text) : '';
         if (!value) return null;
+        const w = (pixelWidth != null && parseInt(pixelWidth, 10) > 0) ? parseInt(pixelWidth, 10) : 180;
         // QRCode global comes from js/qrcode.vendor.iife.js
         if (typeof QRCode === 'undefined') return null;
         try {
             return await new Promise((resolve, reject) => {
                 try {
                     const canvas = document.createElement('canvas');
-                    QRCode.toCanvas(canvas, value, { width: 180 }, function (err) {
+                    QRCode.toCanvas(canvas, value, { width: w }, function (err) {
                         if (err) return reject(err);
                         try {
                             const url = canvas.toDataURL('image/png');
@@ -121,6 +122,19 @@
             });
         } catch (_) {
             return null;
+        }
+    }
+
+    /** KRA submission time for receipt (ISO string or Date). */
+    function formatKraVerifiedLine(isoOrDate) {
+        if (isoOrDate == null || isoOrDate === '') return '';
+        try {
+            const d = typeof isoOrDate === 'string' || typeof isoOrDate === 'number' ? new Date(isoOrDate) : isoOrDate;
+            if (!(d instanceof Date) || isNaN(d.getTime())) return '';
+            const pad = (n) => (n < 10 ? '0' + n : String(n));
+            return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        } catch (_) {
+            return '';
         }
     }
 
@@ -148,21 +162,49 @@
         add(CMD_INIT);
         add(CMD_LEFT);
 
-        // Header — center each line explicitly (some printers need alignment before every line)
+        const maxChars = getMaxLineChars();
+
+        // Header — TAX INVOICE letterhead (center each line; some printers need alignment per line)
         add(CMD_CENTER);
         add(CMD_BOLD_ON);
         if (data.companyName) addCenter(data.companyName);
-        if (data.branchName) addCenter(data.branchName);
         add(CMD_BOLD_OFF);
+        if (data.companyPin) addCenter(`PIN: ${fmt(data.companyPin)}`);
+        if (data.branchPhone) addCenter(`TEL: ${fmt(data.branchPhone)}`);
+        const addrParts = [];
+        if (data.companyAddress && String(data.companyAddress).trim()) addrParts.push(String(data.companyAddress).trim());
+        if (data.branchName || data.branchAddress) {
+            const bb = [data.branchName, data.branchAddress].filter(Boolean).map((s) => String(s).trim()).filter(Boolean);
+            if (bb.length) addrParts.push(bb.join(' — '));
+        }
+        const addrLine = addrParts.join(' | ');
+        if (addrLine) {
+            for (let i = 0; i < addrLine.length; i += maxChars) {
+                addCenter(addrLine.slice(i, i + maxChars));
+            }
+        }
         add(CMD_CENTER);
+        add('-'.repeat(Math.min(maxChars, 32)));
+        add(CMD_BOLD_ON);
+        addCenter('TAX INVOICE');
+        add(CMD_BOLD_OFF);
         add('');
         add(CMD_LEFT);
-
-        const maxChars = getMaxLineChars();
-        add(truncate('SALES INVOICE', maxChars));
-        add(truncate(`Inv: ${fmt(data.invoiceNo)} ${fmt(data.date)}`, maxChars));
-        if (data.customerName) add(truncate(`Customer: ${fmt(data.customerName)}`, maxChars));
-        if (data.customerPhone) add(truncate(`Phone: ${fmt(data.customerPhone)}`, maxChars));
+        add(truncate(`Invoice No: ${fmt(data.invoiceNo)}`, maxChars));
+        const dateTimeLine = data.invoiceTime
+            ? `Date: ${fmt(data.date)}  Time: ${fmt(data.invoiceTime)}`
+            : `Date: ${fmt(data.date)}`;
+        add(truncate(dateTimeLine, maxChars));
+        const cust = (data.customerName && String(data.customerName).trim()) ? String(data.customerName).trim() : 'WALK-IN CUSTOMER';
+        add(truncate(`Customer: ${cust}`, maxChars));
+        const cpin = data.customerPin && String(data.customerPin).trim();
+        add(truncate(cpin ? `Customer PIN: ${cpin}` : 'Customer PIN: OPTIONAL', maxChars));
+        if (data.customerPhone && String(data.customerPhone).trim()) {
+            add(truncate(`Phone: ${fmt(data.customerPhone)}`, maxChars));
+        }
+        if (data.paymentMode && String(data.paymentMode).trim()) {
+            add(truncate(`Payment: ${fmt(data.paymentMode)}`, maxChars));
+        }
         add('');
 
         // Item table — compact layout, max chars/line to avoid right-edge overflow
@@ -206,20 +248,20 @@
         if (data.transactionMessage) add(truncate(fmt(data.transactionMessage), maxChars));
         if (data.servedBy) add(truncate(`Served by: ${fmt(data.servedBy)}`, maxChars));
         add(truncate(`Generated: ${fmt(data.generatedTime)}`, maxChars));
-        // KRA receipt / verification section (text only; QR image printed separately when available)
-        if (data.kraReceiptNumber) {
+
+        const hasKra = !!(data.companyPin || data.kraReceiptNumber || data.kraSignature || data.kraQrCode);
+        if (hasKra) {
             add('');
-            add(truncate(`KRA Receipt: ${fmt(data.kraReceiptNumber)}`, maxChars));
-        }
-        if (data.kraQrCode) {
-            add(truncate('Scan to verify with KRA', maxChars));
+            add(CMD_CENTER);
+            add(CMD_BOLD_ON);
+            add(centerLine('KRA eTIMS', maxChars));
+            add(CMD_BOLD_OFF);
+            if (data.companyPin) addCenter(`PIN: ${fmt(data.companyPin)}`);
+            if (data.kraReceiptNumber) addCenter(`CU Invoice No: ${fmt(data.kraReceiptNumber)}`);
+            if (data.cuDeviceSerial) addCenter(`Control Unit Serial No: ${fmt(data.cuDeviceSerial)}`);
+            add(CMD_LEFT);
         }
         add('');
-        add(CMD_CENTER);
-        add(centerLine('powered by PharmaSight Solutions', maxChars));
-        add(CMD_LEFT);
-        add('');
-        add(CMD_CUT);
 
         return [lines.join('')];
     }
@@ -242,14 +284,57 @@
             await connectPrinter();
         }
         const rawData = buildEscPosReceipt(data);
-        const payload = rawData.slice(); // text receipt
-        // Optional QR image (printer-agnostic bitmap via QZ Tray)
+        const payload = rawData.slice();
+        const maxChars = getMaxLineChars();
+        const hasKraFiscal = !!(data.companyPin || data.kraReceiptNumber || data.kraSignature || data.kraQrCode);
+
+        if (data.kraSignature) {
+            let preQr = CMD_CENTER + LF;
+            preQr += CMD_BOLD_ON + centerLine('Internal Data:', maxChars) + CMD_BOLD_OFF + LF;
+            const sig = String(data.kraSignature);
+            const chunk = maxChars;
+            for (let i = 0; i < sig.length; i += chunk) {
+                preQr += CMD_CENTER + centerLine(sig.slice(i, i + chunk), maxChars) + LF;
+            }
+            preQr += CMD_LEFT + LF;
+            payload.push(preQr);
+        }
+
         if (data.kraQrCode) {
-            const qrDataUrl = await buildQrImageData(data.kraQrCode).catch(() => null);
+            const qrDataUrl = await buildQrImageData(data.kraQrCode, 240).catch(() => null);
             if (qrDataUrl) {
-                payload.push({ type: 'image', data: qrDataUrl, options: { language: 'escp', dotDensity: 'single' } });
+                payload.push({
+                    type: 'image',
+                    data: qrDataUrl,
+                    options: { language: 'escp', dotDensity: 'double' },
+                });
             }
         }
+
+        if (hasKraFiscal) {
+            let tail = CMD_CENTER + LF;
+            const verified = formatKraVerifiedLine(data.kraSubmittedAt);
+            if (verified) {
+                tail += CMD_BOLD_ON + centerLine('Date/Time Verified:', maxChars) + CMD_BOLD_OFF + LF;
+                tail += CMD_CENTER + centerLine(verified, maxChars) + LF;
+            }
+            tail += CMD_BOLD_ON + centerLine('END OF FISCAL RECEIPT', maxChars) + CMD_BOLD_OFF + LF;
+            tail += CMD_CENTER + centerLine('THANK YOU FOR SHOPPING WITH US', maxChars) + LF;
+            tail += CMD_BOLD_ON + centerLine('Powered by SightOps', maxChars) + CMD_BOLD_OFF + LF;
+            tail += CMD_LEFT + LF;
+            payload.push(tail);
+        } else {
+            payload.push(
+                CMD_CENTER +
+                    CMD_BOLD_ON +
+                    centerLine('Powered by SightOps', maxChars) +
+                    CMD_BOLD_OFF +
+                    LF +
+                    CMD_LEFT +
+                    LF
+            );
+        }
+        payload.push(CMD_CUT);
         const config = qz.configs.create(name, { encoding: 'UTF-8' });
         await qz.print(config, payload);
     }

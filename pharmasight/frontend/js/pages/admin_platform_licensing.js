@@ -28,7 +28,7 @@ const SAAS_TIERS = [
     {
         slug: 'clinic_starter',
         title: 'Clinic Starter',
-        subtitle: 'Solo practice & small outpatient clinics',
+        subtitle: 'Solo practice & small outpatient teams',
         price: 'Contact for pricing',
         users: 3,
         branches: 1,
@@ -37,18 +37,18 @@ const SAAS_TIERS = [
     },
     {
         slug: 'pharmacy_growth',
-        title: 'Pharmacy Growth',
-        subtitle: 'Growing retail & hospital outpatient pharmacy',
+        title: 'Growth',
+        subtitle: 'Multi-branch retail & outpatient operations',
         price: 'Contact for pricing',
         users: 10,
         branches: 4,
         products: 8000,
-        modules: 'Starter + branch ops, purchasing, eTIMS-ready, extended reports',
+        modules: 'Starter + branch coordination, purchasing, eTIMS-ready, extended reports',
     },
     {
         slug: 'health_network',
-        title: 'Health Network',
-        subtitle: 'Multi-site groups & small chains',
+        title: 'Network',
+        subtitle: 'Regional groups & growing branch networks',
         price: 'Contact for pricing',
         users: 40,
         branches: 15,
@@ -91,7 +91,7 @@ function createClientCompanySectionHtml(esc) {
                 <form id="lic-create-client-form" style="display: grid; gap: 12px; max-width: 640px;">
                     <div>
                         <label style="display:block; font-weight:600; margin-bottom:4px;">Company name *</label>
-                        <input name="name" type="text" required maxlength="255" class="form-input" placeholder="e.g. Acme Pharmacy Ltd" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                        <input name="name" type="text" required maxlength="255" class="form-input" placeholder="e.g. Acme Retail Ltd" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                     </div>
                     <div>
                         <label style="display:block; font-weight:600; margin-bottom:4px;">Admin email *</label>
@@ -783,14 +783,36 @@ export async function init() {
                             Paste values from <strong>developer.go.ke</strong> validation / test screens. Credentials are stored per company and branch and are used for OAuth and OSCU calls.
                             <strong> Save branch fields</strong> before <strong>Test connection</strong> (the server reads stored values).
                         </p>
+                        <div style="margin-bottom:14px; padding:12px; background:#fffbeb; border-radius:10px; border:1px solid #fcd34d;">
+                            <div style="font-weight:700; margin-bottom:8px;">KRA execution (tenant)</div>
+                            <p style="margin:0 0 10px 0; color:#78350f; font-size:0.88rem; line-height:1.45;">
+                                When enabled, this company may enqueue KRA item and invoice work. The deployment must run the outbox worker (<code>KRA_OUTBOX_WORKER_ENABLED</code>).
+                            </p>
+                            <label style="display:flex; gap:10px; align-items:center; margin-bottom:10px; font-weight:600;">
+                                <input type="checkbox" id="lic-etims-kra-enabled" ${etims && etims.kra_enabled ? 'checked' : ''} />
+                                Enable KRA for this company
+                            </label>
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; align-items:end;">
+                                <div>
+                                    <label style="display:block; font-weight:600; font-size:0.85rem; margin-bottom:4px;">Company KRA mode</label>
+                                    <select id="lic-etims-kra-mode" class="form-input" style="width:100%; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                        <option value="sandbox" ${String((etims && etims.kra_mode) || 'sandbox') === 'sandbox' ? 'selected' : ''}>sandbox</option>
+                                        <option value="production" ${String((etims && etims.kra_mode) || '') === 'production' ? 'selected' : ''}>production</option>
+                                    </select>
+                                </div>
+                                <div style="font-size:0.88rem; color:#64748b;">
+                                    KRA onboarded: <strong>${esc(fmtIso(etims && etims.kra_onboarded_at))}</strong>
+                                </div>
+                            </div>
+                        </div>
                         <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin-bottom:14px; padding:12px; background:#f8fafc; border-radius:10px; border:1px solid #e2e8f0;">
                             <div style="grid-column: 1 / -1;">
                                 <label style="display:block; font-weight:600; margin-bottom:6px;">Company PIN (TIN / client PIN)</label>
                                 <input id="lic-etims-pin" value="${esc((etims && etims.company_pin) || c.pin || '')}" placeholder="e.g. P123456789A" style="width:100%; max-width:420px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                             </div>
                             <div style="grid-column: 1 / -1;">
-                                <label style="display:block; font-weight:600; margin-bottom:6px;">Trader invoicing system name <span style="font-weight:400;color:#64748b;">(KRA app label — for PharmaSight ops traceability)</span></label>
-                                <input id="lic-etims-trader-name" value="${esc((etims && etims.trader_invoicing_system_name) || '')}" placeholder="e.g. PharmaSight ERP (as registered on developer.go.ke)" style="width:100%; max-width:520px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
+                                <label style="display:block; font-weight:600; margin-bottom:6px;">Trader invoicing system name <span style="font-weight:400;color:#64748b;">(KRA app label — for SightOps ops traceability)</span></label>
+                                <input id="lic-etims-trader-name" value="${esc((etims && etims.trader_invoicing_system_name) || '')}" placeholder="e.g. SightOps ERP (as registered on developer.go.ke)" style="width:100%; max-width:520px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px;">
                             </div>
                             <div>
                                 <label style="display:block; font-weight:600; margin-bottom:6px;">Integrator PIN</label>
@@ -979,8 +1001,10 @@ export async function init() {
                         (document.getElementById('lic-etims-trader-name')?.value || '').trim() || null;
                     const integratorRaw = (document.getElementById('lic-etims-integrator')?.value || '').trim();
                     const clear_integrator_pin = !!document.getElementById('lic-etims-clear-integrator')?.checked;
+                    const kra_enabled = !!document.getElementById('lic-etims-kra-enabled')?.checked;
+                    const kra_mode = (document.getElementById('lic-etims-kra-mode')?.value || 'sandbox').trim();
                     if (typeof api.etimsPatchCompanyPin !== 'function') throw new Error('eTIMS API not available');
-                    const body = { pin, trader_invoicing_system_name };
+                    const body = { pin, trader_invoicing_system_name, kra_enabled, kra_mode };
                     if (clear_integrator_pin) body.clear_integrator_pin = true;
                     else if (integratorRaw) body.integrator_pin = integratorRaw;
                     await api.etimsPatchCompanyPin(companyId, body);

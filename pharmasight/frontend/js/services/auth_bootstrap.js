@@ -20,7 +20,7 @@ const AUTH_CHANNEL_NAME = 'pharmasight_auth';
 let authChannel = null;
 
 /**
- * PharmaSight internal auth only.
+ * SightOps internal auth only.
  * Supabase must not be used for session restoration or identity verification.
  */
 
@@ -98,7 +98,7 @@ function getInternalAuthState() {
 }
 
 /**
- * Attempt internal refresh-token rotation via PharmaSight backend.
+ * Attempt internal refresh-token rotation via SightOps backend.
  */
 async function tryRefreshInternalSession() {
     try {
@@ -230,8 +230,8 @@ function onAuthStateChange(callback) {
  * Sign in with email and password
  */
 async function signIn(email, password) {
-    // PharmaSight is the single authentication authority.
-    // This method now delegates to the PharmaSight backend and stores internal tokens.
+    // SightOps backend is the single authentication authority.
+    // This method now delegates to the SightOps backend and stores internal tokens.
     const base = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null) ? CONFIG.API_BASE_URL : '';
     const resp = await fetch(`${base}/api/auth/username-login`, {
         method: 'POST',
@@ -315,7 +315,7 @@ async function signOut() {
  * Update password (for invited users)
  */
 async function updatePassword(newPassword) {
-    // Supabase auth removed. Password changes are handled via PharmaSight backend endpoints.
+    // Supabase auth removed. Password changes are handled via SightOps backend endpoints.
     throw new Error('Password update is not available via AuthBootstrap (Supabase auth removed).');
 }
 

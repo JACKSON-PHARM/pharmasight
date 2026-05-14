@@ -1,5 +1,5 @@
 """
-Configuration settings for PharmaSight
+Configuration settings for SightOps
 """
 import os
 from pathlib import Path
@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     )
 
     # App
-    APP_NAME: str = "PharmaSight"
+    APP_NAME: str = "SightOps"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
@@ -188,7 +188,7 @@ class Settings(BaseSettings):
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     SMTP_USER: str = os.getenv("SMTP_USER", "")
     SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
-    EMAIL_FROM: str = os.getenv("EMAIL_FROM", "PharmaSight <noreply@pharmasight.com>")
+    EMAIL_FROM: str = os.getenv("EMAIL_FROM", "SightOps <noreply@pharmasight.com>")
     # Base URL for invite/password-reset links. Set to your public frontend URL (e.g. https://app.pharmasight.com)
     # so links work for recipients; if unset or localhost, links will point to localhost and fail for external users.
     APP_PUBLIC_URL: str = os.getenv("APP_PUBLIC_URL", "http://localhost:3000")
@@ -237,24 +237,45 @@ class Settings(BaseSettings):
     # Legacy names (optional fallback if ETIMS_APP_* not set)
     ETIMS_OAUTH_USERNAME: str = os.getenv("ETIMS_OAUTH_USERNAME", "").strip()
     ETIMS_OAUTH_PASSWORD: str = os.getenv("ETIMS_OAUTH_PASSWORD", "").strip()
-    # VAT code mapping (override if sandbox code list differs)
-    ETIMS_VAT_CAT_STANDARD: str = os.getenv("ETIMS_VAT_CAT_STANDARD", "A").strip() or "A"
-    ETIMS_VAT_CAT_ZERO: str = os.getenv("ETIMS_VAT_CAT_ZERO", "B").strip() or "B"
-    ETIMS_TAX_TY_STANDARD: str = os.getenv("ETIMS_TAX_TY_STANDARD", "V").strip() or "V"
-    ETIMS_TAX_TY_ZERO: str = os.getenv("ETIMS_TAX_TY_ZERO", "B").strip() or "B"
     # Credential encryption for KRA secrets. If key is unset, derive a deterministic key from SECRET_KEY.
     # Supports Fernet key format or plain text derivation input.
     KRA_CREDENTIAL_ENCRYPTION_KEY: str = os.getenv("KRA_CREDENTIAL_ENCRYPTION_KEY", "").strip()
     # Comma-separated legacy keys accepted for decrypt-only rotation windows.
     KRA_CREDENTIAL_ENCRYPTION_OLD_KEYS: str = os.getenv("KRA_CREDENTIAL_ENCRYPTION_OLD_KEYS", "").strip()
-    # Execution-plane phase 1 toggles (sale.completed outbox + lightweight worker)
-    KRA_OUTBOX_ENABLED: bool = os.getenv("KRA_OUTBOX_ENABLED", "false").lower() in ("true", "1", "yes")
-    KRA_OUTBOX_WORKER_ENABLED: bool = os.getenv("KRA_OUTBOX_WORKER_ENABLED", "false").lower() in ("true", "1", "yes")
+    # KRA outbox worker (infrastructure). Per-company activation is companies.kra_enabled (DB / admin UI).
+    KRA_OUTBOX_WORKER_ENABLED: bool = os.getenv("KRA_OUTBOX_WORKER_ENABLED", "true").lower() in ("true", "1", "yes")
     KRA_OUTBOX_SHADOW_MODE: bool = os.getenv("KRA_OUTBOX_SHADOW_MODE", "false").lower() in ("true", "1", "yes")
     KRA_OUTBOX_POLL_SECONDS: int = int(os.getenv("KRA_OUTBOX_POLL_SECONDS", "5"))
     KRA_OUTBOX_BATCH_SIZE: int = int(os.getenv("KRA_OUTBOX_BATCH_SIZE", "10"))
     KRA_OUTBOX_LEASE_SECONDS: int = int(os.getenv("KRA_OUTBOX_LEASE_SECONDS", "60"))
     KRA_OUTBOX_MAX_ATTEMPTS: int = int(os.getenv("KRA_OUTBOX_MAX_ATTEMPTS", "12"))
+    # After non-stock-in ledger rows (sales, transfer out, stock reduce, etc.), queue saveStockMaster
+    # from current PharmaSight ledger (align_with_ledger) so OSCU rsdQty tracks local stock.
+    KRA_STOCK_LEDGER_SYNC_ENABLED: bool = os.getenv("KRA_STOCK_LEDGER_SYNC_ENABLED", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    KRA_STOCK_LEDGER_SYNC_DEBOUNCE_SECONDS: int = max(0, int(os.getenv("KRA_STOCK_LEDGER_SYNC_DEBOUNCE_SECONDS", "2")))
+    # After insertStockIO + saveStockMaster, if OSCU posted rsdQty still differs from PharmaSight ledger,
+    # post one more saveStockMaster at ledger qty (fixes SBX/read drift without a second IO).
+    KRA_STOCK_IN_FINALIZE_WITH_LEDGER: bool = os.getenv("KRA_STOCK_IN_FINALIZE_WITH_LEDGER", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    # saveTrnsSalesOsdc may return "item not in your stock" briefly after stock master updates (OSCU propagation).
+    KRA_OSDC_SALE_STOCK_PROPAGATION_RETRIES: int = max(1, int(os.getenv("KRA_OSDC_SALE_STOCK_PROPAGATION_RETRIES", "6")))
+    KRA_OSDC_SALE_STOCK_PROPAGATION_SLEEP_MIN: float = float(
+        os.getenv("KRA_OSDC_SALE_STOCK_PROPAGATION_SLEEP_MIN", "1.0") or "1.0"
+    )
+    KRA_OSDC_SALE_STOCK_PROPAGATION_SLEEP_MAX: float = float(
+        os.getenv("KRA_OSDC_SALE_STOCK_PROPAGATION_SLEEP_MAX", "3.5") or "3.5"
+    )
+    # Forensic: append one JSON line per Pharmasight saveTrnsSalesOsdc attempt (exact payload + headers).
+    ETIMS_OSDC_FORENSIC_JSONL_PATH: str = os.getenv("ETIMS_OSDC_FORENSIC_JSONL_PATH", "").strip()
+    # Allow POST /etims/debug/* in production when explicitly enabled (default: DEBUG only).
+    ETIMS_DEBUG_API_ENABLED: bool = os.getenv("ETIMS_DEBUG_API_ENABLED", "false").lower() in ("true", "1", "yes")
 
 
 settings = Settings()

@@ -962,3 +962,43 @@ def get_signed_url_with_path_tenant(
     except Exception as e:
         logger.warning("get_signed_url_with_path_tenant %s: %s", stored_path, e)
         return None
+
+
+_MAX_LOGO_FETCH_BYTES = 2 * 1024 * 1024
+
+
+def resolve_company_logo_bytes(logo_url: Optional[object], tenant: Optional[Any] = None) -> Optional[bytes]:
+    """
+    Load company logo bytes for PDFs and server-side rendering.
+    Supports http(s) URLs and stored paths: company-assets/, user-assets/, tenant-assets/.
+    Tries tenant-scoped download first when applicable, then global download, then signed URL fetch.
+    """
+    raw = str(logo_url or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("http://") or raw.startswith("https://"):
+        try:
+            with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+                resp = client.get(raw)
+            if resp.status_code == 200 and resp.content and len(resp.content) <= _MAX_LOGO_FETCH_BYTES:
+                return bytes(resp.content)
+        except Exception as e:
+            logger.warning("resolve_company_logo_bytes: HTTP logo fetch failed: %s", e)
+        return None
+    data = download_file(raw, tenant=tenant)
+    if isinstance(data, (bytes, bytearray)) and len(data) > 0:
+        return bytes(data)
+    if raw.startswith(("company-assets/", "user-assets/", "tenant-assets/")):
+        data2 = download_file(raw, tenant=None)
+        if isinstance(data2, (bytes, bytearray)) and len(data2) > 0:
+            return bytes(data2)
+        signed = get_signed_url(raw, tenant=None)
+        if signed:
+            try:
+                with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+                    resp = client.get(signed)
+                if resp.status_code == 200 and resp.content and len(resp.content) <= _MAX_LOGO_FETCH_BYTES:
+                    return bytes(resp.content)
+            except Exception as e:
+                logger.warning("resolve_company_logo_bytes: signed URL fetch failed: %s", e)
+    return None

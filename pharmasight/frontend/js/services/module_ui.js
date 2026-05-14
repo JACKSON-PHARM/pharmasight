@@ -99,7 +99,7 @@
         management: [
             {
                 section: 'Overview',
-                items: [{ page: 'dashboard', label: 'Dashboard', icon: 'fa-chart-line', hasSub: false }],
+                items: [{ page: 'dashboard', label: 'Workspace overview', icon: 'fa-chart-line', hasSub: false }],
             },
             {
                 section: 'Organization',
@@ -117,7 +117,7 @@
         ],
     };
 
-    /** Operational / system routes — module UX must not override these. */
+    /** System routes — module UX must not override these. */
     const MODULE_ROUTE_BYPASS = new Set(['branch-select', 'invite', 'stock-take']);
 
     /** Display order for the module switcher (not entitlement source). */
@@ -610,7 +610,7 @@
                     <div class="module-coming-soon-icon" aria-hidden="true"><i class="fas fa-layer-group"></i></div>
                     <h2>${label}</h2>
                     <p class="module-coming-soon-lead">This module is coming soon.</p>
-                    <p class="module-coming-soon-hint">We are still building dedicated tools for this area. Switch modules above when you need Pharmacy, Finance, or Admin.</p>
+                    <p class="module-coming-soon-hint">We are still building dedicated tools for this area. Use the module switcher to return to Pharmacy, Finance, or Admin.</p>
                 </div>
             </div>`;
     }

@@ -10,6 +10,13 @@ let isLoadingBranches = false;
 /** Guard: only one branch selection in progress; blocks duplicate Proceed clicks and multiple toasts */
 let branchSelectInProgress = false;
 
+/** Centered flow logo + wordmark for login-card style states (loading, errors, proceeding). */
+const BRANCH_SELECT_CARD_BRAND_SNIPPET = `
+        <div class="branch-select-card-brand" style="text-align:center;margin-bottom:1rem;">
+            <img src="/assets/brand/sightops-logo-flow.png" alt="SightOps" style="display:block;margin:0 auto;width:min(200px,78vw);max-height:118px;height:auto;object-fit:contain;">
+            <div class="sightops-wordmark" style="margin-top:0.35rem;font-size:1.2rem;" aria-hidden="true"><span class="sightops-wordmark-sight">Sight</span><span class="sightops-wordmark-ops">Ops</span></div>
+        </div>`;
+
 async function loadBranchSelect() {
     console.log('[BRANCH SELECT] loadBranchSelect() called');
     // Branch select is part of app flow but shown before full app shell
@@ -61,8 +68,8 @@ async function loadBranchSelect() {
     page.innerHTML = `
         <div class="login-container">
             <div class="login-card">
-                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
-                <h2>Select Branch</h2>
+                ${BRANCH_SELECT_CARD_BRAND_SNIPPET}
+                <h2>Choose a branch</h2>
                 <div style="text-align: center; padding: 2rem;">
                     <div class="spinner"></div>
                     <p style="margin-top: 1rem; color: var(--text-secondary);">Loading branches...</p>
@@ -170,8 +177,8 @@ async function loadBranches() {
             page.innerHTML = `
                 <div class="login-container">
                     <div class="login-card">
-                        <h1><i class="fas fa-pills"></i> PharmaSight</h1>
-                        <h2>Select Branch</h2>
+                        ${BRANCH_SELECT_CARD_BRAND_SNIPPET}
+                        <h2>Choose a branch</h2>
                         <div class="error-message" style="display: block; margin: 1rem 0;">
                             <i class="fas fa-exclamation-triangle"></i> 
                             No company is linked to your account yet. Finish organization setup first, or sign out and sign in again if you switched organization or device.
@@ -202,8 +209,8 @@ async function loadBranches() {
         page.innerHTML = `
             <div class="login-container">
                 <div class="login-card">
-                    <h1><i class="fas fa-pills"></i> PharmaSight</h1>
-                    <h2>Select Branch</h2>
+                    ${BRANCH_SELECT_CARD_BRAND_SNIPPET}
+                    <h2>Choose a branch</h2>
                     <div class="error-message" style="display: block; margin: 1rem 0;">
                         <i class="fas fa-exclamation-triangle"></i> 
                         ${escapeHtml(msg)}
@@ -226,6 +233,33 @@ async function loadBranches() {
     }
 }
 
+function pickDefaultBranchId(branches) {
+    if (!Array.isArray(branches) || branches.length === 0) return '';
+    const isHqBranch = (b) =>
+        b &&
+        (b.is_hq === true ||
+            b.is_hq === 1 ||
+            String(b.is_hq || '')
+                .toLowerCase()
+                .trim() === 'true');
+    const hq = branches.find(isHqBranch);
+    if (hq) return String(hq.id);
+    const byName = branches.find((b) => {
+        const n = (b.name || '').toUpperCase();
+        const c = String(b.code || '')
+            .toUpperCase()
+            .trim();
+        return /\bHQ\b/.test(n) || /HEAD\s*OFFICE|HEAD OFFICE/i.test(b.name || '') || c === 'HQ';
+    });
+    if (byName) return String(byName.id);
+    let saved = '';
+    try {
+        if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) saved = String(CONFIG.BRANCH_ID);
+    } catch (_) {}
+    if (saved && branches.some((b) => String(b.id) === saved)) return saved;
+    return String(branches[0].id);
+}
+
 function renderBranchSelection() {
     console.log('[BRANCH SELECT] renderBranchSelection() called, availableBranches:', availableBranches.length);
     const page = document.getElementById('branch-select');
@@ -240,32 +274,34 @@ function renderBranchSelection() {
         return;
     }
 
-    // Always render the dropdown first so we never leave the user on the spinner.
+    // Always render the branch choice UI first so we never leave the user on the spinner.
     // If only one branch and not on branch-select route, we'll auto-call selectBranch after rendering.
     const currentHash = window.location.hash || '';
     const isOnBranchSelectRoute = currentHash.replace('#', '').split('?')[0] === 'branch-select';
     const shouldAutoSelectOneBranch = availableBranches.length === 1 && !isOnBranchSelectRoute;
 
-    // Build options for select dropdown
-    const branchOptions = availableBranches.map(branch => `
-        <option value="${branch.id}">
-            ${escapeHtml(branch.name)}${branch.code ? ' - ' + escapeHtml(branch.code) : ''}
-        </option>
-    `).join('');
-    
-    console.log('[BRANCH SELECT] Rendering branch dropdown with', availableBranches.length, 'branch(es)');
+    const defaultBranchId = pickDefaultBranchId(availableBranches);
+    const branchOptions = availableBranches
+        .map((branch) => {
+            const id = String(branch.id);
+            const labelText = `${branch.name || 'Branch'}${branch.code ? ' \u2013 ' + branch.code : ''}`;
+            const selected = id === defaultBranchId ? ' selected' : '';
+            return `<option value="${escapeHtml(id)}"${selected}>${escapeHtml(labelText)}</option>`;
+        })
+        .join('');
+
+    console.log('[BRANCH SELECT] Rendering branch dropdown with', availableBranches.length, 'branch(es), default:', defaultBranchId);
     const branchSelectionHTML = `
         <div class="branch-select-fullscreen">
             <div class="branch-select-card">
                 <div class="branch-select-logo">
-                    <i class="fas fa-pills"></i>
+                    <img src="/assets/brand/sightops-logo-flow.png" alt="SightOps">
                 </div>
-                <h2 class="branch-select-title">Select transacting branch to proceed!</h2>
+                <h2 class="branch-select-title">Choose a branch to continue</h2>
                 
                 <div class="branch-select-form-group">
-                    <label for="branchSelectDropdown" class="branch-select-label">Assigned Branches</label>
-                    <select id="branchSelectDropdown" class="branch-select-dropdown">
-                        <option value="">Select Branch</option>
+                    <label for="branchSelect" class="branch-select-label">Assigned branches</label>
+                    <select id="branchSelect" class="branch-select-dropdown" autocomplete="organization">
                         ${branchOptions}
                     </select>
                 </div>
@@ -301,16 +337,17 @@ function renderBranchSelection() {
                 text-align: center;
             }
             .branch-select-logo {
-                width: 56px;
-                height: 56px;
-                border-radius: 999px;
+                margin: 0 auto 1.25rem auto;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                margin: 0 auto 1rem auto;
-                background: rgba(37, 99, 235, 0.1);
-                color: var(--primary-color);
-                font-size: 1.75rem;
+            }
+            .branch-select-logo img {
+                width: min(220px, 88vw);
+                max-height: 140px;
+                height: auto;
+                object-fit: contain;
+                display: block;
             }
             .branch-select-title {
                 font-size: 1.4rem;
@@ -324,20 +361,28 @@ function renderBranchSelection() {
             .branch-select-label {
                 display: block;
                 margin-bottom: 0.5rem;
-                font-weight: 500;
-                color: var(--text-secondary);
+                font-weight: 600;
+                font-size: 0.8125rem;
+                color: var(--text-primary);
             }
             .branch-select-dropdown {
                 width: 100%;
-                padding: 0.75rem 0.9rem;
-                border-radius: 0.5rem;
-                border: 1px solid var(--border-color);
+                max-width: 100%;
+                padding: 0.7rem 0.95rem;
                 font-size: 1rem;
-                outline: none;
+                line-height: 1.35;
+                border: 1px solid rgba(148, 163, 184, 0.45);
+                border-radius: 0.55rem;
+                background: #f8fafc;
+                color: var(--text-primary);
+                cursor: pointer;
+                appearance: auto;
+                -webkit-appearance: menulist;
             }
             .branch-select-dropdown:focus {
-                border-color: var(--primary-color);
-                box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.3);
+                outline: none;
+                border-color: rgba(22, 163, 74, 0.55);
+                box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
             }
             .branch-select-actions {
                 display: flex;
@@ -359,16 +404,17 @@ function renderBranchSelection() {
     console.log('[BRANCH SELECT] Page element visibility:', window.getComputedStyle(page).visibility);
     
     // Wire up Proceed and Logout buttons
-    const dropdown = document.getElementById('branchSelectDropdown');
     const proceedBtn = document.getElementById('branchSelectProceedBtn');
     const logoutBtn = document.getElementById('branchSelectLogoutBtn');
-    
-    if (proceedBtn && dropdown) {
-        if (availableBranches.length === 1) {
-            dropdown.value = availableBranches[0].id;
-        }
+    const branchSelectEl = document.getElementById('branchSelect');
+    if (branchSelectEl && defaultBranchId) {
+        branchSelectEl.value = defaultBranchId;
+    }
+
+    if (proceedBtn) {
         proceedBtn.onclick = () => {
-            const selectedId = dropdown.value;
+            const sel = document.getElementById('branchSelect');
+            const selectedId = sel && sel.value ? String(sel.value) : '';
             if (!selectedId) {
                 showToast('Please select a branch to continue', 'warning');
                 return;
@@ -404,7 +450,7 @@ function renderCreateFirstBranch() {
     page.innerHTML = `
         <div class="login-container">
             <div class="login-card">
-                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                ${BRANCH_SELECT_CARD_BRAND_SNIPPET}
                 <h2>Complete your setup</h2>
                 <p style="color: var(--text-secondary); margin-bottom: 1rem;">
                     Create your first branch to start using the app. You can add more branches later in Settings.
@@ -502,7 +548,7 @@ async function selectBranch(branch) {
             page.innerHTML = `
                 <div class="login-container">
                     <div class="login-card">
-                        <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                        ${BRANCH_SELECT_CARD_BRAND_SNIPPET}
                         <h2>Opening your workspace...</h2>
                         <div style="text-align: center; padding: 1.25rem 0 0.75rem;">
                             <div class="spinner"></div>
@@ -551,7 +597,8 @@ async function selectBranch(branch) {
 }
 
 function selectBranchById(branchId) {
-    const branch = availableBranches.find(b => b.id === branchId);
+    const sid = branchId != null ? String(branchId) : '';
+    const branch = availableBranches.find((b) => String(b.id) === sid);
     if (branch) {
         selectBranch(branch);
     }

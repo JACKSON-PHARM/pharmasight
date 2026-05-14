@@ -1445,6 +1445,9 @@ class ExcelImportService:
             )
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
             SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, company_id, item_id)
+            from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
+
+            enqueue_kra_stock_in_for_ledger(db, ledger_entry, source="stock.opening_balance")
     
     @staticmethod
     def _process_batch_bulk(

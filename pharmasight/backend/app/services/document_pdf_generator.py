@@ -14,9 +14,12 @@ from decimal import Decimal
 from datetime import date, datetime, timezone
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
+from xml.sax.saxutils import escape as xml_escape
 
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -60,7 +63,7 @@ def kra_qr_png_bytes(kra_qr_code: Optional[str]) -> Optional[bytes]:
     try:
         import qrcode
 
-        img = qrcode.make(s, box_size=3, border=2)
+        img = qrcode.make(s, box_size=4, border=3)
         buf = BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
@@ -86,8 +89,24 @@ def _format_datetime(dt) -> str:
     return str(dt)
 
 
-def _items_table_flowable(items: List[Dict], doc_type: str) -> Table:
-    """Single items table layout: Description | Qty | Unit Price | Total."""
+def _format_kra_verified_stamp(dt) -> str:
+    """Display KRA verification time on fiscal block (local wall time, DD/MM/YYYY HH:MM:SS)."""
+    if dt is None:
+        return ""
+    try:
+        if hasattr(dt, "astimezone") and getattr(dt, "tzinfo", None) is not None:
+            try:
+                dt = dt.astimezone()
+            except Exception:
+                pass
+        if hasattr(dt, "strftime"):
+            return dt.strftime("%d/%m/%Y %H:%M:%S")
+    except Exception:
+        pass
+    return str(dt)
+
+
+def _items_table_flowable(items: List[Dict[str, Any]], _doc_type: str) -> Table:
     headers = ["Description", "Qty", "Unit Price", "Total"]
     col_widths = [80 * mm, 25 * mm, 35 * mm, 35 * mm]
     data = [headers]
@@ -224,18 +243,65 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
         kra_rn = payload.get("kra_receipt_number")
         kra_sig = payload.get("kra_signature")
         kra_qr_png = payload.get("kra_qr_png_bytes")
+        kra_pin = (payload.get("company_pin") or "").strip() if doc_type == DOC_TYPE_SALES_INVOICE else ""
+        kra_cu = (payload.get("kra_cu_device_serial") or "").strip() if doc_type == DOC_TYPE_SALES_INVOICE else ""
+        kra_submitted = payload.get("kra_submitted_at") if doc_type == DOC_TYPE_SALES_INVOICE else None
         if kra_rn or kra_sig or kra_qr_png:
+            kra_center = ParagraphStyle(
+                name="kra_blk_center",
+                parent=st["detail"],
+                alignment=TA_CENTER,
+                fontSize=9,
+                leading=11,
+                spaceAfter=2,
+            )
             flow.append(Spacer(1, 5 * mm))
-            flow.append(Paragraph("<b>KRA eTIMS</b>", st["detail"]))
+            flow.append(Paragraph("<b>KRA eTIMS</b>", kra_center))
+            if doc_type == DOC_TYPE_SALES_INVOICE and kra_pin:
+                flow.append(Paragraph(f"PIN: {xml_escape(kra_pin)}", kra_center))
             if kra_rn:
-                flow.append(Paragraph(f"Receipt no.: {kra_rn}", st["detail"]))
+                flow.append(Paragraph(f"CU Invoice No: {xml_escape(str(kra_rn))}", kra_center))
+            if doc_type == DOC_TYPE_SALES_INVOICE and kra_cu:
+                flow.append(Paragraph(f"Control Unit Serial No: {xml_escape(kra_cu)}", kra_center))
             if kra_sig:
-                sig_s = str(kra_sig)
-                sig_short = (sig_s[:200] + "…") if len(sig_s) > 200 else sig_s
-                flow.append(Paragraph(f"Signature / control data: {sig_short}", st["detail"]))
-            if kra_qr_png:
                 flow.append(Spacer(1, 2 * mm))
-                flow.append(RLImage(BytesIO(kra_qr_png), width=38 * mm, height=38 * mm))
+                flow.append(Paragraph("<b>Internal Data:</b>", kra_center))
+                sig_raw = str(kra_sig)
+                sig_short = (sig_raw[:800] + "…") if len(sig_raw) > 800 else sig_raw
+                sig_html = xml_escape(sig_short).replace("\n", "<br/>")
+                flow.append(Paragraph(sig_html, kra_center))
+            if kra_qr_png:
+                flow.append(Spacer(1, 3 * mm))
+                qr_w = 46 * mm
+                qr_img = RLImage(BytesIO(kra_qr_png), width=qr_w, height=qr_w)
+                qr_tbl = Table([[qr_img]], colWidths=[175 * mm])
+                qr_tbl.setStyle(
+                    TableStyle(
+                        [
+                            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ]
+                    )
+                )
+                flow.append(qr_tbl)
+            verified_str = _format_kra_verified_stamp(kra_submitted) if kra_submitted else ""
+            if verified_str:
+                flow.append(Spacer(1, 2 * mm))
+                flow.append(Paragraph("<b>Date/Time Verified:</b>", kra_center))
+                flow.append(Paragraph(xml_escape(verified_str), kra_center))
+            flow.append(Spacer(1, 2 * mm))
+            flow.append(Paragraph("<b>END OF FISCAL RECEIPT</b>", kra_center))
+            flow.append(Paragraph("THANK YOU FOR SHOPPING WITH US", kra_center))
+            tag_fiscal = ParagraphStyle(
+                name="sales_pdf_tagline_fiscal",
+                parent=st["detail"],
+                alignment=TA_CENTER,
+                fontSize=8,
+                leading=10,
+                textColor=colors.HexColor("#333333"),
+                spaceBefore=4,
+            )
+            flow.append(Paragraph("<b>Powered by SightOps</b>", tag_fiscal))
     elif doc_type == DOC_TYPE_PURCHASE_ORDER:
         total_amount = payload.get("total_amount") or Decimal("0")
         flow.append(Paragraph(f"<b>Total: {total_amount:,.2f}</b>", st["detail"]))
@@ -256,6 +322,22 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
             )
         )
         flow.append(Spacer(1, 4 * mm))
+    if doc_type == DOC_TYPE_SALES_INVOICE:
+        tag_center = ParagraphStyle(
+            name="sales_pdf_tagline",
+            parent=st["detail"],
+            alignment=TA_CENTER,
+            fontSize=8,
+            leading=10,
+            textColor=colors.HexColor("#333333"),
+        )
+        kra_any = bool(
+            (payload.get("kra_receipt_number") or "").strip()
+            or (payload.get("kra_signature") or "").strip()
+            or payload.get("kra_qr_png_bytes")
+        )
+        if not kra_any:
+            flow.append(Paragraph("<b>Powered by SightOps</b>", tag_center))
 
     # ----- 7. Approval block (purchase order only) -----
     if doc_type == DOC_TYPE_PURCHASE_ORDER:
@@ -459,6 +541,8 @@ def build_sales_invoice_pdf(
     kra_receipt_number: Optional[str] = None,
     kra_signature: Optional[str] = None,
     kra_qr_code: Optional[str] = None,
+    kra_submitted_at: Optional[datetime] = None,
+    kra_cu_device_serial: Optional[str] = None,
 ) -> bytes:
     """Build A4 PDF for a sales invoice. Logo right, company left; footer: prepared/printed/served, till; no status."""
     items = items or []
@@ -501,6 +585,8 @@ def build_sales_invoice_pdf(
         "kra_receipt_number": (kra_receipt_number or "").strip() or None,
         "kra_signature": (kra_signature or "").strip() or None,
         "kra_qr_png_bytes": kra_qr_png_bytes(kra_qr_code),
+        "kra_submitted_at": kra_submitted_at,
+        "kra_cu_device_serial": (kra_cu_device_serial or "").strip() or None,
     }
     return build_document_pdf(DOC_TYPE_SALES_INVOICE, payload)
 

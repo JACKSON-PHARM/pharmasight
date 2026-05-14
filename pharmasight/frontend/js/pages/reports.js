@@ -207,7 +207,7 @@ async function renderFinancialReports() {
                 <div class="stat-icon"><i class="fas fa-receipt"></i></div>
                 <div class="stat-info">
                     <h3 id="plSales">—</h3>
-                    <p>Sales (exclusive)</p>
+                    <p>Net sales (excl.)</p>
                 </div>
             </div>
             <div class="stat-card">
@@ -816,7 +816,7 @@ async function loadGrossProfitReport() {
                 ? API.expenses.summary({ branch_id: branchId, start_date: start, end_date: end, include_breakdown: true }).catch(() => null)
                 : Promise.resolve(null),
         ]);
-        const sales = parseFloat(res.sales_exclusive || 0);
+        const sales = parseFloat(res.net_sales_exclusive != null ? res.net_sales_exclusive : res.sales_exclusive || 0);
         const cogs = parseFloat(res.cogs || 0);
         const gp = parseFloat(res.gross_profit || 0);
         const margin = parseFloat(res.margin_percent || 0);
@@ -830,6 +830,11 @@ async function loadGrossProfitReport() {
         netEl.textContent = (typeof formatCurrency === 'function') ? formatCurrency(netProfit) : String(netProfit);
         const cogsSource = (res && res.cogs_source) ? String(res.cogs_source) : '';
         metaEl.textContent = `Gross profit • Margin ${margin.toFixed(1)}%${cogsSource ? ' • COGS: ' + cogsSource : ''}`;
+        const cnTot = parseFloat(res.credit_notes_exclusive || 0);
+        if (cnTot > 0) {
+            const fc2 = (v) => (typeof formatCurrency === 'function') ? formatCurrency(v) : String(v);
+            metaEl.textContent += ` • Credits (excl.): ${fc2(cnTot)}`;
+        }
 
         const rows = Array.isArray(res.breakdown) ? res.breakdown : [];
         const expRows = expRes && Array.isArray(expRes.breakdown) ? expRes.breakdown : [];
@@ -845,7 +850,8 @@ async function loadGrossProfitReport() {
 
         const tr = rows.map(r => {
             const d = (r.date || '').slice(0, 10);
-            const s = parseFloat(r.sales_exclusive || 0);
+            const s = parseFloat(r.net_sales_exclusive != null ? r.net_sales_exclusive : r.sales_exclusive || 0);
+            const credits = parseFloat(r.credit_notes_exclusive || 0);
             const c = parseFloat(r.cogs || 0);
             const g = parseFloat(r.gross_profit || 0);
             const m = parseFloat(r.margin_percent || 0);
@@ -855,6 +861,7 @@ async function loadGrossProfitReport() {
             return `
                 <tr>
                     <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">${d}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(credits)}</td>
                     <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(s)}</td>
                     <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(c)}</td>
                     <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${fc(g)}</td>
@@ -871,7 +878,8 @@ async function loadGrossProfitReport() {
                     <thead>
                         <tr>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:left;">Date</th>
-                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Sales (excl)</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Credits (excl.)</th>
+                            <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Net sales (excl.)</th>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">COGS</th>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Gross profit</th>
                             <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Expenses</th>

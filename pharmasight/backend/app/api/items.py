@@ -35,6 +35,7 @@ from app.models import (
 from app.models.settings import CompanySetting
 from app.models.permission import Permission, RolePermission
 from app.models.sale import SalesInvoice, SalesInvoiceItem
+from app.models.item import ItemBranchKraSync
 from app.schemas.item import (
     ItemCreate, ItemResponse, ItemUpdate,
     ItemUnitCreate, ItemUnitResponse,
@@ -42,6 +43,7 @@ from app.schemas.item import (
     CompanyPricingDefaultCreate, CompanyPricingDefaultResponse,
     ItemsBulkCreate, ItemOverviewResponse,
     AdjustStockRequest, AdjustStockResponse,
+    KraStockReconcileResponse,
     CostAdjustmentRequest, BatchQuantityCorrectionRequest, BatchMetadataCorrectionRequest,
     CorrectionResponse, LedgerBatchEntry, LedgerBatchesResponse,
 )
@@ -61,6 +63,10 @@ from app.services.order_book_service import OrderBookService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.item_search_service import ItemSearchService
 from app.services.etims.kra_outbox_service import KraOutboxService
+from app.services.etims.kra_company_activation import company_kra_execution_enabled
+from app.services.etims.item_kra_sync_policy import enqueue_item_sync_for_stock_event
+from app.services.etims.item_sync_service import refresh_item_kra_catalog_fields
+from app.services.etims.kra_stock_push_service import reconcile_kra_stock_master_read_through
 from app.services.pricing_config_service import (
     check_stock_adjustment_requires_confirmation,
     is_cost_outlier_vs_weighted_average,
@@ -74,7 +80,7 @@ from app.utils.vat import vat_rate_to_percent
 from app.schemas.reports import ItemBatchesResponse
 from app.services.item_movement_report_service import get_item_batches
 from pydantic import BaseModel, Field
-from app.models.company import Company
+from app.models.company import Company, BranchEtimsCredentials
 from app.utils.company_plan_limits import company_is_demo_plan, company_product_limit
 from app.config import settings
 
@@ -86,6 +92,69 @@ ADJUST_STOCK_ALLOWED_ROLES = {"admin", "pharmacist", "auditor", "super admin"}
 
 # Company setting key for POS snapshot search (default False = use heavy search)
 POS_SNAPSHOT_SETTING_KEY = "pos_snapshot_enabled"
+
+
+def _kra_sync_target_branch_ids(db: Session, company_id: UUID) -> List[UUID]:
+    """
+    Branches that should receive item.updated outbox events.
+
+    Prefer branches that are actually KRA submission-ready (enabled + verified).
+    Fallback to the earliest company branch for backward compatibility.
+    """
+    rows = (
+        db.query(BranchEtimsCredentials.branch_id)
+        .join(Branch, Branch.id == BranchEtimsCredentials.branch_id)
+        .filter(
+            Branch.company_id == company_id,
+            Branch.is_active.is_(True),
+            BranchEtimsCredentials.company_id == company_id,
+            BranchEtimsCredentials.enabled.is_(True),
+            func.lower(func.coalesce(BranchEtimsCredentials.connection_status, ""))
+            == "verified",
+        )
+        .distinct()
+        .all()
+    )
+    branch_ids = [r[0] for r in rows if r and r[0]]
+    if branch_ids:
+        return branch_ids
+
+    fallback = (
+        db.query(Branch.id)
+        .filter(Branch.company_id == company_id, Branch.is_active.is_(True))
+        .order_by(Branch.created_at.asc())
+        .first()
+    )
+    return [fallback[0]] if fallback and fallback[0] else []
+
+
+def _enqueue_kra_item_sync_after_item_create(db: Session, item: Item) -> List[Any]:
+    """
+    Queue ``item.updated`` for new products so ``saveItem`` runs without a separate \"Sync to KRA\" click.
+
+    Skips when KRA is disabled for the company or no branch can be targeted (same rules as ``sync-kra-now``).
+    Returns enqueued outbox rows (empty list when skipped) so the caller can run ``sync_item_to_kra`` inline.
+    """
+    if not company_kra_execution_enabled(db, item.company_id):
+        return []
+    target_branch_ids = _kra_sync_target_branch_ids(db, item.company_id)
+    if not target_branch_ids:
+        return []
+    max_attempts = max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1)
+    item.kra_needs_resync = True
+    item.kra_sync_status = "queued"
+    rows: List[Any] = []
+    for branch_id in target_branch_ids:
+        rows.append(
+            KraOutboxService.enqueue_item_updated(
+                db,
+                item=item,
+                branch_id=branch_id,
+                source="items.create",
+                max_attempts=max_attempts,
+            )
+        )
+    return rows
 
 
 def _is_pos_snapshot_enabled(db: Session, company_id: UUID) -> bool:
@@ -302,6 +371,10 @@ def create_item(
     Create a new item with 3-tier units. SKU auto-generated if not provided.
     Rejects duplicate names and duplicate SKU/code (same company, case-insensitive). No duplicate items allowed.
     Item and item_branch_snapshot are updated in a single transaction: if snapshot refresh fails, the item is not committed.
+
+    When KRA is enabled for the company and at least one branch can be targeted, after commit this route runs
+    ``sync_item_to_kra`` inline for each enqueued ``item.updated`` row so the HTTP response can include
+    ``kra_item_code`` and synced catalogue fields when OSCU succeeds (same core path as the outbox worker).
     """
     user, db = current_user_and_db
     effective_company_id = get_effective_company_id_for_user(db, user)
@@ -384,20 +457,19 @@ def create_item(
         # Same transaction: insert into item_branch_snapshot for every branch so the item appears in search.
         # If this fails, we roll back so the item is never committed (no gaps between items and snapshot).
         SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, db_item.company_id, db_item.id)
-        if settings.KRA_OUTBOX_ENABLED:
-            branch = db.query(Branch).filter(Branch.company_id == db_item.company_id).order_by(Branch.created_at.asc()).first()
-            if branch:
-                db_item.kra_needs_resync = True
-                db_item.kra_sync_status = "queued"
-                KraOutboxService.enqueue_item_updated(
-                    db,
-                    item=db_item,
-                    branch_id=branch.id,
-                    source="items.create",
-                    max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
-                )
+        kra_create_outbox_rows = _enqueue_kra_item_sync_after_item_create(db, db_item)
         db.commit()
         db.refresh(db_item)
+        if kra_create_outbox_rows:
+            from app.models.kra_event_outbox import KraEventOutbox
+            from app.services.etims.kra_outbox_worker import process_item_updated_outbox_row
+
+            for ob in kra_create_outbox_rows:
+                live = db.query(KraEventOutbox).filter(KraEventOutbox.id == ob.id).first()
+                if live:
+                    process_item_updated_outbox_row(db, live)
+            db.commit()
+            db.refresh(db_item)
         return db_item
     except IntegrityError:
         db.rollback()
@@ -658,6 +730,21 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "track_expiry": getattr(item, "track_expiry", False),
         "is_controlled": getattr(item, "is_controlled", False),
         "is_cold_chain": getattr(item, "is_cold_chain", False),
+        "kra_item_cls_cd": getattr(item, "kra_item_cls_cd", None),
+        "kra_pkg_unit_cd": getattr(item, "kra_pkg_unit_cd", None),
+        "kra_qty_unit_cd": getattr(item, "kra_qty_unit_cd", None),
+        "kra_tax_ty_cd": getattr(item, "kra_tax_ty_cd", None),
+        "kra_vat_cat_cd": getattr(item, "kra_vat_cat_cd", None),
+        "kra_item_code": getattr(item, "kra_item_code", None),
+        "kra_sync_status": getattr(item, "kra_sync_status", None),
+        "kra_sync_error": getattr(item, "kra_sync_error", None),
+        "kra_synced_at": getattr(item, "kra_synced_at", None),
+        "kra_last_sync_at": getattr(item, "kra_synced_at", None),
+        "kra_last_attempt_at": getattr(item, "kra_last_attempt_at", None),
+        "kra_sync_attempt_count": getattr(item, "kra_sync_attempt_count", None),
+        "kra_needs_resync": getattr(item, "kra_needs_resync", None),
+        "kra_catalog_snapshot": getattr(item, "kra_catalog_snapshot", None),
+        "kra_last_sync_detail": getattr(item, "kra_last_sync_detail", None),
         "default_cost_per_base": float(item.default_cost_per_base) if item.default_cost_per_base is not None else None,
         "default_supplier_id": item.default_supplier_id,
         "default_cost": default_cost,
@@ -667,6 +754,7 @@ def _item_to_response_dict(item: Item, default_cost: float = 0.0) -> dict:
         "promo_start_date": getattr(item, "promo_start_date", None),
         "promo_end_date": getattr(item, "promo_end_date", None),
         "units": [],  # Set below from _display_units_from_item
+        "branch_kra_sync": [],
     }
 
 
@@ -728,6 +816,30 @@ def get_item(
     ) if branch_id else 0.0
     data = _item_to_response_dict(item, default_cost=default_cost)
     data["units"] = _display_units_from_item(item)
+    sync_rows = (
+        db.query(ItemBranchKraSync)
+        .filter(
+            ItemBranchKraSync.item_id == item_id,
+            ItemBranchKraSync.company_id == item.company_id,
+        )
+        .order_by(ItemBranchKraSync.branch_id.asc())
+        .all()
+    )
+    data["branch_kra_sync"] = [
+        {
+            "branch_id": row.branch_id,
+            "status": row.status or "pending",
+            "retry_count": int(row.retry_count or 0),
+            "last_error": row.last_error,
+            "http_status": row.http_status,
+            "kra_result_cd": row.kra_result_cd,
+            "kra_result_msg": row.kra_result_msg,
+            "response_payload_json": row.response_payload_json,
+            "synced_at": row.synced_at,
+            "last_attempt_at": row.last_attempt_at,
+        }
+        for row in sync_rows
+    ]
     data["has_transactions"] = item_id in ExcelImportService._get_items_with_real_transactions(db, item.company_id, [item_id])
     if branch_id:
         qty = float(InventoryService.get_current_stock(db, item.id, branch_id))
@@ -1424,12 +1536,93 @@ def adjust_stock(
                 item_id, body.branch_id,
             )
     SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
+    enqueue_item_sync_for_stock_event(
+        db,
+        item=item,
+        branch_id=body.branch_id,
+        source="stock.adjustment",
+        max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
+    )
+    kra_stock_push_enqueued = False
+    kra_stock_push_note: str | None = None
+    kra_stock_push_ok: bool | None = None
+    kra_stock_push_error: str | None = None
+    kra_stock_push_skipped: str | None = None
+    kra_stock_mirror_rsd_qty: float | None = None
+    kra_outbox_event_id: str | None = None
+    kra_outbox_status: str | None = None
+    kra_ledger_align_failed: str | None = None
+    kra_user_delta: float | None = None
+    kra_previous_rsd_qty: float | None = None
+    kra_target_local_qty: float | None = None
+    kra_reconciliation_delta: float | None = None
+    kra_reconciliation_delta_used: float | None = None
+    kra_resulting_rsd_qty: float | None = None
+    kra_insert_stock_sar_ty_cd: str | None = None
+    kra_insert_stock_io_ty_cd: str | None = None
+    kra_insert_stock_tax_ty_cd: str | None = None
+    if quantity_delta > 0:
+        from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
+        from app.services.etims.kra_outbox_worker import process_inventory_stock_in_outbox_row
+
+        kra_stock_push_enqueued, kra_stock_push_note, ob_row = enqueue_kra_stock_in_for_ledger(
+            db, ledger_entry, source="stock.adjustment"
+        )
+        if ob_row is not None:
+            kra_outbox_event_id = str(ob_row.id)
+            push_res = process_inventory_stock_in_outbox_row(db, ob_row)
+            kra_stock_push_ok = bool(push_res.get("ok"))
+            kra_stock_push_skipped = push_res.get("skipped")
+            kra_stock_push_error = push_res.get("error")
+            kra_outbox_status = push_res.get("outbox_status")
+            kra_ledger_align_failed = push_res.get("kra_ledger_align_failed")
+            kra_user_delta = push_res.get("user_delta")
+            kra_previous_rsd_qty = push_res.get("previous_kra_qty")
+            kra_target_local_qty = push_res.get("target_local_qty")
+            kra_reconciliation_delta = push_res.get("reconciliation_delta")
+            kra_reconciliation_delta_used = push_res.get("reconciliation_delta_used")
+            kra_resulting_rsd_qty = push_res.get("resulting_kra_qty")
+            kra_insert_stock_sar_ty_cd = push_res.get("insert_stock_sar_ty_cd")
+            kra_insert_stock_io_ty_cd = push_res.get("insert_stock_io_ty_cd")
+            kra_insert_stock_tax_ty_cd = push_res.get("insert_stock_tax_ty_cd")
+            rq = push_res.get("kra_stock_rsd_qty")
+            if rq is not None:
+                try:
+                    kra_stock_mirror_rsd_qty = float(rq)
+                except (TypeError, ValueError):
+                    kra_stock_mirror_rsd_qty = None
+            if kra_stock_push_ok:
+                sk = kra_stock_push_skipped
+                if sk == "shadow_mode":
+                    kra_stock_push_note = "KRA stock push skipped (shadow mode)."
+                elif sk == "company_kra_disabled":
+                    kra_stock_push_note = "KRA disabled for this company; OSCU stock not updated."
+                elif sk == "already_processed":
+                    kra_stock_push_note = "KRA stock for this adjustment was already applied."
+                elif not sk:
+                    kra_stock_push_note = "KRA OSCU stock updated in this request (insertStockIO + saveStockMaster)."
+                if kra_ledger_align_failed:
+                    kra_stock_push_note = (
+                        (kra_stock_push_note or "").rstrip()
+                        + " Full ledger align to OSCU failed (strict saveStockMaster): "
+                        + str(kra_ledger_align_failed)[:450]
+                    ).strip()
+            elif kra_stock_push_error:
+                kra_stock_push_note = (
+                    (kra_stock_push_note or "").strip()
+                    + " KRA push failed in this request: "
+                    + str(kra_stock_push_error)[:500]
+                    + (f" (outbox: {kra_outbox_status})" if kra_outbox_status else "")
+                ).strip()
     db.commit()
 
     new_stock = InventoryService.get_current_stock(db, item_id, body.branch_id)
     new_stock_display = InventoryService.get_stock_display(db, item_id, body.branch_id)
     direction_label = "added" if quantity_delta > 0 else "reduced"
     retail_unit = _unit_for_display(get_stock_display_unit(item), "piece")
+    _kra_cd = getattr(item, "kra_item_code", None)
+    if isinstance(_kra_cd, str):
+        _kra_cd = _kra_cd.strip() or None
     return AdjustStockResponse(
         success=True,
         message=f"Stock {direction_label}: {abs(quantity_delta):.0f} base units. Previous: {previous_stock:.0f} → New: {new_stock:.0f} ({new_stock_display}).",
@@ -1441,6 +1634,25 @@ def adjust_stock(
         new_stock_display=new_stock_display,
         base_quantity=new_stock,
         retail_unit=retail_unit,
+        kra_stock_push_enqueued=kra_stock_push_enqueued,
+        kra_stock_push_note=kra_stock_push_note,
+        kra_stock_push_ok=kra_stock_push_ok,
+        kra_stock_push_error=kra_stock_push_error,
+        kra_stock_push_skipped=kra_stock_push_skipped,
+        kra_stock_mirror_rsd_qty=kra_stock_mirror_rsd_qty,
+        kra_outbox_event_id=kra_outbox_event_id,
+        kra_outbox_status=kra_outbox_status,
+        kra_item_code=_kra_cd,
+        kra_ledger_align_failed=kra_ledger_align_failed,
+        kra_user_delta=kra_user_delta,
+        kra_previous_rsd_qty=kra_previous_rsd_qty,
+        kra_target_local_qty=kra_target_local_qty,
+        kra_reconciliation_delta=kra_reconciliation_delta,
+        kra_reconciliation_delta_used=kra_reconciliation_delta_used,
+        kra_resulting_rsd_qty=kra_resulting_rsd_qty,
+        kra_insert_stock_sar_ty_cd=kra_insert_stock_sar_ty_cd,
+        kra_insert_stock_io_ty_cd=kra_insert_stock_io_ty_cd,
+        kra_insert_stock_tax_ty_cd=kra_insert_stock_tax_ty_cd,
     )
 
 
@@ -1475,6 +1687,8 @@ def update_item(
     # Do not persist deprecated price fields — cost from inventory_ledger only
     for key in ("default_cost", "purchase_price_per_supplier_unit", "wholesale_price_per_wholesale_unit", "retail_price_per_retail_unit"):
         update_data.pop(key, None)
+    # Operational/item profile updates must not mutate KRA itemCd implicitly.
+    update_data.pop("kra_item_code", None)
     
     # Business Rule 1: SKU is immutable
     if 'sku' in update_data:
@@ -1528,6 +1742,9 @@ def update_item(
         if cb and (int(ps) if ps is not None else 1) < 2:
             raise HTTPException(status_code=400, detail="Breakable items must have pack_size > 1")
     
+    old_vat_category = (getattr(item, "vat_category", None) or "").strip().upper()
+    old_vat_rate = str(getattr(item, "vat_rate", None) or "")
+
     # Apply allowed updates. Units are item characteristics (columns on items table); no separate unit list.
     for field, value in update_data.items():
         setattr(item, field, value)
@@ -1537,18 +1754,14 @@ def update_item(
     
     # Refresh snapshot in same transaction (e.g. floor_price, name, search_text) so search/stocks stay in sync
     SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, item.company_id, item_id)
-    if settings.KRA_OUTBOX_ENABLED:
-        branch = db.query(Branch).filter(Branch.company_id == item.company_id).order_by(Branch.created_at.asc()).first()
-        if branch:
-            item.kra_needs_resync = True
-            item.kra_sync_status = "queued"
-            KraOutboxService.enqueue_item_updated(
-                db,
-                item=item,
-                branch_id=branch.id,
-                source="items.update",
-                max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
-            )
+    new_vat_category = (getattr(item, "vat_category", None) or "").strip().upper()
+    new_vat_rate = str(getattr(item, "vat_rate", None) or "")
+    tax_profile_changed = old_vat_category != new_vat_category or old_vat_rate != new_vat_rate
+    # Tax profile changes now require explicit manual "Sync to KRA now".
+    # Do not auto-enqueue item.updated from profile edits; that can rotate itemCd unexpectedly.
+    if tax_profile_changed and company_kra_execution_enabled(db, item.company_id):
+        item.kra_needs_resync = True
+        item.kra_sync_status = "pending_manual_sync"
     db.commit()
     db.refresh(item)
     return item
@@ -1614,6 +1827,200 @@ def mark_item_ready(
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.post("/{item_id}/sync-kra-now")
+def sync_item_to_kra_now(
+    item_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Manually enqueue item.updated for immediate KRA sync processing.
+    Uses same outbox pipeline as automatic create/update sync.
+    """
+    user, _ = current_user_and_db
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if not company_kra_execution_enabled(db, item.company_id):
+        raise HTTPException(
+            status_code=400,
+            detail="KRA is not enabled for this company. A platform administrator can enable it under Licensing → eTIMS.",
+        )
+
+    target_branch_ids = _kra_sync_target_branch_ids(db, item.company_id)
+    if not target_branch_ids:
+        raise HTTPException(status_code=400, detail="No active branches available for KRA sync.")
+
+    max_attempts = max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1)
+    item.kra_needs_resync = True
+    item.kra_sync_status = "queued"
+    for branch_id in target_branch_ids:
+        KraOutboxService.enqueue_item_updated(
+            db,
+            item=item,
+            branch_id=branch_id,
+            source="items.sync_now",
+            max_attempts=max_attempts,
+        )
+    db.commit()
+    db.refresh(item)
+    return {
+        "ok": True,
+        "item_id": str(item.id),
+        "queued_branch_ids": [str(bid) for bid in target_branch_ids],
+        "queued_count": len(target_branch_ids),
+        "kra_sync_status": item.kra_sync_status,
+    }
+
+
+@router.post("/{item_id}/kra-catalog-refresh")
+def refresh_item_kra_catalog_now(
+    item_id: UUID,
+    branch_id: UUID = Query(..., description="Branch whose OSCU credentials are used for selectItemList"),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Pull authoritative ``taxTyCd``, ``vatCatCd``, ``itemClsCd``, and unit codes from KRA ``selectItemList``
+    for this item's ``kra_item_code`` and persist on ``items``. No ``saveItem`` call — use to fix drift or after portal edits.
+    """
+    user, _ = current_user_and_db
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch or str(branch.company_id) != str(item.company_id):
+        raise HTTPException(status_code=400, detail="Branch does not belong to item company")
+    if not company_kra_execution_enabled(db, item.company_id):
+        raise HTTPException(
+            status_code=400,
+            detail="KRA is not enabled for this company.",
+        )
+
+    res = refresh_item_kra_catalog_fields(
+        db,
+        item_id=item_id,
+        company_id=item.company_id,
+        branch_id=branch_id,
+    )
+    if not res.get("ok"):
+        detail = str(res.get("error") or "kra_catalog_refresh_failed")
+        code = 404 if detail == "catalog_row_not_found" else 400
+        raise HTTPException(status_code=code, detail=detail)
+    db.commit()
+    db.refresh(item)
+    return {
+        "ok": True,
+        "item_cd": item.kra_item_code,
+        "kra_tax_ty_cd": getattr(item, "kra_tax_ty_cd", None),
+        "kra_vat_cat_cd": getattr(item, "kra_vat_cat_cd", None),
+        "kra_item_cls_cd": getattr(item, "kra_item_cls_cd", None),
+        "kra_pkg_unit_cd": getattr(item, "kra_pkg_unit_cd", None),
+        "kra_qty_unit_cd": getattr(item, "kra_qty_unit_cd", None),
+    }
+
+
+@router.post("/{item_id}/kra-stock-reconcile", response_model=KraStockReconcileResponse)
+def kra_stock_reconcile_now(
+    item_id: UUID,
+    branch_id: UUID = Query(..., description="Branch whose OSCU credentials are used for selectStockMaster / saveStockMaster"),
+    align_with_ledger: bool = Query(
+        False,
+        description=(
+            "If OSCU returns no stock row, post saveStockMaster using PharmaSight ledger base quantity "
+            "(same base units as adjust-stock). Use when KRA never returns selectStockMaster/move balance."
+        ),
+    ),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Read KRA ``selectStockMaster`` (fallback: move-list balance fields, then last mirrored ``rsdQty``),
+    POST ``saveStockMaster`` with that ``rsdQty`` (no ``insertStockIO``), and update ``item_branch_kra_sync``.
+    With ``align_with_ledger=true``, when reads and mirror are empty, uses PharmaSight ledger stock.
+    Does not change the PharmaSight inventory ledger.
+    """
+    user, _ = current_user_and_db
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(item.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not _user_has_permission(db, user.id, "inventory.manage"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch or str(branch.company_id) != str(item.company_id):
+        raise HTTPException(status_code=400, detail="Branch does not belong to item company")
+    if not company_kra_execution_enabled(db, item.company_id):
+        raise HTTPException(
+            status_code=400,
+            detail="KRA is not enabled for this company.",
+        )
+
+    res = reconcile_kra_stock_master_read_through(
+        db,
+        company_id=item.company_id,
+        branch_id=branch_id,
+        item_id=item_id,
+        timeout=120,
+        align_with_ledger=align_with_ledger,
+    )
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=str(res.get("error") or "kra_stock_reconcile_failed"))
+    db.commit()
+    src = res.get("rsd_qty_source")
+    base_msg = (
+        f"OSCU saveStockMaster applied for {res['kra_item_code']} with rsdQty={res['rsd_qty_posted']} "
+        f"(source: {src}). Local KRA mirror updated."
+    )
+    if src == "pharmasight_ledger":
+        msg = base_msg + " Quantity came from PharmaSight ledger — ensure KRA item units match base stock."
+    elif src == "last_mirror":
+        msg = base_msg + " OSCU did not return a row; last mirrored rsdQty was re-posted."
+    elif src == "kra_mismatch_expected":
+        msg = (
+            base_msg
+            + " First rsdQty was adjusted after KRA rsdQty mismatch / Expected: hint (same behavior as kra_min.py)."
+        )
+        try:
+            r_read = float(res.get("rsd_qty_read") or 0)
+            r_post = float(res.get("rsd_qty_posted") or 0)
+        except (TypeError, ValueError):
+            r_read, r_post = 0.0, 0.0
+        if r_read > 0 and abs(r_post) < 1e-9:
+            msg += (
+                " OSCU required rsdQty=0 (not the read value). Your PharmaSight ledger is unchanged; "
+                "if stock should not be zero on OSCU, add stock via adjust-stock (IO) or verify item/units on eTIMS."
+            )
+    elif src in ("select_stock_master", "select_stock_move_list"):
+        msg = base_msg + " Quantity came from OSCU select read-through."
+    else:
+        msg = base_msg
+    return KraStockReconcileResponse(
+        item_id=item_id,
+        branch_id=branch_id,
+        kra_item_code=str(res.get("kra_item_code") or ""),
+        rsd_qty_read=float(res["rsd_qty_read"]),
+        rsd_qty_posted=float(res["rsd_qty_posted"]),
+        rsd_qty_source=str(src) if src else None,
+        http_status=int(res["http_status"]),
+        message=msg,
+    )
 
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2348,6 +2755,17 @@ def post_batch_quantity_correction(
             document_number="ADJ",
         )
         SnapshotRefreshService.schedule_snapshot_refresh(db, item.company_id, body.branch_id, item_id=item_id)
+        enqueue_item_sync_for_stock_event(
+            db,
+            item=item,
+            branch_id=body.branch_id,
+            source="stock.adjustment",
+            max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
+        )
+        if quantity_delta > 0:
+            from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
+
+            enqueue_kra_stock_in_for_ledger(db, ledger_entry, source="stock.adjustment")
         db.commit()
         db.refresh(movement)
         return CorrectionResponse(

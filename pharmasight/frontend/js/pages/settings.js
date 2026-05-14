@@ -637,7 +637,7 @@ async function renderDepartmentStoresSettingsPage() {
             </div>
             <div class="card-body">
                 <p class="text-secondary" style="margin-top:0;">
-                    Each branch has its own department mini-stores (triage, lab, wards, etc.). Stock issued from pharmacy into a store is tracked per store.
+                    Each branch has its own department mini-stores (triage, lab, wards, etc.). Stock issued from central inventory into a store is tracked per store.
                     Finance dashboards for stock value distribution by mini-store can follow; set up stores here first.
                 </p>
                 <div class="form-group" style="max-width:28rem;">
@@ -2706,16 +2706,16 @@ function buildPrintPreviewHTML() {
     const headerHtml = isThermal
         ? (showCompany || showAddress
             ? `<div class="header">
-        ${showCompany ? '<div class="company-name">PharmaSight</div>' : ''}
-        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@pharmasight.com</div>' : ''}
+        ${showCompany ? '<div class="company-name">SightOps</div>' : ''}
+        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@example.com</div>' : ''}
         <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Quotation</p>
     </div>` : '<div class="header"><p style="margin: 0;">Sales Quotation</p></div>')
         : (showCompany || showAddress
             ? `<div class="header"><div class="header-inner">
         <div class="header-logo-wrap" style="${logoWrapStyle}">${logoEl}</div>
         <div class="header-company-block">
-        ${showCompany ? '<div class="company-name">PharmaSight</div>' : ''}
-        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@pharmasight.com</div>' : ''}
+        ${showCompany ? '<div class="company-name">SightOps</div>' : ''}
+        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@example.com</div>' : ''}
         <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
         </div>
     </div></div>` : '<div class="header"><div class="header-inner"><div class="header-logo-wrap" style="' + logoWrapStyle + '">' + logoEl + '</div><div class="header-company-block"><p style="margin: 0;">Sales Invoice</p></div></div></div>');
@@ -2782,8 +2782,8 @@ function buildA4PreviewInnerHTML() {
     const headerHtml = `<div class="header"><div class="header-inner">
         <div id="previewLogoWrap" class="header-logo-wrap" style="${logoWrapStyle}">${logoEl}</div>
         <div class="header-company-block">
-        ${showCompany ? '<div class="company-name">PharmaSight</div>' : ''}
-        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@pharmasight.com</div>' : ''}
+        ${showCompany ? '<div class="company-name">SightOps</div>' : ''}
+        ${showAddress ? '<div class="company-details">Sample Branch, Nairobi</div><div class="company-details">Ph: 0700000000 | Email: branch@example.com</div>' : ''}
         <p style="margin: 8px 0 0 0; font-weight: bold;">Sales Invoice</p>
         </div>
     </div></div>`;

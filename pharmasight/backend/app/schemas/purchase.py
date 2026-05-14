@@ -159,6 +159,34 @@ class SupplierInvoiceCreate(SupplierInvoiceBase):
     confirmations: Optional[List[BatchLineConfirmation]] = Field(None, description="Required when line costs trigger floor price or margin confirmation (same as stock adjustment)")
 
 
+class KraStockPushLedgerOutcome(BaseModel):
+    """One inventory line after batch: whether OSCU insertStockIO/saveStockMaster ran (server-side, not in browser Network)."""
+
+    item_id: UUID
+    inventory_ledger_id: UUID
+    kra_enqueued: bool = Field(
+        ...,
+        description="True when a durable outbox row was created for this ledger line.",
+    )
+    kra_ok: Optional[bool] = Field(
+        None,
+        description="True/False when push ran in this request; null when not enqueued.",
+    )
+    kra_error: Optional[str] = None
+    kra_skipped: Optional[str] = None
+    kra_note: Optional[str] = Field(
+        None,
+        description="Why enqueue was skipped (e.g. KRA off, branch not verified, item missing kra_item_code).",
+    )
+    kra_insert_stock_sar_ty_cd: Optional[str] = None
+    kra_insert_stock_io_ty_cd: Optional[str] = None
+    kra_insert_stock_tax_ty_cd: Optional[str] = Field(
+        default=None,
+        description="insertStockIO itemList[0].taxTyCd sent to OSCU (must match OSDC sale taxTyCd for that item).",
+    )
+    kra_mirror_rsd_qty: Optional[float] = None
+
+
 class SupplierInvoicePaymentAllocationInfo(BaseModel):
     """One supplier payment line linked to this invoice (from supplier_payments + allocations)."""
     supplier_payment_id: UUID
@@ -188,6 +216,18 @@ class SupplierInvoiceResponse(SupplierInvoiceBase):
     payment_allocations: Optional[List[SupplierInvoicePaymentAllocationInfo]] = Field(
         default=None,
         description="Payments recorded via Supplier Payments (allocations). Empty if only legacy invoice payment was used.",
+    )
+    kra_stock_push_note: Optional[str] = Field(
+        default=None,
+        description=(
+            "After batch: KRA OSCU stock sync runs in the PharmaSight API process (server → KRA), "
+            "so you will not see KRA hosts in the browser Network tab for this request. "
+            "See kra_stock_push_lines for per-line outcomes."
+        ),
+    )
+    kra_stock_push_lines: Optional[List[KraStockPushLedgerOutcome]] = Field(
+        default=None,
+        description="Populated when batch posted stock: one entry per inventory_ledger row created for this invoice.",
     )
 
     class Config:

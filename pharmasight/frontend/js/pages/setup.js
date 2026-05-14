@@ -128,8 +128,8 @@ function renderCompanySetup() {
     page.innerHTML = `
         <div class="setup-wizard">
             <div class="setup-header">
-                <h2><i class="fas fa-building"></i> Welcome to PharmaSight</h2>
-                <p class="setup-subtitle">Let's set up your pharmacy business</p>
+                <h2><i class="fas fa-building"></i> Welcome to SightOps</h2>
+                <p class="setup-subtitle">Let's set up your SightOps workspace</p>
             </div>
 
             <div class="setup-progress">
@@ -161,7 +161,7 @@ function renderCompanySetup() {
                         <div class="form-group">
                             <label class="form-label">Company Name *</label>
                             <input type="text" class="form-input" name="name" required 
-                                   placeholder="PharmaSight" value="${setupData.company.name || ''}">
+                                   placeholder="Your company name" value="${setupData.company.name || ''}">
                         </div>
                         <div class="form-group">
                             <label class="form-label">Registration Number</label>
@@ -186,7 +186,7 @@ function renderCompanySetup() {
                     <div class="form-group">
                         <label class="form-label">Email Address</label>
                         <input type="email" class="form-input" name="email" 
-                               placeholder="info@pharmasight.com" value="${setupData.company.email || ''}">
+                               placeholder="info@yourcompany.com" value="${setupData.company.email || ''}">
                     </div>
 
                     <div class="form-group">
@@ -253,7 +253,7 @@ function renderAdminUserSetup() {
             <div class="card setup-card">
                 <div class="card-header">
                     <h3>Step 2: Admin User Information</h3>
-                    <p>Set up the administrator account for your pharmacy</p>
+                    <p>Set up the administrator account for your organization</p>
                     <small style="color: var(--text-secondary); display: block; margin-top: 0.5rem;">
                         Your user ID and email are set from your sign-in. Update name and phone below if needed.
                     </small>
@@ -275,7 +275,7 @@ function renderAdminUserSetup() {
                     <div class="form-group">
                         <label class="form-label">Email Address *</label>
                         <input type="email" class="form-input" name="email" required 
-                               placeholder="admin@pharmasight.com" 
+                               placeholder="admin@yourcompany.com" 
                                value="${setupData.admin_user.email || ''}"
                                readonly
                                style="background-color: #f5f5f5; cursor: not-allowed;">
@@ -351,7 +351,7 @@ function renderBranchSetup() {
                         <div class="form-group">
                             <label class="form-label">Branch Name *</label>
                             <input type="text" class="form-input" name="name" required 
-                                   placeholder="PharmaSight Main Branch" 
+                                   placeholder="Main branch" 
                                    value="${setupData.branch.name || ''}">
                         </div>
                         <div class="form-group">
@@ -399,7 +399,7 @@ function renderCompletion() {
         <div class="setup-wizard">
             <div class="setup-header">
                 <h2><i class="fas fa-check-circle" style="color: var(--success);"></i> Setup Complete!</h2>
-                <p class="setup-subtitle">Your pharmacy is ready to use</p>
+                <p class="setup-subtitle">Your workspace is ready</p>
             </div>
 
             <div class="setup-progress">
@@ -443,7 +443,7 @@ function renderCompletion() {
 
                     <div class="setup-actions">
                         <button class="btn btn-primary btn-large" onclick="goToDashboard()">
-                            <i class="fas fa-home"></i> Go to Dashboard
+                            <i class="fas fa-home"></i> Open dashboard
                         </button>
                         <button class="btn btn-secondary" onclick="goToAddItems()">
                             <i class="fas fa-box"></i> Add Inventory Items

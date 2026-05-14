@@ -129,7 +129,7 @@ async function loadExpensesIntoTable() {
 
     if (!list.length) {
         const emptyHtml = (window.EmptyStateWatermark && window.EmptyStateWatermark.render)
-            ? window.EmptyStateWatermark.render({ title: 'No expenses found', description: 'Record your first operational expense using “New Expense”.' })
+            ? window.EmptyStateWatermark.render({ title: 'No expenses found', description: 'Record your first expense using “New Expense”.' })
             : '<p style="color: var(--text-secondary);">No expenses found.</p>';
         wrap.innerHTML = emptyHtml;
         return;

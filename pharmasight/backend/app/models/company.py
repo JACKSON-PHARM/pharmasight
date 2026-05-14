@@ -39,6 +39,10 @@ class Company(Base):
     stripe_subscription_id = Column(String(255), nullable=True)
     # Marketing customer portal: optional WhatsApp override for upgrade CTAs (wa.me)
     portal_upgrade_whatsapp = Column(String(32), nullable=True)
+    # KRA / eTIMS tenant activation (execution plane); infra toggles live in ENV only.
+    kra_enabled = Column(Boolean, nullable=False, default=False)
+    kra_mode = Column(String(32), nullable=False, default="sandbox")
+    kra_onboarded_at = Column(TIMESTAMP(timezone=True), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -54,6 +58,7 @@ class Company(Base):
     kra_profile = relationship(
         "CompanyKraProfile",
         uselist=False,
+        back_populates="company",
         cascade="all, delete-orphan",
     )
 
@@ -143,6 +148,10 @@ class BranchEtimsCredentials(Base):
     token_expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
     failed_validation_count = Column(Integer, nullable=False, default=0)
     activation_blockers = Column(Text, nullable=True)
+    # insertStockIO SAR sequence (last successful sarNo for this OSCU branch).
+    kra_last_stock_io_sar_no = Column(Integer, nullable=False, default=0)
+    # saveTrnsSalesOsdc invcNo sequence (next value to send; KRA monotonic per branch, not POS invoice_no).
+    kra_osdc_next_invc_no = Column(Integer, nullable=False, default=1)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

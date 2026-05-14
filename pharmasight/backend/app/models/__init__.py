@@ -8,7 +8,7 @@ from .company import Company, Branch, BranchSetting
 from .company_kra_profile import CompanyKraProfile
 from .company_module import CompanyModule
 from .user import User, UserRole, UserBranchRole
-from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier, PricingSettings
+from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier, PricingSettings, ItemBranchKraSync
 from .inventory import InventoryLedger, ItemMovement
 from .snapshot import InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot, ItemBranchSnapshot
 from .supplier import Supplier
@@ -90,6 +90,7 @@ __all__ = [
     "CompanyPricingDefault",
     "CompanyMarginTier",
     "PricingSettings",
+    "ItemBranchKraSync",
     "InventoryLedger",
     "ItemMovement",
     "InventoryBalance",

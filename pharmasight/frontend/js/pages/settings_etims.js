@@ -162,7 +162,7 @@ async function renderEtimsSettingsPage() {
                 <li>Submission enabled: <strong>${cred.enabled ? 'Yes' : 'No'}</strong></li>
             </ul>
             <div class="alert alert-info" style="margin-top: 0.75rem;">
-                eTIMS credentials are managed by <strong>PharmaSight Platform Admin</strong>. If you need changes, contact support.
+                eTIMS credentials are managed by <strong>SightOps Platform Admin</strong>. If you need changes, contact support.
             </div>
         `;
         return;

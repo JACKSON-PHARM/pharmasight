@@ -78,7 +78,7 @@ async function loadDashboard() {
         panel.innerHTML =
             '<div style="padding: 2rem; text-align: center; max-width: 36rem; margin: 0 auto;">' +
             '<h2 style="margin: 0 0 0.5rem;">Trial ended</h2>' +
-            '<p style="color: var(--text-secondary); margin-bottom: 1rem;">Your PharmaSight trial has ended. Upgrade to continue using sales, inventory, purchases, and reports.</p>' +
+            '<p style="color: var(--text-secondary); margin-bottom: 1rem;">Your SightOps trial has ended. Upgrade to continue using sales, inventory, purchases, and reports.</p>' +
             '<p style="color: var(--text-secondary); font-size: 0.875rem;">Contact support to upgrade your subscription.</p>' +
             '</div>';
         return;
@@ -94,7 +94,7 @@ async function loadDashboard() {
     if (gridRestore) gridRestore.style.display = '';
 
     const branchId = getBranchIdForStock();
-    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'ordersProcessed', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday', 'belowMarginCount'];
+    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'ordersProcessed', 'creditReturnsCount', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday', 'belowMarginCount'];
 
     // Reset cards to placeholder (no auto-fetch)
     cardIds.forEach(function (id) {
@@ -102,7 +102,11 @@ async function loadDashboard() {
         if (el) el.textContent = '—';
     });
     const salesLabel = document.getElementById('dashboardSalesLabel');
-    if (salesLabel) salesLabel.textContent = 'Gross Sales incl. VAT (select range & Apply)';
+    if (salesLabel) salesLabel.textContent = 'Net sales incl. VAT (select range & Apply)';
+    const salesSub = document.getElementById('dashboardSalesSubline');
+    if (salesSub) salesSub.textContent = '';
+    const ordersSubReset = document.getElementById('ordersProcessedSub');
+    if (ordersSubReset) ordersSubReset.textContent = '';
     const gpMeta = document.getElementById('todayGrossProfitMeta');
     if (gpMeta) gpMeta.textContent = 'Gross Profit';
 
@@ -203,7 +207,7 @@ async function applyDashboardFilters() {
     if (grid) grid.querySelectorAll('.stat-card').forEach(function (card) { card.classList.add('stat-card-loading'); });
 
     const salesLabel = document.getElementById('dashboardSalesLabel');
-    if (salesLabel) salesLabel.textContent = 'Gross Sales incl. VAT';
+    if (salesLabel) salesLabel.textContent = 'Net sales incl. VAT';
 
     try {
         const now = Date.now();
@@ -244,6 +248,8 @@ async function applyDashboardFilters() {
                 sales_inclusive: parseFloat(gpRes.sales_inclusive || 0), // gross sales inclusive of VAT (before credit notes)
                 net_sales_exclusive: parseFloat(gpRes.net_sales_exclusive || 0), // sales after credit notes
                 net_sales_inclusive: parseFloat(gpRes.net_sales_inclusive || 0),
+                credit_notes_inclusive: parseFloat(gpRes.credit_notes_inclusive || 0),
+                credit_note_document_count: parseInt(gpRes.credit_note_document_count || 0, 10),
                 gross_profit: parseFloat(gpRes.gross_profit || 0),
                 margin_percent: parseFloat(gpRes.margin_percent || 0),
                 invoice_count: parseInt(gpRes.invoice_count || 0, 10),
@@ -315,6 +321,8 @@ async function applyDashboardFilters() {
         const totalStockValueEl = document.getElementById('totalStockValue');
         const todaySalesEl = document.getElementById('todaySales');
         const ordersProcessedEl = document.getElementById('ordersProcessed');
+        const ordersProcessedSubEl = document.getElementById('ordersProcessedSub');
+        const creditReturnsCountEl = document.getElementById('creditReturnsCount');
         const todayGrossProfitEl = document.getElementById('todayGrossProfit');
         const todayGrossProfitMetaEl = document.getElementById('todayGrossProfitMeta');
         const expiringItemsEl = document.getElementById('expiringItems');
@@ -325,9 +333,29 @@ async function applyDashboardFilters() {
         if (totalItemsEl) totalItemsEl.textContent = (kpisData.itemsCount != null ? kpisData.itemsCount : '—');
         if (totalStockEl) totalStockEl.textContent = (kpisData.stockCount != null ? kpisData.stockCount : '—');
         if (totalStockValueEl) totalStockValueEl.textContent = (kpisData.stockValue != null ? (typeof formatCurrency === 'function' ? formatCurrency(kpisData.stockValue) : kpisData.stockValue) : '—');
-        const grossSalesInclusive = (rangeData.sales_inclusive != null) ? rangeData.sales_inclusive : rangeData.sales_exclusive;
-        if (todaySalesEl) todaySalesEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(grossSalesInclusive) : grossSalesInclusive;
+        const netSalesInc = (rangeData.net_sales_inclusive != null && !isNaN(rangeData.net_sales_inclusive))
+            ? rangeData.net_sales_inclusive
+            : (parseFloat(rangeData.sales_inclusive || 0));
+        const grossInc = parseFloat(rangeData.sales_inclusive || 0);
+        const cnInc = parseFloat(rangeData.credit_notes_inclusive || 0);
+        if (todaySalesEl) todaySalesEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(netSalesInc) : netSalesInc;
+        const salesSubEl = document.getElementById('dashboardSalesSubline');
+        if (salesSubEl) {
+            if (cnInc > 0 && typeof formatCurrency === 'function') {
+                salesSubEl.textContent = 'Gross ' + formatCurrency(grossInc) + ' − credits ' + formatCurrency(cnInc);
+            } else {
+                salesSubEl.textContent = '';
+            }
+        }
         if (ordersProcessedEl) ordersProcessedEl.textContent = rangeData.invoice_count != null ? rangeData.invoice_count : '—';
+        if (ordersProcessedSubEl) {
+            const ncn = rangeData.credit_note_document_count != null ? rangeData.credit_note_document_count : 0;
+            ordersProcessedSubEl.textContent = ncn > 0 ? (ncn + ' credit note' + (ncn === 1 ? '' : 's') + ' in range (sale date)') : '';
+        }
+        if (creditReturnsCountEl) {
+            const ncn = rangeData.credit_note_document_count != null ? rangeData.credit_note_document_count : 0;
+            creditReturnsCountEl.textContent = ncn > 0 ? String(ncn) : '0';
+        }
         if (todayGrossProfitEl) todayGrossProfitEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(rangeData.gross_profit) : rangeData.gross_profit;
         if (todayGrossProfitMetaEl) todayGrossProfitMetaEl.textContent = 'Gross Profit • Margin ' + (rangeData.margin_percent != null ? rangeData.margin_percent.toFixed(1) : '0') + '%';
         if (expiringItemsEl) expiringItemsEl.textContent = (kpisData.expiringCount != null ? kpisData.expiringCount : '—');
@@ -495,6 +523,78 @@ async function showOrdersProcessedModal() {
         console.error('Orders processed summary failed:', e);
         const msg = `<p style="color: var(--danger-color); padding: 1rem;">Failed to load summary.</p>`;
         if (typeof showModal === 'function') showModal('Orders Processed — Item Summary', msg, footer, 'modal-large');
+    }
+}
+
+async function showCreditReturnsItemsModal() {
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
+        if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
+        return;
+    }
+    if (!API.sales || typeof API.sales.getCreditNotesItemsSummary !== 'function') {
+        if (typeof showToast === 'function') showToast('Credit returns summary not available.', 'warning');
+        return;
+    }
+
+    const params = getDashboardParams();
+    const qp = {};
+    if (params && params.preset && params.preset !== 'custom') qp.preset = params.preset;
+    if (params && params.preset === 'custom') {
+        if (params.startDate) qp.start_date = params.startDate;
+        if (params.endDate) qp.end_date = params.endDate;
+    }
+    qp.limit = 400;
+
+    const content = '<div class="spinner" style="margin: 2rem auto;"></div><p style="text-align: center;">Loading credited items...</p>';
+    const footer = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
+    if (typeof showModal === 'function') {
+        showModal('Customer credits — Item summary (by original sale date)', content, footer, 'modal-large');
+    }
+
+    try {
+        const res = await API.sales.getCreditNotesItemsSummary(branchId, qp);
+        const rows = (res && Array.isArray(res.rows)) ? res.rows : [];
+        if (!rows.length) {
+            const empty = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No credited line items in this range (credits are matched to the invoice sale date).</p>';
+            if (typeof showModal === 'function') showModal('Customer credits — Item summary (by original sale date)', empty, footer, 'modal-large');
+            return;
+        }
+        const tr = rows.map(function (r) {
+            const item = (typeof escapeHtml === 'function') ? escapeHtml(r.item_name || '—') : (r.item_name || '—');
+            const unit = (typeof escapeHtml === 'function') ? escapeHtml(r.unit_name || '') : (r.unit_name || '');
+            const qty = (typeof formatNumber === 'function') ? formatNumber(r.quantity || 0) : String(r.quantity || 0);
+            const freq = (r.frequency != null ? Number(r.frequency) : 0);
+            const up = (typeof formatCurrency === 'function') ? formatCurrency(r.unit_price || 0) : String(r.unit_price || 0);
+            const tp = (typeof formatCurrency === 'function') ? formatCurrency(r.total_price || 0) : String(r.total_price || 0);
+            return (
+                '<tr>' +
+                '<td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">' + item + '</td>' +
+                '<td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">' + qty + ' ' + unit + '</td>' +
+                '<td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">' + freq + '</td>' +
+                '<td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">' + up + '</td>' +
+                '<td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">' + tp + '</td>' +
+                '</tr>'
+            );
+        }).join('');
+        const table = (
+            '<p style="font-size:0.8rem;color:var(--text-secondary);margin:0 0 0.75rem 0;">Totals reduce net sales on the <strong>original invoice date</strong>, even if the credit note is dated later.</p>' +
+            '<div style="max-height: 65vh; overflow:auto;">' +
+            '<table style="width:100%; border-collapse: collapse;">' +
+            '<thead style="position: sticky; top: 0; background: white;">' +
+            '<tr>' +
+            '<th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:left;">Item</th>' +
+            '<th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Qty returned</th>' +
+            '<th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Lines</th>' +
+            '<th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Avg unit (excl.)</th>' +
+            '<th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Total (excl.)</th>' +
+            '</tr></thead><tbody>' + tr + '</tbody></table></div>'
+        );
+        if (typeof showModal === 'function') showModal('Customer credits — Item summary (by original sale date)', table, footer, 'modal-large');
+    } catch (e) {
+        console.error('Credit returns summary failed:', e);
+        const msg = '<p style="color: var(--danger-color); padding: 1rem;">Failed to load summary.</p>';
+        if (typeof showModal === 'function') showModal('Customer credits — Item summary (by original sale date)', msg, footer, 'modal-large');
     }
 }
 
@@ -691,6 +791,7 @@ window.applyDashboardFilters = applyDashboardFilters;
 window.showOrderBookPendingTodayModal = showOrderBookPendingTodayModal;
 window.openOrderBookFromDashboard = openOrderBookFromDashboard;
 window.showOrdersProcessedModal = showOrdersProcessedModal;
+window.showCreditReturnsItemsModal = showCreditReturnsItemsModal;
 window.showExpiringSoonModal = showExpiringSoonModal;
 window.exportExpiringToCsv = exportExpiringToCsv;
 window.openFinancialReportsFromDashboard = openFinancialReportsFromDashboard;

@@ -46,8 +46,8 @@ from app.services.etims.select_init_osdc_client import (
 )
 from app.services.etims.kra_policy_service import KraPolicyService
 from app.services.etims.kra_readiness_resolver import BranchKraReadinessResolver
-from app.services.etims.item_sync_service import sync_item_to_kra
 from app.services.etims.kra_outbox_service import KraOutboxService
+from app.services.etims.kra_company_activation import company_kra_execution_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -452,6 +452,15 @@ def bootstrap_kra_item_sync(
     require_document_belongs_to_user_company(db, user, branch, "Branch", None)
     ensure_user_has_branch_access(db, user.id, branch_id)
 
+    if not dry_run and not company_kra_execution_enabled(db, branch.company_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "KRA execution is not enabled for this company. "
+                "A platform administrator can enable it under Licensing → eTIMS."
+            ),
+        )
+
     rows = (
         db.query(Item)
         .filter(Item.company_id == branch.company_id, Item.is_active.is_(True))
@@ -473,29 +482,16 @@ def bootstrap_kra_item_sync(
         if dry_run:
             out["queued"] += 1
             continue
-        if settings.KRA_OUTBOX_ENABLED:
-            item.kra_needs_resync = True
-            item.kra_sync_status = "queued"
-            KraOutboxService.enqueue_item_updated(
-                db,
-                item=item,
-                branch_id=branch_id,
-                source="items.bootstrap",
-                max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
-            )
-            out["queued"] += 1
-            continue
-        res = sync_item_to_kra(
+        item.kra_needs_resync = True
+        item.kra_sync_status = "queued"
+        KraOutboxService.enqueue_item_updated(
             db,
-            item_id=item.id,
-            company_id=branch.company_id,
+            item=item,
             branch_id=branch_id,
+            source="items.bootstrap",
+            max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
         )
-        if bool(res.get("ok")):
-            out["synced"] += 1
-        else:
-            out["failed"] += 1
-            out["errors"].append({"item_id": str(item.id), "item_name": item.name, "error": res.get("error")})
+        out["queued"] += 1
     db.commit()
     return out
 

@@ -1,5 +1,5 @@
 """
-PharmaSight - Main FastAPI Application
+SightOps — Main FastAPI application
 """
 import logging
 import time
@@ -230,11 +230,22 @@ def run_tenant_migrations():
 
 
 @app.on_event("startup")
+def register_kra_stock_ledger_sync_listener():
+    """Enqueue OSCU saveStockMaster from PharmaSight ledger after non-stock-in ledger rows (e.g. sales)."""
+    try:
+        from app.services.etims.inventory_kra_stock_hooks import register_inventory_kra_ledger_sync_listener
+
+        register_inventory_kra_ledger_sync_listener()
+        logger.info("KRA inventory ledger sync listener registered")
+    except Exception:
+        logger.exception("Failed to register KRA inventory ledger sync listener")
+
+
+@app.on_event("startup")
 def start_kra_outbox_worker_if_enabled():
-    if not (settings.KRA_OUTBOX_ENABLED and settings.KRA_OUTBOX_WORKER_ENABLED):
+    if not settings.KRA_OUTBOX_WORKER_ENABLED:
         logger.info(
-            "KRA outbox worker disabled (KRA_OUTBOX_ENABLED=%s, KRA_OUTBOX_WORKER_ENABLED=%s)",
-            bool(settings.KRA_OUTBOX_ENABLED),
+            "KRA outbox worker disabled (KRA_OUTBOX_WORKER_ENABLED=%s)",
             bool(settings.KRA_OUTBOX_WORKER_ENABLED),
         )
         return
@@ -272,6 +283,7 @@ from app.api import (
     department_supply_router,
 )
 from app.api import etims
+from app.api import etims_debug as etims_debug_router
 from app.api.company import router as company_router
 from app.api.startup import router as startup_router
 from app.api.invite import router as invite_router
@@ -335,6 +347,7 @@ app.include_router(department_supply_router, prefix="/api/department-supply", ta
 app.include_router(modules_router, prefix="/api", tags=["Modules"])
 app.include_router(clinic_router, prefix="/api", tags=["Clinic / OPD"])
 app.include_router(etims.router, prefix="/api/etims", tags=["ETIMS"])
+app.include_router(etims_debug_router.router, prefix="/etims", tags=["ETIMS Forensic"])
 app.include_router(reports_router, prefix="/api", tags=["Reports"])
 if tenants_router:
     app.include_router(tenants_router, prefix="/api/admin", tags=["Tenant Management (Admin)"])
@@ -367,6 +380,9 @@ logger.warning(
 if _FRONTEND_DIR.is_dir():
     app.mount("/css", StaticFiles(directory=str(_FRONTEND_DIR / "css")), name="css")
     app.mount("/js", StaticFiles(directory=str(_FRONTEND_DIR / "js")), name="js")
+    _assets_dir = _FRONTEND_DIR / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
 
 # Uploaded files (logos, etc.) — register before SPA catch-all so /uploads/* is not served as index.html
 _UPLOADS_DIR = _BACKEND / "uploads"

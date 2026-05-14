@@ -50,7 +50,15 @@ function renderEmailRequestForm(page) {
     page.innerHTML = `
         <div class="login-container">
             <div class="login-card">
-                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                <div class="login-branding" style="margin-bottom:1rem;">
+                    <div class="login-brand-row">
+                        <div class="login-logo-wrap"><img class="login-logo" src="/assets/brand/sightops-mark.svg" width="56" height="56" alt="" decoding="async" onerror="this.onerror=null;this.src='/assets/brand/sightops-mark-mono.svg';"></div>
+                        <div class="login-brand-text">
+                            <h1 class="sightops-wordmark sightops-login-title"><span class="sightops-wordmark-sight">Sight</span><span class="sightops-wordmark-ops">Ops</span></h1>
+                            <p class="sightops-tagline">See more. Operate better.</p>
+                        </div>
+                    </div>
+                </div>
                 <h2>Reset Password</h2>
                 <p style="color: var(--text-secondary); margin-bottom: 1.5rem; text-align: center;">
                     Enter your email address and we'll send you a link to reset your password.
@@ -180,7 +188,15 @@ async function renderPasswordUpdateForm(page) {
     page.innerHTML = `
         <div class="login-container">
             <div class="login-card">
-                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                <div class="login-branding" style="margin-bottom:1rem;">
+                    <div class="login-brand-row">
+                        <div class="login-logo-wrap"><img class="login-logo" src="/assets/brand/sightops-mark.svg" width="56" height="56" alt="" decoding="async" onerror="this.onerror=null;this.src='/assets/brand/sightops-mark-mono.svg';"></div>
+                        <div class="login-brand-text">
+                            <h1 class="sightops-wordmark sightops-login-title"><span class="sightops-wordmark-sight">Sight</span><span class="sightops-wordmark-ops">Ops</span></h1>
+                            <p class="sightops-tagline">See more. Operate better.</p>
+                        </div>
+                    </div>
+                </div>
                 <h2>Set New Password</h2>
                 <p style="color: var(--text-secondary); margin-bottom: 1.5rem; text-align: center;">
                     Enter your new password below.

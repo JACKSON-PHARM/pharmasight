@@ -35,13 +35,13 @@ from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.etims.invoice_etims_snapshot import apply_etims_snapshots_on_batch
 from app.services.etims.kra_outbox_service import KraOutboxService
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
-from app.services.tenant_storage_service import get_signed_url
+from app.services.tenant_storage_service import get_signed_url, resolve_company_logo_bytes
 from app.utils.vat import vat_rate_to_percent
 from fastapi.responses import Response
 from app.config import settings
+from app.services.etims.kra_company_activation import company_kra_execution_enabled
 
 from app.services.document_pdf_generator import build_quotation_pdf
-from app.services.tenant_storage_service import download_file
 
 router = APIRouter()
 
@@ -174,9 +174,7 @@ def get_quotation_pdf(
     company_address = getattr(company, "address", None) if company else None
     branch_name = branch.name if branch else None
     branch_address = getattr(branch, "address", None) if branch else None
-    company_logo_bytes = None
-    if company and getattr(company, "logo_url", None) and str(company.logo_url or "").startswith("tenant-assets/") and tenant is not None:
-        company_logo_bytes = download_file(company.logo_url, tenant=tenant)
+    company_logo_bytes = resolve_company_logo_bytes(getattr(company, "logo_url", None) if company else None, tenant=tenant)
     prepared_by = None
     served_by = None
     creator = db.query(User).filter(User.id == quotation.created_by).first()
@@ -865,7 +863,7 @@ def convert_quotation_to_invoice(
         if getattr(inv_item, "item", None) is None:
             inv_item.item = db.query(Item).filter(Item.id == inv_item.item_id).first()
     apply_etims_snapshots_on_batch(db_invoice)
-    if settings.KRA_OUTBOX_ENABLED:
+    if company_kra_execution_enabled(db, db_invoice.company_id):
         from app.models.company import BranchEtimsCredentials
 
         creds = (

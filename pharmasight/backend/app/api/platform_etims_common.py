@@ -40,6 +40,9 @@ class PlatformEtimsCompanyResponse(BaseModel):
     company_pin: Optional[str] = None
     trader_invoicing_system_name: Optional[str] = None
     has_company_integrator_pin: bool = False
+    kra_enabled: bool = False
+    kra_mode: str = "sandbox"
+    kra_onboarded_at: Optional[datetime] = None
     branches: List[PlatformEtimsBranchRow] = Field(default_factory=list)
 
 
@@ -58,6 +61,14 @@ class PatchCompanyPinRequest(BaseModel):
     clear_integrator_pin: Optional[bool] = Field(
         None,
         description="If true, clears stored company integrator PIN.",
+    )
+    kra_enabled: Optional[bool] = Field(
+        None,
+        description="Tenant activation: allow KRA outbox enqueue and worker execution for this company.",
+    )
+    kra_mode: Optional[str] = Field(
+        None,
+        description="sandbox or production (company label; branch credentials remain authoritative for API calls).",
     )
 
 
@@ -82,6 +93,11 @@ def norm_etims_env(v: Optional[str]) -> str:
     if e not in ("sandbox", "production"):
         raise HTTPException(status_code=400, detail="environment must be sandbox or production")
     return e
+
+
+def norm_kra_mode(v: Optional[str]) -> str:
+    """Company-level fiscal mode; same allowed values as branch eTIMS environment."""
+    return norm_etims_env(v)
 
 
 def norm_etims_solution(v: Optional[str]) -> str:

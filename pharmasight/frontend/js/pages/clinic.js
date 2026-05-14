@@ -71,7 +71,9 @@
             : '';
         return (
             '<div class="card" style="padding:2rem; text-align:center;" role="status" aria-live="polite">' +
-            '<div class="ps-page-load-ring" aria-hidden="true"></div>' +
+            (window.SightOpsBrand && typeof SightOpsBrand.spinnerCompact === 'function'
+                ? SightOpsBrand.spinnerCompact()
+                : '<div class="so-inline-loader" role="status" aria-hidden="true"><div style="width:2.25rem;height:2.25rem;margin:0 auto;border:0.28rem solid #e5e7eb;border-top-color:var(--primary-color);border-radius:50%;animation:so-spin 0.85s linear infinite"></div></div>') +
             msgHtml +
             '</div>'
         );

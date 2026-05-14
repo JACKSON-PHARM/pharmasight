@@ -46,6 +46,8 @@ from app.services.inventory_service import InventoryService
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.order_book_service import OrderBookService
+from app.services.etims.item_kra_sync_policy import enqueue_item_sync_for_stock_event
+from app.config import settings
 
 router = APIRouter(tags=["Department Supply"])
 logger = logging.getLogger(__name__)
@@ -523,6 +525,17 @@ def complete_department_supply_transfer(
                 document_number=entry.document_number or transfer.transfer_number,
             )
             SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
+        max_attempts = max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1)
+        for entry in ledger_entries:
+            item = db.query(Item).filter(Item.id == entry.item_id).first()
+            if item:
+                enqueue_item_sync_for_stock_event(
+                    db,
+                    item=item,
+                    branch_id=branch_id,
+                    source="stock.department_issue",
+                    max_attempts=max_attempts,
+                )
 
         item_ids_touched = list({line.item_id for line in transfer.lines})
         for item_id in item_ids_touched:

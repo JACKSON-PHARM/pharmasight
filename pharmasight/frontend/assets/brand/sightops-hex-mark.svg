@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+  <!-- SightOps hex mark (flat segments + eye) — matches brand reference -->
+  <!-- Hex vertices, pointy top, R=18, center (24,24): V0 top … clockwise -->
+  <!-- Teal TL: O–V5–V0 | Navy TR: O–V0–V1 | Sage BR: O–V1–V2–V3 | Emerald BL: O–V3–V4–V5 -->
+  <path d="M24 24 L8.412 15 L24 6 Z" fill="#14b8a6"/>
+  <path d="M24 24 L24 6 L39.588 15 Z" fill="#142a4a"/>
+  <path d="M24 24 L39.588 15 L39.588 33 L24 42 Z" fill="#9dc9b8"/>
+  <path d="M24 24 L24 42 L8.412 33 L8.412 15 Z" fill="#10b981"/>
+  <ellipse cx="24" cy="24.5" rx="6.4" ry="4.95" fill="#ffffff"/>
+  <circle cx="24" cy="24.5" r="2.65" fill="#0f172a"/>
+  <circle cx="22.5" cy="23.35" r="0.75" fill="#ffffff" opacity="0.95"/>
+</svg>

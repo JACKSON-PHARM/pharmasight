@@ -25,7 +25,7 @@
             'https://wa.me/' +
             waDigits +
             '?text=' +
-            encodeURIComponent('Hi PharmaSight — I have a question about the product.')
+            encodeURIComponent('Hi SightOps — I have a question about the product.')
         );
     }
 
@@ -36,18 +36,18 @@
             [
                 '<div class="ps-chat" id="psChat" aria-live="polite">',
                 '  <button class="ps-chat-fab" id="psChatFab" type="button" aria-haspopup="dialog" aria-controls="psChatPanel" aria-expanded="false">Ask</button>',
-                '  <section class="ps-chat-panel" id="psChatPanel" role="dialog" aria-modal="false" aria-label="PharmaSight assistant" hidden>',
+                '  <section class="ps-chat-panel" id="psChatPanel" role="dialog" aria-modal="false" aria-label="SightOps assistant" hidden>',
                 '    <header class="ps-chat-header">',
-                '      <div class="ps-chat-title">PharmaSight assistant</div>',
+                '      <div class="ps-chat-title">SightOps assistant</div>',
                 '      <button class="ps-chat-close" id="psChatClose" type="button" aria-label="Close chat">&times;</button>',
                 '    </header>',
                 '    <div class="ps-chat-body" id="psChatBody">',
                 '      <div class="ps-chat-msg ps-chat-msg--bot">',
-                '        Hi! Ask me anything about pricing, setup, or what PharmaSight does. You can also pick a quick question below.',
+                '        Hi! Ask me anything about pricing, setup, or what SightOps does. You can also pick a quick question below.',
                 '      </div>',
                 '      <div class="ps-chat-quick" id="psChatQuick">',
-                '        <button type="button" class="ps-chat-chip" data-q="What does PharmaSight do?">What does it do?</button>',
-                '        <button type="button" class="ps-chat-chip" data-q="How do I get started with PharmaSight?">Get started</button>',
+                '        <button type="button" class="ps-chat-chip" data-q="What does SightOps do?">What does it do?</button>',
+                '        <button type="button" class="ps-chat-chip" data-q="How do I get started with SightOps?">Get started</button>',
                 '        <button type="button" class="ps-chat-chip" data-q="How much does it cost?">Pricing</button>',
                 '        <button type="button" class="ps-chat-chip" data-q="Can I use it for clinics or agrovets?">Clinic / Agrovet</button>',
                 '      </div>',
@@ -57,7 +57,7 @@
                 '      <button class="btn btn-primary" type="submit">Send</button>',
                 '    </form>',
                 '    <div class="ps-chat-footer">',
-                '      <a class="ps-chat-link" href="signup.html">Start using PharmaSight now</a>',
+                '      <a class="ps-chat-link" href="signup.html">Start free trial</a>',
                 '      <span class="ps-chat-dot">&middot;</span>',
                 '      <a class="ps-chat-link" href="pricing.html">Pricing</a>',
                 '      <span class="ps-chat-dot">&middot;</span>',
@@ -79,7 +79,7 @@
         var wa = getWaUrl();
         return (
             "<div class='ps-chat-cta'>" +
-            "<a href='signup.html'>Start using PharmaSight now &rarr;</a>" +
+            "<a href='signup.html'>Start free trial &rarr;</a>" +
             "<a href='" +
             wa +
             "' target='_blank' rel='noopener noreferrer'>Chat on WhatsApp</a>" +
@@ -89,10 +89,10 @@
 
     function replyFor(question) {
         var q = qs(question);
-        if (!q) return 'Ask me about pricing, setup, or what PharmaSight does.' + ctaLinksHtml();
+        if (!q) return 'Ask me about pricing, setup, or what SightOps does.' + ctaLinksHtml();
         if (q.indexOf('price') >= 0 || q.indexOf('cost') >= 0 || q.indexOf('pricing') >= 0) {
             return (
-                'PharmaSight pricing is straightforward and built for real pharmacy operations. The best way to judge fit is to try it with your own workflow—stock in, sales out, and margins visible immediately.' +
+                'SightOps pricing is straightforward and built for inventory-heavy operations. The best way to judge fit is to try it with your own workflow—stock in, sales out, and margins visible immediately.' +
                 ctaLinksHtml()
             );
         }
@@ -109,7 +109,7 @@
         }
         if (q.indexOf('clinic') >= 0 || q.indexOf('opd') >= 0) {
             return (
-                'Yes—PharmaSight works well for clinics. You get clean stock control, fast billing flows, and real-time visibility so you don’t run out of essentials mid-day.' +
+                'Yes—SightOps works well for clinics. You get clean stock control, fast billing flows, and real-time visibility so you don’t run out of essentials mid-day.' +
                 ctaLinksHtml()
             );
         }
@@ -121,7 +121,7 @@
         }
         if (q.indexOf('what') >= 0 && (q.indexOf('do') >= 0 || q.indexOf('does') >= 0)) {
             return (
-                'PharmaSight helps you run inventory, sales, purchases, and reporting with batch-aware stock, clear margins, and branch-friendly workflows—so you always know what you have and what you’re earning.' +
+                'SightOps helps you run inventory, sales, purchases, and reporting with batch-aware stock, clear margins, and branch-friendly workflows—so you always know what you have and what you’re earning.' +
                 ctaLinksHtml()
             );
         }
@@ -133,7 +133,7 @@
             q.indexOf('batch') >= 0
         ) {
             return (
-                'Yes — PharmaSight helps reduce expiries by tracking stock by batch and highlighting items that are close to expiry, so you can act early and avoid losses.' +
+                'Yes — SightOps helps reduce expiries by tracking stock by batch and highlighting items that are close to expiry, so you can act early and avoid losses.' +
                 ctaLinksHtml()
             );
         }
@@ -144,7 +144,7 @@
             );
         }
         return (
-            'I can help you quickly. Are you trying to solve:\n\n• Stock issues\n• Pricing / margins\n• Expiries\n• Sales tracking\n\nTell me which one, and I’ll show you exactly how PharmaSight helps.' +
+            'I can help you quickly. Are you trying to solve:\n\n• Stock issues\n• Pricing / margins\n• Expiries\n• Sales tracking\n\nTell me which one, and I’ll show you exactly how SightOps helps.' +
             ctaLinksHtml()
         );
     }

@@ -102,15 +102,34 @@
         };
         const formatTime = () => new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 
+        const formatInvoiceTime = (inv) => {
+            const iso = inv.approved_at || inv.batched_at || inv.created_at;
+            if (!iso) return '';
+            try {
+                const t = new Date(iso);
+                if (isNaN(t.getTime())) return '';
+                const pad = (n) => (n < 10 ? '0' + n : String(n));
+                return `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+            } catch (_) {
+                return '';
+            }
+        };
+
         if (type === 'RECEIPT' || type === 'INVOICE') {
             const inv = doc;
             return {
-                companyName: inv.company_name || 'PharmaSight',
+                companyName: inv.company_name || 'SightOps',
+                companyAddress: inv.company_address || '',
                 branchName: inv.branch_name || '',
+                branchAddress: inv.branch_address || '',
+                branchPhone: inv.branch_phone || '',
                 invoiceNo: inv.invoice_no || inv.id || '',
                 date: formatDate(inv.invoice_date),
+                invoiceTime: formatInvoiceTime(inv),
                 customerName: inv.customer_name || '',
+                customerPin: inv.customer_pin || '',
                 customerPhone: inv.customer_phone || '',
+                paymentMode: inv.payment_mode || '',
                 items: inv.items || [],
                 total: inv.total_inclusive != null ? inv.total_inclusive : (inv.total_amount || 0),
                 servedBy: inv.created_by_username || inv.created_by_name || '',
@@ -118,13 +137,17 @@
                 transactionMessage: (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '',
                 // KRA eTIMS (for thermal receipts)
                 kraReceiptNumber: inv.kra_receipt_number || null,
-                kraQrCode: inv.kra_qr_code || null
+                kraQrCode: inv.kra_qr_code || null,
+                kraSignature: inv.kra_signature || null,
+                companyPin: inv.company_pin || null,
+                kraSubmittedAt: inv.kra_submitted_at || null,
+                cuDeviceSerial: inv.etims_device_serial || null
             };
         }
         if (type === 'QUOTATION') {
             const q = doc;
             return {
-                companyName: q.company_name || 'PharmaSight',
+                companyName: q.company_name || 'SightOps',
                 branchName: q.branch_name || '',
                 invoiceNo: q.quotation_no || q.id || '',
                 date: formatDate(q.quotation_date),
@@ -148,7 +171,7 @@
                 line_total_inclusive: i.total_price || (parseFloat(i.quantity || 0) * parseFloat(i.unit_price || 0))
             }));
             return {
-                companyName: o.company_name || 'PharmaSight',
+                companyName: o.company_name || 'SightOps',
                 branchName: o.branch_name || '',
                 invoiceNo: o.order_number || o.id || '',
                 date: formatDate(o.order_date),

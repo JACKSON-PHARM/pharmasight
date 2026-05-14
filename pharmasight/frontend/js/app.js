@@ -539,16 +539,9 @@ async function renderInviteHandler() {
         invitePage.style.display = 'block';
         invitePage.style.visibility = 'visible';
         invitePage.innerHTML = `
-            <div style="display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; gap: 1rem;">
-                <div style="border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite;"></div>
-                <p>Processing invitation...</p>
+            <div style="display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; gap: 0.5rem; padding: 2rem;">
+                ${window.SightOpsBrand ? SightOpsBrand.loaderBlock('Processing invitation…', { progress: true }) : '<p>Processing invitation…</p>'}
             </div>
-            <style>
-                @keyframes spin {
-                    0% { transform: rotate(0deg); }
-                    100% { transform: rotate(360deg); }
-                }
-            </style>
         `;
     }
     
@@ -1915,7 +1908,7 @@ async function loadPage(pageName) {
                         // Fallback: show error message
                         const page = document.getElementById('password-reset');
                         if (page) {
-                            page.innerHTML = '<div class="login-container"><div class="login-card"><h1><i class="fas fa-pills"></i> PharmaSight</h1><h2>Password Reset</h2><p>The password reset functionality is not available. Please refresh the page.</p><p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 1rem;">If this keeps happening, contact your administrator or support.</p><a href="#login" style="display: inline-block; margin-top: 1rem;">Back to Login</a></div></div>';
+                            page.innerHTML = '<div class="login-container"><div class="login-card"><div class="login-branding" style="margin-bottom:1rem;"><div class="login-brand-row"><div class="login-logo-wrap"><img class="login-logo" src="/assets/brand/sightops-mark.svg" width="56" height="56" alt=""></div><div class="login-brand-text"><h1 class="sightops-wordmark sightops-login-title"><span class="sightops-wordmark-sight">Sight</span><span class="sightops-wordmark-ops">Ops</span></h1><p class="sightops-tagline">See more. Operate better.</p></div></div></div><h2>Password Reset</h2><p>The password reset functionality is not available. Please refresh the page.</p><p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 1rem;">If this keeps happening, contact your administrator or support.</p><a href="#login" style="display: inline-block; margin-top: 1rem;">Back to Login</a></div></div>';
                         }
                     }
                 }, retryInterval);
@@ -2234,13 +2227,13 @@ async function updateStatusBar(user) {
             statusCompany.textContent = 'Company Not Found';
             statusCompany.classList.add('status-warning');
             const sidebarTitle = document.querySelector('.sidebar-title');
-            if (sidebarTitle) sidebarTitle.textContent = 'PharmaSight';
+            if (sidebarTitle) sidebarTitle.textContent = (window.SightOpsBrand && SightOpsBrand.APP_NAME) || 'SightOps';
         }
     } else {
         statusCompany.textContent = 'Not Set';
         statusCompany.classList.add('status-warning');
         const sidebarTitle = document.querySelector('.sidebar-title');
-        if (sidebarTitle) sidebarTitle.textContent = 'PharmaSight';
+        if (sidebarTitle) sidebarTitle.textContent = (window.SightOpsBrand && SightOpsBrand.APP_NAME) || 'SightOps';
     }
     
     // Update branch

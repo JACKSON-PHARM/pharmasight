@@ -593,7 +593,7 @@ function showAddItemModal() {
                     <i class="fas fa-layer-group"></i> 3-Tier Unit System
                 </div>
                 <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-                    Supplier buys in <strong>packets</strong> → Pharmacy buys in <strong>packets</strong> → Customer buys in <strong>tablets</strong>. Type or choose any unit (e.g. vial, ampule, bottle, pair).
+                    Supplier ships in <strong>packets</strong> → your branch receives in <strong>packets</strong> → customers buy in <strong>tablets</strong>. Type or choose any unit (e.g. vial, ampule, bottle, pair).
                 </p>
                 <datalist id="addItemUnitOptions">${COMMON_UNIT_OPTIONS.map(u => '<option value="' + escapeHtml(u) + '">').join('')}</datalist>
                 <div class="form-row">
@@ -602,7 +602,7 @@ function showAddItemModal() {
                         <input type="text" class="form-input" name="supplier_unit" list="addItemUnitOptions" value="packet" placeholder="e.g. carton, box" autocomplete="off" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Wholesale Unit (what pharmacies buy) *</label>
+                        <label class="form-label">Wholesale Unit (branch receiving unit) *</label>
                         <input type="text" class="form-input" name="wholesale_unit" list="addItemUnitOptions" value="packet" placeholder="e.g. packet, vial" autocomplete="off" required>
                     </div>
                     <div class="form-group">
@@ -871,11 +871,11 @@ function downloadItemTemplate() {
     }));
     ws['!cols'] = colWidths;
     
-    XLSX.utils.book_append_sheet(wb, ws, 'Pharmasight Template');
+    XLSX.utils.book_append_sheet(wb, ws, 'SightOps Template');
     
     // Instructions sheet (import reads first sheet only)
     const instructions = [
-        ['PharmaSight Excel import – column guide'],
+        ['SightOps Excel import – column guide'],
         [],
         ['Column', 'Meaning', 'Required'],
         ['Item_Name', 'Item name', 'Yes'],
@@ -908,7 +908,7 @@ function downloadItemTemplate() {
     wsInstructions['!cols'] = [{ wch: 35 }, { wch: 60 }, { wch: 10 }];
     XLSX.utils.book_append_sheet(wb, wsInstructions, 'Instructions');
     
-    const fileName = `pharmasight_template.xlsx`;
+    const fileName = `sightops_items_import_template.xlsx`;
     XLSX.writeFile(wb, fileName);
     
     showToast('Template downloaded! Current stock must be in wholesale (base) units.', 'success');
@@ -1000,7 +1000,7 @@ function showImportExcelModal() {
                 <p><strong>Excel Import (Vyper-style column mapping):</strong></p>
                 <ol style="margin-top: 0.5rem; padding-left: 1.5rem;">
                     <li>Select your Excel file below</li>
-                    <li>For each PharmaSight field, choose which column from your Excel sheet contains that data</li>
+                    <li>For each SightOps field, choose which column from your Excel sheet contains that data</li>
                     <li><strong>Required:</strong> At least "Item Name" must be mapped</li>
                     <li>Click Import when ready</li>
                 </ol>
@@ -1023,8 +1023,8 @@ function showImportExcelModal() {
                     <span>Run import synchronously (recommended: see result immediately; may take several minutes for large files)</span>
                 </label>
                 <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 0.5rem 1.75rem;">If you uncheck this, the import runs in the background. If it never completes, run again with this box <strong>checked</strong>.</p>
-                <h4><i class="fas fa-columns"></i> Map PharmaSight fields to your Excel columns</h4>
-                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">For each PharmaSight field, choose which column from your Excel sheet contains that data. <strong id="excelColumnCount">0</strong> columns available from your sheet.</p>
+                <h4><i class="fas fa-columns"></i> Map SightOps fields to your Excel columns</h4>
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">For each SightOps field, choose which column from your Excel sheet contains that data. <strong id="excelColumnCount">0</strong> columns available from your sheet.</p>
                 <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;"><i class="fas fa-info-circle"></i> For <strong>opening balance</strong>: choose your columns for <strong>Current Stock Quantity</strong>, <strong>Wholesale Unit Price</strong> (or Purchase Price per Supplier Unit), and <strong>Supplier</strong>.</p>
                 <div id="excelColumnMapping" style="max-height: 420px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;"></div>
             </div>
@@ -1228,7 +1228,7 @@ function handleFileSelect(event) {
                 }
                 return '';
             }
-            let mappingHTML = '<table style="width: 100%; font-size: 0.875rem;"><thead><tr><th style="text-align:left;">PharmaSight field</th><th style="text-align:left;">Your Excel column</th></tr></thead><tbody>';
+            let mappingHTML = '<table style="width: 100%; font-size: 0.875rem;"><thead><tr><th style="text-align:left;">SightOps field</th><th style="text-align:left;">Your Excel column</th></tr></thead><tbody>';
             expectedFields.forEach(f => {
                 const suggested = suggestedExcelHeaderForSystemField(f.id, headers, expectedFields);
                 const reqLabel = f.required ? ' <span style="color: var(--danger);">*</span>' : '';
@@ -1578,12 +1578,12 @@ async function importExcelFile() {
                     const statusTextEl = document.getElementById('importStatusText');
                     const scopeEl = document.getElementById('importScopeWarning');
                     if (statusEl) statusEl.innerHTML = '<span style="color: var(--danger-color);"><i class="fas fa-search"></i> Job not found in this database</span>';
-                    if (statusTextEl) statusTextEl.textContent = 'This job is not in your current database. Open the app from your tenant URL (e.g. your-tenant.pharmasight.com) and start a new import to load data into Supabase.';
+                    if (statusTextEl) statusTextEl.textContent = 'This job is not in your current database. Open the app from your workspace URL (e.g. your-workspace.pharmasight.com) and start a new import to load data into Supabase.';
                     if (scopeEl) {
                         scopeEl.style.display = 'block';
-                        scopeEl.innerHTML = '<strong><i class="fas fa-info-circle"></i> Job not in tenant database</strong><br>If you expected data in Supabase, open the app from your <strong>tenant URL</strong> and run a <strong>new import</strong>. This job may belong to the default database.';
+                        scopeEl.innerHTML = '<strong><i class="fas fa-info-circle"></i> Job not in this environment</strong><br>If you expected data in Supabase, open the app from your <strong>workspace URL</strong> and run a <strong>new import</strong>. This job may belong to the default database.';
                     }
-                    showToast('Job not found in this database. Use your tenant URL and start a new import to load data into Supabase.', 'warning');
+                    showToast('Job not found in this database. Use your workspace URL and start a new import to load data into Supabase.', 'warning');
                     if (importBtn) { importBtn.disabled = false; importBtn.innerHTML = '<i class="fas fa-upload"></i> Import Items'; }
                     isImporting = false;
                     return;
@@ -1663,7 +1663,55 @@ async function editItem(itemId) {
     
     const hasTransactions = item.has_transactions || false;
     const isLocked = hasTransactions;
-    
+    const kraCompanyStatus = (item.kra_sync_status || 'not_synced').toString();
+    const kraBranchRows = Array.isArray(item.branch_kra_sync) ? item.branch_kra_sync : [];
+    const fmtIso = (v) => {
+        if (!v) return '—';
+        try {
+            const d = new Date(v);
+            return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+        } catch (_) {
+            return '—';
+        }
+    };
+
+    const ksd = item.kra_last_sync_detail && typeof item.kra_last_sync_detail === 'object' ? item.kra_last_sync_detail : null;
+    let kraAuditSection = '';
+    if (ksd) {
+        const aligned = ksd.vat_aligned === true;
+        const boxBg = aligned ? '#f0fdf4' : '#fffbeb';
+        const boxBr = aligned ? '#bbf7d0' : '#fde68a';
+        const saveLbl =
+            ksd.save_item_called === true ? 'Yes — OSCU saveItem ran' : 'No — lookup-only or skipped (see sync_path)';
+        kraAuditSection = `
+                <div class="form-group" style="margin-top:10px;">
+                    <label class="form-label">Last KRA sync audit</label>
+                    <div style="background:${boxBg}; border:1px solid ${boxBr}; border-radius:8px; padding:10px 12px; font-size:0.82rem;">
+                        <div><strong>saveItem called:</strong> ${escapeHtml(saveLbl)}</div>
+                        <div><strong>sync_path:</strong> <code>${escapeHtml(String(ksd.sync_path || '—'))}</code>
+                            · KRA result_msg: <code>${escapeHtml(String(ksd.result_msg || '—'))}</code></div>
+                        <div><strong>VAT aligned (SightOps ↔ stored catalogue):</strong> ${aligned ? 'Yes' : 'No'}</div>
+                        <div><strong>SightOps taxTyCd:</strong> <code>${escapeHtml(String(ksd.pharmasight_tax_ty_cd || '—'))}</code>
+                             · <strong>KRA catalogue taxTyCd:</strong> <code>${escapeHtml(String(ksd.catalog_tax_ty_cd || '—'))}</code></div>
+                        ${
+                            ksd.payload_tax_ty_cd_sent
+                                ? `<div><strong>taxTyCd sent on saveItem:</strong> <code>${escapeHtml(String(ksd.payload_tax_ty_cd_sent))}</code></div>`
+                                : ''
+                        }
+                        <div style="margin-top:8px; color: ${aligned ? '#166534' : '#92400e'};"><strong>What this means:</strong> ${escapeHtml(String(ksd.user_hint || '—'))}</div>
+                        <div style="color: var(--text-secondary); margin-top:6px;">Recorded: ${escapeHtml(fmtIso(ksd.synced_at))}</div>
+                    </div>
+                </div>`;
+    } else {
+        kraAuditSection = `
+                <div class="form-group" style="margin-top:10px;">
+                    <label class="form-label">Last KRA sync audit</label>
+                    <div style="font-size:0.82rem; color: var(--text-secondary);">
+                        None yet. Queue <strong>Sync to KRA now</strong>, wait for the outbox worker to finish, then reopen this item — you will see whether <code>saveItem</code> ran or only a catalogue lookup.
+                    </div>
+                </div>`;
+    }
+
     const content = `
         <form id="editItemForm" onsubmit="updateItem(event, '${itemId}')" style="max-height: 70vh; overflow-y: auto;">
             ${isLocked ? `
@@ -1673,6 +1721,77 @@ async function editItem(itemId) {
                     Pack size and supplier conversion numbers cannot be changed. You can still edit unit <em>names</em> (e.g. packets, bottles, tins) for convenience.
                 </div>
             ` : ''}
+
+            <div class="form-section">
+                <div class="form-section-title">
+                    <i class="fas fa-link"></i> KRA sync status
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Company item sync</label>
+                        <div class="form-input" style="background:#f8fafc;">
+                            <strong>${escapeHtml(kraCompanyStatus)}</strong>
+                            <div style="font-size:0.82rem; color: var(--text-secondary); margin-top:4px;">
+                                Item code: <code>${escapeHtml(item.kra_item_code || '—')}</code><br>
+                                KRA taxTyCd: <code>${escapeHtml(item.kra_tax_ty_cd || '—')}</code>
+                                · vatCatCd: <code>${escapeHtml(item.kra_vat_cat_cd || '—')}</code><br>
+                                Last sync: ${escapeHtml(fmtIso(item.kra_last_sync_at || item.kra_synced_at))}<br>
+                                Last attempt: ${escapeHtml(fmtIso(item.kra_last_attempt_at))}<br>
+                                Error: ${escapeHtml(item.kra_sync_error || '—')}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" style="max-width: 260px;">
+                        <label class="form-label">Manual sync</label>
+                        <button type="button" class="btn btn-outline" onclick="syncItemToKraNow('${itemId}')" style="width: 100%;">
+                            <i class="fas fa-sync"></i> Sync to KRA now
+                        </button>
+                        <button type="button" class="btn btn-outline" onclick="refreshItemKraCatalogCodes('${itemId}')" style="width: 100%; margin-top: 8px;">
+                            <i class="fas fa-database"></i> Refresh codes from KRA catalog
+                        </button>
+                        <button type="button" class="btn btn-outline" onclick="reconcileItemKraStockMaster('${itemId}')" style="width: 100%; margin-top: 8px;">
+                            <i class="fas fa-balance-scale"></i> Reconcile OSCU stock master
+                        </button>
+                        <button type="button" class="btn btn-outline" onclick="reconcileItemKraStockMasterFromLedger('${itemId}')" style="width: 100%; margin-top: 8px;">
+                            <i class="fas fa-warehouse"></i> Push ledger stock to OSCU (no IO)
+                        </button>
+                        <small style="display:block; color: var(--text-secondary); margin-top: 6px;">
+                            Sync queues saveItem/outbox. &quot;Refresh codes&quot; only runs selectItemList for this itemCd (does not push VAT changes to KRA).
+                            <strong>Reconcile</strong> re-reads OSCU (master / move-list / last mirror) and posts that <code>rsdQty</code> (no IO).
+                            <strong>Push ledger stock</strong> posts <strong>current SightOps ledger base quantity</strong> as <code>rsdQty</code> (ignores the last OSCU mirror so a stale 0 cannot block). Same units as inventory — wrong if KRA counts packs differently. Stock-in (<code>adjust-stock</code>) uses <code>insertStockIO</code> + <code>saveStockMaster</code>.
+                        </small>
+                    </div>
+                </div>
+                ${kraAuditSection}
+                <div class="form-group">
+                    <label class="form-label">Branch sync visibility</label>
+                    <div style="border:1px solid var(--border-color); border-radius:8px; max-height:180px; overflow:auto;">
+                        ${
+                            kraBranchRows.length
+                                ? kraBranchRows
+                                      .map((r) => {
+                                          const bid = r && r.branch_id ? String(r.branch_id) : '—';
+                                          const status = r && r.status ? String(r.status) : 'pending';
+                                          const retries = Number((r && r.retry_count) || 0);
+                                          const lastErr = r && r.last_error ? String(r.last_error) : '—';
+                                          const httpStatus = r && r.http_status ? String(r.http_status) : '—';
+                                          const resultCd = r && r.kra_result_cd ? String(r.kra_result_cd) : '—';
+                                          const resultMsg = r && r.kra_result_msg ? String(r.kra_result_msg) : '—';
+                                          const accepted = resultCd === '000' ? 'accepted' : (resultCd === '—' ? 'pending' : 'rejected');
+                                          return `<div style="padding:8px 10px; border-bottom:1px solid var(--border-color); font-size:0.85rem;">
+                                            <div><code>${escapeHtml(bid)}</code> — <strong>${escapeHtml(status)}</strong> (retries: ${retries})</div>
+                                            <div style="color: var(--text-secondary);">last sync: ${escapeHtml(fmtIso(r && r.synced_at))} | attempt: ${escapeHtml(fmtIso(r && r.last_attempt_at))}</div>
+                                            <div style="color: var(--text-secondary);">KRA result: <strong>${escapeHtml(accepted)}</strong> | code: <code>${escapeHtml(resultCd)}</code> | HTTP: <code>${escapeHtml(httpStatus)}</code></div>
+                                            <div style="color: var(--text-secondary);">KRA message: ${escapeHtml(resultMsg)}</div>
+                                            <div style="color: var(--danger-color);">${escapeHtml(lastErr)}</div>
+                                        </div>`;
+                                      })
+                                      .join('')
+                                : `<div style="padding:10px; color: var(--text-secondary); font-size:0.85rem;">No branch sync rows yet. Save/update item and ensure KRA outbox worker is enabled.</div>`
+                        }
+                    </div>
+                </div>
+            </div>
             
             <!-- Item Details Section -->
             <div class="form-section">
@@ -2185,6 +2304,104 @@ function updateUnitCostDisplay(selectEl, sectionEl) {
     }
 }
 
+async function syncItemToKraNow(itemId) {
+    try {
+        if (!window.API || !API.items || typeof API.items.syncKraNow !== 'function') {
+            throw new Error('Items API not available');
+        }
+        showToast('Queueing item for KRA sync...', 'info');
+        const res = await API.items.syncKraNow(itemId);
+        const n = Number((res && res.queued_count) || 0);
+        showToast(
+            `KRA sync queued for ${n} branch${n === 1 ? '' : 'es'}. Reopen this item after the worker runs to see if saveItem updated KRA.`,
+            'success'
+        );
+        await editItem(itemId);
+    } catch (e) {
+        showToast((e && e.message) || 'Failed to queue KRA sync', 'error');
+    }
+}
+
+async function refreshItemKraCatalogCodes(itemId) {
+    try {
+        const bid = (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) ? CONFIG.BRANCH_ID : null;
+        if (!bid) {
+            showToast('Select a branch session before refreshing KRA catalog codes.', 'error');
+            return;
+        }
+        if (typeof window.confirm === 'function' && !window.confirm(
+            'Refresh from KRA catalog may update local KRA metadata and can change itemCd if KRA returns a different code. Continue?'
+        )) {
+            return;
+        }
+        if (!window.API || !API.items || typeof API.items.refreshKraCatalog !== 'function') {
+            throw new Error('Items API not available');
+        }
+        showToast('Fetching authoritative codes from KRA…', 'info');
+        await API.items.refreshKraCatalog(itemId, bid);
+        showToast('KRA catalog codes updated on this item.', 'success');
+        await editItem(itemId);
+    } catch (e) {
+        const msg =
+            (e && e.response && e.response.detail && (typeof e.response.detail === 'string' ? e.response.detail : JSON.stringify(e.response.detail))) ||
+            (e && e.message) ||
+            'Failed to refresh KRA catalog codes';
+        showToast(msg, 'error');
+    }
+}
+
+async function reconcileItemKraStockMaster(itemId) {
+    try {
+        const bid = (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) ? CONFIG.BRANCH_ID : null;
+        if (!bid) {
+            showToast('Select a branch session before reconciling OSCU stock master.', 'error');
+            return;
+        }
+        if (!window.API || !API.items || typeof API.items.kraStockReconcile !== 'function') {
+            throw new Error('Items API not available');
+        }
+        showToast('Re-reading OSCU stock master and posting saveStockMaster…', 'info');
+        const res = await API.items.kraStockReconcile(itemId, bid, {});
+        const posted = res && res.rsd_qty_posted != null ? String(res.rsd_qty_posted) : '—';
+        showToast((res && res.message) || `OSCU saveStockMaster applied (rsdQty=${posted}).`, 'success');
+        await editItem(itemId);
+    } catch (e) {
+        const msg =
+            (e && e.response && e.response.detail && (typeof e.response.detail === 'string' ? e.response.detail : JSON.stringify(e.response.detail))) ||
+            (e && e.message) ||
+            'Failed to reconcile OSCU stock master';
+        showToast(msg, 'error');
+    }
+}
+
+async function reconcileItemKraStockMasterFromLedger(itemId) {
+    try {
+        const bid = (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) ? CONFIG.BRANCH_ID : null;
+        if (!bid) {
+            showToast('Select a branch session first.', 'error');
+            return;
+        }
+        if (!window.API || !API.items || typeof API.items.kraStockReconcile !== 'function') {
+            throw new Error('Items API not available');
+        }
+        if (typeof window.confirm === 'function' && !window.confirm(
+            'Post SightOps ledger base stock as OSCU rsdQty (no stock IO)? Only use if KRA never returns selectStockMaster / move-list balance, and units match.'
+        )) {
+            return;
+        }
+        showToast('Posting ledger quantity to saveStockMaster…', 'info');
+        const res = await API.items.kraStockReconcile(itemId, bid, { alignWithLedger: true });
+        showToast((res && res.message) || 'OSCU saveStockMaster applied from ledger.', 'success');
+        await editItem(itemId);
+    } catch (e) {
+        const msg =
+            (e && e.response && e.response.detail && (typeof e.response.detail === 'string' ? e.response.detail : JSON.stringify(e.response.detail))) ||
+            (e && e.message) ||
+            'Failed to push ledger stock to OSCU';
+        showToast(msg, 'error');
+    }
+}
+
 async function updateItem(event, itemId) {
     event.preventDefault();
     const form = event.target;
@@ -2460,6 +2677,10 @@ window.handleFileSelect = handleFileSelect;
 window.importExcelFile = importExcelFile;
 window.saveItem = saveItem;
 window.editItem = editItem;
+window.syncItemToKraNow = syncItemToKraNow;
+window.refreshItemKraCatalogCodes = refreshItemKraCatalogCodes;
+window.reconcileItemKraStockMaster = reconcileItemKraStockMaster;
+window.reconcileItemKraStockMasterFromLedger = reconcileItemKraStockMasterFromLedger;
 window.updateItem = updateItem;
 window.permanentDeleteItem = permanentDeleteItem;
 window.confirmClearDataWithPassword = confirmClearDataWithPassword;

@@ -39,6 +39,7 @@ from app.services.stock_validation_service import (
     validate_stock_entry_with_config,
     StockValidationError,
 )
+from app.services.etims.item_kra_sync_policy import enqueue_item_sync_for_stock_event
 
 logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
@@ -1819,6 +1820,8 @@ def complete_branch_stock_take(
         # 1) Update inventory for each count (variance adjustments)
         items_updated = 0
         errors = []
+        kra_sync_item_ids = set()
+        positive_take_ledgers: List[InventoryLedger] = []
         for count in counts:
             try:
                 variance = count.variance
@@ -1879,11 +1882,14 @@ def complete_branch_stock_take(
                         expiry_date=count.expiry_date,
                     )
                     db.add(ledger_entry)
+                    if variance > 0:
+                        positive_take_ledgers.append(ledger_entry)
                     SnapshotService.upsert_inventory_balance(
                         db, branch.company_id, branch_id, count.item_id, variance,
                         document_number=session.session_code,
                     )
                     SnapshotRefreshService.schedule_snapshot_refresh(db, branch.company_id, branch_id, item_id=count.item_id)
+                    kra_sync_item_ids.add(count.item_id)
                     items_updated += 1
             except Exception as e:
                 logger.error(f"Error updating inventory for item {count.item_id}: {str(e)}")
@@ -1919,6 +1925,7 @@ def complete_branch_stock_take(
                     document_number=session.session_code,
                 )
                 SnapshotRefreshService.schedule_snapshot_refresh(db, branch.company_id, branch_id, item_id=item_id)
+                kra_sync_item_ids.add(item_id)
                 items_zeroed += 1
             except Exception as e:
                 logger.error(f"Error zeroing item {item_id}: {str(e)}")
@@ -1927,6 +1934,22 @@ def complete_branch_stock_take(
         # Mark session as completed
         session.status = 'COMPLETED'
         session.completed_at = datetime.utcnow()
+        db.flush()
+        from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
+
+        for led in positive_take_ledgers:
+            enqueue_kra_stock_in_for_ledger(db, led, source="stock.take")
+        max_attempts = max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1)
+        for sync_item_id in kra_sync_item_ids:
+            item = db.query(Item).filter(Item.id == sync_item_id).first()
+            if item:
+                enqueue_item_sync_for_stock_event(
+                    db,
+                    item=item,
+                    branch_id=branch_id,
+                    source="stock.take",
+                    max_attempts=max_attempts,
+                )
         db.commit()
 
         logger.info(

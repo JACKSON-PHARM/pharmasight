@@ -1,0 +1,170 @@
+/**
+ * SightOps design tokens — single source for shell evolution.
+ * Load before style.css (style uses these variables throughout).
+ */
+:root {
+    /* ——— Color system (semantic) ——— */
+    --so-color-navy-950: #0f172a;
+    --so-color-navy-800: #1e293b;
+    --so-color-slate-500: #64748b;
+    --so-color-slate-400: #94a3b8;
+    --so-color-surface: #f4f7fa;
+    --so-color-surface-elevated: #ffffff;
+    --so-color-border-subtle: #e8edf2;
+    --so-color-teal-500: #14b8a6;
+    --so-color-teal-600: #0d9488;
+    --so-color-teal-300: #5eead4;
+
+    /* ——— Radii ——— */
+    --radius-xs: 6px;
+    --radius-sm: 10px;
+    --radius-md: 12px;
+    --radius-lg: 14px;
+    --radius-xl: 18px;
+    --radius-pill: 999px;
+    --radius-card: var(--radius-lg);
+    --radius-button: var(--radius-sm);
+    --radius-input: var(--radius-sm);
+    --radius-nav-pill: 10px;
+
+    /* ——— Shadows (calm, low elevation) ——— */
+    --shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 20px rgba(15, 23, 42, 0.05);
+    --shadow-elevated: 0 4px 12px rgba(15, 23, 42, 0.06), 0 12px 40px rgba(15, 23, 42, 0.06);
+    --shadow-focus-ring: 0 0 0 3px rgba(20, 184, 166, 0.14);
+
+    /* ——— Motion ——— */
+    --transition-fast: 0.14s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-smooth: 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* ——— Spacing ——— */
+    --spacing-xs: 0.35rem;
+    --spacing-sm: 0.75rem;
+    --spacing-md: 1.25rem;
+    --spacing-lg: 1.75rem;
+    --spacing-xl: 2.25rem;
+    --spacing-section: 1.75rem;
+    --content-max: 1280px;
+    --content-max-wide: 1440px;
+    --page-header-gap: 0.35rem;
+    --section-gap: 1.5rem;
+
+    /* ——— Surfaces (layered UI) ——— */
+    --surface-base: var(--so-color-surface);
+    --surface-elevated: var(--so-color-surface-elevated);
+    --surface-muted: #eef2f6;
+    --surface-muted-strong: #e4e9f0;
+    --surface-overlay: rgba(248, 250, 252, 0.92);
+
+    /* ——— Tables ——— */
+    --table-header-bg: #f1f5f9;
+    --table-border: var(--so-color-border-subtle);
+    --table-row-hover: rgba(20, 184, 166, 0.06);
+    --table-zebra: rgba(15, 23, 42, 0.02);
+    --table-cell-padding-y: 0.75rem;
+    --table-cell-padding-x: 1rem;
+    --table-radius: var(--radius-md);
+
+    /* ——— Forms & controls ——— */
+    --form-stack-gap: 1.25rem;
+    --form-section-gap: 1.75rem;
+    --control-height: 2.625rem;
+    --control-padding-x: 0.75rem;
+    --helper-text-color: var(--so-color-slate-500);
+    --label-weight: 600;
+
+    /* ——— Interaction ——— */
+    --opacity-hover: 0.92;
+    --opacity-disabled: 0.55;
+    --tap-target-min: 2.75rem;
+    --ease-out-soft: cubic-bezier(0.4, 0, 0.2, 1);
+    --icon-size-nav: 1.05rem;
+    --icon-size-stat: 1.35rem;
+
+    /* ——— Shell stacking (align with existing overlays) ——— */
+    --z-sticky-topbar: 120;
+
+    /* ——— Layout ——— */
+    --sidebar-width: 272px;
+    --sidebar-collapsed-width: 80px;
+
+    /* ——— Z-index stack ——— */
+    --z-backdrop: 999;
+    --z-sidebar: 1000;
+    --z-overlay: 1020;
+    --z-dropdown: 1030;
+    --z-modal: 1050;
+    --z-toast: 1100;
+
+    /* ——— Typography scale ——— */
+    --text-xs: 0.75rem;
+    --text-sm: 0.8125rem;
+    --text-base: 0.9375rem;
+    --text-md: 1rem;
+    --text-lg: 1.125rem;
+    --text-xl: 1.35rem;
+    --text-2xl: 1.65rem;
+    --leading-tight: 1.25;
+    --leading-snug: 1.4;
+    --leading-normal: 1.55;
+
+    --success-color: #10b981;
+    --warning-color: #f59e0b;
+    --danger-color: #ef4444;
+
+    /* ——— Bridge: app variables consumed by style.css ——— */
+    --primary-color: var(--so-color-teal-500);
+    --primary-dark: var(--so-color-teal-600);
+    --secondary-color: var(--so-color-slate-500);
+    --bg-color: var(--so-color-surface);
+    --card-bg: var(--so-color-surface-elevated);
+    --border-color: var(--so-color-border-subtle);
+    --text-primary: #1e293b;
+    --text-secondary: #64748b;
+    --sidebar-bg: var(--so-color-navy-950);
+    --sidebar-hover: rgba(255, 255, 255, 0.06);
+    --shadow: var(--shadow-soft);
+    --shadow-md: var(--shadow-soft);
+    --shadow-lg: var(--shadow-elevated);
+
+    /* ——— Brand layer aliases (sightops-brand.css, loaders) ——— */
+    --so-teal: var(--so-color-teal-500);
+    --so-teal-dark: var(--so-color-teal-600);
+    --so-teal-soft: var(--so-color-teal-300);
+    --so-navy: var(--so-color-navy-950);
+    --so-navy-soft: var(--so-color-navy-800);
+    --so-gray-100: #f1f5f9;
+    --so-gray-200: var(--so-color-border-subtle);
+    --so-radius-lg: var(--radius-lg);
+    --so-radius-md: var(--radius-md);
+    --so-radius-sm: var(--radius-sm);
+    --so-shadow-card: var(--shadow-soft);
+    --so-transition: var(--transition-smooth);
+}
+
+@keyframes so-page-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes so-shimmer {
+    0% {
+        background-position: 100% 0;
+    }
+    100% {
+        background-position: -100% 0;
+    }
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    letter-spacing: -0.011em;
+    line-height: var(--leading-normal);
+    -webkit-font-smoothing: antialiased;
+}

@@ -1,4 +1,4 @@
-// API Client for PharmaSight
+// API client for SightOps ERP (shared DB, company-scoped).
 //
 // 401 handling (app session): A 401 on a stale access token is normal while in-flight requests
 // still carry the old Bearer. We refresh once per request chain, retry with tokens read from
@@ -624,6 +624,21 @@ const API = {
         bulkCreate: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/bulk`, data, { timeout: 300000 }), // 5 minute timeout for bulk
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),
         markReady: (itemId) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/mark-ready`, null),
+        syncKraNow: (itemId) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/sync-kra-now`, null, { timeout: 120000 }),
+        /** Pull tax/class/unit codes from KRA selectItemList for items.kra_item_code (current branch OSCU). */
+        refreshKraCatalog: (itemId, branchId) => {
+            if (!branchId) return Promise.reject(new Error('branch_id required'));
+            const q = new URLSearchParams({ branch_id: String(branchId) }).toString();
+            return api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/kra-catalog-refresh?${q}`, null, { timeout: 120000 });
+        },
+        /** Re-read OSCU selectStockMaster (fallback move-list balance), POST saveStockMaster with that rsdQty; no insertStockIO. */
+        kraStockReconcile: (itemId, branchId, options = {}) => {
+            if (!branchId) return Promise.reject(new Error('branch_id required'));
+            const params = new URLSearchParams({ branch_id: String(branchId) });
+            if (options.alignWithLedger) params.set('align_with_ledger', 'true');
+            const q = params.toString();
+            return api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/kra-stock-reconcile?${q}`, null, { timeout: 120000 });
+        },
         delete: (itemId, permanent = false) => {
             const url = permanent
                 ? `${CONFIG.API_ENDPOINTS.items}/${itemId}?permanent=true`
@@ -755,7 +770,7 @@ const API = {
         receiveReceipt: (receiptId) => api.post(`${CONFIG.API_ENDPOINTS.branchInventory || '/api/branch-inventory'}/receipts/${receiptId}/receive`),
     },
 
-    /** Same-branch department mini-store supply (order → pharmacy transfer → department receipt). */
+    /** Same-branch department mini-store supply (order → central-stock transfer → department receipt). */
     departmentSupply: {
         createOrder: (data) => api.post('/api/department-supply/orders', data),
         listOrders: (params) => {
@@ -793,6 +808,15 @@ const API = {
     sales: {
         createInvoice: (data) => api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice`, data),
         getInvoice: (invoiceId) => api.get(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`),
+        /** Best-effort synchronous KRA submit (same path as outbox worker); use before print/PDF for fiscal data. */
+        submitKraNow: (invoiceId) =>
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/kra-submit-now`, {}),
+        /** Re-apply eTIMS line snapshots (e.g. after VAT mapping fix) and clear failed submit state for retry. */
+        etimsRefreshSnapshotsForResubmit: (invoiceId) =>
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/etims-refresh-snapshots-for-resubmit`, {}),
+        /** Parse latest successful KRA submit log and fill kra_receipt_number / kra_signature / kra_qr_code on the invoice. */
+        kraReceiptFromSubmissionLog: (invoiceId) =>
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/kra-receipt-from-log`, {}),
         /** Get branch invoices. Params: date_from, date_to (YYYY-MM-DD), invoice_no, limit. No params = today only (limit 50). */
         getBranchInvoices: (branchId, params = {}) => {
             const qs = new URLSearchParams();
@@ -812,6 +836,8 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/below-margin/details`, params),
         getOrdersProcessedItemsSummary: (branchId, params = {}) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/orders-processed/items-summary`, params),
+        getCreditNotesItemsSummary: (branchId, params = {}) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/credit-notes/items-summary`, params),
         updateInvoice: (invoiceId, data) => 
             api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
         addInvoiceItem: (invoiceId, item) =>
@@ -860,7 +886,10 @@ const API = {
                     const text = await res.text();
                     let data;
                     try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
-                    const d = data.detail || data.message;
+                    let d = data.detail || data.message;
+                    if (res.status === 409 && d && typeof d === 'object' && d.message) {
+                        d = d.message;
+                    }
                     if (d) msg += ': ' + (typeof d === 'string' ? d : JSON.stringify(d));
                 } catch (_) {}
                 throw new Error(msg);

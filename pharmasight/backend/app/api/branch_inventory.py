@@ -42,6 +42,8 @@ from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.order_book_service import OrderBookService
 from app.services.document_service import DocumentService
+from app.services.etims.item_kra_sync_policy import enqueue_item_sync_for_stock_event
+from app.config import settings
 
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 logger = logging.getLogger(__name__)
@@ -627,6 +629,17 @@ def complete_branch_transfer(
             SnapshotRefreshService.schedule_snapshot_refresh(
                 db, entry.company_id, entry.branch_id, item_id=entry.item_id
             )
+        max_attempts = max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1)
+        for item_id in item_qty_base:
+            item = db.query(Item).filter(Item.id == item_id).first()
+            if item:
+                enqueue_item_sync_for_stock_event(
+                    db,
+                    item=item,
+                    branch_id=supplying_branch_id,
+                    source="stock.transfer_out",
+                    max_attempts=max_attempts,
+                )
 
         # Inventory sanity guard: balance after deduction must be >= 0 for each affected (branch, item)
         for item_id in item_qty_base:
@@ -770,7 +783,24 @@ def confirm_branch_receipt(
                 db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
                 document_number=getattr(entry, "document_number", None) or receipt.receipt_number,
             )
-        SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
+            SnapshotRefreshService.schedule_snapshot_refresh(
+                db, entry.company_id, entry.branch_id, item_id=entry.item_id
+            )
+        max_attempts = max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1)
+        for entry in ledger_entries:
+            item = db.query(Item).filter(Item.id == entry.item_id).first()
+            if item:
+                enqueue_item_sync_for_stock_event(
+                    db,
+                    item=item,
+                    branch_id=receiving_branch_id,
+                    source="stock.transfer_in",
+                    max_attempts=max_attempts,
+                )
+        from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
+
+        for entry in ledger_entries:
+            enqueue_kra_stock_in_for_ledger(db, entry, source="stock.transfer_in")
         # Order book lifecycle: mark ORDERED entries as received and archive to history (CLOSED)
         receipt_item_ids = list({e.item_id for e in ledger_entries})
         received_at = datetime.utcnow()

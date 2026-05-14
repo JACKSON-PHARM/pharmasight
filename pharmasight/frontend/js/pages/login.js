@@ -72,27 +72,37 @@ async function loadLogin() {
         <div class="login-container">
             <div class="login-card">
                 <div class="login-branding no-print">
-                    <div class="login-logo-wrap"><svg class="login-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 30" width="64" height="40" aria-hidden="true"><path fill="#14b8a6" d="M24 2C11 2 3 9 3 12s8 10 21 10 21-8 21-10-8-10-21-10zm0 20c-7.2 0-13-5-15-7 2-2 7.8-7 15-7s13 5 15 7c-2 2-7.8 7-15 7z"/><circle fill="#0f172a" cx="24" cy="12" r="6"/><rect x="20" y="10" width="8" height="4" rx="1.5" fill="#14b8a6"/><rect x="28" y="10" width="4" height="4" rx="0.5" fill="#fff"/></svg></div>
-                    <h1>PharmaSight</h1>
-                    <p class="login-subtitle">Secure Pharmacy Operations Platform</p>
+                    <div class="login-brand-mark-row">
+                        <div class="login-logo-wrap"><img class="login-logo" src="/assets/brand/sightops-logo-flow.png" width="70" height="62" alt="" decoding="async" fetchpriority="high" onerror="this.onerror=null;this.src='/assets/brand/sightops-logo-emblem.png';"></div>
+                        <div class="login-brand-wordmark-wrap">
+                            ${window.SightOpsBrand ? SightOpsBrand.wordmarkHtml('h1', 'sightops-login-title') : '<h1 class="sightops-wordmark sightops-login-title"><span class="sightops-wordmark-sight">Sight</span><span class="sightops-wordmark-ops">Ops</span></h1>'}
+                        </div>
+                    </div>
                 </div>
-                <h2>Sign In</h2>
+                <div class="login-card-intro">
+                    <p class="sightops-tagline">${window.SightOpsBrand ? SightOpsBrand.TAGLINE : 'See more. Operate better.'}</p>
+                    <h2 class="login-welcome">Welcome Back</h2>
+                    <p class="login-lead">Sign in</p>
+                </div>
                 <form id="loginForm">
                     <div class="form-group">
                         <label for="loginUsername">Username</label>
-                        <input type="text" id="loginUsername" required placeholder="Enter your username">
+                        <div class="login-input-with-icon">
+                            <span class="login-input-icon" aria-hidden="true"><i class="fas fa-user"></i></span>
+                            <input type="text" id="loginUsername" name="username" required placeholder="Enter your username" autocomplete="username">
+                        </div>
                     </div>
                     <div class="form-group">
                         <label for="loginPassword">Password</label>
                         <div class="login-password-input-wrap">
-                            <input type="password" id="loginPassword" required placeholder="••••••••" autocomplete="current-password">
+                            <input type="password" id="loginPassword" name="password" required placeholder="••••••••" autocomplete="current-password">
                             <button type="button" class="login-password-toggle" id="loginPasswordToggle" aria-label="Show password" title="Show password">
                                 <i class="fas fa-eye" aria-hidden="true"></i>
                             </button>
                         </div>
                     </div>
-                    <button type="submit" class="btn btn-primary btn-block">
-                        <i class="fas fa-sign-in-alt"></i> Sign In
+                    <button type="submit" class="btn btn-primary btn-block login-btn-signin">
+                        <i class="fas fa-right-to-bracket" aria-hidden="true"></i> Sign In
                     </button>
                 </form>
                 <div id="loginError" class="error-message" style="display: none;"></div>
@@ -372,7 +382,7 @@ async function loadLogin() {
                         </form>
                     </div>
                     <div class="modal-footer">
-                        <small>By creating an account, you agree to use PharmaSight for evaluation only.</small>
+                        <small>By creating an account, you agree to use SightOps for evaluation only.</small>
                     </div>
                 </div>
             `;
@@ -915,17 +925,17 @@ async function loadLogin() {
                     return;
                 }
                 
-                // PharmaSight is the single authentication authority.
+                // SightOps backend is the single authentication authority.
                 // If we reached here, backend did not return internal tokens, so we must not attempt Supabase login.
                 if (errorDiv) {
                     errorDiv.innerHTML =
-                        '<span>This account is not enabled for PharmaSight internal authentication.</span>' +
+                        '<span>This account is not enabled for SightOps internal authentication.</span>' +
                         '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">' +
-                        'Ask an admin to complete account setup (set password in PharmaSight) then try again.' +
+                        'Ask an admin to complete account setup (set password in SightOps) then try again.' +
                         '</p>';
                     errorDiv.style.display = 'block';
                 } else {
-                    showToast('This account is not enabled for PharmaSight internal authentication.', 'error');
+                    showToast('This account is not enabled for SightOps internal authentication.', 'error');
                 }
                 return;
             } catch (error) {

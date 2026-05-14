@@ -40,7 +40,7 @@ async function loadTenantInviteSetup() {
         page.innerHTML = `
             <div class="login-container">
                 <div class="login-card">
-                    <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                    <h1><img src="/assets/brand/sightops-mark.svg" width="40" height="40" alt="" style="vertical-align:middle;margin-right:0.35rem;"> <span class="sightops-wordmark"><span class="sightops-wordmark-sight">Sight</span><span class="sightops-wordmark-ops">Ops</span></span></h1>
                     <h2>Invalid setup link</h2>
                     <p style="margin-bottom: 1rem; color: var(--text-secondary);">
                         This link is missing the setup token. Please use the exact link from your invite email.
@@ -54,7 +54,7 @@ async function loadTenantInviteSetup() {
     page.innerHTML = `
         <div class="login-container">
             <div class="login-card">
-                <h1><i class="fas fa-pills"></i> PharmaSight</h1>
+                <h1><img src="/assets/brand/sightops-mark.svg" width="40" height="40" alt="" style="vertical-align:middle;margin-right:0.35rem;"> <span class="sightops-wordmark"><span class="sightops-wordmark-sight">Sight</span><span class="sightops-wordmark-ops">Ops</span></span></h1>
                 <h2>Complete your setup</h2>
                 <div id="tenant-invite-loading" style="text-align: center; padding: 2rem;">
                     <div style="border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 1rem;"></div>

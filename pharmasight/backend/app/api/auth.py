@@ -160,7 +160,7 @@ def _enforce_login_company_access(db: Session, user: User) -> None:
     if plan == "demo" and access == "expired":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your PharmaSight demo has expired. Please upgrade to continue using the system.",
+            detail="Your SightOps demo has expired. Please upgrade to continue using the system.",
         )
 
 

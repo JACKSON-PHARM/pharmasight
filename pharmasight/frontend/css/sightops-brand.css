@@ -1,0 +1,572 @@
+/* SightOps brand layer — wordmark, loaders (loads after design-tokens.css + style.css) */
+
+.sightops-wordmark {
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+}
+.sightops-wordmark-sight {
+    color: var(--so-navy);
+}
+.sightops-wordmark-ops {
+    color: #15803d;
+}
+.sidebar .sightops-wordmark-sight {
+    color: #f8fafc;
+}
+.sidebar .sightops-wordmark-ops {
+    color: var(--so-teal-soft);
+}
+
+.sightops-tagline {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin: 0.35rem 0 0 0;
+    letter-spacing: 0.02em;
+}
+
+/* Sidebar / compact mark */
+.sightops-logo-icon,
+.pharmasight-logo-icon {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+.sightops-logo-icon svg,
+.pharmasight-logo-icon svg {
+    width: 26px;
+    height: 26px;
+    vertical-align: middle;
+}
+.sidebar-header h1 .sightops-logo-icon,
+.sidebar-header h1 .pharmasight-logo-icon {
+    margin-right: 0.4rem;
+}
+
+.sightops-logo-icon img,
+.pharmasight-logo-icon img {
+    width: 26px;
+    height: 26px;
+    display: block;
+    object-fit: contain;
+}
+
+/* =============================================================
+ * SightOps Auth (Login) — Premium SaaS aesthetic
+ * Scoped to #authLayout so app shell (sidebar, loaders) is untouched.
+ * Design intent: modern healthcare/operations ERP, Inter typeface,
+ * soft slate background with mint/emerald radial blobs + dot grid,
+ * generous 8px-system spacing, 28px card radius, 56px inputs with
+ * focus ring, emerald gradient CTA, subtle fade-in.
+ * ============================================================= */
+
+/* Legacy auth branding row (password-reset, password-set, app fallbacks) */
+.login-brand-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.875rem;
+}
+.login-brand-text {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+}
+
+/* Auth scene background ---------------------------------------- */
+#authLayout {
+    background-color: #f8fafc;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+#authLayout .login-container {
+    position: relative;
+    overflow-x: hidden;
+    overflow-y: auto;
+    background-color: #f8fafc;
+    background-image: radial-gradient(circle at 1px 1px, rgba(15, 23, 42, 0.045) 1px, transparent 0);
+    background-size: 22px 22px;
+    padding: 2rem 1.5rem;
+}
+@media (max-height: 720px) {
+    #authLayout .page {
+        align-items: flex-start;
+    }
+    #authLayout .login-container {
+        align-items: flex-start;
+        padding-top: 1.5rem;
+        padding-bottom: 1.5rem;
+    }
+}
+#authLayout .login-container::before,
+#authLayout .login-container::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    border-radius: 50%;
+    filter: blur(40px);
+    z-index: 0;
+}
+#authLayout .login-container::before {
+    width: min(560px, 90vw);
+    height: min(560px, 90vw);
+    top: -22%;
+    right: -14%;
+    background: radial-gradient(circle at 40% 40%,
+        rgba(110, 231, 183, 0.32),
+        rgba(167, 243, 208, 0.06) 60%,
+        transparent 75%);
+}
+#authLayout .login-container::after {
+    width: min(640px, 95vw);
+    height: min(640px, 95vw);
+    bottom: -28%;
+    left: -16%;
+    background: radial-gradient(circle at 55% 45%,
+        rgba(52, 211, 153, 0.26),
+        rgba(187, 247, 208, 0.04) 60%,
+        transparent 75%);
+}
+
+/* Auth card ---------------------------------------------------- */
+@keyframes so-auth-fade-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+#authLayout .login-card {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 460px;
+    background: #ffffff;
+    padding: 2.5rem 2.25rem 2.25rem;
+    border-radius: 28px;
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    box-shadow: 0 10px 40px rgba(15, 23, 42, 0.08);
+    font-family: inherit;
+    animation: so-auth-fade-in 0.4s cubic-bezier(0.4, 0, 0.2, 1) both;
+    text-align: left;
+}
+
+/* Branding row: logo + SightOps — centered on #login only */
+#authLayout #login .login-branding {
+    margin: 0 0 0.5rem 0;
+    text-align: center;
+    width: 100%;
+}
+#authLayout .login-brand-mark-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    flex-wrap: nowrap;
+    width: 100%;
+}
+#authLayout .login-brand-wordmark-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    flex: 0 1 auto;
+}
+/* ~10% larger footprint; slightly wider than tall (“elongated”) — image uses object-fit: contain */
+#authLayout .login-brand-mark-row .login-logo-wrap {
+    width: 70px;
+    height: 62px;
+    min-width: 70px;
+    min-height: 62px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+#authLayout .login-brand-mark-row .login-logo {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    display: block;
+    object-fit: contain;
+    object-position: center;
+}
+#authLayout .login-brand-mark-row h1.sightops-login-title,
+#authLayout .login-brand-mark-row .sightops-wordmark.sightops-login-title {
+    font-size: clamp(2.34rem, 1.32vw + 2.04rem, 3.16rem);
+    font-weight: 800;
+    margin: 0;
+    padding: 0;
+    color: #0f172a;
+    letter-spacing: -0.045em;
+    line-height: 1;
+    display: block;
+    text-align: center;
+    white-space: nowrap;
+}
+#authLayout #login .sightops-wordmark-sight {
+    color: #142a4a;
+}
+#authLayout #login .sightops-wordmark-ops {
+    color: #10b981;
+}
+
+/* Centered copy block (tagline + welcome + lead only) */
+#authLayout .login-card-intro {
+    text-align: center;
+    width: 100%;
+    margin: 0 0 1.5rem 0;
+}
+#authLayout .login-card-intro .sightops-tagline {
+    margin: 0 0 0.5rem 0;
+    max-width: none;
+    width: 100%;
+    font-size: 0.9375rem;
+    color: #64748b;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    line-height: 1.5;
+    text-align: center;
+}
+#authLayout .login-card-intro h2.login-welcome {
+    font-size: 1.875rem;
+    font-weight: 800;
+    color: #020617;
+    letter-spacing: -0.03em;
+    margin: 0 0 0.5rem 0;
+    line-height: 1.15;
+    text-align: center;
+}
+#authLayout .login-card-intro p.login-lead {
+    margin: 0;
+    font-size: 1rem;
+    color: #64748b;
+    font-weight: 500;
+    line-height: 1.55;
+    text-align: center;
+}
+@media (max-width: 400px) {
+    #authLayout .login-brand-mark-row {
+        flex-wrap: wrap;
+        justify-content: center;
+        row-gap: 0.375rem;
+    }
+    #authLayout .login-brand-wordmark-wrap {
+        flex: 1 1 auto;
+        min-width: 0;
+        justify-content: center;
+    }
+    #authLayout .login-brand-mark-row h1.sightops-login-title,
+    #authLayout .login-brand-mark-row .sightops-wordmark.sightops-login-title {
+        text-align: center;
+        white-space: normal;
+    }
+}
+
+/* Heading + subheading outside .login-card-intro (legacy / other pages) */
+#authLayout .login-card > h2.login-welcome,
+#authLayout .login-card > p.login-lead {
+    text-align: left;
+}
+
+/* Form fields -------------------------------------------------- */
+#authLayout .login-card .form-group {
+    margin-bottom: 1.125rem;
+    text-align: left;
+}
+#authLayout #login .login-card .form-group {
+    margin-bottom: 1rem;
+}
+#authLayout .login-card .form-group label {
+    display: block;
+    color: #0f172a;
+    font-weight: 600;
+    font-size: 0.8125rem;
+    letter-spacing: 0.005em;
+    margin-bottom: 0.5rem;
+    text-align: left;
+}
+.login-input-with-icon {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    width: 100%;
+    height: 56px;
+    padding: 0 1rem;
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+.login-input-with-icon:focus-within {
+    border-color: #34d399;
+    box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.18),
+                inset 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.login-input-with-icon .login-input-icon {
+    color: #94a3b8;
+    flex-shrink: 0;
+    font-size: 0.95rem;
+    line-height: 1;
+}
+.login-input-with-icon input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    font-size: 0.9375rem;
+    color: #0f172a;
+    line-height: 1.4;
+}
+#authLayout .login-card .login-password-input-wrap {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 56px;
+    padding: 0 0.5rem 0 1rem;
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+#authLayout .login-card .login-password-input-wrap:focus-within {
+    border-color: #34d399;
+    box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.18),
+                inset 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+#authLayout .login-card .login-password-input-wrap input {
+    flex: 1;
+    min-width: 0;
+    height: 100% !important;
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    font-size: 0.9375rem;
+    color: #0f172a;
+}
+#authLayout .login-input-with-icon input::placeholder,
+#authLayout .login-card .login-password-input-wrap input::placeholder {
+    color: #94a3b8;
+    opacity: 1;
+}
+#authLayout .login-password-toggle {
+    position: static;
+    transform: none;
+    width: 36px;
+    height: 36px;
+    color: #94a3b8;
+    border-radius: 0.5rem;
+}
+#authLayout .login-password-toggle:hover {
+    color: #475569;
+    background: rgba(15, 23, 42, 0.04);
+}
+
+/* Primary CTA -------------------------------------------------- */
+#authLayout .login-btn-signin,
+.login-btn-signin {
+    height: 54px;
+    width: 100%;
+    margin-top: 0.5rem !important;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    border: none !important;
+    border-radius: 0.75rem !important;
+    color: #ffffff !important;
+    font-weight: 600;
+    font-size: 0.9375rem;
+    letter-spacing: 0.01em;
+    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.28);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease, background 0.2s ease;
+    gap: 0.5rem;
+}
+#authLayout .login-btn-signin:hover,
+.login-btn-signin:hover {
+    background: linear-gradient(135deg, #14c294 0%, #069669 100%) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 8px 22px rgba(16, 185, 129, 0.32);
+    filter: brightness(1.02);
+}
+#authLayout .login-btn-signin:active,
+.login-btn-signin:active {
+    transform: translateY(0);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.24);
+}
+#authLayout .login-btn-signin:disabled,
+.login-btn-signin:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+    transform: none;
+    filter: none;
+}
+
+/* Footer links ------------------------------------------------- */
+#authLayout .login-links {
+    margin-top: 1.5rem;
+    text-align: left;
+}
+#authLayout .login-links a {
+    color: #059669;
+    font-weight: 600;
+    font-size: 0.875rem;
+    text-decoration: none;
+    transition: color 0.15s ease;
+}
+#authLayout .login-links a:hover {
+    color: #047857;
+    text-decoration: none;
+}
+
+/* Inline error message inside the card ------------------------- */
+#authLayout .login-card .error-message {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    background-color: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: 0.75rem;
+    color: #b91c1c;
+    font-size: 0.875rem;
+    text-align: left;
+    line-height: 1.5;
+}
+
+/* ——— Loaders ——— */
+@keyframes so-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+@keyframes so-pulse {
+    0%,
+    100% {
+        opacity: 1;
+        filter: drop-shadow(0 0 0 transparent);
+    }
+    50% {
+        opacity: 0.9;
+        filter: drop-shadow(0 0 8px rgba(13, 148, 136, 0.18));
+    }
+}
+@keyframes so-bar {
+    0% {
+        transform: scaleX(0.12);
+        transform-origin: left center;
+    }
+    50% {
+        transform: scaleX(0.72);
+        transform-origin: left center;
+    }
+    100% {
+        transform: scaleX(1);
+        transform-origin: left center;
+    }
+}
+
+.so-loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.5rem;
+    animation: so-pulse 2.8s ease-in-out infinite;
+}
+.so-loader-mark {
+    width: 3.25rem;
+    height: 3.25rem;
+}
+.so-loader-mark img {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+.so-loader-spin {
+    transform-origin: 24px 24px;
+    animation: so-spin 1.15s linear infinite;
+}
+.so-loader-mark.so-loader-spin {
+    transform-origin: center center;
+}
+.so-loader-caption {
+    margin: 0;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-align: center;
+    max-width: 16rem;
+}
+.so-loader-track {
+    width: min(220px, 70vw);
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.08);
+    overflow: hidden;
+}
+.so-loader-bar {
+    height: 100%;
+    width: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #115e59, #0d9488, #0f766e);
+    animation: so-bar 1.8s ease-in-out infinite;
+}
+
+.page-load-overlay {
+    backdrop-filter: blur(2px);
+}
+.page-load-overlay .so-loader {
+    animation: none;
+}
+.page-load-overlay .so-loader-mark {
+    animation: so-pulse 2.2s ease-in-out infinite;
+}
+
+.so-app-loading {
+    padding: 3rem 1.5rem !important;
+    text-align: center;
+}
+.so-app-loading-sub {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
+}
+
+/* Clinic / inline spinners: ring replaced by compact loader */
+.so-inline-loader .so-loader-mark {
+    width: 2.25rem;
+    height: 2.25rem;
+    margin: 0 auto;
+}
+.so-inline-loader .so-loader-spin {
+    animation-duration: 0.95s;
+}
+
+#pageLoadOverlay.page-load-overlay {
+    z-index: var(--z-overlay, 1020);
+}
+
+/* Lightweight skeleton shimmer (tables, cards) */
+.so-skeleton {
+    border-radius: var(--radius-sm);
+    background: linear-gradient(
+        110deg,
+        rgba(15, 23, 42, 0.05) 0%,
+        rgba(15, 23, 42, 0.09) 22%,
+        rgba(15, 23, 42, 0.05) 44%
+    );
+    background-size: 200% 100%;
+    animation: so-shimmer 1.35s ease-in-out infinite;
+}
+.so-skeleton-line {
+    height: 0.65rem;
+    margin: 0.45rem 0;
+    border-radius: var(--radius-pill);
+}
+.so-skeleton-block {
+    height: 5.5rem;
+    margin-bottom: 0.75rem;
+    border-radius: var(--radius-card);
+}

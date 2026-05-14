@@ -10,8 +10,8 @@
     var PLAN_LABELS = {
         demo: 'Demo',
         clinic_starter: 'Clinic Starter',
-        pharmacy_growth: 'Pharmacy Growth',
-        health_network: 'Health Network',
+        pharmacy_growth: 'Growth',
+        health_network: 'Network',
         enterprise: 'Enterprise',
     };
 
