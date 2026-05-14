@@ -154,6 +154,19 @@ def _is_numeric_unit_value(value) -> bool:
         return False
 
 
+class ItemBranchKraSyncResponse(BaseModel):
+    branch_id: UUID
+    status: str
+    retry_count: int = 0
+    last_error: Optional[str] = None
+    http_status: Optional[int] = None
+    kra_result_cd: Optional[str] = None
+    kra_result_msg: Optional[str] = None
+    response_payload_json: Optional[dict] = None
+    synced_at: Optional[datetime] = None
+    last_attempt_at: Optional[datetime] = None
+
+
 class ItemResponse(ItemBase):
     """Item response with 3-tier unit fields. Cost from API (inventory_ledger) only."""
     id: UUID
@@ -190,7 +203,7 @@ class ItemResponse(ItemBase):
         None,
         description="Last sync audit: sync_path, save_item_called, PharmaSight vs catalogue VAT, user_hint",
     )
-    branch_kra_sync: List["ItemBranchKraSyncResponse"] = Field(default_factory=list, description="Per-branch KRA sync state")
+    branch_kra_sync: List[ItemBranchKraSyncResponse] = Field(default_factory=list, description="Per-branch KRA sync state")
 
     @model_validator(mode="after")
     def coerce_numeric_base_unit_for_display(self):
@@ -270,19 +283,6 @@ class ItemOverviewResponse(ItemResponse):
     last_unit_cost: Optional[float] = Field(default=None, description="Last unit cost from purchase transactions")
     has_transactions: bool = Field(default=False, description="Whether item has sales, purchases, or non–opening-balance ledger (locks unit fields)")
     minimum_stock: Optional[float] = Field(default=None, description="Minimum stock level (if configured)")
-
-
-class ItemBranchKraSyncResponse(BaseModel):
-    branch_id: UUID
-    status: str
-    retry_count: int = 0
-    last_error: Optional[str] = None
-    http_status: Optional[int] = None
-    kra_result_cd: Optional[str] = None
-    kra_result_msg: Optional[str] = None
-    response_payload_json: Optional[dict] = None
-    synced_at: Optional[datetime] = None
-    last_attempt_at: Optional[datetime] = None
 
 
 class AdjustStockRequest(BaseModel):
