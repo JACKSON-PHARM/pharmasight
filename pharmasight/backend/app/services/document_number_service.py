@@ -16,7 +16,8 @@ from app.models import Branch, DocumentSequence
 DOC_TYPE_INV = "INV"
 DOC_TYPE_CN = "CN"
 DOC_TYPE_GRN = "GRN"
-DOC_TYPE_PR = "PR"
+DOC_TYPE_PR = "PR"  # Legacy alias; supplier returns use DOC_TYPE_SR (SR-{branch}-{seq}).
+DOC_TYPE_SR = "SR"
 DOC_TYPE_TRF = "TRF"
 DOC_TYPE_ADJ = "ADJ"
 DOC_TYPE_OPEN = "OPEN"

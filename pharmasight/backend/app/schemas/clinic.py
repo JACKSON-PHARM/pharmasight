@@ -103,19 +103,6 @@ class EncounterResponse(BaseModel):
         from_attributes = True
 
 
-class PatientChartEntry(BaseModel):
-    encounter: EncounterResponse
-    triage: Optional[EncounterTriageResponse] = None
-    notes: List[EncounterNoteResponse] = []
-    orders: List[ClinicOrderResponse] = []
-    service_executions: List[ServiceExecutionResponse] = []
-
-
-class PatientChartResponse(BaseModel):
-    patient_id: UUID
-    entries: List[PatientChartEntry] = []
-
-
 # --- Triage ---
 class EncounterTriageUpsert(BaseModel):
     payment_mode: Optional[str] = None  # e.g. cash | insurance | other
@@ -380,6 +367,19 @@ class ServiceExecutionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PatientChartEntry(BaseModel):
+    encounter: EncounterResponse
+    triage: Optional[EncounterTriageResponse] = None
+    notes: List[EncounterNoteResponse] = []
+    orders: List[ClinicOrderResponse] = []
+    service_executions: List[ServiceExecutionResponse] = []
+
+
+class PatientChartResponse(BaseModel):
+    patient_id: UUID
+    entries: List[PatientChartEntry] = []
 
 
 class DepartmentStoreCreate(BaseModel):

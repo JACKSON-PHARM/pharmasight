@@ -1,0 +1,49 @@
+-- Phase 1 refinements (pre–Phase 2):
+-- 1) ERP transaction trace: event_group_id on ledger + reversal headers.
+-- 2) Canonical, actionable kra_sync_status vocabulary (no unknown / not_applicable).
+-- 3) Idempotent for DBs that already ran the updated 122 migration.
+
+-- ---------------------------------------------------------------------------
+-- event_group_id: one UUID per business transaction (header + ledger + future outbox/KRA)
+-- ---------------------------------------------------------------------------
+ALTER TABLE inventory_ledger ADD COLUMN IF NOT EXISTS event_group_id UUID;
+CREATE INDEX IF NOT EXISTS idx_inventory_ledger_event_group_id
+    ON inventory_ledger(event_group_id) WHERE event_group_id IS NOT NULL;
+COMMENT ON COLUMN inventory_ledger.event_group_id IS 'Shared UUID for all rows in one ERP business transaction (reversal, sale, etc.); links header, ledger, outbox, allocations, KRA attempts.';
+
+ALTER TABLE credit_notes ADD COLUMN IF NOT EXISTS event_group_id UUID;
+CREATE INDEX IF NOT EXISTS idx_credit_notes_event_group_id
+    ON credit_notes(event_group_id) WHERE event_group_id IS NOT NULL;
+COMMENT ON COLUMN credit_notes.event_group_id IS 'Same event_group_id as inventory_ledger rows created with this credit note.';
+
+ALTER TABLE supplier_returns ADD COLUMN IF NOT EXISTS event_group_id UUID;
+CREATE INDEX IF NOT EXISTS idx_supplier_returns_event_group_id
+    ON supplier_returns(event_group_id) WHERE event_group_id IS NOT NULL;
+COMMENT ON COLUMN supplier_returns.event_group_id IS 'Set when posted: same id as PURCHASE_RETURN ledger rows for this approval.';
+
+-- ---------------------------------------------------------------------------
+-- KRA sync vocabulary migration (from earlier Phase 1 draft values)
+-- ---------------------------------------------------------------------------
+UPDATE credit_notes
+SET kra_sync_status = 'not_started'
+WHERE kra_sync_status IN ('unknown', 'pending');
+
+UPDATE supplier_returns
+SET kra_sync_status = 'not_required'
+WHERE kra_sync_status IN ('unknown', 'not_applicable', 'pending');
+
+ALTER TABLE credit_notes DROP CONSTRAINT IF EXISTS credit_notes_kra_sync_status_check;
+ALTER TABLE credit_notes ADD CONSTRAINT credit_notes_kra_sync_status_check
+    CHECK (kra_sync_status IN ('not_required', 'not_started', 'pending', 'retrying', 'synced', 'failed', 'partially_synced'));
+
+ALTER TABLE supplier_returns DROP CONSTRAINT IF EXISTS supplier_returns_kra_sync_status_check;
+ALTER TABLE supplier_returns ADD CONSTRAINT supplier_returns_kra_sync_status_check
+    CHECK (kra_sync_status IN ('not_required', 'not_started', 'pending', 'retrying', 'synced', 'failed', 'partially_synced'));
+
+ALTER TABLE credit_notes ALTER COLUMN kra_sync_status SET DEFAULT 'not_started';
+ALTER TABLE supplier_returns ALTER COLUMN kra_sync_status SET DEFAULT 'not_required';
+
+COMMENT ON COLUMN credit_notes.posting_status IS 'Business posting lifecycle. posted = inventory ledger rows for this document were successfully committed (system invariant). Independent of kra_sync_status.';
+COMMENT ON COLUMN credit_notes.kra_sync_status IS 'KRA fiscal/async sync (actionable states). not_started until fiscal credit-note outbox exists; not_required when no KRA path applies.';
+COMMENT ON COLUMN supplier_returns.posting_status IS 'Stock/financial posting state. posted = PURCHASE_RETURN ledger rows committed for this return (invariant). Legacy status column remains.';
+COMMENT ON COLUMN supplier_returns.kra_sync_status IS 'KRA fiscal/async sync (actionable states). not_required when no supplier-return KRA path applies.';

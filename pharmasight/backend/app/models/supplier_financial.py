@@ -65,6 +65,16 @@ class SupplierReturn(Base):
     reason = Column(Text)
     total_value = Column(Numeric(20, 4), nullable=False, default=0)
     status = Column(String(50), nullable=False, default="pending")  # pending, approved, rejected, credited
+    return_document_no = Column(String(100), nullable=True)
+    posting_status = Column(String(32), nullable=False, default="not_posted")
+    kra_sync_status = Column(String(32), nullable=False, default="not_required")
+    event_group_id = Column(UUID(as_uuid=True), nullable=True)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    submitted_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    client_ip = Column(String(64), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    payload_hash = Column(String(64), nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -74,6 +84,7 @@ class SupplierReturn(Base):
     supplier = relationship("Supplier")
     linked_invoice = relationship("SupplierInvoice", foreign_keys=[linked_invoice_id])
     creator = relationship("User", foreign_keys=[created_by])
+    approver = relationship("User", foreign_keys=[approved_by])
     lines = relationship(
         "SupplierReturnLine",
         back_populates="supplier_return",
@@ -93,6 +104,9 @@ class SupplierReturnLine(Base):
     quantity = Column(Numeric(20, 4), nullable=False)
     unit_cost = Column(Numeric(20, 4), nullable=False)
     line_total = Column(Numeric(20, 4), nullable=False)
+    source_purchase_invoice_item_id = Column(UUID(as_uuid=True), nullable=True)
+    source_grn_item_id = Column(UUID(as_uuid=True), nullable=True)
+    source_inventory_ledger_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     supplier_return = relationship("SupplierReturn", back_populates="lines")

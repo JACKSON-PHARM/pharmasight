@@ -253,6 +253,15 @@ class CreditNoteResponse(CreditNoteBase):
     total_inclusive: Decimal
     created_by: UUID
     created_at: datetime
+    posting_status: str = "posted"
+    kra_sync_status: str = "not_started"
+    event_group_id: Optional[UUID] = None
+    approved_by: Optional[UUID] = None
+    approved_at: Optional[datetime] = None
+    submitted_at: Optional[datetime] = None
+    client_ip: Optional[str] = None
+    user_agent: Optional[str] = None
+    payload_hash: Optional[str] = None
     items: List[CreditNoteItemResponse] = []
 
     class Config:

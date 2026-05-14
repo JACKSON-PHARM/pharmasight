@@ -357,7 +357,10 @@ async function applyDashboardFilters() {
             creditReturnsCountEl.textContent = ncn > 0 ? String(ncn) : '0';
         }
         if (todayGrossProfitEl) todayGrossProfitEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(rangeData.gross_profit) : rangeData.gross_profit;
-        if (todayGrossProfitMetaEl) todayGrossProfitMetaEl.textContent = 'Gross Profit • Margin ' + (rangeData.margin_percent != null ? rangeData.margin_percent.toFixed(1) : '0') + '%';
+        if (todayGrossProfitMetaEl) {
+            todayGrossProfitMetaEl.textContent =
+                'Gross Profit • Margin ' + (rangeData.margin_percent != null ? rangeData.margin_percent.toFixed(1) : '0') + '% (on net sales ex VAT)';
+        }
         if (expiringItemsEl) expiringItemsEl.textContent = (kpisData.expiringCount != null ? kpisData.expiringCount : '—');
         if (expiringItemsMetaEl) {
             const ev = (kpisData.expiringValue != null ? Number(kpisData.expiringValue) : 0);

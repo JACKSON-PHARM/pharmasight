@@ -141,10 +141,12 @@ def _resolve_references_batch(
             "reference": cn.credit_note_no if cn else "",
         }
 
-    # supplier_return -> Supplier Return (no doc number column; use id prefix for legacy)
+    # supplier_return -> Supplier Return; prefer SR header number when present
     for rid in refs_by_type.get("supplier_return") or []:
         sr = db.query(SupplierReturn).filter(SupplierReturn.id == rid).first()
-        ref = f"PR-{str(rid).replace('-', '')[:8].upper()}" if sr else str(rid)
+        ref = (sr.return_document_no or "").strip() if sr else ""
+        if not ref:
+            ref = f"PR-{str(rid).replace('-', '')[:8].upper()}"
         result[("supplier_return", rid)] = {
             "document_type": "Supplier Return",
             "reference": ref,

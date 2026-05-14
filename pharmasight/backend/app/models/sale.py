@@ -133,7 +133,7 @@ class Payment(Base):
 
 
 class CreditNote(Base):
-    """Credit Note (KRA Document for Returns)"""
+    """Customer credit note (sales reversal). posting_status=posted only after SALE_RETURN ledger rows exist."""
     __tablename__ = "credit_notes"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -149,11 +149,22 @@ class CreditNote(Base):
     total_inclusive = Column(Numeric(20, 4), default=0)
     created_by = Column(UUID(as_uuid=True), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    # Reversal axes + audit (Phase 1; independent posting vs KRA sync)
+    posting_status = Column(String(32), nullable=False, default="posted")
+    kra_sync_status = Column(String(32), nullable=False, default="not_started")
+    event_group_id = Column(UUID(as_uuid=True), nullable=True)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    submitted_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    client_ip = Column(String(64), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    payload_hash = Column(String(64), nullable=True)
 
     # Relationships
     company = relationship("Company")
     branch = relationship("Branch")
     original_invoice = relationship("SalesInvoice", back_populates="credit_notes")
+    approver = relationship("User", foreign_keys=[approved_by])
     items = relationship("CreditNoteItem", back_populates="credit_note", cascade="all, delete-orphan")
 
     __table_args__ = (

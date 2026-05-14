@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Any, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 from decimal import Decimal
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from fastapi import Query
@@ -45,6 +45,7 @@ from app.schemas.sale import (
 from app.services.inventory_service import InventoryService
 from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
+from app.utils.reversal_audit import client_ip_from_request, pydantic_payload_hash, user_agent_from_request
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
 from app.services.snapshot_service import SnapshotService
@@ -1284,11 +1285,13 @@ def _compute_cogs_from_invoice_lines(
     Primary: sum of InventoryLedger.total_cost for SALE rows created when invoices were
     batched (reference_type=sales_invoice). This is the *actual* cost removed from stock
     across all FEFO layers — not stock valuation / last-cost-for-display, and not the
-    snapshot on sales_invoice_items.unit_cost_used (which is only the first batch's cost).
+    snapshot on sales_invoice_items.unit_cost_used. Recomputing from lines uses **current**
+    item unit definitions (pack_size, unit names); if those change after batching, line math
+    can mis-state COGS vs what was actually deducted at sale time.
 
-    Fallback (legacy / missing ledger): sum per line
+    Fallback (legacy / missing SALE ledger): sum per line
         quantity (sale unit) × multiplier_to_retail × unit_cost_used (per retail/base)
-    when unit_cost_used is set on the line.
+        when unit_cost_used is set on the line.
 
     Returns (total_cogs, cogs_by_day_dict or None).
     """
@@ -1297,9 +1300,12 @@ def _compute_cogs_from_invoice_lines(
     # Use invoice business date for all sales-window analytics so dashboards match invoice listings.
     sales_date_key = SalesInvoice.invoice_date
 
-    # --- Ledger COGS: actual batching cost (multi-batch correct) ---
-    ledger_total_raw = (
-        db.query(func.coalesce(func.sum(InventoryLedger.total_cost), 0))
+    # Per-invoice SALE ledger totals (multi-batch accurate; immutable at batch time).
+    ledger_per_inv_rows = (
+        db.query(
+            InventoryLedger.reference_id.label("invoice_id"),
+            func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"),
+        )
         .join(SalesInvoice, SalesInvoice.id == InventoryLedger.reference_id)
         .filter(
             InventoryLedger.branch_id == branch_id,
@@ -1309,30 +1315,10 @@ def _compute_cogs_from_invoice_lines(
             SalesInvoice.status.in_(["BATCHED", "PAID"]),
             sales_date_key.between(sd, ed),
         )
-        .scalar()
+        .group_by(InventoryLedger.reference_id)
+        .all()
     )
-    ledger_total = Decimal(str(ledger_total_raw or 0))
-
-    ledger_cogs_by_day = None
-    if by_date:
-        ledger_rows = (
-            db.query(
-                sales_date_key.label("d"),
-                func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("cogs"),
-            )
-            .join(SalesInvoice, SalesInvoice.id == InventoryLedger.reference_id)
-            .filter(
-                InventoryLedger.branch_id == branch_id,
-                InventoryLedger.transaction_type == "SALE",
-                InventoryLedger.reference_type == "sales_invoice",
-                SalesInvoice.branch_id == branch_id,
-                SalesInvoice.status.in_(["BATCHED", "PAID"]),
-                sales_date_key.between(sd, ed),
-            )
-            .group_by(sales_date_key)
-            .all()
-        )
-        ledger_cogs_by_day = {r.d: (r.cogs or Decimal("0")) for r in (ledger_rows or [])}
+    ledger_per_invoice = {r.invoice_id: (r.cogs or Decimal("0")) for r in (ledger_per_inv_rows or [])}
 
     invoices = (
         db.query(SalesInvoice)
@@ -1346,6 +1332,8 @@ def _compute_cogs_from_invoice_lines(
     )
     invoice_cogs = Decimal("0")
     invoice_cogs_by_day = {} if by_date else None
+    n_from_ledger = 0
+    n_from_lines = 0
 
     for inv in invoices:
         inv_date = inv.invoice_date or inv.batched_at or inv.created_at
@@ -1358,47 +1346,47 @@ def _compute_cogs_from_invoice_lines(
         else:
             from datetime import datetime as dt
             d = dt.fromisoformat(str(inv_date)[:10]).date() if inv_date else sd
-        inv_line_cogs = Decimal("0")
-        for line in inv.items or []:
-            if not line.unit_cost_used or float(line.unit_cost_used) <= 0:
-                continue
-            item = line.item
-            if not item:
-                item = db.query(Item).filter(Item.id == line.item_id).first()
-            if not item:
-                continue
-            
-            # ARCHITECTURE: unit_cost_used is ALWAYS stored as cost per retail/base unit (ledger/snapshot).
-            # COGS = quantity sold (in retail units) × cost per retail unit.
-            # pack_size is not used for cost; it only affects quantity conversion (sale unit → retail).
-            mult_to_retail = get_unit_multiplier_from_item(item, line.unit_name or "")
-            if mult_to_retail is None or mult_to_retail <= 0:
-                continue
 
-            qty_retail = Decimal(str(line.quantity)) * mult_to_retail
-            cost_per_retail = Decimal(str(line.unit_cost_used))
-            line_cogs = qty_retail * cost_per_retail
-            inv_line_cogs += line_cogs
-        
+        lid = ledger_per_invoice.get(inv.id) or Decimal("0")
+        if lid > 0:
+            inv_line_cogs = Decimal(str(lid))
+            n_from_ledger += 1
+        else:
+            inv_line_cogs = Decimal("0")
+            for line in inv.items or []:
+                if not line.unit_cost_used or float(line.unit_cost_used) <= 0:
+                    continue
+                item = line.item
+                if not item:
+                    item = db.query(Item).filter(Item.id == line.item_id).first()
+                if not item:
+                    continue
+
+                # ARCHITECTURE: unit_cost_used is ALWAYS stored as cost per retail/base unit (ledger/snapshot).
+                # COGS = quantity sold (in retail units) × cost per retail unit.
+                # pack_size is not used for cost; it only affects quantity conversion (sale unit → retail).
+                mult_to_retail = get_unit_multiplier_from_item(item, line.unit_name or "")
+                if mult_to_retail is None or mult_to_retail <= 0:
+                    continue
+
+                qty_retail = Decimal(str(line.quantity)) * mult_to_retail
+                cost_per_retail = Decimal(str(line.unit_cost_used))
+                line_cogs = qty_retail * cost_per_retail
+                inv_line_cogs += line_cogs
+            n_from_lines += 1
+
         invoice_cogs += inv_line_cogs
         if by_date and inv_line_cogs > 0:
             invoice_cogs_by_day[d] = invoice_cogs_by_day.get(d, Decimal("0")) + inv_line_cogs
 
-    # Prefer batched SALE ledger totals (multi-batch FEFO accurate). Invoice-line math uses
-    # unit_cost_used from the first batch only and can over- or under-state COGS vs actual layers.
-    # Financial reporting preference:
-    # - When sales invoice snapshot cost (sales_invoice_items.unit_cost_used) exists,
-    #   reports must match that snapshot cost, because users validate against it.
-    # - Ledger SALE costs are the inventory-layer valuation at batching time and can be
-    #   exaggerated if earlier purchase layers were wrong; fixing those layers does
-    #   not retroactively rewrite historical SALE ledger rows.
-    if ledger_total > 0 and invoice_cogs > 0:
-        return invoice_cogs, invoice_cogs_by_day if by_date else None, "invoice_lines"
+    if n_from_ledger > 0 and n_from_lines > 0:
+        cogs_src = "mixed"
+    elif n_from_ledger > 0:
+        cogs_src = "ledger"
+    else:
+        cogs_src = "invoice_lines"
 
-    if ledger_total > 0:
-        return ledger_total, ledger_cogs_by_day if by_date else None, "ledger"
-
-    return invoice_cogs, invoice_cogs_by_day if by_date else None, "invoice_lines"
+    return invoice_cogs, invoice_cogs_by_day if by_date else None, cogs_src
 
 
 @router.get("/branch/{branch_id}/gross-profit", response_model=dict)
@@ -1418,9 +1406,10 @@ def get_branch_gross_profit(
     each credit note reduces totals on the **original invoice's invoice_date** (not the credit
     note document date), so back-dated returns still correct the day the sale was recorded.
 
-    COGS = SALE ledger for invoices in range, minus SALE_RETURN cost for returns linked to
-    credit notes on invoices whose invoice_date falls in the range (aligned with net sales).
-    Gross profit = Net sales − COGS.
+    COGS = per invoice: sum of SALE inventory-ledger total_cost when that invoice has ledger rows,
+    otherwise recomputed from line snapshots (legacy invoices without SALE ledger). Minus SALE_RETURN
+    cost for returns linked to credit notes on invoices whose invoice_date falls in the range
+    (aligned with net sales). Gross profit = Net sales − COGS.
     """
     user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
@@ -1998,6 +1987,8 @@ def create_credit_note(
     vat_rate_pct = Decimal("16")
     total_exclusive = Decimal("0")
     total_vat = Decimal("0")
+    now = datetime.now(timezone.utc)
+    event_group_id = uuid4()
 
     credit_note = CreditNote(
         company_id=body.company_id,
@@ -2007,6 +1998,13 @@ def create_credit_note(
         credit_note_date=body.credit_note_date,
         reason=body.reason,
         created_by=body.created_by,
+        event_group_id=event_group_id,
+        posting_status="submitted",
+        kra_sync_status="not_started",
+        submitted_at=now,
+        client_ip=client_ip_from_request(request),
+        user_agent=user_agent_from_request(request),
+        payload_hash=pydantic_payload_hash(body),
     )
     db.add(credit_note)
     db.flush()
@@ -2087,6 +2085,7 @@ def create_credit_note(
             unit_cost=unit_cost,
             total_cost=unit_cost * return_qty_base,
             created_by=body.created_by,
+            event_group_id=event_group_id,
         )
         ledger_entries.append(ledger_entry)
 
@@ -2099,6 +2098,7 @@ def create_credit_note(
     for entry in ledger_entries:
         db.add(entry)
     db.flush()
+    credit_note.posting_status = "posted"
     for entry in ledger_entries:
         SnapshotService.upsert_inventory_balance(
             db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,

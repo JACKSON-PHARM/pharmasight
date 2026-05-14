@@ -14,6 +14,7 @@ from app.services.document_number_service import (
     DOC_TYPE_INV,
     DOC_TYPE_CN,
     DOC_TYPE_GRN,
+    DOC_TYPE_SR,
     DOC_TYPE_TRF,
 )
 
@@ -214,6 +215,18 @@ class DocumentService:
         Format: CN-{BRANCH_CODE}-{SEQUENCE} (e.g. CN-01-000014).
         """
         return DocumentNumberService.get_next(db, company_id, branch_id, DOC_TYPE_CN)
+
+    @staticmethod
+    def get_supplier_return_document_number(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID,
+    ) -> str:
+        """
+        Next supplier return (goods returned to supplier) document number.
+        Format: SR-{BRANCH_CODE}-{SEQUENCE} (e.g. SR-01-000014).
+        """
+        return DocumentNumberService.get_next(db, company_id, branch_id, DOC_TYPE_SR)
 
     @staticmethod
     def get_payment_number(

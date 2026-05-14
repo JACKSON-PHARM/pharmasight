@@ -14,9 +14,12 @@ from app.database import Base
 class InventoryLedger(Base):
     """
     Inventory Ledger - Append-only record of all stock movements
-    
+
     This is the SINGLE SOURCE OF TRUTH for inventory.
     Never update or delete. Always append.
+
+    event_group_id: optional shared UUID for one ERP business transaction (links to reversal
+    headers, future outbox rows, and KRA attempts without mutating historical rows).
     """
     __tablename__ = "inventory_ledger"
 
@@ -36,6 +39,7 @@ class InventoryLedger(Base):
     created_by = Column(UUID(as_uuid=True), nullable=False)  # User ID
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     notes = Column(String(2000), nullable=True)  # Optional comment/details (e.g. source, reason for adjustment)
+    event_group_id = Column(UUID(as_uuid=True), nullable=True)  # ERP transaction trace (header, outbox, KRA)
 
     # Enhanced batch tracking fields
     batch_cost = Column(Numeric(20, 4), nullable=True)  # Cost for this specific batch (for FIFO/LIFO)

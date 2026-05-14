@@ -2,10 +2,10 @@
 Supplier Management API: payments, allocations, returns, ledger, aging, metrics, statement.
 company_id is resolved from session only (never from request body).
 """
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional, Dict, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy import func, and_, case
@@ -35,13 +35,14 @@ from app.services.supplier_invoice_payment_service import (
     outstanding_after_allocations,
 )
 from app.services.cashbook_service import ensure_cashbook_entry_for_supplier_payment
+from app.services.document_service import DocumentService
+from app.utils.reversal_audit import client_ip_from_request, pydantic_payload_hash, user_agent_from_request
 from app.schemas.supplier_management import (
     SupplierPaymentCreate,
     SupplierPaymentResponse,
     SupplierPaymentAllocationResponse,
     SupplierReturnCreate,
     SupplierReturnResponse,
-    SupplierReturnLineResponse,
     SupplierLedgerEntryResponse,
     SupplierAgingRow,
     AgingBucket,
@@ -402,6 +403,7 @@ def create_supplier_return(
         raise HTTPException(status_code=404, detail="Branch not found")
 
     total_value = sum(line.line_total for line in body.lines)
+    now = datetime.now(timezone.utc)
     ret = SupplierReturn(
         company_id=company_id,
         branch_id=body.branch_id,
@@ -412,6 +414,10 @@ def create_supplier_return(
         total_value=total_value,
         status="pending",
         created_by=user.id,
+        submitted_at=now,
+        client_ip=client_ip_from_request(request),
+        user_agent=user_agent_from_request(request),
+        payload_hash=pydantic_payload_hash(body),
     )
     db.add(ret)
     db.flush()
@@ -424,6 +430,9 @@ def create_supplier_return(
             quantity=line.quantity,
             unit_cost=line.unit_cost,
             line_total=line.line_total,
+            source_purchase_invoice_item_id=line.source_purchase_invoice_item_id,
+            source_grn_item_id=line.source_grn_item_id,
+            source_inventory_ledger_id=line.source_inventory_ledger_id,
         ))
     db.commit()
     db.refresh(ret)
@@ -432,27 +441,7 @@ def create_supplier_return(
         selectinload(SupplierReturn.supplier),
         selectinload(SupplierReturn.branch),
     ).filter(SupplierReturn.id == ret.id).first()
-    return SupplierReturnResponse(
-        id=ret.id,
-        company_id=ret.company_id,
-        branch_id=ret.branch_id,
-        supplier_id=ret.supplier_id,
-        linked_invoice_id=ret.linked_invoice_id,
-        return_date=ret.return_date,
-        reason=ret.reason,
-        total_value=ret.total_value,
-        status=ret.status,
-        created_by=ret.created_by,
-        created_at=ret.created_at,
-        lines=[SupplierReturnLineResponse(
-            id=l.id, supplier_return_id=l.supplier_return_id, item_id=l.item_id,
-            batch_number=l.batch_number, expiry_date=l.expiry_date,
-            quantity=l.quantity, unit_cost=l.unit_cost, line_total=l.line_total,
-            item_name=l.item.name if l.item else None,
-        ) for l in ret.lines],
-        supplier_name=ret.supplier.name if ret.supplier else None,
-        branch_name=ret.branch.name if ret.branch else None,
-    )
+    return SupplierReturnResponse.model_validate(ret)
 
 
 @router.patch("/returns/{return_id}/approve", response_model=SupplierReturnResponse)
@@ -492,9 +481,16 @@ def approve_supplier_return(
             )
 
     try:
+        event_group_id = uuid4()
+        doc_num = ret.return_document_no or DocumentService.get_supplier_return_document_number(
+            db, company_id, ret.branch_id
+        )
+        ret.return_document_no = doc_num
+        ret.event_group_id = event_group_id
+        ret.approved_by = user.id
+        ret.approved_at = datetime.now(timezone.utc)
         for line in ret.lines:
             # Negative ledger entry (reduction)
-            doc_num = f"PR-{str(ret.id).replace('-', '')[:8].upper()}"
             entry = InventoryLedger(
                 company_id=company_id,
                 branch_id=ret.branch_id,
@@ -509,6 +505,7 @@ def approve_supplier_return(
                 unit_cost=line.unit_cost,
                 total_cost=line.unit_cost * line.quantity,
                 created_by=user.id,
+                event_group_id=event_group_id,
             )
             db.add(entry)
             SnapshotService.upsert_inventory_balance(
@@ -516,6 +513,9 @@ def approve_supplier_return(
                 document_number=doc_num,
             )
             SnapshotRefreshService.schedule_snapshot_refresh(db, company_id, ret.branch_id, item_id=line.item_id)
+
+        db.flush()
+        ret.posting_status = "posted"
 
         # Ledger credit
         SupplierLedgerService.create_entry(
@@ -538,27 +538,7 @@ def approve_supplier_return(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-    return SupplierReturnResponse(
-        id=ret.id,
-        company_id=ret.company_id,
-        branch_id=ret.branch_id,
-        supplier_id=ret.supplier_id,
-        linked_invoice_id=ret.linked_invoice_id,
-        return_date=ret.return_date,
-        reason=ret.reason,
-        total_value=ret.total_value,
-        status=ret.status,
-        created_by=ret.created_by,
-        created_at=ret.created_at,
-        lines=[SupplierReturnLineResponse(
-            id=l.id, supplier_return_id=l.supplier_return_id, item_id=l.item_id,
-            batch_number=l.batch_number, expiry_date=l.expiry_date,
-            quantity=l.quantity, unit_cost=l.unit_cost, line_total=l.line_total,
-            item_name=l.item.name if l.item else None,
-        ) for l in ret.lines],
-        supplier_name=ret.supplier.name if ret.supplier else None,
-        branch_name=ret.branch.name if ret.branch else None,
-    )
+    return SupplierReturnResponse.model_validate(ret)
 
 
 @router.get("/returns", response_model=List[SupplierReturnResponse])
@@ -585,22 +565,7 @@ def list_supplier_returns(
         selectinload(SupplierReturn.supplier),
         selectinload(SupplierReturn.branch),
     ).all()
-    return [
-        SupplierReturnResponse(
-            id=r.id, company_id=r.company_id, branch_id=r.branch_id, supplier_id=r.supplier_id,
-            linked_invoice_id=r.linked_invoice_id, return_date=r.return_date, reason=r.reason,
-            total_value=r.total_value, status=r.status, created_by=r.created_by, created_at=r.created_at,
-            lines=[SupplierReturnLineResponse(
-                id=l.id, supplier_return_id=l.supplier_return_id, item_id=l.item_id,
-                batch_number=l.batch_number, expiry_date=l.expiry_date,
-                quantity=l.quantity, unit_cost=l.unit_cost, line_total=l.line_total,
-                item_name=l.item.name if l.item else None,
-            ) for l in r.lines],
-            supplier_name=r.supplier.name if r.supplier else None,
-            branch_name=r.branch.name if r.branch else None,
-        )
-        for r in returns
-    ]
+    return [SupplierReturnResponse.model_validate(r) for r in returns]
 
 
 # --- Ledger ---
@@ -954,7 +919,7 @@ def get_supplier_statement(
         elif e.entry_type == "return" and e.reference_id:
             r = ret_map.get(e.reference_id)
             if r:
-                legacy_ref = f"RET-{str(r.id)[:8]}"
+                legacy_ref = (r.return_document_no or "").strip() or f"RET-{str(r.id)[:8]}"
         elif e.reference_id:
             legacy_ref = str(e.reference_id)
 

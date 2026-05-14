@@ -81,6 +81,9 @@ class SupplierReturnLineCreate(BaseModel):
     quantity: Decimal = Field(..., gt=0)
     unit_cost: Decimal = Field(..., ge=0)
     line_total: Decimal = Field(..., ge=0)
+    source_purchase_invoice_item_id: Optional[UUID] = None
+    source_grn_item_id: Optional[UUID] = None
+    source_inventory_ledger_id: Optional[UUID] = None
 
 
 class SupplierReturnCreate(BaseModel):
@@ -102,6 +105,9 @@ class SupplierReturnLineResponse(BaseModel):
     unit_cost: Decimal
     line_total: Decimal
     item_name: Optional[str] = None
+    source_purchase_invoice_item_id: Optional[UUID] = None
+    source_grn_item_id: Optional[UUID] = None
+    source_inventory_ledger_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True
@@ -117,6 +123,16 @@ class SupplierReturnResponse(BaseModel):
     reason: Optional[str] = None
     total_value: Decimal
     status: str
+    return_document_no: Optional[str] = None
+    posting_status: str = "not_posted"
+    kra_sync_status: str = "not_required"
+    event_group_id: Optional[UUID] = None
+    approved_by: Optional[UUID] = None
+    approved_at: Optional[datetime] = None
+    submitted_at: Optional[datetime] = None
+    client_ip: Optional[str] = None
+    user_agent: Optional[str] = None
+    payload_hash: Optional[str] = None
     created_by: UUID
     created_at: datetime
     lines: List[SupplierReturnLineResponse] = []
