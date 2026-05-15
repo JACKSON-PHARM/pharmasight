@@ -15,20 +15,30 @@ function _localDateStr(d) {
     return `${yyyy}-${mm}-${dd}`;
 }
 
+/** Map router subPage / hash aliases to internal sub-page keys. */
+function _normalizeExpensesSubPage(subPage) {
+    if (subPage == null || subPage === '') return 'expenses';
+    const s = String(subPage).toLowerCase();
+    if (s === 'expenses' || s === 'list' || s === 'all') return 'expenses';
+    if (s === 'categories' || s === 'category' || s === 'expenses-categories') return 'categories';
+    if (s === 'reports' || s === 'expenses-reports' || s === 'insights' || s === 'analytics') return 'reports';
+    return s;
+}
+
 async function loadExpenses(subPage = null) {
-    const target = subPage || currentExpensesSubPage || 'expenses';
+    const target = _normalizeExpensesSubPage(subPage);
     await loadExpensesSubPage(target);
 }
 
 async function loadExpensesSubPage(subPage) {
-    currentExpensesSubPage = subPage || 'expenses';
+    currentExpensesSubPage = _normalizeExpensesSubPage(subPage);
     const page = document.getElementById('expenses');
     if (!page) return;
 
     const titleMap = {
         'expenses': 'All Expenses',
         'categories': 'Expense Categories',
-        'reports': 'Expense Reports',
+        'reports': 'Expense Insights',
     };
     const title = titleMap[currentExpensesSubPage] || 'Expenses';
 
@@ -48,15 +58,7 @@ async function loadExpensesSubPage(subPage) {
         return;
     }
     if (currentExpensesSubPage === 'reports') {
-        const body = document.getElementById('expensesBody');
-        if (body) {
-            body.innerHTML = `
-                <div class="alert alert-info">
-                    <i class="fas fa-info-circle"></i>
-                    <p>Expense reports will be available via Financial Reports (Net Profit).</p>
-                </div>
-            `;
-        }
+        await renderExpenseInsights();
         return;
     }
 
@@ -182,7 +184,8 @@ async function showNewExpenseModal() {
     cats = Array.isArray(cats) ? cats : [];
     if (!cats.length) {
         showToast('Create at least one expense category first.', 'warning');
-        await loadExpensesSubPage('categories');
+        if (typeof loadPage === 'function') loadPage('expenses-categories');
+        else await loadExpensesSubPage('categories');
         return;
     }
 
@@ -407,6 +410,321 @@ async function toggleExpenseCategory(categoryId, isActive) {
     } catch (e) {
         showToast((e && e.message) ? e.message : 'Failed to update category', 'error');
     }
+}
+
+function _expInsightsStartOfWeekMonday(d) {
+    const x = new Date(d);
+    const wd = x.getDay();
+    const diff = (wd === 0 ? -6 : 1 - wd);
+    x.setDate(x.getDate() + diff);
+    x.setHours(0, 0, 0, 0);
+    return x;
+}
+
+function _expInsightsEndOfWeekSunday(d) {
+    const s = _expInsightsStartOfWeekMonday(d);
+    const e = new Date(s);
+    e.setDate(e.getDate() + 6);
+    e.setHours(0, 0, 0, 0);
+    return e;
+}
+
+function _expInsightsStartOfMonth(d) {
+    const x = new Date(d.getFullYear(), d.getMonth(), 1);
+    x.setHours(0, 0, 0, 0);
+    return x;
+}
+
+function _expInsightsEndOfMonth(d) {
+    const x = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    x.setHours(0, 0, 0, 0);
+    return x;
+}
+
+function _expInsightsStartOfYear(d) {
+    const x = new Date(d.getFullYear(), 0, 1);
+    x.setHours(0, 0, 0, 0);
+    return x;
+}
+
+function _expInsightsEndOfYear(d) {
+    const x = new Date(d.getFullYear(), 11, 31);
+    x.setHours(0, 0, 0, 0);
+    return x;
+}
+
+function _expInsightsPresetRange(preset) {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const p = (preset || '').toLowerCase();
+    if (p === 'today') return { start: now, end: now };
+    if (p === 'this_week') return { start: _expInsightsStartOfWeekMonday(now), end: _expInsightsEndOfWeekSunday(now) };
+    if (p === 'last_week') {
+        const end = new Date(_expInsightsStartOfWeekMonday(now));
+        end.setDate(end.getDate() - 1);
+        end.setHours(0, 0, 0, 0);
+        return { start: _expInsightsStartOfWeekMonday(end), end };
+    }
+    if (p === 'this_month') return { start: _expInsightsStartOfMonth(now), end: _expInsightsEndOfMonth(now) };
+    if (p === 'last_month') {
+        const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        prev.setHours(0, 0, 0, 0);
+        return { start: _expInsightsStartOfMonth(prev), end: _expInsightsEndOfMonth(prev) };
+    }
+    if (p === 'this_year') return { start: _expInsightsStartOfYear(now), end: _expInsightsEndOfYear(now) };
+    if (p === 'last_year') {
+        const prev = new Date(now.getFullYear() - 1, 0, 1);
+        prev.setHours(0, 0, 0, 0);
+        return { start: _expInsightsStartOfYear(prev), end: _expInsightsEndOfYear(prev) };
+    }
+    return { start: _expInsightsStartOfMonth(now), end: now };
+}
+
+function _expInsightsBranchId() {
+    return (typeof BranchContext !== 'undefined' && BranchContext.getBranch && BranchContext.getBranch()?.id) || CONFIG.BRANCH_ID || null;
+}
+
+function _expInsightsPaymentLabel(mode) {
+    const m = (mode || '').toLowerCase();
+    if (m === 'mpesa') return 'M-Pesa';
+    if (m === 'bank') return 'Bank';
+    if (m === 'cash') return 'Cash';
+    return m || 'Other';
+}
+
+async function renderExpenseInsights() {
+    const body = document.getElementById('expensesBody');
+    if (!body) return;
+
+    const branchId = _expInsightsBranchId();
+    const today = new Date();
+    const defaultStart = _localDateStr(_expInsightsStartOfMonth(today));
+    const defaultEnd = _localDateStr(today);
+
+    body.innerHTML = `
+        <p style="margin: 0 0 1rem; color: var(--text-secondary); font-size: 0.9rem;">
+            Approved totals match <strong>Financial Reports → Net profit</strong>. Below: expense-specific breakdowns and pending items.
+        </p>
+        <div style="display:flex; flex-wrap:wrap; gap:0.75rem; align-items:end; margin-bottom: 1rem;">
+            <div class="form-group" style="min-width: 200px; margin: 0;">
+                <label class="form-label">Period</label>
+                <select class="form-select" id="expInsightPreset">
+                    <option value="this_month" selected>This month</option>
+                    <option value="today">Today</option>
+                    <option value="this_week">This week</option>
+                    <option value="last_week">Last week</option>
+                    <option value="last_month">Last month</option>
+                    <option value="this_year">This year</option>
+                    <option value="last_year">Last year</option>
+                    <option value="custom">Custom</option>
+                </select>
+            </div>
+            <div class="form-group" style="margin: 0;">
+                <label class="form-label">From</label>
+                <input type="date" class="form-input" id="expInsightFrom" value="${defaultStart}">
+            </div>
+            <div class="form-group" style="margin: 0;">
+                <label class="form-label">To</label>
+                <input type="date" class="form-input" id="expInsightTo" value="${defaultEnd}">
+            </div>
+            <button type="button" class="btn btn-primary" id="expInsightApply"><i class="fas fa-sync"></i> Apply</button>
+            <button type="button" class="btn btn-outline" id="expInsightFinancial"><i class="fas fa-chart-line"></i> Financial Reports</button>
+        </div>
+        <div id="expInsightSummary" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem;"></div>
+        <div id="expInsightPanels"></div>
+    `;
+
+    const presetEl = document.getElementById('expInsightPreset');
+    const fromEl = document.getElementById('expInsightFrom');
+    const toEl = document.getElementById('expInsightTo');
+
+    presetEl?.addEventListener('change', () => {
+        const p = presetEl.value;
+        if (p === 'custom') return;
+        const r = _expInsightsPresetRange(p);
+        if (fromEl) fromEl.value = _localDateStr(r.start);
+        if (toEl) toEl.value = _localDateStr(r.end);
+    });
+
+    document.getElementById('expInsightApply')?.addEventListener('click', () => loadExpenseInsightsData());
+    document.getElementById('expInsightFinancial')?.addEventListener('click', () => {
+        if (typeof loadPage === 'function') loadPage('reports-financial');
+        else window.location.hash = '#reports-financial';
+    });
+
+    await loadExpenseInsightsData();
+}
+
+async function loadExpenseInsightsData() {
+    const summaryEl = document.getElementById('expInsightSummary');
+    const panelsEl = document.getElementById('expInsightPanels');
+    if (!summaryEl || !panelsEl) return;
+
+    const branchId = _expInsightsBranchId();
+    if (!branchId) {
+        panelsEl.innerHTML = '<p style="color: var(--warning-color);">Select a branch to view expense insights.</p>';
+        return;
+    }
+
+    const start = document.getElementById('expInsightFrom')?.value;
+    const end = document.getElementById('expInsightTo')?.value;
+    if (!start || !end) {
+        showToast('Pick a valid date range.', 'warning');
+        return;
+    }
+
+    summaryEl.innerHTML = '';
+    panelsEl.innerHTML = '<div class="spinner" style="margin: 1rem auto;"></div>';
+
+    let summary = null;
+    let allRows = [];
+    try {
+        const [sumRes, listRes] = await Promise.all([
+            (API && API.expenses && typeof API.expenses.summary === 'function')
+                ? API.expenses.summary({ branch_id: branchId, start_date: start, end_date: end, include_breakdown: true })
+                : Promise.resolve(null),
+            API.expenses.list({ branch_id: branchId, date_from: start, date_to: end, limit: 5000, offset: 0 }),
+        ]);
+        summary = sumRes;
+        allRows = Array.isArray(listRes) ? listRes : [];
+    } catch (e) {
+        panelsEl.innerHTML = `<p style="color: var(--danger-color);">Failed to load insights: ${escapeHtml((e && e.message) ? e.message : '')}</p>`;
+        return;
+    }
+
+    const approvedTotal = summary ? parseFloat(summary.total_expenses || 0) : 0;
+    let pendingTotal = 0;
+    let pendingCount = 0;
+    const byCategory = {};
+    const byMode = {};
+    allRows.forEach((r) => {
+        const amt = parseFloat(r.amount || 0);
+        const st = (r.status || '').toLowerCase();
+        if (st === 'pending') {
+            pendingTotal += amt;
+            pendingCount += 1;
+            return;
+        }
+        if (st !== 'approved') return;
+        const cat = r.category_name || 'Uncategorized';
+        byCategory[cat] = (byCategory[cat] || 0) + amt;
+        const mode = _expInsightsPaymentLabel(r.payment_mode);
+        byMode[mode] = (byMode[mode] || 0) + amt;
+    });
+
+    const txnCount = allRows.length;
+    const avgApproved = approvedTotal > 0 && summary && Array.isArray(summary.breakdown) && summary.breakdown.length
+        ? approvedTotal / summary.breakdown.filter((b) => parseFloat(b.total_expenses || 0) > 0).length
+        : (txnCount ? approvedTotal / Math.max(1, allRows.filter((r) => (r.status || '').toLowerCase() === 'approved').length) : 0);
+
+    summaryEl.innerHTML = `
+        <div class="card" style="padding: 1rem; margin: 0;">
+            <h4 style="margin: 0 0 0.25rem; font-size: 1.25rem;">${_fmtMoney(approvedTotal)}</h4>
+            <p style="margin: 0; color: var(--text-secondary); font-size: 0.85rem;">Approved (in Net profit)</p>
+        </div>
+        <div class="card" style="padding: 1rem; margin: 0;">
+            <h4 style="margin: 0 0 0.25rem; font-size: 1.25rem;">${_fmtMoney(pendingTotal)}</h4>
+            <p style="margin: 0; color: var(--text-secondary); font-size: 0.85rem;">Pending (${pendingCount})</p>
+        </div>
+        <div class="card" style="padding: 1rem; margin: 0;">
+            <h4 style="margin: 0 0 0.25rem; font-size: 1.25rem;">${txnCount}</h4>
+            <p style="margin: 0; color: var(--text-secondary); font-size: 0.85rem;">Transactions</p>
+        </div>
+        <div class="card" style="padding: 1rem; margin: 0;">
+            <h4 style="margin: 0 0 0.25rem; font-size: 1.25rem;">${_fmtMoney(avgApproved)}</h4>
+            <p style="margin: 0; color: var(--text-secondary); font-size: 0.85rem;">Avg / active day</p>
+        </div>
+    `;
+
+    const catRows = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
+    const modeRows = Object.entries(byMode).sort((a, b) => b[1] - a[1]);
+    const dailyRows = (summary && Array.isArray(summary.breakdown) ? summary.breakdown : [])
+        .filter((r) => parseFloat(r.total_expenses || 0) > 0)
+        .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+    const pct = (part, whole) => (whole > 0 ? ((part / whole) * 100).toFixed(1) : '0.0');
+
+    const catTable = catRows.length
+        ? catRows.map(([name, total]) => `
+            <tr>
+                <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">${escapeHtml(name)}</td>
+                <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${_fmtMoney(total)}</td>
+                <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${pct(total, approvedTotal)}%</td>
+            </tr>
+        `).join('')
+        : '<tr><td colspan="3" style="padding: 0.75rem; color: var(--text-secondary);">No approved expenses in range.</td></tr>';
+
+    const modeTable = modeRows.length
+        ? modeRows.map(([name, total]) => `
+            <tr>
+                <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">${escapeHtml(name)}</td>
+                <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${_fmtMoney(total)}</td>
+                <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${pct(total, approvedTotal)}%</td>
+            </tr>
+        `).join('')
+        : '<tr><td colspan="3" style="padding: 0.75rem; color: var(--text-secondary);">No payment breakdown.</td></tr>';
+
+    const dailyTable = dailyRows.length
+        ? dailyRows.map((r) => {
+            const d = (r.date || '').toString().slice(0, 10);
+            const t = parseFloat(r.total_expenses || 0);
+            return `
+                <tr>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color);">${d}</td>
+                    <td style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); text-align:right;">${_fmtMoney(t)}</td>
+                </tr>
+            `;
+        }).join('')
+        : '<tr><td colspan="2" style="padding: 0.75rem; color: var(--text-secondary);">No daily spend in range.</td></tr>';
+
+    panelsEl.innerHTML = `
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+            <div class="card" style="padding: 1rem;">
+                <h4 style="margin: 0 0 0.75rem;"><i class="fas fa-folder"></i> By category</h4>
+                <div style="overflow:auto;">
+                    <table style="width:100%; border-collapse: collapse;">
+                        <thead>
+                            <tr>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:left;">Category</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Amount</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Share</th>
+                            </tr>
+                        </thead>
+                        <tbody>${catTable}</tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card" style="padding: 1rem;">
+                <h4 style="margin: 0 0 0.75rem;"><i class="fas fa-wallet"></i> By payment mode</h4>
+                <div style="overflow:auto;">
+                    <table style="width:100%; border-collapse: collapse;">
+                        <thead>
+                            <tr>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:left;">Mode</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Amount</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Share</th>
+                            </tr>
+                        </thead>
+                        <tbody>${modeTable}</tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card" style="padding: 1rem; grid-column: 1 / -1;">
+                <h4 style="margin: 0 0 0.75rem;"><i class="fas fa-calendar-day"></i> Daily approved spend</h4>
+                <div style="overflow:auto; max-height: 320px;">
+                    <table style="width:100%; border-collapse: collapse;">
+                        <thead>
+                            <tr>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:left;">Date</th>
+                                <th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Approved</th>
+                            </tr>
+                        </thead>
+                        <tbody>${dailyTable}</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
 }
 
 // Export

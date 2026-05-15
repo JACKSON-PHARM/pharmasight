@@ -224,6 +224,8 @@ def run_migrations_for_url(database_url: str) -> List[str]:
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             cur = conn.cursor()
             try:
+                # One execute() sends the full SQL file as a single batch. On failure the server
+                # rolls back that batch; schema_migrations is inserted only after this succeeds.
                 cur.execute(sql)
             except Exception as e:
                 cur.close()

@@ -1119,8 +1119,8 @@ window.subNavItems = {
     ],
     expenses: [
         { page: 'expenses', label: 'All Expenses', icon: 'fa-money-bill-wave' },
-        { page: 'expenses-categories', label: 'Categories', icon: 'fa-folder' },
-        { page: 'expenses-reports', label: 'Reports', icon: 'fa-chart-pie' }
+        { page: 'expenses', subPage: 'categories', label: 'Categories', icon: 'fa-folder' },
+        { page: 'expenses', subPage: 'reports', label: 'Reports', icon: 'fa-chart-pie' }
     ],
     reports: [
         { page: 'reports-sales', label: 'Sales Reports', icon: 'fa-chart-line' },
