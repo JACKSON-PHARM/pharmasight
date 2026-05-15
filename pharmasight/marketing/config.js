@@ -91,6 +91,23 @@
             if (!u) return;
             el.setAttribute('href', u);
         });
+
+        syncHeroVisual(settings);
+    }
+
+    /** When a CMS hero image exists, hide the default abstract art so only the photo shows. */
+    function syncHeroVisual(settings) {
+        var images = (settings && settings.marketing_images) || {};
+        var heroUrl = String(images.hero || '').trim();
+        document.querySelectorAll('.hero-visual').forEach(function (root) {
+            var art = root.querySelector('.hero-analytics-art');
+            if (!art) return;
+            if (heroUrl) {
+                art.setAttribute('hidden', '');
+            } else {
+                art.removeAttribute('hidden');
+            }
+        });
     }
 
     function scheduleApplyMarketingAssets(settings) {

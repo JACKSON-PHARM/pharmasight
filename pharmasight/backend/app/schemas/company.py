@@ -2,7 +2,7 @@
 Company and Branch schemas
 """
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 from datetime import datetime, date
 from uuid import UUID
 
@@ -61,6 +61,10 @@ class BranchBase(BaseModel):
     paybill: Optional[str] = Field(None, max_length=50, description="Paybill for sales invoice PDF footer")
     is_active: bool = Field(default=True)
     is_hq: bool = Field(default=False, description="HQ branch: exclusive create items, suppliers, users, roles, branches")
+    invoice_workflow_type: Literal["RETAIL_COUNTER", "ENCOUNTER_CONSOLIDATED"] = Field(
+        default="RETAIL_COUNTER",
+        description="Branch-scoped fiscal authority: RETAIL_COUNTER (pharmacy-first) vs ENCOUNTER_CONSOLIDATED (billing-governed).",
+    )
 
 
 class BranchCreate(BranchBase):
@@ -78,6 +82,7 @@ class BranchUpdate(BaseModel):
     paybill: Optional[str] = None
     is_active: Optional[bool] = None
     is_hq: Optional[bool] = None
+    invoice_workflow_type: Optional[Literal["RETAIL_COUNTER", "ENCOUNTER_CONSOLIDATED"]] = None
 
 
 class BranchResponse(BranchBase):

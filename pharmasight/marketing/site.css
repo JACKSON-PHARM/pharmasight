@@ -49,7 +49,7 @@ header nav {
   align-items: center;
   gap: 0.5rem;
 }
-header:not(.site-header--landing) .logo img[data-marketing-logo] {
+header:not(.site-header--landing) .logo > img {
   height: 28px;
   width: auto;
   max-width: 44px;
@@ -502,7 +502,7 @@ footer:not(.site-footer) {
 }
 
 /* ---------------------------------------------------------------------------
-   Landing page (index.html) — focused hero + messaging
+   Landing page (index.html) — split hero + abstract efficiency illustration
    --------------------------------------------------------------------------- */
 body.marketing-home {
   font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
@@ -637,13 +637,63 @@ html[data-theme="dark"] .theme-toggle-btn {
   padding: 2.5rem 1.5rem 4rem;
 }
 
-.hero--focused {
-  padding: 1rem 0 3rem;
+.hero--split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 1.05fr);
+  gap: 2.5rem 3rem;
+  align-items: center;
   text-align: left;
+  padding: 1rem 0 3.5rem;
 }
 
-.hero--focused .hero-copy {
-  max-width: 40rem;
+.hero-visual {
+  position: relative;
+  min-height: 300px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hero-analytics-art {
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.hero-analytics-art[hidden] {
+  display: none !important;
+}
+
+.hero-analytics-art img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 20px;
+  box-shadow: 0 20px 55px rgba(15, 23, 42, 0.1), 0 0 0 1px rgba(15, 23, 42, 0.06);
+}
+
+html[data-theme="dark"] .hero-analytics-art img {
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(51, 65, 85, 0.55);
+}
+
+.hero-cms-photo {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  width: 100%;
+  max-width: 520px;
+  height: auto;
+  max-height: min(440px, 85vw);
+  object-fit: contain;
+  border-radius: 20px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.07);
+}
+
+html[data-theme="dark"] .hero-cms-photo {
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(51, 65, 85, 0.55);
 }
 
 .hero-copy {
@@ -761,12 +811,16 @@ html[data-theme="dark"] .hero-features li {
 }
 
 @media (max-width: 960px) {
-  .hero--focused {
+  .hero--split {
+    grid-template-columns: 1fr;
+    gap: 2rem;
     text-align: center;
   }
-  .hero--focused .hero-copy {
+  .hero--split .hero-visual {
+    max-width: 480px;
     margin-left: auto;
     margin-right: auto;
+    min-height: 220px;
   }
   .hero-cta {
     justify-content: center;

@@ -511,6 +511,10 @@ def submit_sales_invoice(
     if not invoice:
         raise ValueError("Invoice not found")
 
+    from app.services.invoice_workflow_policy import note_kra_submission_workflow_anchor
+
+    note_kra_submission_workflow_anchor(db, invoice)
+
     # Match worker behaviour: clear failed state so operators / print-PDF path can retry submit.
     if (invoice.submission_status or "").strip().lower() == "failed":
         invoice.submission_status = "pending"

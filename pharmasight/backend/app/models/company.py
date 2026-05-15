@@ -82,6 +82,13 @@ class Branch(Base):
     paybill = Column(String(50), nullable=True)  # Paybill for sales invoice footer
     is_active = Column(Boolean, default=True)
     is_hq = Column(Boolean, default=False)  # HQ branch: exclusive create items, suppliers, users, roles, branches
+    # Fiscal doctrine for this branch only (not patient entry pathway). See invoice_workflow_policy service.
+    invoice_workflow_type = Column(
+        String(40),
+        nullable=False,
+        default="RETAIL_COUNTER",
+        server_default="RETAIL_COUNTER",
+    )
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

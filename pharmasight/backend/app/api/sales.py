@@ -479,6 +479,9 @@ def get_sales_invoice_pdf(
     ensure_user_has_branch_access(db, user.id, invoice.branch_id)
     if not _user_has_permission(db, user.id, "sales.view"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    from app.services.invoice_workflow_policy import note_fiscal_pdf_and_print_policy
+
+    note_fiscal_pdf_and_print_policy(db, invoice, context="get_sales_invoice_pdf")
     # Best-effort fiscal sign before PDF bytes so downloads include KRA data when possible.
     if company_kra_execution_enabled(db, invoice.company_id):
         from app.services.etims.etims_invoice_submitter import EtimsSubmissionSkipped, submit_sales_invoice
@@ -2307,6 +2310,10 @@ def batch_sales_invoice(
     ensure_user_has_branch_access(db, user.id, invoice.branch_id)
     if not _user_has_permission(db, user.id, "sales.edit"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    from app.services.invoice_workflow_policy import note_invoice_finalization_policy
+
+    note_invoice_finalization_policy(db, invoice, context="batch_sales_invoice")
 
     if invoice.status == "BATCHED":
         raise HTTPException(

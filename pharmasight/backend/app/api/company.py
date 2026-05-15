@@ -626,6 +626,12 @@ def update_branch(
         raise HTTPException(status_code=404, detail="Branch not found")
     
     update_data = branch_update.model_dump(exclude_unset=True) if hasattr(branch_update, 'model_dump') else branch_update.dict(exclude_unset=True)
+    if "invoice_workflow_type" in update_data and update_data["invoice_workflow_type"] is not None:
+        from app.services.invoice_workflow_policy import normalize_invoice_workflow_type
+
+        update_data["invoice_workflow_type"] = normalize_invoice_workflow_type(
+            update_data["invoice_workflow_type"]
+        )
     for field, value in update_data.items():
         setattr(branch, field, value)
     
