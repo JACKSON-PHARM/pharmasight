@@ -153,6 +153,27 @@
                         </div>
                     </div>
 
+                    <div class="card" style="padding:0.75rem; margin-top:1rem;" id="paKraCard">
+                        <h3 style="margin:0 0 0.5rem;">KRA / eTIMS</h3>
+                        <p style="margin:0 0 0.75rem; color:var(--text-secondary); font-size:0.85rem;">
+                            Turn off KRA for companies that started certification but should not block printing.
+                        </p>
+                        <div id="paKraLoading" style="color:var(--text-secondary); font-size:0.9rem;">Loading KRA status…</div>
+                        <div id="paKraControls" style="display:none;">
+                            <label style="display:flex; gap:0.5rem; align-items:flex-start; cursor:pointer;">
+                                <input id="paKraEnabled" type="checkbox" />
+                                <span>
+                                    <strong>Enable KRA for this company</strong><br>
+                                    <span style="color:var(--text-secondary); font-size:0.85rem;">
+                                        When off, batched invoices will not require KRA signing before print.
+                                    </span>
+                                </span>
+                            </label>
+                            <div style="margin-top:0.5rem; color:var(--text-secondary); font-size:0.85rem;" id="paKraMeta"></div>
+                            <button type="button" class="btn btn-primary btn-sm" id="paSaveKra" style="margin-top:0.75rem;">Save KRA setting</button>
+                        </div>
+                    </div>
+
                     <div class="card" style="padding:0.75rem; margin-top:1rem;">
                         <h3 style="margin:0 0 0.5rem;">Licensed modules</h3>
                         <p style="margin:0 0 0.75rem; color:var(--text-secondary); font-size:0.9rem;">
@@ -201,6 +222,25 @@
                 }
             });
 
+            void loadPlatformAdminKraControls(companyId, card);
+
+            document.getElementById('paSaveKra')?.addEventListener('click', async () => {
+                try {
+                    setBusy(card, true);
+                    const kra_enabled = !!document.getElementById('paKraEnabled')?.checked;
+                    if (typeof API.platformAdmin.etimsPatchCompanyPin !== 'function') {
+                        throw new Error('KRA API not available');
+                    }
+                    await API.platformAdmin.etimsPatchCompanyPin(companyId, { kra_enabled });
+                    showOk(kra_enabled ? 'KRA enabled for company' : 'KRA disabled — printing will not require fiscal signing');
+                    await loadPlatformAdminKraControls(companyId, card);
+                } catch (e) {
+                    showErr(e.message || 'Failed to save KRA setting');
+                } finally {
+                    setBusy(card, false);
+                }
+            });
+
             document.getElementById('paSaveModules')?.addEventListener('click', async () => {
                 try {
                     setBusy(card, true);
@@ -221,6 +261,37 @@
             });
         } catch (e) {
             el.innerHTML = `<div class="card" style="padding:1rem;"><p class="text-danger">Could not load company. ${escapeHtml(e.message || '')}</p></div>`;
+        }
+    }
+
+    async function loadPlatformAdminKraControls(companyId, card) {
+        const loading = document.getElementById('paKraLoading');
+        const controls = document.getElementById('paKraControls');
+        const meta = document.getElementById('paKraMeta');
+        const cb = document.getElementById('paKraEnabled');
+        if (!loading || !controls) return;
+        loading.style.display = 'block';
+        controls.style.display = 'none';
+        try {
+            if (typeof API.platformAdmin.etimsCompany !== 'function') {
+                loading.textContent = 'KRA API not available on this build.';
+                return;
+            }
+            const etims = await API.platformAdmin.etimsCompany(companyId);
+            const on = !!(etims && etims.kra_enabled);
+            if (cb) cb.checked = on;
+            const mode = (etims && etims.kra_mode) ? String(etims.kra_mode) : 'sandbox';
+            const onboarded = etims && etims.kra_onboarded_at
+                ? new Date(etims.kra_onboarded_at).toLocaleString()
+                : '—';
+            if (meta) {
+                meta.innerHTML = `Mode: <strong>${escapeHtml(mode)}</strong> · Onboarded: <strong>${escapeHtml(onboarded)}</strong>`;
+            }
+            loading.style.display = 'none';
+            controls.style.display = 'block';
+        } catch (e) {
+            loading.textContent = 'Could not load KRA status: ' + (e.message || '');
+            if (card) setBusy(card, false);
         }
     }
 

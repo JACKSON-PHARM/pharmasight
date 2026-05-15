@@ -3033,6 +3033,12 @@ async function viewSalesInvoice(invoiceId) {
                                     <label class="form-label">Payment Status</label>
                                     <input type="text" class="form-input" value="${invoice.payment_status || '—'}" readonly>
                                 </div>
+                                ${(invoice.customer_phone && String(invoice.customer_phone).trim()) ? `
+                                <div class="form-group">
+                                    <label class="form-label">Customer Phone</label>
+                                    <input type="text" class="form-input" value="${escapeHtml(String(invoice.customer_phone).trim())}" readonly>
+                                </div>
+                                ` : ''}
                             </div>
                         </div>
                     </div>
@@ -3854,9 +3860,12 @@ async function checkIfAdminOrManager() {
 /** Matches backend batch gate: company kra_enabled + branch eTIMS credentials enabled (snapshot/outbox path). */
 function kraFiscalReceiptRequired(invoice) {
     if (!invoice) return false;
+    // Platform admin disabled KRA for this company — do not block print/PDF on fiscal gate.
+    if (invoice.company_kra_enabled === false) return false;
+    if (!invoice.kra_fiscal_receipt_required) return false;
     const sub = (invoice.submission_status || '').trim().toLowerCase();
     if (sub === 'pending' || sub === 'failed') return true;
-    return !!invoice.kra_fiscal_receipt_required;
+    return true;
 }
 
 /** When fiscal receipt is required, batched/paid invoices must be submission_status=submitted before print (no unsigned fiscal slip). */

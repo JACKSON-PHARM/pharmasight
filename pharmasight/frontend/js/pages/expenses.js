@@ -583,7 +583,7 @@ async function loadExpenseInsightsData() {
             (API && API.expenses && typeof API.expenses.summary === 'function')
                 ? API.expenses.summary({ branch_id: branchId, start_date: start, end_date: end, include_breakdown: true })
                 : Promise.resolve(null),
-            API.expenses.list({ branch_id: branchId, date_from: start, date_to: end, limit: 5000, offset: 0 }),
+            API.expenses.list({ branch_id: branchId, date_from: start, date_to: end, limit: 1000, offset: 0 }),
         ]);
         summary = sumRes;
         allRows = Array.isArray(listRes) ? listRes : [];

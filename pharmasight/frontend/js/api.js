@@ -1566,6 +1566,8 @@ const API = {
         patchModules: (companyId, data) => api.patch(`/api/platform-admin/company/${companyId}/modules`, data),
         patchSubscription: (companyId, data) => api.patch(`/api/platform-admin/company/${companyId}/subscription`, data),
         patchStatus: (companyId, data) => api.patch(`/api/platform-admin/company/${companyId}/status`, data),
+        etimsCompany: (companyId) => api.get(`/api/platform-admin/company/${companyId}/etims`),
+        etimsPatchCompanyPin: (companyId, data) => api.patch(`/api/platform-admin/company/${companyId}/etims/pin`, data),
     },
     // Admin Authentication
     adminAuth: {
