@@ -96,6 +96,19 @@ class ItemBase(BaseModel):
     kra_vat_cat_cd: Optional[str] = Field(None, description="KRA vatCatCd from catalog (selectItemList)")
 
 
+class CatalogItemSuggestionCreate(BaseModel):
+    """
+    Minimal payload to create a new catalog SKU from POS/clinical flows when search finds nothing.
+    Creates a PHARMACEUTICAL item with default 3-tier units; SKU is auto-assigned.
+    """
+
+    name: str = Field(..., min_length=1, max_length=255)
+    branch_id: Optional[UUID] = Field(
+        None,
+        description="Optional current branch for access check (must have branch access if set)",
+    )
+
+
 class ItemCreate(ItemBase):
     """Create item request with 3-tier units"""
     company_id: UUID

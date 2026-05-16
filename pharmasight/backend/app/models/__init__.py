@@ -74,6 +74,7 @@ from .department_supply import (
 from .etims_sync_cursor import EtimsSyncCursor
 from .kra_audit_event import KraAuditEvent
 from .kra_event_outbox import KraEventOutbox
+from .commercial_transaction import CommercialTransaction, CommercialTransactionTransition
 
 __all__ = [
     "Base",
@@ -168,4 +169,6 @@ __all__ = [
     "EtimsSyncCursor",
     "KraAuditEvent",
     "KraEventOutbox",
+    "CommercialTransaction",
+    "CommercialTransactionTransition",
 ]

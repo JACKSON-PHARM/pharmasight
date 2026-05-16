@@ -70,7 +70,7 @@
             return 'trial_expired';
         }
         if (fromMe === 'blocked') {
-            return 'trial_expired';
+            return 'blocked';
         }
         if (notifiedFromApi || window.__pharmasightTrialExpiredFromApi) {
             return 'trial_expired';
@@ -83,7 +83,8 @@
     }
 
     function getRedirectIfOutsideSubscription(routeBase) {
-        if (effectiveAccess() !== 'trial_expired') return null;
+        var acc = effectiveAccess();
+        if (acc !== 'trial_expired' && acc !== 'blocked') return null;
         var allowed = new Set([
             'dashboard',
             'branch-select',
@@ -164,20 +165,26 @@
         var banner = document.getElementById('subscriptionBanner');
         var body = document.body;
         if (body) {
-            body.classList.toggle('subscription-trial-expired', acc === 'trial_expired');
+            body.classList.toggle('subscription-trial-expired', acc === 'trial_expired' || acc === 'blocked');
             body.classList.toggle('subscription-trial-active', acc === 'trial');
+            body.classList.toggle('subscription-commercial-active', acc === 'full');
         }
 
         var searchBar = document.getElementById('globalItemSearchBar');
         var quick = document.getElementById('topBarQuickActions');
         var modSwitch = document.getElementById('moduleSwitcher');
-        if (acc === 'trial_expired') {
+        if (acc === 'trial_expired' || acc === 'blocked') {
             if (searchBar) searchBar.style.display = 'none';
             if (quick) quick.style.display = 'none';
             if (modSwitch) modSwitch.style.display = 'none';
             var me = window.__authMe || {};
             var msg = '';
-            if (me && me.subscription_access === 'blocked') {
+            if (acc === 'blocked') {
+                msg =
+                    me.commercial_access_label === 'Suspended'
+                        ? 'This organization is suspended. Contact SightOps support.'
+                        : 'Your organization cannot access SightOps. Contact your administrator.';
+            } else if (me && me.subscription_access === 'blocked') {
                 msg = 'Your account is inactive. Contact support to restore access.';
             }
             showGlobalNotice(msg);
@@ -208,28 +215,61 @@
             banner.classList.add('subscription-banner-strip--danger');
             var meDead = window.__authMe || {};
             var pDead = planLabel(meDead.subscription_plan);
+            var labelDead = meDead.commercial_access_label || 'Trial expired';
             banner.innerHTML =
                 '<span class="subscription-banner-icon subscription-banner-warn" aria-hidden="true"><i class="fas fa-exclamation-circle"></i></span>' +
                 '<span class="subscription-banner-text"><strong>' +
-                pDead +
-                '</strong> · Your access period has ended. Contact support to renew or upgrade.</span>';
+                labelDead +
+                '</strong> · ' +
+                (pDead && pDead !== 'Standard' ? pDead + ' · ' : '') +
+                'Your access period has ended. Contact support to renew or upgrade.</span>';
+            return;
+        }
+
+        if (acc === 'blocked') {
+            banner.style.display = 'flex';
+            banner.classList.add('subscription-banner-strip--danger');
+            var meBlk = window.__authMe || {};
+            var labelBlk = meBlk.commercial_access_label || 'Blocked';
+            banner.innerHTML =
+                '<span class="subscription-banner-icon subscription-banner-warn" aria-hidden="true"><i class="fas fa-ban"></i></span>' +
+                '<span class="subscription-banner-text"><strong>' +
+                labelBlk +
+                '</strong> · This organization cannot use SightOps. Contact your administrator.</span>';
             return;
         }
 
         var me = window.__authMe || {};
         var plan = planLabel(me.subscription_plan);
+        var accessLabel = me.commercial_access_label || (acc === 'full' ? 'Active' : 'Trial');
         var endIso = me.subscription_period_ends_at || me.trial_ends_at;
         var FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
 
         banner.style.display = 'flex';
+
+        /** Paid / operator-approved active: ignore past trial_expires_at in the company row. */
+        if (acc === 'full') {
+            banner.classList.add('subscription-banner-strip--ok');
+            var planPart = plan && plan !== 'Standard' ? '<strong>' + plan + '</strong> · ' : '';
+            banner.innerHTML =
+                '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-circle-check"></i></span>' +
+                '<span class="subscription-banner-text">' +
+                planPart +
+                '<strong>' +
+                accessLabel +
+                '</strong> · Full commercial access.</span>';
+            return;
+        }
 
         if (!endIso) {
             banner.classList.add('subscription-banner-strip--ok');
             banner.innerHTML =
                 '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-circle-check"></i></span>' +
                 '<span class="subscription-banner-text"><strong>' +
+                accessLabel +
+                '</strong> · ' +
                 plan +
-                '</strong> · Active. No renewal end date is set on your company profile.</span>';
+                ' · No trial end date is set.</span>';
             return;
         }
 
@@ -287,10 +327,12 @@
             banner.innerHTML =
                 '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-circle-check"></i></span>' +
                 '<span class="subscription-banner-text"><strong>' +
+                accessLabel +
+                '</strong> · ' +
                 plan +
-                '</strong> · Active. Access window ends <strong>' +
+                ' · Trial ends <strong>' +
                 dateLong +
-                '</strong> (more than 5 days from now).</span>';
+                '</strong>.</span>';
             return;
         }
 
@@ -302,12 +344,15 @@
             return;
         }
 
-        banner.classList.add('subscription-banner-strip--urgent');
+        /** Trial window ended — user should see trial_expired from API; fallback messaging. */
+        banner.classList.add('subscription-banner-strip--danger');
         banner.innerHTML =
-            '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-exclamation-triangle"></i></span>' +
+            '<span class="subscription-banner-icon" aria-hidden="true"><i class="fas fa-exclamation-circle"></i></span>' +
             '<span class="subscription-banner-text"><strong>' +
+            accessLabel +
+            '</strong> · ' +
             plan +
-            '</strong> · The scheduled end date has passed. Contact your administrator or support if you still need access.</span>';
+            ' · Trial ended. Ask your administrator to set subscription status to <strong>active</strong>.</span>';
     }
 
     function flushPendingFromApiFlag() {

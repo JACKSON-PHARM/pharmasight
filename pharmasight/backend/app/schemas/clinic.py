@@ -281,6 +281,9 @@ class ClinicalServiceComponentResponse(BaseModel):
     accumulator_threshold_qty: Optional[Decimal] = None
     sort_order: int
     notes: Optional[str] = None
+    # Populated when API eager-loads Item (consumable label for triage / settings UX).
+    item_name: Optional[str] = None
+    item_sku: Optional[str] = None
 
     class Config:
         from_attributes = True

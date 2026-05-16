@@ -69,7 +69,7 @@ async function loadInventory(optionalSubPage) {
         }
         
         // Respect URL subpage so Current Stock (and others) persist and aren't overwritten by hashchange
-        const validSubPages = ['items', 'batch', 'expiry', 'movement', 'stock', 'manual-adjustments', 'branch-orders', 'branch-transfers', 'branch-receipts', 'department-transfers'];
+        const validSubPages = ['items', 'clinical-services', 'batch', 'expiry', 'movement', 'stock', 'manual-adjustments', 'branch-orders', 'branch-transfers', 'branch-receipts', 'department-transfers'];
         if (optionalSubPage && validSubPages.includes(optionalSubPage)) {
             currentInventorySubPage = optionalSubPage;
         } else {
@@ -129,6 +129,8 @@ function renderSubPageContent() {
         switch(currentInventorySubPage) {
             case 'items':
                 return renderItemsSubPage();
+            case 'clinical-services':
+                return renderClinicalServicesCatalogSubPage();
             case 'batch':
                 return renderBatchTrackingSubPage();
             case 'expiry':
@@ -231,6 +233,14 @@ function renderItemsSubPage() {
     `;
 }
 
+function renderClinicalServicesCatalogSubPage() {
+    return `
+        <div id="clinicalServicesCatalogMount" style="min-height: 120px;">
+            <div class="spinner"></div>
+        </div>
+    `;
+}
+
 let inventoryItemsList = [];
 let inventoryFilteredItemsList = [];
 let inventorySearchTimeout = null;
@@ -241,6 +251,12 @@ async function loadSubPageData() {
         switch(currentInventorySubPage) {
             case 'items':
                 await loadItemsData();
+                break;
+            case 'clinical-services':
+                if (typeof window.renderClinicalServicesCatalogPage === 'function') {
+                    const el = document.getElementById('clinicalServicesCatalogMount');
+                    if (el) await window.renderClinicalServicesCatalogPage(el);
+                }
                 break;
             case 'batch':
                 await loadBatchTrackingData();

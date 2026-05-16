@@ -1106,6 +1106,7 @@ window.subNavItems = {
     ],
     inventory: [
         { page: 'inventory', subPage: 'items', label: 'Items', icon: 'fa-box' },
+        { page: 'inventory', subPage: 'clinical-services', label: 'Catalogs • Services', icon: 'fa-notes-medical' },
         { page: 'inventory', subPage: 'batch', label: 'Batch Tracking', icon: 'fa-tags' },
         { page: 'inventory', subPage: 'expiry', label: 'Expiry Report', icon: 'fa-calendar-times' },
         { page: 'inventory', subPage: 'movement', label: 'Item Movement', icon: 'fa-exchange-alt' },
@@ -1135,7 +1136,6 @@ window.subNavItems = {
         { page: 'settings', subPage: 'company', label: 'Company', icon: 'fa-building' },
         { page: 'settings', subPage: 'branches', label: 'Branches', icon: 'fa-code-branch' },
         { page: 'settings', subPage: 'users', label: 'Users & Roles', icon: 'fa-users' },
-        { page: 'settings', subPage: 'catalogs-services', label: 'Catalogs • Services', icon: 'fa-notes-medical' },
         { page: 'settings', subPage: 'transaction', label: 'Transaction', icon: 'fa-receipt' },
         { page: 'settings', subPage: 'print', label: 'Print', icon: 'fa-print' },
         { page: 'settings', subPage: 'documentBranding', label: 'Document Branding', icon: 'fa-file-signature' }

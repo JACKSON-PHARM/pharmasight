@@ -43,6 +43,8 @@ class Company(Base):
     kra_enabled = Column(Boolean, nullable=False, default=False)
     kra_mode = Column(String(32), nullable=False, default="sandbox")
     kra_onboarded_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Platform governance: organizational intent (parent of branch fiscal doctrine).
+    organization_operating_model = Column(String(40), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

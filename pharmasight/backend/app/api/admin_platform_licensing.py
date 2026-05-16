@@ -81,15 +81,37 @@ class PlatformCompanyResponse(BaseModel):
     product_limit: Optional[int] = None
     branch_limit: Optional[int] = None
     user_limit: Optional[int] = None
+    organization_operating_model: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class PatchOperatingModelRequest(BaseModel):
+    organization_operating_model: str = Field(..., min_length=1, max_length=40)
+    apply_preset: bool = Field(
+        default=True,
+        description="When true, compile modules + HQ branch doctrine from the operating model preset.",
+    )
+
+
+class ApplyGovernancePresetRequest(BaseModel):
+    operating_model: str = Field(..., min_length=1, max_length=40)
+    apply_modules: bool = True
+    apply_hq_doctrine: bool = True
+
+
+class PatchBranchFiscalDoctrineRequest(BaseModel):
+    invoice_workflow_type: str = Field(..., min_length=1, max_length=40)
 
 
 class PlatformCompanyListItem(PlatformCompanyResponse):
     """List row: includes inferred trial end for demo when ``trial_expires_at`` was never persisted."""
 
     trial_display_expires_at: Optional[datetime] = None
+    governance_access_label: Optional[str] = None
+    governance_access_state: Optional[str] = None
+    governance_uses_legacy: bool = False
 
 
 class ModuleToggle(BaseModel):
@@ -150,6 +172,10 @@ class CreatePlatformCompanyRequest(BaseModel):
     product_limit: Optional[int] = None
     branch_limit: Optional[int] = None
     user_limit: Optional[int] = None
+    organization_operating_model: Optional[str] = Field(
+        default="PHARMACY_RETAIL",
+        description="Governance preset applied at provisioning (modules + HQ branch doctrine).",
+    )
 
 
 @router.get("/companies", response_model=List[PlatformCompanyListItem])
@@ -164,9 +190,18 @@ def list_companies(
         query = query.filter(Company.name.ilike(term))
     rows = query.order_by(Company.created_at.desc()).limit(1000).all()
     out: List[PlatformCompanyListItem] = []
+    from app.services.company_governance_service import (
+        derive_commercial_access,
+        governance_access_display,
+    )
+
     for c in rows:
         base = PlatformCompanyResponse.model_validate(c).model_dump()
         base["trial_display_expires_at"] = company_trial_expires_effective(c)
+        access_disp = governance_access_display(derive_commercial_access(c))
+        base["governance_access_label"] = access_disp["label"]
+        base["governance_access_state"] = access_disp["state"]
+        base["governance_uses_legacy"] = access_disp["uses_legacy_fallback"]
         out.append(PlatformCompanyListItem(**base))
     return out
 
@@ -238,6 +273,17 @@ def create_platform_company(
         demo_days = int(getattr(settings, "DEMO_DURATION_DAYS", 7) or 7)
         company_kwargs["trial_expires_at"] = datetime.now(timezone.utc) + timedelta(days=demo_days)
 
+    if not (company_kwargs.get("subscription_status") or "").strip():
+        company_kwargs["subscription_status"] = "demo" if plan_slug == "demo" else "trialing"
+
+    operating_model_raw = (body.organization_operating_model or "PHARMACY_RETAIL").strip().upper()
+    from app.services.company_governance_service import normalize_operating_model
+
+    try:
+        company_kwargs["organization_operating_model"] = normalize_operating_model(operating_model_raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     hq = HQBranchSpec(
         name=(body.hq_branch_name or "Head Office").strip()[:255] or "Head Office",
         code=(body.hq_branch_code or "HQ").strip()[:50] or "HQ",
@@ -262,9 +308,17 @@ def create_platform_company(
         raise HTTPException(status_code=500, detail=f"Provisioning failed: {e}") from e
 
     sync_demo_plan_slug_with_subscription_status(company)
-    db.add(company)
+    from app.services.company_governance_service import provision_governance_defaults
+
+    provision_governance_defaults(
+        db,
+        company,
+        operating_model=company_kwargs.get("organization_operating_model") or "PHARMACY_RETAIL",
+        subscription_status=(company.subscription_status or "trialing").strip().lower(),
+    )
     db.commit()
     db.refresh(company)
+    db.refresh(branch)
 
     initial_invite: Optional[TenantInviteResponse] = None
     invite_warning: Optional[str] = None
@@ -517,6 +571,100 @@ def patch_company_status(
     db.commit()
     db.refresh(c)
     return c
+
+
+@router.get("/company/{company_id}/governance", response_model=Dict[str, Any])
+def get_company_governance(
+    company_id: UUID,
+    _admin: None = Depends(get_current_admin),
+    db: Session = Depends(get_tenant_db),
+):
+    from app.services.company_governance_service import compile_governance_profile
+
+    c = db.query(Company).filter(Company.id == company_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return compile_governance_profile(db, company_id, company=c)
+
+
+@router.patch("/company/{company_id}/operating-model", response_model=Dict[str, Any])
+def patch_company_operating_model(
+    company_id: UUID,
+    body: PatchOperatingModelRequest,
+    _admin: None = Depends(get_current_admin),
+    db: Session = Depends(get_tenant_db),
+):
+    from app.services.company_governance_service import (
+        apply_operating_model_preset,
+        normalize_operating_model,
+    )
+
+    c = db.query(Company).filter(Company.id == company_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Company not found")
+    try:
+        model = normalize_operating_model(body.organization_operating_model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if body.apply_preset:
+        profile = apply_operating_model_preset(db, company_id, model or "")
+    else:
+        c.organization_operating_model = model
+        db.flush()
+        from app.services.company_governance_service import compile_governance_profile
+
+        profile = compile_governance_profile(db, company_id, company=c)
+    db.commit()
+    return profile
+
+
+@router.post("/company/{company_id}/apply-governance-preset", response_model=Dict[str, Any])
+def apply_governance_preset(
+    company_id: UUID,
+    body: ApplyGovernancePresetRequest,
+    _admin: None = Depends(get_current_admin),
+    db: Session = Depends(get_tenant_db),
+):
+    from app.services.company_governance_service import apply_operating_model_preset
+
+    c = db.query(Company).filter(Company.id == company_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Company not found")
+    try:
+        profile = apply_operating_model_preset(
+            db,
+            company_id,
+            body.operating_model,
+            apply_modules=body.apply_modules,
+            apply_hq_doctrine=body.apply_hq_doctrine,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    db.commit()
+    return profile
+
+
+@router.patch("/branch/{branch_id}/fiscal-doctrine", response_model=Dict[str, Any])
+def patch_branch_fiscal_doctrine(
+    branch_id: UUID,
+    body: PatchBranchFiscalDoctrineRequest,
+    _admin: None = Depends(get_current_admin),
+    db: Session = Depends(get_tenant_db),
+):
+    from app.services.company_governance_service import compile_governance_profile, set_branch_fiscal_doctrine
+
+    try:
+        branch, warnings = set_branch_fiscal_doctrine(db, branch_id, body.invoice_workflow_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    db.commit()
+    profile = compile_governance_profile(db, branch.company_id)
+    return {
+        "branch_id": str(branch.id),
+        "invoice_workflow_type": branch.invoice_workflow_type,
+        "governance_warnings": warnings,
+        "governance": profile,
+    }
 
 
 @router.get("/company/{company_id}/etims", response_model=PlatformEtimsCompanyResponse)

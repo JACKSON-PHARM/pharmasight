@@ -8,7 +8,7 @@ Logout revokes the access token server-side so the session is fully terminated.
 """
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,11 @@ from app.utils.auth_internal import (
     verify_password,
 )
 from app.services.demo_signup_service import create_demo_tenant
-from app.utils.company_access import get_company_access, company_access_to_subscription_access
+from app.utils.company_access import get_company_access, get_subscription_access
+from app.services.company_governance_service import (
+    derive_commercial_access,
+    governance_access_display,
+)
 from app.utils.whatsapp_e164 import normalize_whatsapp_e164
 
 router = APIRouter()
@@ -149,6 +153,14 @@ def _enforce_login_company_access(db: Session, user: User) -> None:
     company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
     access = get_company_access(company)
     if access == "blocked":
+        sub = (getattr(company, "subscription_status", None) or "").strip().lower()
+        if sub in ("suspended", "canceled", "cancelled", "past_due"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "This organization's subscription is suspended. Contact your administrator or SightOps support."
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
@@ -156,11 +168,18 @@ def _enforce_login_company_access(db: Session, user: User) -> None:
                 "if you need access."
             ),
         )
-    plan = (getattr(company, "subscription_plan", None) or "").strip().lower()
-    if plan == "demo" and access == "expired":
+    if access == "expired":
+        plan = (getattr(company, "subscription_plan", None) or "").strip().lower()
+        if plan == "demo":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your SightOps demo has expired. Please upgrade to continue using the system.",
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your SightOps demo has expired. Please upgrade to continue using the system.",
+            detail=(
+                "Your trial or subscription period has ended. Contact your administrator to activate commercial access."
+            ),
         )
 
 
@@ -328,26 +347,46 @@ def auth_me(
         company = None
 
     company_access = get_company_access(company)
-    subscription_access = company_access_to_subscription_access(company_access)
+    commercial_state = derive_commercial_access(company) if company else "active"
+    commercial_access_meta = governance_access_display(commercial_state)
+    subscription_access = get_subscription_access(company)
+
+    governance_summary: Optional[Dict[str, Any]] = None
+    if company_id and company:
+        try:
+            from app.services.company_governance_service import compile_governance_profile
+
+            gov = compile_governance_profile(db, company_id, company=company)
+            governance_summary = {
+                "commercial_access": gov.get("commercial_access"),
+                "uses_legacy_governance": gov.get("uses_legacy_governance"),
+                "organization_operating_model": gov.get("organization_operating_model"),
+                "governance_problem_count": len(gov.get("governance_problems") or []),
+            }
+        except Exception:
+            governance_summary = None
     trial_expires_at = getattr(company, "trial_expires_at", None) if company else None
     from app.utils.company_plan_limits import company_trial_expires_effective
 
-    period_end = company_trial_expires_effective(company) if company else None
+    # Period end drives trial countdown banners only — not paid ``active`` access.
+    period_end: Optional[datetime] = None
+    if commercial_state in ("trial", "demo", "expired"):
+        period_end = company_trial_expires_effective(company) if company else None
+        if period_end is None:
+            period_end = trial_expires_at
+
     trial_days_remaining: Optional[int] = None
     n = datetime.now(timezone.utc)
-    end_for_days = period_end or trial_expires_at
-    if end_for_days is not None:
+    end_for_days = period_end
+    if end_for_days is not None and commercial_state in ("trial", "demo", "expired"):
         end = end_for_days
         if getattr(end, "tzinfo", None) is None:
             end = end.replace(tzinfo=timezone.utc)
         delta_days = (end - n).days
-        if company_access == "trial":
+        if commercial_state in ("trial", "demo"):
             trial_days_remaining = max(0, delta_days)
-        elif company_access == "expired":
+        elif commercial_state == "expired":
             trial_days_remaining = 0
-        elif company_access == "active" and end > n:
-            # Paid / active row with a future renewal date: surface whole days for banner UX
-            trial_days_remaining = max(0, delta_days)
 
     portal_billing_visible = bool(PORTAL_BILLING_ROLES.intersection(set(roles)))
     portal_wa_raw = (
@@ -367,15 +406,18 @@ def auth_me(
         "portal_billing_visible": portal_billing_visible,
         "portal_whatsapp_e164": portal_whatsapp_e164,
         "subscription_access": subscription_access,
+        "commercial_access_state": commercial_state,
+        "commercial_access_label": commercial_access_meta.get("label"),
         "tenant_status": getattr(company, "subscription_status", None) if company else None,
         "subscription_plan": getattr(company, "subscription_plan", None) if company else None,
-        "trial_ends_at": trial_expires_at,
+        "trial_ends_at": trial_expires_at if commercial_state in ("trial", "demo", "expired") else None,
         "subscription_period_ends_at": period_end,
         "trial_days_remaining": trial_days_remaining,
         "subscription_tenant_subdomain": None,
         "subscription_used_default_tenant_fallback": False,
         "company_id": str(company_id) if company_id else None,
         "company_access": company_access,
+        "governance": governance_summary,
     }
 
     hdr = (request.headers.get("x-pharmasight-portal") or "").strip().lower()

@@ -37,6 +37,7 @@ from app.models.permission import Permission, RolePermission
 from app.models.sale import SalesInvoice, SalesInvoiceItem
 from app.models.item import ItemBranchKraSync
 from app.schemas.item import (
+    CatalogItemSuggestionCreate,
     ItemCreate, ItemResponse, ItemUpdate,
     ItemUnitCreate, ItemUnitResponse,
     ItemPricingCreate, ItemPricingResponse,
@@ -456,6 +457,97 @@ def create_item(
     try:
         # Same transaction: insert into item_branch_snapshot for every branch so the item appears in search.
         # If this fails, we roll back so the item is never committed (no gaps between items and snapshot).
+        SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, db_item.company_id, db_item.id)
+        kra_create_outbox_rows = _enqueue_kra_item_sync_after_item_create(db, db_item)
+        db.commit()
+        db.refresh(db_item)
+        if kra_create_outbox_rows:
+            from app.models.kra_event_outbox import KraEventOutbox
+            from app.services.etims.kra_outbox_worker import process_item_updated_outbox_row
+
+            for ob in kra_create_outbox_rows:
+                live = db.query(KraEventOutbox).filter(KraEventOutbox.id == ob.id).first()
+                if live:
+                    process_item_updated_outbox_row(db, live)
+            db.commit()
+            db.refresh(db_item)
+        return db_item
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"message": "An item with this name or code already exists. Duplicate items are not allowed."},
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/catalog-suggestion", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
+def create_catalog_item_suggestion(
+    body: CatalogItemSuggestionCreate,
+    current_user_and_db: tuple = Depends(get_current_user),
+):
+    """
+    Create a new catalog item from a short name when branch snapshot search has no match.
+    Same persistence path as POST /items/ (snapshot rows + optional KRA); permissions: items.create or inventory.manage.
+    """
+    user, db = current_user_and_db
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot resolve company",
+        )
+    if body.branch_id is not None:
+        ensure_user_has_branch_access(db, user.id, body.branch_id)
+    if not (
+        _user_has_permission(db, user.id, "items.create")
+        or _user_has_permission(db, user.id, "inventory.manage")
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    company_row = db.query(Company).filter(Company.id == effective_company_id).first()
+    if company_row and company_is_demo_plan(company_row):
+        product_limit = company_product_limit(company_row)
+        if product_limit is not None and product_limit > 0:
+            existing_products_count = (
+                db.query(Item)
+                .filter(Item.company_id == effective_company_id)
+                .count()
+            )
+            if existing_products_count >= product_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Demo accounts have a limited number of products. Upgrade to add more.",
+                )
+
+    item = ItemCreate(
+        company_id=effective_company_id,
+        name=name,
+        description="Created from clinical service consumables catalog (suggested SKU).",
+        product_category="PHARMACEUTICAL",
+    )
+
+    try:
+        db_item = svc_create_item(db, item)
+    except DuplicateItemNameError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except DuplicateItemSkuError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
         SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, db_item.company_id, db_item.id)
         kra_create_outbox_rows = _enqueue_kra_item_sync_after_item_create(db, db_item)
         db.commit()

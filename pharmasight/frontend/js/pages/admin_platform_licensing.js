@@ -280,8 +280,8 @@ export async function init() {
                 ${publicDemoSignupSectionHtml()}
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
                     <div>
-                        <h2 style="margin:0;">Licensing · Companies</h2>
-                        <div style="color:#666; font-size:0.9rem; margin-top:4px;">Search by name, then open a company to toggle modules and subscription.</div>
+                        <h2 style="margin:0;">Governance · Companies</h2>
+                        <div style="color:#666; font-size:0.9rem; margin-top:4px;">Search by name, then open a company to manage operating model, access, modules, and branch doctrine.</div>
                     </div>
                     <div style="display:flex; gap:8px; align-items:center;">
                         <input id="lic-search" type="search" autocomplete="off" value="${esc(qNorm)}" placeholder="Search company…" style="padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px; min-width:220px;">
@@ -293,6 +293,8 @@ export async function init() {
                         <thead>
                             <tr>
                                 <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Company</th>
+                                <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Access</th>
+                                <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Operating model</th>
                                 <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Plan</th>
                                 <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Status</th>
                                 <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Trial expires</th>
@@ -301,7 +303,7 @@ export async function init() {
                             </tr>
                         </thead>
                         <tbody id="lic-tbody">
-                            <tr><td colspan="6" style="padding:12px; color:#666;">Loading…</td></tr>
+                            <tr><td colspan="8" style="padding:12px; color:#666;">Loading…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -409,13 +411,12 @@ export async function init() {
                 const rows = list.map((c) => {
                 const active = c.is_active ? '<span style="color:#16a34a; font-weight:600;">Yes</span>' : '<span style="color:#dc2626; font-weight:600;">No</span>';
                 const cid = esc(c.id);
-                const effectiveStatus = (() => {
-                    const s = (c.subscription_status || '').trim();
-                    if (s) return s;
-                    // Treat null subscription fields as active (full access) per single-source-of-truth rules.
-                    if (c.trial_expires_at) return 'trial';
-                    return 'active';
-                })();
+                const accessLabel = c.governance_access_label || '—';
+                const accessLegacy = c.governance_uses_legacy
+                    ? ' <span style="color:#b45309;font-size:0.75rem;">legacy</span>'
+                    : '';
+                const opModel = (c.organization_operating_model || '—').replace(/_/g, ' ');
+                const effectiveStatus = (c.subscription_status || '').trim() || '—';
                 const trialIso = c.trial_display_expires_at || c.trial_expires_at;
                 const trialCell = trialIso
                     ? `${esc(new Date(trialIso).toLocaleString())}${
@@ -427,6 +428,8 @@ export async function init() {
                 return `
                     <tr data-cid="${cid}" style="cursor:pointer;">
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.name || '—')}</td>
+                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(accessLabel)}${accessLegacy}</td>
+                        <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(opModel)}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.subscription_plan || '—')}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(effectiveStatus)}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${trialCell}</td>
@@ -438,7 +441,7 @@ export async function init() {
                 `;
             }).join('');
             if (seq !== _licListLoadSeq) return;
-            tbody.innerHTML = rows || '<tr><td colspan="6" style="padding:12px; color:#666;">No companies match.</td></tr>';
+            tbody.innerHTML = rows || '<tr><td colspan="8" style="padding:12px; color:#666;">No companies match.</td></tr>';
 
             tbody.addEventListener('click', (e) => {
                 const btn = e.target.closest('.lic-open-manage');
@@ -457,7 +460,7 @@ export async function init() {
             });
         } catch (e) {
             if (seq !== _licListLoadSeq) return;
-            tbody.innerHTML = `<tr><td colspan="6" style="padding:12px; color:#b91c1c;">Failed: ${esc(e.message || 'Error')}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; color:#b91c1c;">Failed: ${esc(e.message || 'Error')}</td></tr>`;
         }
 
         if (seq !== _licListLoadSeq) return;
@@ -544,14 +547,16 @@ export async function init() {
     async function loadCompanyDetail(companyId) {
         mount.innerHTML = `
             <div class="card" style="padding:16px;">
-                <h2 style="margin:0 0 8px 0;">Company</h2>
+                <h2 style="margin:0 0 8px 0;">Company governance</h2>
                 <p style="margin:0; color:#666;">Loading…</p>
             </div>
         `;
         try {
-            const [resp, etims] = await Promise.all([
+            const govUi = await import('/js/pages/admin_governance_panel.js?v=1');
+            const [resp, etims, gov] = await Promise.all([
                 api.company(companyId),
                 (typeof api.etimsCompany === 'function' ? api.etimsCompany(companyId) : Promise.resolve(null)).catch(() => null),
+                (typeof api.governance === 'function' ? api.governance(companyId) : Promise.resolve(null)).catch(() => null),
             ]);
             const c = resp.company || {};
             const dispUserCap = c.user_limit != null ? c.user_limit : c.resolved_user_limit;
@@ -604,18 +609,23 @@ export async function init() {
             `;
             };
 
+            const govHtml = gov
+                ? govUi.renderGovernanceOverview(gov, esc) +
+                  govUi.renderOperatingModelPresets(gov, esc) +
+                  govUi.renderBranchGovernanceTable(gov, esc)
+                : '<p class="gov-alert gov-alert--warning">Governance profile unavailable (run migration 126 and restart API).</p>';
+
             mount.innerHTML = `
                 <div class="card" style="padding:16px;">
-                    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-                        <div>
-                            <h2 style="margin:0;">${esc(c.name || 'Company')}</h2>
-                            <div style="margin-top:4px; color:#666; font-size:0.9rem;"><code>${esc(companyId)}</code></div>
-                        </div>
-                        <button id="lic-back" class="btn btn-secondary">← Back</button>
+                    <div style="margin-bottom:8px;">
+                        <button id="lic-back" class="btn btn-secondary">← Back to companies</button>
                     </div>
+                    ${govHtml}
 
+                    <details class="gov-advanced">
+                    <summary>Access &amp; billing</summary>
                     <div style="margin-top:14px; padding:12px 14px; border-radius:10px; border:2px solid #4338ca; background:linear-gradient(135deg,#f5f3ff 0%,#eef2ff 100%); box-shadow:0 0 0 1px rgba(67,56,202,0.12);">
-                        <div style="font-weight:700; color:#312e81; font-size:0.95rem;">Current plan (Manage)</div>
+                        <div style="font-weight:700; color:#312e81; font-size:0.95rem;">Current plan</div>
                         <div style="margin-top:6px; color:#3730a3; font-size:0.88rem; line-height:1.45;">
                             <strong>${esc(tierForUi ? tierForUi.title : planSlugForUi || '—')}</strong>
                             ${planSlugForUi ? ` · slug <code style="background:#e0e7ff;padding:1px 6px;border-radius:4px;">${esc(planSlugForUi)}</code>` : ''}
@@ -751,6 +761,10 @@ export async function init() {
                         </div>
                     </div>
 
+                    </details>
+
+                    <details class="gov-advanced">
+                    <summary>Licensed capabilities</summary>
                     <div style="border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-top:16px;">
                         <h3 style="margin:0 0 10px 0;">Modules</h3>
                         <p style="margin:0 0 10px 0; color:#666; font-size:0.9rem;">
@@ -777,6 +791,10 @@ export async function init() {
                         <button id="lic-save-mods" class="btn btn-primary" style="margin-top:12px;">Save modules</button>
                     </div>
 
+                    </details>
+
+                    <details class="gov-advanced">
+                    <summary>Fiscal governance (eTIMS)</summary>
                     <div style="border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-top:16px;">
                         <h3 style="margin:0 0 10px 0;">eTIMS (KRA / Gava Connect onboarding)</h3>
                         <p style="margin:0 0 10px 0; color:#666; font-size:0.9rem; line-height:1.45;">
@@ -906,9 +924,13 @@ export async function init() {
                         </div>`
                                 : `<div style="color:#666;">No branches found (or eTIMS endpoint unavailable).</div>`
                         }
-                    </div>
+                    </details>
                 </div>
             `;
+
+            if (gov && typeof govUi.wireGovernancePanel === 'function') {
+                govUi.wireGovernancePanel(mount, api, companyId, toast, () => loadCompanyDetail(companyId));
+            }
 
             document.getElementById('lic-back')?.addEventListener('click', () => void loadCompanies());
 

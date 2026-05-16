@@ -454,7 +454,16 @@ def create_sales_invoice(
     for item in invoice_items:
         item.sales_invoice_id = db_invoice.id
         db.add(item)
-    
+
+    try:
+        from app.services.commercial_transaction_lifecycle import on_sales_invoice_created
+
+        on_sales_invoice_created(db, db_invoice, actor_user_id=invoice.created_by)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "commercial_transaction_lifecycle: create hook failed for invoice (non-fatal)"
+        )
+
     db.commit()
     db.refresh(db_invoice)
     return db_invoice
@@ -500,6 +509,11 @@ def get_sales_invoice_pdf(
         )
         fiscal_pdf_required = False
         _co = db.query(Company).filter(Company.id == invoice.company_id).first()
+        if _co:
+            try:
+                db.refresh(_co)
+            except Exception:
+                pass
         if _co and bool(getattr(_co, "kra_enabled", False)):
             _cred = (
                 db.query(BranchEtimsCredentials)
@@ -706,6 +720,10 @@ def _get_sales_invoice_response(
     # Print letterhead: company, branch, user, logo URL for print (all documents)
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     if company:
+        try:
+            db.refresh(company)
+        except Exception:
+            pass
         invoice.company_name = company.name
         invoice.company_address = getattr(company, "address", None) or ""
         invoice.company_pin = getattr(company, "pin", None) or ""
@@ -739,6 +757,13 @@ def _get_sales_invoice_response(
     creator = db.query(User).filter(User.id == invoice.created_by).first()
     if creator:
         invoice.created_by_username = creator.username or getattr(creator, "full_name", None) or ""
+
+    try:
+        from app.services.commercial_transaction_lifecycle import constitutional_state_for_invoice
+
+        invoice.constitutional_state = constitutional_state_for_invoice(db, invoice.id)
+    except Exception:
+        invoice.constitutional_state = None
 
     if request is not None:
         request.state.timings["BuildMs"] = round((time.perf_counter() - t4) * 1000, 1)
@@ -2649,6 +2674,16 @@ def batch_sales_invoice(
         for entry in ledger_entries:
             SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
 
+        try:
+            from app.services.commercial_transaction_lifecycle import on_sales_invoice_batched
+
+            on_sales_invoice_batched(db, invoice, batched_by=batched_by)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "commercial_transaction_lifecycle: batch hook failed for invoice %s (non-fatal)",
+                invoice_id,
+            )
+
         db.commit()
     except HTTPException:
         db.rollback()
@@ -3132,7 +3167,16 @@ def add_invoice_payment(
         invoice.approved_at = datetime.now(timezone.utc)
     elif effective_total_after > 0:
         invoice.payment_status = "PARTIAL"
-    
+
+    try:
+        from app.services.commercial_transaction_lifecycle import on_invoice_payment_recorded
+
+        on_invoice_payment_recorded(db, invoice, paid_by=payment.paid_by)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "commercial_transaction_lifecycle: payment hook failed (non-fatal)"
+        )
+
     db.commit()
     db.refresh(db_payment)
     return db_payment

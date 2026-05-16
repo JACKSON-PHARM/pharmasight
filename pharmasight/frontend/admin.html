@@ -95,6 +95,43 @@
             gap: 20px;
         }
         .platform-dashboard-actions { margin-top: 24px; }
+        .gov-mission-control {
+            margin: 16px 0 20px;
+            padding: 18px 20px;
+            border-radius: 12px;
+            background: linear-gradient(145deg, #0f172a 0%, #1e293b 55%, #334155 100%);
+            color: #f8fafc;
+        }
+        .gov-mc-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+        .gov-mc-title { margin: 0; font-size: 1.35rem; font-weight: 700; }
+        .gov-mc-sub { margin: 6px 0 0; font-size: 0.85rem; color: #94a3b8; }
+        .gov-access-badge { padding: 6px 12px; border-radius: 999px; border: 2px solid; font-weight: 600; font-size: 0.85rem; background: rgba(15,23,42,0.5); }
+        .gov-mc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+        .gov-card { background: rgba(255,255,255,0.06); border: 1px solid rgba(148,163,184,0.25); border-radius: 10px; padding: 12px 14px; }
+        .gov-card-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; }
+        .gov-card-value { font-size: 1.05rem; font-weight: 600; margin-top: 4px; }
+        .gov-card-meta { font-size: 0.78rem; color: #cbd5e1; margin-top: 4px; }
+        .gov-problems-wrap { margin-top: 14px; }
+        .gov-alert { margin: 6px 0; padding: 8px 12px; border-radius: 8px; font-size: 0.85rem; }
+        .gov-alert--ok { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+        .gov-alert--warning { background: #fffbeb; color: #92400e; border: 1px solid #fcd34d; }
+        .gov-alert--info { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+        .gov-alert--danger { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+        .gov-section { margin: 20px 0; padding: 16px; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; }
+        .gov-section-title { margin: 0 0 6px; font-size: 1.05rem; }
+        .gov-section-desc { margin: 0 0 12px; color: #64748b; font-size: 0.88rem; line-height: 1.45; }
+        .gov-preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+        .gov-preset-card { cursor: pointer; text-align: left; border: 2px solid #e2e8f0; background: #fff; border-radius: 10px; padding: 12px; font: inherit; }
+        .gov-preset-card--active { border-color: #4338ca; background: #f5f3ff; box-shadow: 0 0 0 3px rgba(67,56,202,0.2); }
+        .gov-preset-title { font-weight: 700; font-size: 0.92rem; }
+        .gov-preset-hint { color: #64748b; font-size: 0.78rem; margin-top: 4px; }
+        .gov-preset-current { display: inline-block; margin-top: 8px; font-size: 0.72rem; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 999px; }
+        .gov-branch-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        .gov-branch-table th, .gov-branch-table td { padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: left; vertical-align: top; }
+        .gov-branch-warn { margin-top: 6px; font-size: 0.78rem; color: #b45309; }
+        .gov-tag { font-size: 0.72rem; background: #e0e7ff; color: #3730a3; padding: 1px 6px; border-radius: 4px; }
+        .gov-advanced { margin-top: 16px; border: 1px solid #e2e8f0; border-radius: 10px; padding: 0 14px 14px; }
+        .gov-advanced > summary { cursor: pointer; font-weight: 600; padding: 12px 0; }
     </style>
 </head>
 <body>
@@ -102,7 +139,7 @@
         <div class="admin-header">
             <div>
                 <h1>Platform Admin</h1>
-                <p style="margin: 4px 0 0 0; font-size: 0.9rem; color: #666;">Company licensing and platform metrics. Access control is managed under Licensing (companies).</p>
+                <p style="margin: 4px 0 0 0; font-size: 0.9rem; color: #666;">Governance control plane — company policy, branch doctrine, and platform metrics.</p>
             </div>
             <div class="admin-header-actions">
                 <button id="logout-btn" class="btn btn-danger">Logout</button>
@@ -110,7 +147,7 @@
         </div>
 
         <div class="admin-tabs">
-            <button type="button" class="admin-tab active" data-tab="licensing">Licensing</button>
+            <button type="button" class="admin-tab active" data-tab="licensing">Governance</button>
             <button type="button" class="admin-tab" data-tab="platform-dashboard">Platform Dashboard</button>
             <button type="button" class="admin-tab" data-tab="marketing-settings">Marketing Settings</button>
         </div>
@@ -181,7 +218,7 @@
                     }
                 }
 
-                const { init: initLicensing } = await import('/js/pages/admin_platform_licensing.js?v=12');
+                const { init: initLicensing } = await import('/js/pages/admin_platform_licensing.js?v=13');
                 window.initPlatformLicensing = async () => {
                     await initLicensing();
                 };

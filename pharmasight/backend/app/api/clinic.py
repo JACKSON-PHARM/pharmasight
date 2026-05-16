@@ -23,6 +23,7 @@ from app.dependencies import (
     get_tenant_db,
     require_company_match,
     ensure_user_has_branch_access,
+    _user_has_permission,
 )
 from app.module_enforcement import require_module
 from app.models import Branch, Item, User, SalesInvoice, SalesInvoiceItem, InventoryLedger
@@ -57,6 +58,7 @@ from app.schemas.clinic import (
     ClinicOrderItemCreate,
     EncounterTriageUpsert,
     EncounterTriageResponse,
+    ClinicalServiceComponentResponse,
     ClinicalServiceCreate,
     ClinicalServiceUpdate,
     ClinicalServiceResponse,
@@ -108,6 +110,15 @@ def _company_id(db: Session, user: User) -> UUID:
             detail="Cannot resolve company",
         )
     return cid
+
+
+def _require_items_create_for_service_catalog(db: Session, user: User) -> None:
+    """Same privilege as creating SKUs / pharmacy catalog items (items.create)."""
+    if not _user_has_permission(db, user.id, "items.create"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="items.create permission required to manage the clinical services catalog",
+        )
 
 
 def _get_patient_scoped(db: Session, patient_id: UUID, company_id: UUID) -> Patient:
@@ -197,6 +208,86 @@ def _normalize_departments(raw: Optional[List[str]], fallback: Optional[str] = N
         seen.add(s)
         out.append(s)
     return out
+
+
+def _clinical_service_relationship_opts():
+    """Eager-load consumable rows plus inventory item labels for API responses."""
+    return joinedload(ClinicalService.components).joinedload(ClinicalServiceComponent.item)
+
+
+def _clinical_service_components_to_response(service: ClinicalService) -> List[ClinicalServiceComponentResponse]:
+    comps = sorted(service.components or [], key=lambda x: (x.sort_order or 0, str(x.id)))
+    out: List[ClinicalServiceComponentResponse] = []
+    for c in comps:
+        it = getattr(c, "item", None)
+        nm = getattr(it, "name", None) if it else None
+        sku = getattr(it, "sku", None) if it else None
+        out.append(
+            ClinicalServiceComponentResponse(
+                id=c.id,
+                service_id=c.service_id,
+                item_id=c.item_id,
+                item_unit_name=c.item_unit_name,
+                quantity_per_service=c.quantity_per_service,
+                is_optional=c.is_optional,
+                deduction_policy=str(c.deduction_policy or "immediate"),
+                accumulator_threshold_qty=c.accumulator_threshold_qty,
+                sort_order=c.sort_order,
+                notes=c.notes,
+                item_name=nm,
+                item_sku=sku,
+            )
+        )
+    return out
+
+
+def clinical_service_to_response(svc: ClinicalService) -> ClinicalServiceResponse:
+    raw_allowed = svc.allowed_departments
+    if isinstance(raw_allowed, list):
+        allowed = [str(x) for x in raw_allowed if x is not None and str(x).strip()]
+    elif raw_allowed:
+        allowed = [str(raw_allowed)]
+    else:
+        allowed = []
+    return ClinicalServiceResponse(
+        id=svc.id,
+        company_id=svc.company_id,
+        name=svc.name,
+        code=svc.code,
+        department=svc.department,
+        allowed_departments=allowed,
+        strict_department_only=bool(svc.strict_department_only),
+        description=svc.description,
+        fee=svc.fee,
+        billing_item_id=svc.billing_item_id,
+        is_active=bool(svc.is_active),
+        created_at=svc.created_at,
+        updated_at=svc.updated_at,
+        components=_clinical_service_components_to_response(svc),
+    )
+
+
+def _validate_clinical_service_component_items(db: Session, company_id: UUID, components) -> None:
+    """Consumables must reference active stock/SKU rows in the same company (not the synthetic service fee item)."""
+    for comp in components or []:
+        iid = getattr(comp, "item_id", None)
+        if iid is None:
+            raise HTTPException(status_code=400, detail="Each consumable must include item_id")
+        item_row = (
+            db.query(Item)
+            .filter(Item.id == iid, Item.company_id == company_id, Item.is_active.is_(True))
+            .first()
+        )
+        if not item_row:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Consumable item {iid} is not an active product in your company catalog.",
+            )
+        if str(item_row.product_category or "").upper() == "SERVICE":
+            raise HTTPException(
+                status_code=400,
+                detail="Link consumables to physical/SKU items (gloves, syringes, drugs), not another service product.",
+            )
 
 
 def _service_dept_prefix(dept: Optional[str]) -> str:
@@ -451,6 +542,43 @@ def update_patient(
     db.commit()
     db.refresh(p)
     return p
+
+
+@router.get("/branch-operational-manifest")
+def get_branch_operational_manifest(
+    branch_id: UUID = Query(..., description="Branch to compile operational stations for"),
+    debug: bool = Query(
+        False,
+        description="Include per-station derivation rules (observability; no extra DB reads)",
+    ),
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Compiled branch operational truth (no persistence).
+
+    Separates governance (modules), operational stations (declared registry), and inventory linkage.
+    """
+    user, _ = auth
+    company_id = _company_id(db, user)
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    require_company_match(branch.company_id, company_id)
+    ensure_user_has_branch_access(db, user.id, branch_id)
+
+    from app.services.branch_operational_manifest import compile_branch_operational_manifest
+
+    try:
+        return compile_branch_operational_manifest(
+            db,
+            company_id=company_id,
+            branch_id=branch_id,
+            branch_name=branch.name,
+            include_debug=debug,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/patients", response_model=List[PatientResponse])
@@ -970,7 +1098,7 @@ def list_clinical_services(
     company_id = _company_id(db, user)
     query = (
         db.query(ClinicalService)
-        .options(joinedload(ClinicalService.components))
+        .options(_clinical_service_relationship_opts())
         .filter(ClinicalService.company_id == company_id)
     )
     if not include_inactive:
@@ -980,7 +1108,26 @@ def list_clinical_services(
     if q and q.strip():
         term = f"%{q.strip()}%"
         query = query.filter(or_(ClinicalService.name.ilike(term), ClinicalService.code.ilike(term)))
-    return query.order_by(ClinicalService.name.asc()).all()
+    return [clinical_service_to_response(s) for s in query.order_by(ClinicalService.name.asc()).all()]
+
+
+@router.get("/services/{service_id}", response_model=ClinicalServiceResponse)
+def get_clinical_service(
+    service_id: UUID,
+    auth: Tuple[User, Session] = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    user, _ = auth
+    company_id = _company_id(db, user)
+    svc = (
+        db.query(ClinicalService)
+        .options(_clinical_service_relationship_opts())
+        .filter(ClinicalService.id == service_id, ClinicalService.company_id == company_id)
+        .first()
+    )
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    return clinical_service_to_response(svc)
 
 
 @router.post("/services", response_model=ClinicalServiceResponse, status_code=status.HTTP_201_CREATED)
@@ -990,8 +1137,10 @@ def create_clinical_service(
     db: Session = Depends(get_tenant_db),
 ):
     user, _ = auth
+    _require_items_create_for_service_catalog(db, user)
     company_id = _company_id(db, user)
     allowed_departments = _normalize_departments(body.allowed_departments, body.department)
+    _validate_clinical_service_component_items(db, company_id, body.components)
     service_code = _clean_text(body.code)
     if not service_code:
         service_code = _generate_service_code(db, company_id, body.name, allowed_departments)
@@ -1030,12 +1179,13 @@ def create_clinical_service(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Service with same name/code already exists for this company")
     db.refresh(svc)
-    return (
+    svc2 = (
         db.query(ClinicalService)
-        .options(joinedload(ClinicalService.components))
+        .options(_clinical_service_relationship_opts())
         .filter(ClinicalService.id == svc.id, ClinicalService.company_id == company_id)
         .first()
     )
+    return clinical_service_to_response(svc2 or svc)
 
 
 @router.put("/services/{service_id}", response_model=ClinicalServiceResponse)
@@ -1046,6 +1196,7 @@ def update_clinical_service(
     db: Session = Depends(get_tenant_db),
 ):
     user, _ = auth
+    _require_items_create_for_service_catalog(db, user)
     company_id = _company_id(db, user)
     svc = (
         db.query(ClinicalService)
@@ -1083,6 +1234,7 @@ def update_clinical_service(
         svc.is_active = bool(body.is_active)
     _get_or_create_service_billing_item(db, svc)
     if body.components is not None:
+        _validate_clinical_service_component_items(db, company_id, body.components)
         for old in list(svc.components or []):
             db.delete(old)
         db.flush()
@@ -1106,12 +1258,13 @@ def update_clinical_service(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Service with same name/code already exists for this company")
-    return (
+    svc_reload = (
         db.query(ClinicalService)
-        .options(joinedload(ClinicalService.components))
+        .options(_clinical_service_relationship_opts())
         .filter(ClinicalService.id == service_id, ClinicalService.company_id == company_id)
         .first()
     )
+    return clinical_service_to_response(svc_reload or svc)
 
 
 @router.delete("/services/{service_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1121,6 +1274,7 @@ def delete_clinical_service(
     db: Session = Depends(get_tenant_db),
 ):
     user, _ = auth
+    _require_items_create_for_service_catalog(db, user)
     company_id = _company_id(db, user)
     svc = (
         db.query(ClinicalService)

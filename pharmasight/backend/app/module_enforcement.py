@@ -70,17 +70,9 @@ def is_module_enabled_for_company(
     if normalized in get_core_modules(db):
         return True
 
-    row = (
-        db.query(CompanyModule)
-        .filter(
-            CompanyModule.company_id == company_id,
-            CompanyModule.module_name == normalized,
-        )
-        .first()
-    )
-    if row is not None:
-        return bool(row.is_enabled)
-    return normalized == DEFAULT_ENABLED_IF_NO_ROW
+    from app.services.company_governance_service import is_module_enabled_compiled
+
+    return is_module_enabled_compiled(db, company_id, normalized)
 
 
 def get_company_module_license_catalog(db: Session, company_id: UUID) -> List[Dict[str, Any]]:

@@ -559,9 +559,15 @@ const API = {
         },
         services: {
             list: (params) => api.get('/api/clinic/services', params || {}),
+            get: (id) => api.get(`/api/clinic/services/${id}`),
             create: (data) => api.post('/api/clinic/services', data),
             update: (id, data) => api.put(`/api/clinic/services/${id}`, data),
             remove: (id) => api.delete(`/api/clinic/services/${id}`),
+        },
+        branchOperationalManifest: (branchId, debug) => {
+            const params = { branch_id: branchId };
+            if (debug) params.debug = true;
+            return api.get('/api/clinic/branch-operational-manifest', params);
         },
         departmentStores: {
             list: (params) => api.get('/api/clinic/department-stores', params || {}),
@@ -621,6 +627,12 @@ const API = {
             return api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}/activity`, { branch_id: branchId });
         },
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/`, data),
+        /** Minimal SKU create when snapshot search has no match (clinical consumables, etc.). */
+        catalogSuggestion: (name, branchId = null) => {
+            const body = { name: String(name || '').trim() };
+            if (branchId) body.branch_id = branchId;
+            return api.post(`${CONFIG.API_ENDPOINTS.items}/catalog-suggestion`, body);
+        },
         bulkCreate: (data) => api.post(`${CONFIG.API_ENDPOINTS.items}/bulk`, data, { timeout: 300000 }), // 5 minute timeout for bulk
         update: (itemId, data) => api.put(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, data),
         markReady: (itemId) => api.post(`${CONFIG.API_ENDPOINTS.items}/${itemId}/mark-ready`, null),
@@ -1611,6 +1623,13 @@ const API = {
                 api.get('/api/admin/platform-licensing/companies', params, requestOptions),
             createCompany: (data) => api.post('/api/admin/platform-licensing/companies', data),
             company: (companyId) => api.get(`/api/admin/platform-licensing/company/${companyId}`),
+            governance: (companyId) => api.get(`/api/admin/platform-licensing/company/${companyId}/governance`),
+            patchOperatingModel: (companyId, data) =>
+                api.patch(`/api/admin/platform-licensing/company/${companyId}/operating-model`, data),
+            applyGovernancePreset: (companyId, data) =>
+                api.post(`/api/admin/platform-licensing/company/${companyId}/apply-governance-preset`, data),
+            patchBranchFiscalDoctrine: (branchId, data) =>
+                api.patch(`/api/admin/platform-licensing/branch/${branchId}/fiscal-doctrine`, data),
             patchModules: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/modules`, data),
             patchSubscription: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/subscription`, data),
             patchProfile: (companyId, data) => api.patch(`/api/admin/platform-licensing/company/${companyId}/profile`, data),

@@ -162,6 +162,8 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     kra_last_error: Optional[str] = None
     # Branch eTIMS hardware serial (for fiscal receipt line; not persisted on invoice row)
     etims_device_serial: Optional[str] = None
+    # Layer 2 constitutional spine (commercial_transactions); null for legacy invoices pre-wiring
+    constitutional_state: Optional[str] = None
 
     class Config:
         from_attributes = True

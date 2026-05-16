@@ -670,6 +670,14 @@ def submit_sales_invoice(
                     response_body=text[:16000],
                 )
                 _record_etims_connection_after_submit_attempt(db, invoice.branch_id, success=True)
+                try:
+                    from app.services.commercial_transaction_lifecycle import on_kra_submit_success
+
+                    on_kra_submit_success(db, invoice, actor_user_id=None)
+                except Exception:
+                    logger.exception(
+                        "commercial_transaction_lifecycle: KRA success hook failed (non-fatal)"
+                    )
                 db.commit()
                 return {"ok": True, "receipt": rcpt}
 

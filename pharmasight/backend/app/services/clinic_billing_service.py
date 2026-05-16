@@ -174,5 +174,17 @@ def ensure_draft_invoice_for_encounter(
     enc.sales_invoice_id = db_invoice.id
     db.add(enc)
     db.flush()
+
+    try:
+        from app.services.commercial_transaction_lifecycle import on_sales_invoice_created
+
+        on_sales_invoice_created(db, db_invoice, actor_user_id=user_id)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "commercial_transaction_lifecycle: encounter invoice create hook failed (non-fatal)"
+        )
+
     db.refresh(db_invoice)
     return db_invoice

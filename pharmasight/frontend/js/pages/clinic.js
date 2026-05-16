@@ -17,6 +17,8 @@
             dateFrom: '',
             dateTo: '',
             editPatientId: null,
+            /** Set after register-new save; applied when reception patient list reloads. */
+            pendingSelectPatientId: null,
         },
         queue: {
             filters: {
@@ -28,7 +30,7 @@
         triage: {
             activeTab: 'attend_patient',
             showLookup: false,
-            complaintsLoaded: false,
+            chiefComplaintsRemoteScheduled: false,
             complaints: [],
             serviceSearchQuery: '',
             serviceSearchResults: [],
@@ -55,6 +57,9 @@
             showAll: false,
             lastFetchedAt: 0,
         },
+        operationalManifest: null,
+        operationalManifestBranchId: null,
+        operationalManifestDebug: false,
     };
 
     /** Triage “Raise stock request” uses TransactionItemsTable; persist lines here across re-renders. */
@@ -122,6 +127,23 @@
         var mid = String(window.__clinicDeptStoreId || '');
         var meta = window.__clinicDeptNavMeta && window.__clinicDeptNavMeta[mid];
         return meta && meta.name ? String(meta.name) : '';
+    }
+
+    /** Today (local calendar) encounter start → skip heavy chart on standard triage for faster first paint. */
+    function encounterIsTodaysActiveForChartSkip(enc) {
+        if (!enc) return false;
+        var st = String(enc.status || '').toLowerCase();
+        if (st !== 'waiting' && st !== 'in_consultation') return false;
+        var raw = enc.created_at;
+        if (!raw) return false;
+        var d = new Date(raw);
+        if (Number.isNaN(d.getTime())) return false;
+        var now = new Date();
+        return (
+            d.getFullYear() === now.getFullYear() &&
+            d.getMonth() === now.getMonth() &&
+            d.getDate() === now.getDate()
+        );
     }
 
     function getCurrentClinicStation() {
@@ -215,6 +237,160 @@
 
     function branchId() {
         return (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) || null;
+    }
+
+    function isManifestDebugEnabled() {
+        try {
+            if (sessionStorage.getItem('pharmasight_manifest_debug') === '1') return true;
+        } catch (_) {
+            /* ignore */
+        }
+        const h = String(window.location.hash || '');
+        return /manifest_debug=(?:1|true)/i.test(h);
+    }
+
+    function setManifestDebugEnabled(on) {
+        try {
+            if (on) sessionStorage.setItem('pharmasight_manifest_debug', '1');
+            else sessionStorage.removeItem('pharmasight_manifest_debug');
+        } catch (_) {
+            /* ignore */
+        }
+    }
+
+    async function loadBranchOperationalManifest(forceRefresh) {
+        const bid = branchId();
+        if (!bid) return null;
+        const wantDebug = isManifestDebugEnabled();
+        if (
+            !forceRefresh &&
+            clinicUiState.operationalManifest &&
+            clinicUiState.operationalManifestBranchId === bid &&
+            !!clinicUiState.operationalManifestDebug === wantDebug
+        ) {
+            return clinicUiState.operationalManifest;
+        }
+        const manifest = await API.clinic.branchOperationalManifest(bid, wantDebug);
+        clinicUiState.operationalManifest = manifest;
+        clinicUiState.operationalManifestBranchId = bid;
+        clinicUiState.operationalManifestDebug = wantDebug;
+        return manifest;
+    }
+
+    function stationOp(station) {
+        return (station && station.operational) || {};
+    }
+
+    function stationFromManifest(manifest, routingCode) {
+        if (!manifest || !routingCode) return null;
+        return (manifest.stations || []).find((s) => String(s.routing_code) === String(routingCode)) || null;
+    }
+
+    function stationOptionLabel(station) {
+        if (!station) return '';
+        const op = stationOp(station);
+        if (op.status === 'active') return station.name || station.routing_code;
+        return `${station.name || station.routing_code} (${op.status_label || op.status})`;
+    }
+
+    function stationStatusBadgeHtml(station) {
+        if (!station) return '';
+        const op = stationOp(station);
+        const cls =
+            op.status === 'active'
+                ? 'badge-success'
+                : op.status === 'routing_only'
+                  ? 'badge-warning'
+                  : 'badge-secondary';
+        return `<span class="badge ${cls}" style="font-size:0.7rem; margin-left:0.35rem;">${escapeHtml(op.status_label || op.status)}</span>`;
+    }
+
+    function renderFirstStationCell(manifest, routingCode) {
+        const station = stationFromManifest(manifest, routingCode);
+        if (!station) {
+            const fallback = routingCode
+                ? String(routingCode).charAt(0).toUpperCase() + String(routingCode).slice(1)
+                : '—';
+            return escapeHtml(fallback);
+        }
+        return `<strong>${escapeHtml(station.name || routingCode)}</strong>${stationStatusBadgeHtml(station)}`;
+    }
+
+    function renderManifestDebugPanel(manifest) {
+        if (!manifest || !isManifestDebugEnabled()) return '';
+        const gov = manifest.governance || {};
+        const inv = manifest.inventory_linkage || {};
+        const rows = (manifest.stations || [])
+            .map((st) => {
+                const op = stationOp(st);
+                const g = st.governance || {};
+                const i = st.inventory || {};
+                const rules = (st.derivation && st.derivation.rules_applied) || [];
+                return `<tr>
+                    <td><code>${escapeHtml(st.code || '')}</code></td>
+                    <td>${escapeHtml(op.status || '')}</td>
+                    <td style="font-size:0.8rem;">${escapeHtml(op.activation_reason || '')}</td>
+                    <td>${g.module_enabled ? 'yes' : 'no'}</td>
+                    <td>${escapeHtml(i.linked_store_code || '—')}</td>
+                    <td style="font-size:0.75rem;color:var(--text-secondary);">${escapeHtml(rules.join(' → ') || '—')}</td>
+                </tr>`;
+            })
+            .join('');
+        return `
+            <details class="card" style="margin-top:0.75rem;padding:0.75rem;" open>
+                <summary style="cursor:pointer;font-weight:600;">Compiled operational truth (debug)</summary>
+                <p style="font-size:0.85rem;color:var(--text-secondary);margin:0.5rem 0 0.75rem 0;">
+                    ${escapeHtml(manifest.contract || 'compiled_branch_operational_truth')}
+                    · ${escapeHtml(manifest.manifest_version || '')}
+                    · registry ${escapeHtml((manifest.station_registry && manifest.station_registry.version) || '')}
+                    · modules enabled: ${escapeHtml((gov.modules_enabled || []).join(', ') || 'none')}
+                    · branch stores: ${escapeHtml(Object.keys(inv.stores_by_code || {}).join(', ') || 'none')}
+                </p>
+                <table class="data-table" style="width:100%;font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Station</th>
+                            <th>Status</th>
+                            <th>activation_reason</th>
+                            <th>Module on</th>
+                            <th>Store</th>
+                            <th>Derivation</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows || '<tr><td colspan="6">No stations</td></tr>'}</tbody>
+                </table>
+            </details>`;
+    }
+
+    function populateRegisterStationSelect(manifest) {
+        const sel = document.getElementById('regDestination');
+        if (!sel) return;
+        const routing = Array.isArray(manifest?.routing_stations) ? manifest.routing_stations : [];
+        sel.innerHTML = '';
+        if (!routing.length) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = 'No licensed stations for this branch';
+            sel.appendChild(opt);
+            sel.disabled = true;
+            return;
+        }
+        sel.disabled = false;
+        for (const st of routing) {
+            const op = stationOp(st);
+            const opt = document.createElement('option');
+            opt.value = st.routing_code;
+            opt.textContent = stationOptionLabel(st);
+            if (op.status === 'routing_only') {
+                opt.title =
+                    (op.activation_reason || 'routing_only') +
+                    ' — routes to queue; full workstation not available yet';
+            }
+            sel.appendChild(opt);
+        }
+        const triage = routing.find((s) => s.routing_code === 'triage');
+        if (triage) sel.value = 'triage';
+        else if (routing[0]) sel.value = routing[0].routing_code;
     }
 
     function showErr(msg) {
@@ -541,27 +717,49 @@
         return 'clinic_chief_complaints_' + String((typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) || 'default');
     }
 
-    async function ensureChiefComplaintDictionary() {
-        if (clinicUiState.triage.complaintsLoaded) return;
-        clinicUiState.triage.complaintsLoaded = true;
+    function hydrateChiefComplaintsFromLocalSync() {
         var local = [];
         try {
             local = JSON.parse(localStorage.getItem(getComplaintStorageKey()) || '[]');
             if (!Array.isArray(local)) local = [];
-        } catch (_) { local = []; }
+        } catch (_) {
+            local = [];
+        }
         var merged = new Set(local.map(function (x) { return String(x || '').trim(); }).filter(Boolean));
-        try {
-            var companyId = (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) || null;
-            if (companyId) {
+        clinicUiState.triage.complaints = Array.from(merged).slice(0, 500);
+    }
+
+    /**
+     * Merge company settings into chief-complaint autocomplete (background; does not block triage).
+     */
+    function scheduleChiefComplaintsRemoteMerge() {
+        if (clinicUiState.triage.chiefComplaintsRemoteScheduled) return;
+        clinicUiState.triage.chiefComplaintsRemoteScheduled = true;
+        void (async function () {
+            try {
+                var companyId = (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) || null;
+                if (!companyId) return;
                 var res = await API.company.getSettings(companyId, 'clinic_chief_complaints');
                 var remote = Array.isArray(res?.value) ? res.value : [];
+                var merged = new Set(
+                    (clinicUiState.triage.complaints || [])
+                        .map(function (x) { return String(x || '').trim(); })
+                        .filter(Boolean)
+                );
                 remote.forEach(function (x) {
                     var s = String(x || '').trim();
                     if (s) merged.add(s);
                 });
+                clinicUiState.triage.complaints = Array.from(merged).slice(0, 500);
+            } catch (_) {
+                /* optional */
             }
-        } catch (_) {}
-        clinicUiState.triage.complaints = Array.from(merged).slice(0, 500);
+        })();
+    }
+
+    async function ensureChiefComplaintDictionary() {
+        hydrateChiefComplaintsFromLocalSync();
+        scheduleChiefComplaintsRemoteMerge();
     }
 
     async function persistChiefComplaintTerm(term) {
@@ -919,7 +1117,10 @@
                 .concat(Array.isArray(done) ? done : []);
             clinicUiState.reception.patients = Array.isArray(list) ? list : [];
             clinicUiState.reception.encounterPriority = buildReceptionPatientPriority(allEncounters);
-            if (!getSelectedPatient(clinicUiState.reception.patients)) {
+            if (clinicUiState.reception.pendingSelectPatientId) {
+                clinicUiState.reception.selectedPatientId = clinicUiState.reception.pendingSelectPatientId;
+                clinicUiState.reception.pendingSelectPatientId = null;
+            } else if (!getSelectedPatient(clinicUiState.reception.patients)) {
                 clinicUiState.reception.selectedPatientId = null;
             }
             clinicUiState.reception.loadingPatients = false;
@@ -968,15 +1169,9 @@
                             </select>
                         </div>
                         <div><label>Schedule date/time</label><input type="datetime-local" id="regSchedule" class="form-input" /></div>
-                        <div><label>Initial destination</label>
-                            <select id="regDestination" class="form-input">
-                                <option value="triage">Triage</option>
-                                <option value="consultation">Consultation</option>
-                                <option value="pharmacy">Pharmacy</option>
-                                <option value="lab">Lab</option>
-                                <option value="radiology">Radiology</option>
-                                <option value="procedure">Procedure</option>
-                                <option value="referral">Referral</option>
+                        <div><label>First clinical station</label>
+                            <select id="regDestination" class="form-input" disabled>
+                                <option value="">Loading stations…</option>
                             </select>
                         </div>
                     </div>
@@ -1009,6 +1204,19 @@
                 }
             } catch (_) {
                 // Do not block registration when insurance list fails.
+            }
+        })();
+
+        (async () => {
+            try {
+                const manifest = await loadBranchOperationalManifest();
+                populateRegisterStationSelect(manifest);
+            } catch (e) {
+                const sel = document.getElementById('regDestination');
+                if (sel) {
+                    sel.innerHTML = '<option value="">Could not load clinical stations</option>';
+                    sel.disabled = true;
+                }
             }
         })();
 
@@ -1062,7 +1270,7 @@
                 if (start_visit) {
                     const bid = branchId();
                     if (!bid) throw new Error('Select a branch first');
-                    const encounter = await API.clinic.encounters.create({
+                    await API.clinic.encounters.create({
                         patient_id: patient.id,
                         branch_id: bid,
                         scheduled_for: scheduledRaw ? new Date(scheduledRaw).toISOString() : null,
@@ -1070,18 +1278,15 @@
                         payment_mode,
                         insurance_scheme,
                     });
-                    if (initial_destination === 'consultation') {
-                        navigateToEncounterStation('consultation', encounter.id);
-                    } else if (initial_destination === 'triage') {
-                        navigateToEncounterStation('triage', encounter.id);
-                    } else {
-                        navigateToEncounterStation('queue');
-                    }
-                } else {
-                    window.location.hash = '#patients';
-                    if (typeof window.loadPage === 'function') await window.loadPage('patients');
                 }
-                if (typeof window.showToast === 'function') window.showToast('Patient registered successfully', 'success');
+                // Reception registers patients; clinical stations (triage, etc.) are separate roles.
+                clinicUiState.reception.pendingSelectPatientId = patient.id;
+                window.location.hash = '#patients';
+                if (typeof window.loadPage === 'function') await window.loadPage('patients');
+                const toastMsg = start_visit
+                    ? 'Patient registered and visit queued. Continue at reception or send patient to the encounter queue.'
+                    : 'Patient registered successfully';
+                if (typeof window.showToast === 'function') window.showToast(toastMsg, 'success');
             } catch (e) {
                 showErr(e.message || 'Failed to register patient');
             } finally {
@@ -1097,6 +1302,30 @@
         const d = document.createElement('div');
         d.textContent = s;
         return d.innerHTML;
+    }
+
+    function escapeAttr(s) {
+        return String(s ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
+
+    /** Tooltip: default consumables for service search chips in triage. */
+    function triageServiceConsumablesTitle(s) {
+        var comps = Array.isArray(s && s.components) ? s.components : [];
+        if (!comps.length) {
+            return 'No default consumables. Billing uses the service fee only; add consumables in Settings → Catalogs → Services.';
+        }
+        return comps
+            .map(function (c) {
+                var qty = c.quantity_per_service != null ? String(c.quantity_per_service) : '?';
+                var nm = (c.item_name || c.item_sku || c.notes || 'item').trim();
+                var opt = c.is_optional ? ' (optional)' : '';
+                return qty + '× ' + nm + opt;
+            })
+            .join(' · ');
     }
 
     function emptyRowForColumn(title) {
@@ -1175,9 +1404,12 @@
             .map(function (enc) {
                 var p = enc && enc.patient ? enc.patient : {};
                 var name = ((p.first_name || '') + ' ' + (p.last_name || '')).trim() || '—';
+                var manifest = clinicUiState.operationalManifest;
+                var firstStation = renderFirstStationCell(manifest, enc && enc.initial_destination);
                 return `
                     <tr>
                         <td><strong>${escapeHtml(name)}</strong><div style="font-size:0.8rem; color:var(--text-secondary);">${escapeHtml(p.phone || '—')}</div></td>
+                        <td>${firstStation}</td>
                         <td><span class="badge badge-info" style="font-size:0.75rem;">${escapeHtml(enc.status || '—')}</span></td>
                         <td>${escapeHtml(formatDateTime(enc.created_at))}</td>
                         <td>${escapeHtml(formatWaitingDuration(enc.created_at))}</td>
@@ -1192,6 +1424,7 @@
         const el = document.getElementById('encounters');
         if (!el) return;
         try {
+            const manifest = await loadBranchOperationalManifest();
             const [waiting, active, done] = await Promise.all([
                 API.clinic.encounters.list('waiting'),
                 API.clinic.encounters.list('in_consultation'),
@@ -1208,7 +1441,12 @@
             el.innerHTML = `
                 <div style="padding:0.5rem;" id="clinicQueueWorklist">
                     ${renderClinicStationNav()}
-                    <h2>Encounter queue</h2>
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;">
+                        <h2 style="margin:0;">Encounter queue</h2>
+                        <button type="button" class="btn btn-sm btn-outline" id="clinicManifestDebugToggle">
+                            ${isManifestDebugEnabled() ? 'Hide truth compiler' : 'Show truth compiler'}
+                        </button>
+                    </div>
                     <div class="card" style="padding:0.75rem; margin-bottom:0.75rem;">
                         <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:0.6rem; align-items:end;">
                             <div>
@@ -1235,6 +1473,7 @@
                             <thead>
                                 <tr>
                                     <th>Patient</th>
+                                    <th>First station</th>
                                     <th>Stage</th>
                                     <th>Visit time</th>
                                     <th>Waiting</th>
@@ -1244,12 +1483,13 @@
                             <tbody id="clinicQueueRows"></tbody>
                         </table>
                     </div>
+                    ${renderManifestDebugPanel(manifest)}
                 </div>`;
             var renderQueueRows = function () {
                 var rowsEl = document.getElementById('clinicQueueRows');
                 if (!rowsEl) return;
                 var rows = buildQueueWorklistRows(allEncounters);
-                rowsEl.innerHTML = rows || '<tr><td colspan="5">No encounters found for current filters.</td></tr>';
+                rowsEl.innerHTML = rows || '<tr><td colspan="6">No encounters found for current filters.</td></tr>';
             };
             renderQueueRows();
             document.getElementById('clinicQueueSearch')?.addEventListener('input', (e) => {
@@ -1263,6 +1503,11 @@
             document.getElementById('clinicQueueDateFilter')?.addEventListener('change', (e) => {
                 clinicUiState.queue.filters.date = String(e.target?.value || '');
                 renderQueueRows();
+            });
+            document.getElementById('clinicManifestDebugToggle')?.addEventListener('click', async () => {
+                setManifestDebugEnabled(!isManifestDebugEnabled());
+                clinicUiState.operationalManifest = null;
+                await loadClinicEncounters();
             });
             el.onclick = (event) => {
                 const btn = event.target?.closest?.('[data-eid]');
@@ -2060,14 +2305,26 @@
             return;
         }
         try {
-            await ensureRegisterLookupData();
-            await ensureChiefComplaintDictionary();
-            const enc = await API.clinic.encounters.get(eid);
+            void ensureChiefComplaintDictionary();
+            var registerWarm = Promise.resolve();
+            if (clinicUiState.triage.showLookup) {
+                registerWarm = ensureRegisterLookupData();
+            } else {
+                void ensureRegisterLookupData();
+            }
+
+            const enc = (await Promise.all([API.clinic.encounters.get(eid), registerWarm]))[0];
             const patient = enc.patient ? enc.patient : await API.clinic.patients.get(enc.patient_id);
-            const triage = await API.clinic.encounters.triage.get(eid);
-            const orders = await API.clinic.encounters.orders.list(eid);
-            const notes = await API.clinic.encounters.notes.list(eid);
-            const chart = await API.clinic.patients.chart(patient.id, { exclude_encounter_id: eid, limit: 8 });
+            const skipHeavyChart = !isClinicDeptStoreWorkstation() && encounterIsTodaysActiveForChartSkip(enc);
+            const chartPromise = skipHeavyChart
+                ? Promise.resolve({ entries: [] })
+                : API.clinic.patients.chart(patient.id, { exclude_encounter_id: eid, limit: 8 });
+            const [triage, orders, notes, chart] = await Promise.all([
+                API.clinic.encounters.triage.get(eid),
+                API.clinic.encounters.orders.list(eid),
+                API.clinic.encounters.notes.list(eid),
+                chartPromise,
+            ]);
             if (!shouldApplyClinicRender('triage', eid)) return;
             const completed = enc.status === 'completed';
             const t = triage || {};
@@ -2081,12 +2338,21 @@
             const dob = patient.date_of_birth || null;
             const intakePm = (enc.intake_payment_mode || '').trim();
             const intakeScheme = (enc.intake_insurance_scheme || '').trim();
-            const registerPaymentNote =
-                intakePm
-                    ? `<p style="font-size:0.875rem; color:var(--text-secondary); margin:-0.35rem 0 0 0;"><strong>Payment (register):</strong> ${escapeHtml(intakePm)}${
-                          intakeScheme ? ` · ${escapeHtml(intakeScheme)}` : ''
-                      }</p>`
-                    : '';
+            const intakeIsInsurance = intakePm.toLowerCase() === 'insurance';
+            const registerPaymentNote = intakePm
+                ? intakeIsInsurance
+                    ? `<div class="card" style="padding:0.6rem 0.75rem; margin:0.35rem 0 0 0; background:var(--surface-2, #f8fafc);">
+                            <p style="margin:0; font-size:0.875rem;">
+                                <strong>Payment (register):</strong> Insurance
+                                ${
+                                    intakeScheme
+                                        ? ` · <strong>Scheme / capitation:</strong> ${escapeHtml(intakeScheme)}`
+                                        : '<span style="color:var(--text-secondary);"> — scheme not recorded at register</span>'
+                                }
+                            </p>
+                        </div>`
+                    : `<p style="font-size:0.875rem; color:var(--text-secondary); margin:0.35rem 0 0 0;"><strong>Payment (register):</strong> ${escapeHtml(intakePm)}</p>`
+                : '';
             const isDeptDesk = isClinicDeptStoreWorkstation();
             const patientChartEntries = Array.isArray(chart?.entries) ? chart.entries : [];
             const allCurrentAndHistoryNotes = (notes || []).concat(
@@ -2158,11 +2424,6 @@
                             : ''
                     }
                     <div style="margin-top:1rem;">
-                            <label>Insurance scheme</label>
-                            <input id="triageInsurance" class="form-input" value="${escapeHtml(t.insurance_scheme || '')}" disabled />
-                    </div>
-
-                    <div style="margin-top:1rem;">
                         <label>Chief complaint</label>
                         <input id="triageChief" list="triageChiefList" class="form-input" placeholder="e.g. Fever, headache…" value="${escapeHtml(t.chief_complaint || '')}" ${completed ? 'disabled' : ''} />
                         <datalist id="triageChiefList">${complaintsOptions}</datalist>
@@ -2211,9 +2472,26 @@
                         ${(clinicUiState.triage.serviceSearchResults || []).map(function (s) {
                             var sid = String(s.id || '');
                             var selected = String(clinicUiState.triage.selectedServiceId || '') === sid;
-                            return '<button type="button" class="btn btn-sm ' + (selected ? 'btn-primary' : 'btn-outline') + '" data-triage-service-id="' + sid + '" style="margin:0.2rem;">' +
-                                escapeHtml(s.name || 'Service') + ' · ' + escapeHtml(String(s.fee || 0)) +
-                                '</button>';
+                            var comps = Array.isArray(s.components) ? s.components : [];
+                            var nCons = comps.length;
+                            var sub =
+                                'Fee ' +
+                                String(s.fee ?? 0) +
+                                (nCons ? ' · ' + nCons + ' consumable line' + (nCons !== 1 ? 's' : '') : '');
+                            return (
+                                '<button type="button" class="btn btn-sm ' +
+                                (selected ? 'btn-primary' : 'btn-outline') +
+                                '" data-triage-service-id="' +
+                                escapeAttr(sid) +
+                                '" title="' +
+                                escapeAttr(triageServiceConsumablesTitle(s)) +
+                                '" style="margin:0.2rem; text-align:left; vertical-align:top;">' +
+                                '<strong>' +
+                                escapeHtml(s.name || 'Service') +
+                                '</strong><br/><span style="font-size:0.72rem;opacity:0.95;">' +
+                                escapeHtml(sub) +
+                                '</span></button>'
+                            );
                         }).join('') || '<div class="text-secondary" style="padding:0.25rem;">Type at least 2 letters to search services.</div>'}
                     </div>
                     <ul id="clinicTriageOrderList">${formatOrderList(orders)}</ul>
@@ -2345,8 +2623,6 @@
             };
 
             const save = async () => {
-                const payment_mode = (t.payment_mode || '').trim() || null;
-                const insurance_scheme = (t.insurance_scheme || '').trim() || null;
                 const chief_complaint = (document.getElementById('triageChief')?.value || '').trim() || null;
                 const allergies = (document.getElementById('triageAllergies')?.value || '').trim() || null;
                 const symptoms = (document.getElementById('triageSymptoms')?.value || '').trim() || null;
@@ -2356,8 +2632,6 @@
                     void persistChiefComplaintTerm(chief_complaint);
                 }
                 return {
-                    payment_mode,
-                    insurance_scheme,
                     chief_complaint,
                     allergies,
                     symptoms,

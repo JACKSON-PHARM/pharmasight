@@ -64,9 +64,15 @@ async function loadSettingsSubPage(subPage) {
             console.log('[SETTINGS] renderUsersPage() completed');
             break;
         case 'catalogs-services':
-            console.log('[SETTINGS] Case: catalogs-services');
-            await renderServicesCatalogSettingsPage();
-            break;
+            try {
+                if (typeof loadPage === 'function') void loadPage('inventory-clinical-services');
+                else window.location.hash = '#inventory-clinical-services';
+            } catch (_) {
+                try {
+                    window.location.hash = '#inventory-clinical-services';
+                } catch (__) {}
+            }
+            return;
         case 'transaction':
             console.log('[SETTINGS] Case: transaction');
             await renderTransactionSettingsPage();
@@ -3523,39 +3529,444 @@ function getPermissionDisplayLabel(perm) {
     return (perm.action || '').replace(/_/g, ' ');
 }
 
-function buildServiceComponentRow(component, idx, items) {
+/**
+ * Escape for HTML attributes / text inputs (do not coerce empty string to em dash — see escapeHtml).
+ */
+function escapeHtmlAttr(raw) {
+    if (raw == null || raw === '') return '';
+    const div = document.createElement('div');
+    div.textContent = String(raw);
+    return div.innerHTML;
+}
+
+/** Resolved branch for POS snapshot search (must match session header or inventory). */
+function _svcComponentBranchIdResolved() {
+    if (typeof BranchContext !== 'undefined' && BranchContext.getBranch) {
+        const b = BranchContext.getBranch();
+        if (b && b.id) return b.id;
+    }
+    if (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) return CONFIG.BRANCH_ID;
+    try {
+        const saved = localStorage.getItem('pharmasight_config');
+        if (saved) {
+            const cfg = JSON.parse(saved);
+            if (cfg.BRANCH_ID) return cfg.BRANCH_ID;
+        }
+    } catch (e) { /* ignore */ }
+    return null;
+}
+
+function _svcComponentStockLine(it) {
+    if (it.stock_display != null && String(it.stock_display).trim() !== '') {
+        return String(it.stock_display).trim();
+    }
+    const stock = typeof it.current_stock === 'number'
+        ? it.current_stock
+        : (it.base_quantity != null ? it.base_quantity : (it.stock != null ? it.stock : null));
+    const unit = (it.retail_unit || it.base_unit || it.wholesale_unit || 'units') || 'units';
+    if (stock != null && Number.isFinite(Number(stock))) {
+        return `${stock} ${unit}`.trim();
+    }
+    return '—';
+}
+
+/**
+ * Build billable / deductible units from 3-tier fields (same rules as TransactionItemsTable.buildUnitsFrom3Tier).
+ */
+function svcBuildUnitsFromSearchHit(full) {
+    const wholesaleName = ((full.wholesale_unit || 'piece') + '').trim() || 'piece';
+    const retailName = ((full.retail_unit || '') + '').trim();
+    const supplierName = ((full.supplier_unit || '') + '').trim();
+    const pack = Math.max(1, parseInt(full.pack_size, 10) || 1);
+    const wups = Math.max(0.0001, parseFloat(full.wholesale_units_per_supplier) || 1);
+    const units = [];
+    if (retailName) {
+        const sameAsWholesale = retailName.toLowerCase() === wholesaleName.toLowerCase();
+        if (!(sameAsWholesale && pack === 1)) {
+            units.push({ unit_name: retailName, multiplier_to_base: 1, tier: 'retail' });
+        }
+    }
+    units.push({ unit_name: wholesaleName, multiplier_to_base: pack, tier: 'wholesale' });
+    if (supplierName && supplierName.toLowerCase() !== wholesaleName.toLowerCase()) {
+        units.push({ unit_name: supplierName, multiplier_to_base: pack * wups, tier: 'supplier' });
+    }
+    return units.length ? units : [{ unit_name: wholesaleName, multiplier_to_base: pack, tier: 'wholesale' }];
+}
+
+function svcDefaultUnitForConsumable(full, units) {
+    const pack = Math.max(1, parseInt(full.pack_size, 10) || 1);
+    if (pack > 1) {
+        const w = units.find((u) => u.tier === 'wholesale');
+        if (w) return w.unit_name;
+    }
+    const r = units.find((u) => u.tier === 'retail');
+    return (r && r.unit_name) || (units[0] && units[0].unit_name) || 'piece';
+}
+
+function svcRenderUnitSelectHtml(full, selectedUnit) {
+    const units = svcBuildUnitsFromSearchHit(full);
+    const def = selectedUnit && units.some((u) => u.unit_name === selectedUnit)
+        ? selectedUnit
+        : svcDefaultUnitForConsumable(full, units);
+    const optRetail = units.filter((u) => u.tier === 'retail').map((u) => `<option value="${escapeHtmlAttr(u.unit_name)}" ${u.unit_name === def ? 'selected' : ''}>${escapeHtmlAttr(u.unit_name)} — smallest unit (retail)</option>`).join('');
+    const optWhole = units.filter((u) => u.tier === 'wholesale').map((u) => `<option value="${escapeHtmlAttr(u.unit_name)}" ${u.unit_name === def ? 'selected' : ''}>${escapeHtmlAttr(u.unit_name)} — pack / strip (1 = ${u.multiplier_to_base}× retail)</option>`).join('');
+    const optSup = units.filter((u) => u.tier === 'supplier').map((u) => `<option value="${escapeHtmlAttr(u.unit_name)}" ${u.unit_name === def ? 'selected' : ''}>${escapeHtmlAttr(u.unit_name)} — outer (1 = ${u.multiplier_to_base}× retail)</option>`).join('');
+    const parts = [];
+    if (optRetail) parts.push(`<optgroup label="Retail">${optRetail}</optgroup>`);
+    if (optWhole) parts.push(`<optgroup label="Wholesale / pack">${optWhole}</optgroup>`);
+    if (optSup) parts.push(`<optgroup label="Supplier">${optSup}</optgroup>`);
+    if (!parts.length) {
+        parts.push(`<option value="${escapeHtmlAttr(def)}" selected>${escapeHtmlAttr(def)}</option>`);
+    }
+    return `<select class="form-input svc-unit-select">${parts.join('')}</select><div class="text-secondary" style="font-size:0.75rem;margin-top:0.25rem;">Quantity per service is counted in this unit (how immediate deduction is applied).</div>`;
+}
+
+function svcFillUnitCell(tr, fullItem, preferredUnit) {
+    const cell = tr && tr.querySelector('.svc-unit-cell');
+    if (!cell || !fullItem) return;
+    const initial = preferredUnit || cell.getAttribute('data-initial-unit') || '';
+    cell.removeAttribute('data-initial-unit');
+    cell.innerHTML = svcRenderUnitSelectHtml(fullItem, initial || null);
+}
+
+async function hydrateSvcComponentUnitRows(tbody) {
+    if (!tbody || !API || !API.items || !API.items.get) return;
+    const bid = _svcComponentBranchIdResolved();
+    if (!bid) return;
+    const rows = tbody.querySelectorAll('tr[data-comp-row]');
+    for (const tr of rows) {
+        const hid = tr.querySelector('.svc-item-id');
+        if (!hid || !hid.value) continue;
+        const cell = tr.querySelector('.svc-unit-cell');
+        if (!cell || cell.querySelector('.svc-unit-select')) continue;
+        try {
+            const full = await API.items.get(hid.value, bid);
+            const initial = cell.getAttribute('data-initial-unit') || '';
+            svcFillUnitCell(tr, full, initial || null);
+        } catch (err) {
+            console.warn('[svc] could not load units for row', err);
+        }
+    }
+}
+
+/**
+ * Inline item picker for service consumables — same API/debounce pattern as TransactionItemsTable;
+ * dropdown shows only item name and stock (no SKU / price).
+ */
+function svcComponentScheduleItemSearch(inputEl) {
+    if (!inputEl) return;
+    const q = (inputEl.value || '').trim();
+    const wrap = inputEl.closest('.svc-item-search-wrap');
+    const dd = wrap && wrap.querySelector('.svc-item-dropdown');
+    if (!dd) return;
+
+    const seq = (parseInt(inputEl.dataset.svcSearchSeq, 10) || 0) + 1;
+    inputEl.dataset.svcSearchSeq = String(seq);
+
+    if (wrap._svcAbort) {
+        try { wrap._svcAbort.abort(); } catch (_) { /* ignore */ }
+        wrap._svcAbort = null;
+    }
+    if (wrap._debTimer) {
+        clearTimeout(wrap._debTimer);
+        wrap._debTimer = null;
+    }
+
+    if (q.length < 2) {
+        dd.style.display = 'none';
+        dd.innerHTML = '';
+        return;
+    }
+
+    dd.innerHTML = '<div class="global-item-search-hit" style="padding:0.75rem;text-align:center;color:var(--text-secondary);"><i class="fas fa-spinner fa-spin"></i> Searching…</div>';
+    dd.style.display = 'block';
+    try {
+        const cell = wrap.closest('td');
+        if (cell) {
+            cell.style.position = 'relative';
+            cell.style.zIndex = '5';
+        }
+    } catch (_) {}
+
+    wrap._debTimer = setTimeout(() => {
+        wrap._debTimer = null;
+        void svcComponentRunItemSearch(inputEl, q, seq);
+    }, 60);
+}
+
+async function svcComponentRunItemSearch(inputEl, q, seq) {
+    const wrap = inputEl.closest('.svc-item-search-wrap');
+    const dd = wrap && wrap.querySelector('.svc-item-dropdown');
+    if (!dd || parseInt(inputEl.dataset.svcSearchSeq, 10) !== seq) return;
+    if ((inputEl.value || '').trim() !== q) return;
+
+    if (typeof CONFIG === 'undefined' || !CONFIG.COMPANY_ID || typeof API === 'undefined' || !API.items || !API.items.search) {
+        dd.innerHTML = '<div class="global-item-search-hit" style="color:var(--danger-color);">Search unavailable.</div>';
+        dd.style.display = 'block';
+        return;
+    }
+
+    const branchId = _svcComponentBranchIdResolved();
+    if (!branchId) {
+        dd.innerHTML = '<div class="global-item-search-hit" style="color:var(--text-secondary);">Select a <strong>branch</strong> in the header (same as POS). Item search uses that branch’s <strong>snapshot</strong> only.</div>';
+        dd.style.display = 'block';
+        return;
+    }
+
+    if (wrap._svcAbort) {
+        try { wrap._svcAbort.abort(); } catch (_) { /* ignore */ }
+    }
+    wrap._svcAbort = new AbortController();
+    const signal = wrap._svcAbort.signal;
+
+    try {
+        const items = await API.items.search(
+            q,
+            CONFIG.COMPANY_ID,
+            50,
+            branchId,
+            true,
+            null,
+            { signal },
+            false,
+            false
+        );
+        if (parseInt(inputEl.dataset.svcSearchSeq, 10) !== seq) return;
+        if ((inputEl.value || '').trim() !== q) return;
+
+        const filtered = (items || []).filter((it) => String(it.product_category || '').toUpperCase() !== 'SERVICE');
+        wrap._svcLastResults = filtered;
+        if (filtered.length === 0) {
+            dd.innerHTML = `
+                <div class="global-item-search-hit" style="color:var(--text-secondary);">No SKUs in this branch snapshot for “${escapeHtml(q)}”.</div>
+                <div class="global-item-search-hit svc-catalog-create" data-query="${escapeHtmlAttr(q)}" style="cursor:pointer;padding:0.6rem 0.75rem;background:#e7f3ff;border-top:1px solid var(--border-color,#dee2e6);">
+                    <i class="fas fa-plus-circle" style="color:var(--primary-color);"></i>
+                    <strong>Create SKU</strong> “${escapeHtml(q)}” (adds item + snapshot row)
+                </div>`;
+        } else {
+            dd.innerHTML = filtered.map((it, idx) => {
+                const id = String(it.id || it.item_id || '');
+                const name = (it.name || it.item_name || '').trim() || '—';
+                const stock = _svcComponentStockLine(it);
+                return `<div class="global-item-search-hit svc-item-hit" data-svc-idx="${idx}" style="cursor:pointer;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border-color,#dee2e6);">
+                    <span class="hit-name">${escapeHtml(name)}</span>
+                    <div class="hit-stock-price" style="margin-top:2px;">Stock: ${escapeHtml(stock)}</div>
+                </div>`;
+            }).join('');
+        }
+        dd.style.display = 'block';
+    } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        if (parseInt(inputEl.dataset.svcSearchSeq, 10) !== seq) return;
+        dd.innerHTML = `<div class="global-item-search-hit" style="color:var(--danger-color);">${escapeHtml(err.message || 'Search failed')}</div>`;
+        dd.style.display = 'block';
+    }
+}
+
+function svcComponentCloseOtherDropdowns(exceptDd) {
+    document.querySelectorAll('.svc-item-dropdown').forEach((d) => {
+        if (exceptDd && d === exceptDd) return;
+        d.style.display = 'none';
+        d.innerHTML = '';
+    });
+}
+
+/** One-time delegated listeners on the consumables tbody (survives new rows). */
+function bindSvcComponentItemSearch(tbody) {
+    if (!tbody || tbody.dataset.svcItemSearchBound === '1') return;
+    tbody.dataset.svcItemSearchBound = '1';
+
+    if (!window.__svcCompOutsideClickBound) {
+        window.__svcCompOutsideClickBound = true;
+        document.addEventListener(
+            'click',
+            (e) => {
+                if (e.target.closest && (e.target.closest('.svc-item-search-wrap') || e.target.closest('.svc-item-dropdown'))) {
+                    return;
+                }
+                svcComponentCloseOtherDropdowns(null);
+            },
+            true
+        );
+    }
+
+    tbody.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        const inp = e.target.closest && e.target.closest('.svc-item-search');
+        if (!inp || !tbody.contains(inp)) return;
+        const dd = inp.closest('.svc-item-search-wrap')?.querySelector('.svc-item-dropdown');
+        if (dd) {
+            dd.style.display = 'none';
+            dd.innerHTML = '';
+        }
+    });
+
+    tbody.addEventListener('input', (e) => {
+        const inp = e.target.closest && e.target.closest('.svc-item-search');
+        if (!inp || !tbody.contains(inp)) return;
+        const hidden = inp.closest('tr').querySelector('.svc-item-id');
+        if (e.isTrusted && hidden && hidden.value) {
+            hidden.value = '';
+        }
+        svcComponentCloseOtherDropdowns(inp.closest('.svc-item-search-wrap')?.querySelector('.svc-item-dropdown'));
+        svcComponentScheduleItemSearch(inp);
+    });
+
+    tbody.addEventListener('mousedown', (e) => {
+        const hit = e.target.closest && e.target.closest('.svc-item-hit');
+        if (!hit || !tbody.contains(hit)) return;
+        e.preventDefault();
+        const wrap = hit.closest('.svc-item-search-wrap');
+        if (!wrap) return;
+        const idx = parseInt(hit.getAttribute('data-svc-idx'), 10);
+        const list = wrap._svcLastResults;
+        const item = Array.isArray(list) && Number.isFinite(idx) ? list[idx] : null;
+        if (!item) return;
+        const itemId = String(item.id || item.item_id || '');
+        const itemName = (item.name || item.item_name || '').trim() || '—';
+        const tr = wrap.closest('tr');
+        const input = wrap.querySelector('.svc-item-search');
+        const hidden = wrap.querySelector('.svc-item-id');
+        const dd = wrap.querySelector('.svc-item-dropdown');
+        if (input) {
+            input.value = itemName;
+            input.dataset.svcSearchSeq = String((parseInt(input.dataset.svcSearchSeq, 10) || 0) + 1);
+        }
+        if (hidden) hidden.value = itemId;
+        if (dd) {
+            dd.style.display = 'none';
+            dd.innerHTML = '';
+        }
+        if (tr) svcFillUnitCell(tr, item, null);
+    });
+
+    tbody.addEventListener('click', async (e) => {
+        const btn = e.target.closest && e.target.closest('.svc-catalog-create');
+        if (!btn || !tbody.contains(btn)) return;
+        e.preventDefault();
+        const q = (btn.getAttribute('data-query') || '').trim();
+        if (!q) return;
+        const bid = _svcComponentBranchIdResolved();
+        if (!bid) {
+            if (typeof showToast === 'function') showToast('Select a branch in the header before creating an SKU.', 'warning');
+            return;
+        }
+        if (!API.items || typeof API.items.catalogSuggestion !== 'function') {
+            if (typeof showToast === 'function') showToast('Create SKU is not available. Refresh the page.', 'error');
+            return;
+        }
+        try {
+            const created = await API.items.catalogSuggestion(q, bid);
+            const wrap = btn.closest('.svc-item-search-wrap');
+            const tr = wrap && wrap.closest('tr');
+            if (wrap && tr) {
+                const inp = wrap.querySelector('.svc-item-search');
+                const hid = wrap.querySelector('.svc-item-id');
+                const dd = wrap.querySelector('.svc-item-dropdown');
+                if (inp) inp.value = (created && created.name) ? created.name : q;
+                if (hid && created && created.id) hid.value = String(created.id);
+                if (dd) {
+                    dd.style.display = 'none';
+                    dd.innerHTML = '';
+                }
+                if (created) svcFillUnitCell(tr, created, created.retail_unit || null);
+            }
+            if (typeof showToast === 'function') showToast('SKU created. You can adjust pack / units under Inventory → Items if needed.', 'success');
+        } catch (err) {
+            const msg = (err && err.message) ? err.message : 'Could not create SKU';
+            if (typeof showToast === 'function') showToast(msg, 'error');
+        }
+    });
+
+    tbody.addEventListener('focusin', (e) => {
+        const inp = e.target.closest && e.target.closest('.svc-item-search');
+        if (!inp || !tbody.contains(inp)) return;
+        const dd = inp.closest('.svc-item-search-wrap')?.querySelector('.svc-item-dropdown');
+        svcComponentCloseOtherDropdowns(dd || null);
+    });
+}
+
+function buildServiceComponentRow(component, idx, rowKey) {
     const c = component || {};
     const itemId = String(c.item_id || '');
-    const options = (Array.isArray(items) ? items : [])
-        .map((it) => `<option value="${escapeHtml(it.id)}" ${String(it.id) === itemId ? 'selected' : ''}>${escapeHtml(it.name || '')}</option>`)
-        .join('');
+    const displayName = (c.item_name || '').trim() || '';
+    const rk = rowKey != null ? String(rowKey) : ('r_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
     return `
-        <tr data-comp-row="${idx}">
-            <td><select class="form-input svc-item" style="min-width:220px;"><option value="">Select item...</option>${options}</select></td>
-            <td><input class="form-input svc-qty" type="number" step="0.0001" min="0.0001" value="${escapeHtml(String(c.quantity_per_service || 1))}" /></td>
-            <td><input class="form-input svc-unit" type="text" value="${escapeHtml(c.item_unit_name || '')}" placeholder="auto" /></td>
+        <tr data-comp-row="${escapeHtmlAttr(String(idx))}" data-row-key="${escapeHtmlAttr(rk)}">
+            <td class="svc-item-cell" style="position:relative;vertical-align:top;min-width:260px;">
+                <div class="svc-item-search-wrap" style="position:relative;">
+                    <input type="text"
+                        class="form-input svc-item-search"
+                        placeholder="Type at least 2 characters to search…"
+                        value="${escapeHtmlAttr(displayName)}"
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                    <input type="hidden" class="svc-item-id" value="${escapeHtmlAttr(itemId)}" />
+                    <div class="svc-item-dropdown item-suggestions-dropdown" style="display:none;position:absolute;left:0;right:0;top:100%;margin-top:2px;z-index:1200;max-height:280px;overflow-y:auto;background:#fff;border:1px solid var(--border-color,#dee2e6);border-radius:0.25rem;box-shadow:0 6px 16px rgba(0,0,0,0.18);font-size:0.85rem;"></div>
+                </div>
+            </td>
+            <td><input class="form-input svc-qty" type="number" step="0.0001" min="0.0001" value="${escapeHtmlAttr(String(c.quantity_per_service ?? 1))}" /></td>
+            <td class="svc-unit-cell" data-initial-unit="${escapeHtmlAttr(c.item_unit_name || '')}"><span class="text-secondary" style="font-size:0.8rem;">${itemId ? 'Loading units…' : 'Select item…'}</span></td>
             <td>
                 <select class="form-input svc-policy">
-                    <option value="immediate" ${c.deduction_policy === 'immediate' ? 'selected' : ''}>Immediate</option>
-                    <option value="accumulator" ${c.deduction_policy === 'accumulator' ? 'selected' : ''}>Accumulator</option>
+                    <option value="immediate" ${c.deduction_policy === 'accumulator' ? '' : 'selected'}>Immediate (deduct on use)</option>
+                    <option value="accumulator" ${c.deduction_policy === 'accumulator' ? 'selected' : ''}>Accumulator (batch deduct)</option>
                 </select>
             </td>
-            <td><input class="form-input svc-threshold" type="number" step="0.0001" min="0.0001" value="${escapeHtml(String(c.accumulator_threshold_qty || ''))}" placeholder="for accumulator" /></td>
-            <td><input type="checkbox" class="svc-optional" ${c.is_optional ? 'checked' : ''} /></td>
+            <td><input class="form-input svc-threshold" type="number" step="0.0001" min="0.0001" value="${escapeHtmlAttr(c.accumulator_threshold_qty != null ? String(c.accumulator_threshold_qty) : '')}" placeholder="if accumulator" /></td>
+            <td style="text-align:center;"><input type="checkbox" class="svc-optional" title="Patient may waive" ${c.is_optional ? 'checked' : ''} /></td>
+            <td><input class="form-input svc-notes" type="text" value="${escapeHtmlAttr(c.notes || '')}" placeholder="e.g. pair nitrile gloves" /></td>
             <td><button type="button" class="btn btn-sm btn-outline svc-remove-row">Remove</button></td>
         </tr>
     `;
 }
 
-async function renderServicesCatalogSettingsPage() {
-    const page = document.getElementById('settings');
-    if (!page) return;
-    page.innerHTML = '<div class="card"><div class="card-body">Loading services catalog...</div></div>';
+/**
+ * Renders the clinical services catalog into a host element (e.g. Inventory ▸ Catalogs • Services).
+ * Create / edit / delete require items.create (same as new SKU); view list with items.view or items.create.
+ */
+async function renderClinicalServicesCatalogPage(mountEl) {
+    const root = mountEl && mountEl.nodeType === 1 ? mountEl : (typeof mountEl === 'string' ? document.getElementById(mountEl) : null);
+    if (!root) return;
+
+    let canManage = false;
+    let canViewCatalog = false;
+    if (typeof hasPermission === 'function') {
+        canManage = await hasPermission('items.create');
+        canViewCatalog = await hasPermission('items.view');
+    } else {
+        canManage = true;
+        canViewCatalog = true;
+    }
+    if (!canViewCatalog && !canManage) {
+        root.innerHTML = `
+            <div class="card">
+                <div class="card-body">
+                    <p class="alert alert-warning" style="margin:0;">
+                        You need <strong>items.view</strong> to browse clinical services or <strong>items.create</strong> to manage them.
+                    </p>
+                </div>
+            </div>`;
+        return;
+    }
+
+    root.innerHTML = '<div class="card"><div class="card-body">Loading services catalog...</div></div>';
     try {
-        const [services, items] = await Promise.all([
-            API.clinic.services.list({ include_inactive: true }),
-            API.items.list(CONFIG.COMPANY_ID, { limit: 500, offset: 0 }),
-        ]);
+        if (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) {
+            const sessionBranchId = _svcComponentBranchIdResolved();
+            if (sessionBranchId && CONFIG.BRANCH_ID !== sessionBranchId) {
+                CONFIG.BRANCH_ID = sessionBranchId;
+                if (typeof saveConfig === 'function') saveConfig();
+            }
+        }
+        const services = await API.clinic.services.list({ include_inactive: true });
+        const actionCells = (s) => (canManage
+            ? `<td style="display:flex; gap:0.4rem;">
+                    <button type="button" class="btn btn-sm btn-outline svc-edit" data-id="${s.id}">Edit</button>
+                    <button type="button" class="btn btn-sm btn-outline svc-delete" data-id="${s.id}">Delete</button>
+                </td>`
+            : '<td><span class="text-secondary">—</span></td>');
         const serviceRows = (Array.isArray(services) ? services : []).map((s) => `
             <tr>
                 <td><strong>${escapeHtml(s.name || '')}</strong><br><small>${escapeHtml(s.code || '—')}</small></td>
@@ -3566,20 +3977,18 @@ async function renderServicesCatalogSettingsPage() {
                 <td>${escapeHtml(String(s.fee || 0))}</td>
                 <td>${s.is_active ? '<span class="badge badge-success">Active</span>' : '<span class="badge">Inactive</span>'}</td>
                 <td>${(s.components || []).length}</td>
-                <td style="display:flex; gap:0.4rem;">
-                    <button type="button" class="btn btn-sm btn-outline svc-edit" data-id="${s.id}">Edit</button>
-                    <button type="button" class="btn btn-sm btn-outline svc-delete" data-id="${s.id}">Delete</button>
-                </td>
+                ${actionCells(s)}
             </tr>
         `).join('');
-        page.innerHTML = `
+        root.innerHTML = `
+            <div id="svcCatalogRoot">
             <div class="card">
                 <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
                     <h3 class="card-title"><i class="fas fa-notes-medical"></i> Catalogs • Services</h3>
-                    <button type="button" class="btn btn-primary" id="svcNewBtn">New Service</button>
+                    ${canManage ? '<button type="button" class="btn btn-primary" id="svcNewBtn">New Service</button>' : ''}
                 </div>
                 <div class="card-body">
-                    <p style="margin-top:0; color:var(--text-secondary);">Company-level services shared by all branches. Billing charges service fee; inventory deductions follow component rules.</p>
+                    <p style="margin-top:0; color:var(--text-secondary);">Define the <strong>service fee</strong> (billing) and optional <strong>default consumables</strong>—gloves, syringes, sundries—that deduct from the triage desk mini-store when this service is run. Configure items under <strong>Inventory → Items</strong> first.</p>
                     <div style="overflow:auto;">
                         <table class="data-table" style="width:100%;">
                             <thead><tr><th>Name</th><th>Department</th><th>Fee</th><th>Status</th><th>Components</th><th>Actions</th></tr></thead>
@@ -3589,14 +3998,14 @@ async function renderServicesCatalogSettingsPage() {
                     <div id="svcEditorMount" style="margin-top:1rem;"></div>
                 </div>
             </div>
+            </div>
         `;
-        const allItems = Array.isArray(items) ? items.filter((i) => String(i.product_category || '').toUpperCase() !== 'SERVICE') : [];
         const svcMap = {};
         (Array.isArray(services) ? services : []).forEach((s) => { svcMap[String(s.id)] = s; });
 
         const renderEditor = (svc) => {
             const model = svc || { name: '', code: '', department: '', allowed_departments: [], strict_department_only: false, description: '', fee: '0', is_active: true, components: [] };
-            const componentRows = (model.components || []).map((c, idx) => buildServiceComponentRow(c, idx, allItems)).join('');
+            const componentRows = (model.components || []).map((c, idx) => buildServiceComponentRow(c, idx, idx)).join('');
             const mount = document.getElementById('svcEditorMount');
             if (!mount) return;
             mount.innerHTML = `
@@ -3615,13 +4024,14 @@ async function renderServicesCatalogSettingsPage() {
                             <label style="display:inline-flex; gap:0.35rem; align-items:center;"><input id="svcStrictDept" type="checkbox" ${model.strict_department_only ? 'checked' : ''} /> Restrict to listed departments only</label>
                         </div>
                         <hr />
+                        <p style="margin:0 0 0.5rem 0; font-size:0.85rem; color:var(--text-secondary);">Consumable item search uses the <strong>header branch</strong> and its <strong>branch snapshot</strong> only (same as transaction lines). If nothing matches, create a new SKU from the search panel.</p>
                         <div style="display:flex; justify-content:space-between; align-items:center;">
                             <h4 style="margin:0;">Consumable Rules</h4>
                             <button type="button" class="btn btn-sm btn-outline" id="svcAddComp">Add Component</button>
                         </div>
-                        <div style="overflow:auto; margin-top:0.5rem;">
+                        <div style="margin-top:0.5rem;overflow:visible;">
                             <table class="data-table" style="width:100%;">
-                                <thead><tr><th>Item</th><th>Qty/service</th><th>Unit</th><th>Policy</th><th>Threshold</th><th>Optional</th><th></th></tr></thead>
+                                <thead><tr><th>Item</th><th>Qty/service</th><th>Unit</th><th>Policy</th><th>Threshold</th><th>Optional</th><th>Notes</th><th></th></tr></thead>
                                 <tbody id="svcCompBody">${componentRows || ''}</tbody>
                             </table>
                         </div>
@@ -3632,27 +4042,42 @@ async function renderServicesCatalogSettingsPage() {
                     </div>
                 </div>
             `;
+            bindSvcComponentItemSearch(document.getElementById('svcCompBody'));
+            void hydrateSvcComponentUnitRows(document.getElementById('svcCompBody'));
             document.getElementById('svcAddComp')?.addEventListener('click', () => {
                 const body = document.getElementById('svcCompBody');
                 if (!body) return;
-                body.insertAdjacentHTML('beforeend', buildServiceComponentRow({}, Date.now(), allItems));
+                const nk = 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+                body.insertAdjacentHTML('beforeend', buildServiceComponentRow({}, nk, nk));
             });
-            mount.addEventListener('click', (e) => {
+            mount.onclick = (e) => {
                 const rm = e.target.closest('.svc-remove-row');
                 if (rm) rm.closest('tr')?.remove();
-            }, { once: true });
+            };
             document.getElementById('svcCancelBtn')?.addEventListener('click', () => { mount.innerHTML = ''; });
             document.getElementById('svcSaveBtn')?.addEventListener('click', async () => {
                 const rows = Array.from(document.querySelectorAll('#svcCompBody tr'));
-                const components = rows.map((r, i) => ({
-                    item_id: r.querySelector('.svc-item')?.value || '',
-                    quantity_per_service: Number(r.querySelector('.svc-qty')?.value || 0),
-                    item_unit_name: (r.querySelector('.svc-unit')?.value || '').trim() || null,
-                    deduction_policy: r.querySelector('.svc-policy')?.value || 'immediate',
-                    accumulator_threshold_qty: (r.querySelector('.svc-threshold')?.value || '').trim() || null,
-                    is_optional: !!r.querySelector('.svc-optional')?.checked,
-                    sort_order: i,
-                })).filter((c) => c.item_id && c.quantity_per_service > 0);
+                const components = rows
+                    .map((r, i) => {
+                        const policy = (r.querySelector('.svc-policy')?.value || '').trim() || 'immediate';
+                        const threshRaw = (r.querySelector('.svc-threshold')?.value || '').trim();
+                        let accumulator_threshold_qty = null;
+                        if (policy === 'accumulator') {
+                            const tn = Number(threshRaw);
+                            accumulator_threshold_qty = Number.isFinite(tn) && tn > 0 ? tn : null;
+                        }
+                        return {
+                            item_id: r.querySelector('.svc-item-id')?.value || '',
+                            quantity_per_service: Number(r.querySelector('.svc-qty')?.value || 0),
+                            item_unit_name: (r.querySelector('.svc-unit-select')?.value || '').trim() || null,
+                            deduction_policy: policy,
+                            accumulator_threshold_qty,
+                            is_optional: !!r.querySelector('.svc-optional')?.checked,
+                            notes: (r.querySelector('.svc-notes')?.value || '').trim() || null,
+                            sort_order: i,
+                        };
+                    })
+                    .filter((c) => c.item_id && c.quantity_per_service > 0);
                 const payload = {
                     name: (document.getElementById('svcName')?.value || '').trim(),
                     code: (document.getElementById('svcCode')?.value || '').trim() || null,
@@ -3665,36 +4090,42 @@ async function renderServicesCatalogSettingsPage() {
                 };
                 payload.department = payload.allowed_departments[0] || null;
                 if (!payload.name) return showToast('Service name is required', 'error');
+                if (components.some((c) => c.deduction_policy === 'accumulator' && !c.accumulator_threshold_qty)) {
+                    return showToast('Accumulator policy requires a positive threshold for each consumable line', 'error');
+                }
                 try {
                     if (model.id) await API.clinic.services.update(model.id, payload);
                     else await API.clinic.services.create(payload);
                     showToast('Service saved', 'success');
-                    await renderServicesCatalogSettingsPage();
+                    await renderClinicalServicesCatalogPage(root);
                 } catch (err) {
                     showToast(err.message || 'Failed to save service', 'error');
                 }
             });
         };
-        document.getElementById('svcNewBtn')?.addEventListener('click', () => renderEditor(null));
-        page.addEventListener('click', async (event) => {
-            const editBtn = event.target.closest('.svc-edit');
-            if (editBtn) return renderEditor(svcMap[String(editBtn.getAttribute('data-id'))] || null);
-            const delBtn = event.target.closest('.svc-delete');
-            if (delBtn) {
-                const id = delBtn.getAttribute('data-id');
-                if (!id) return;
-                if (!confirm('Delete this service?')) return;
-                try {
-                    await API.clinic.services.remove(id);
-                    showToast('Service deleted', 'success');
-                    await renderServicesCatalogSettingsPage();
-                } catch (err) {
-                    showToast(err.message || 'Failed to delete service', 'error');
+        const catalogRoot = root.querySelector('#svcCatalogRoot');
+        if (canManage && catalogRoot) {
+            document.getElementById('svcNewBtn')?.addEventListener('click', () => renderEditor(null));
+            catalogRoot.addEventListener('click', async (event) => {
+                const editBtn = event.target.closest('.svc-edit');
+                if (editBtn) return renderEditor(svcMap[String(editBtn.getAttribute('data-id'))] || null);
+                const delBtn = event.target.closest('.svc-delete');
+                if (delBtn) {
+                    const id = delBtn.getAttribute('data-id');
+                    if (!id) return;
+                    if (!confirm('Delete this service?')) return;
+                    try {
+                        await API.clinic.services.remove(id);
+                        showToast('Service deleted', 'success');
+                        await renderClinicalServicesCatalogPage(root);
+                    } catch (err) {
+                        showToast(err.message || 'Failed to delete service', 'error');
+                    }
                 }
-            }
-        });
+            });
+        }
     } catch (e) {
-        page.innerHTML = `<div class="card"><div class="card-body"><p class="alert alert-danger">Failed to load service catalogs: ${escapeHtml(e.message || 'error')}</p></div></div>`;
+        root.innerHTML = `<div class="card"><div class="card-body"><p class="alert alert-danger">Failed to load service catalogs: ${escapeHtml(e.message || 'error')}</p></div></div>`;
     }
 }
 
@@ -3707,7 +4138,7 @@ function switchSettingsSubPage(subPage) {
 (function() {
     'use strict';
     try {
-        console.log('[SETTINGS.JS] Exporting functions to window...');
+        window.renderClinicalServicesCatalogPage = renderClinicalServicesCatalogPage;
         
         if (typeof window === 'undefined') {
             console.error('[SETTINGS.JS] ❌ window is undefined!');

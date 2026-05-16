@@ -1,14 +1,20 @@
 """
-Company-based subscription access (single source of truth).
+Company-based subscription access.
 
-Tenancy architecture: `companies.id` is the tenant. Subscription gating must be derived from
-company fields only, not from legacy `tenants` registry rows.
+Delegates commercial access derivation to ``company_governance_service`` (single compiler).
+Maps governance states to legacy ``CompanyAccess`` for existing SPA subscription gates.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Literal, Optional, Any
+
+from app.services.company_governance_service import (
+    derive_commercial_access,
+    map_commercial_access_to_company_access,
+    subscription_access_for_company,
+)
 
 CompanyAccess = Literal["blocked", "active", "trial", "expired"]
 
@@ -18,43 +24,14 @@ def now_utc() -> datetime:
 
 
 def get_company_access(company: Optional[Any], *, now: Optional[datetime] = None) -> CompanyAccess:
-    """
-    Compute access from companies table fields (single source of truth).
-
-    Rules (as requested):
-    - if not company.is_active => "blocked"
-    - if company.subscription_status == "active" => "active"
-    - if company.trial_expires_at:
-        - now < trial_expires_at => "trial"
-        - else => "expired"
-    - else => "active" (treat nulls as full access)
-    """
     if company is None:
-        # Defensive default: if we cannot resolve the company row, don't block the entire app.
         return "active"
-
-    if not bool(getattr(company, "is_active", True)):
-        return "blocked"
-
-    sub_status = (getattr(company, "subscription_status", None) or "").strip().lower()
-    if sub_status == "active":
-        return "active"
-
-    trial_expires_at = getattr(company, "trial_expires_at", None)
-    if trial_expires_at is not None:
-        n = now or now_utc()
-        end = trial_expires_at
-        if getattr(end, "tzinfo", None) is None:
-            end = end.replace(tzinfo=timezone.utc)
-        return "trial" if n < end else "expired"
-
-    return "active"
+    state = derive_commercial_access(company, now=now)
+    return map_commercial_access_to_company_access(state)
 
 
 def company_access_to_subscription_access(access: CompanyAccess) -> str:
-    """
-    Map company access -> frontend `subscription_access` values used by existing SPA logic.
-    """
+    """Map CompanyAccess → SPA token (prefer subscription_access_for_company on auth/me)."""
     if access == "trial":
         return "trial"
     if access == "expired":
@@ -63,3 +40,7 @@ def company_access_to_subscription_access(access: CompanyAccess) -> str:
         return "blocked"
     return "full"
 
+
+def get_subscription_access(company: Optional[Any], *, now: Optional[datetime] = None) -> str:
+    """SPA subscription_access from governance compiler (single source of truth)."""
+    return subscription_access_for_company(company, now=now)

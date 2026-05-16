@@ -3857,14 +3857,12 @@ async function checkIfAdminOrManager() {
     }
 }
 
-/** Matches backend batch gate: company kra_enabled + branch eTIMS credentials enabled (snapshot/outbox path). */
+/** Matches backend: company kra_enabled + branch eTIMS submission enabled. */
 function kraFiscalReceiptRequired(invoice) {
     if (!invoice) return false;
-    // Platform admin disabled KRA for this company — do not block print/PDF on fiscal gate.
-    if (invoice.company_kra_enabled === false) return false;
+    // Live company flag from GET /invoice/{id}. Only block print when KRA is explicitly on.
+    if (invoice.company_kra_enabled !== true) return false;
     if (!invoice.kra_fiscal_receipt_required) return false;
-    const sub = (invoice.submission_status || '').trim().toLowerCase();
-    if (sub === 'pending' || sub === 'failed') return true;
     return true;
 }
 
