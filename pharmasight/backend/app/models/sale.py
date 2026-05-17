@@ -19,11 +19,15 @@ class SalesInvoice(Base):
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
     invoice_no = Column(String(100), nullable=False)  # SD-{BRANCH_CODE}-{NUMBER}, e.g. SD-MAIN-000001
     invoice_date = Column(Date, nullable=False)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     customer_name = Column(String(255))
     customer_pin = Column(String(50))
     customer_phone = Column(String(50), nullable=True)  # Required for credit payment mode (nullable for backward compatibility)
     payment_mode = Column(String(50), nullable=False)  # cash, mpesa, credit, bank (legacy - kept for backward compatibility)
     payment_status = Column(String(50), default="PAID")  # PAID, PARTIAL, CREDIT
+    due_date = Column(Date, nullable=True)
+    amount_paid = Column(Numeric(20, 4), default=0)
+    balance = Column(Numeric(20, 4), nullable=True)
     sales_type = Column(String(20), default="RETAIL")  # RETAIL (customers) or WHOLESALE (pharmacies)
     total_exclusive = Column(Numeric(20, 4), default=0)
     vat_rate = Column(Numeric(5, 2), default=16.00)
@@ -64,6 +68,7 @@ class SalesInvoice(Base):
     invoice_payments = relationship("InvoicePayment", back_populates="sales_invoice", cascade="all, delete-orphan")
     credit_notes = relationship("CreditNote", back_populates="original_invoice")
     encounter = relationship("Encounter", foreign_keys="[SalesInvoice.encounter_id]")
+    customer = relationship("Customer", foreign_keys="[SalesInvoice.customer_id]")
 
     __table_args__ = (
         {"comment": "KRA-compliant sales document. Immutable after creation."},
@@ -205,6 +210,7 @@ class Quotation(Base):
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
     quotation_no = Column(String(100), nullable=False)  # Sequential
     quotation_date = Column(Date, nullable=False)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     customer_name = Column(String(255))
     customer_pin = Column(String(50))
     reference = Column(String(255))  # Optional reference number

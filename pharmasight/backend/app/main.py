@@ -290,6 +290,8 @@ from app.api.invite import router as invite_router
 from app.api.users import router as users_router
 from app.api.suppliers import router as suppliers_router
 from app.api.supplier_management import router as supplier_management_router
+from app.api.customers import router as customers_router
+from app.api.customer_management import router as customer_management_router
 from app.api.expenses import router as expenses_router
 from app.api.cashbook import router as cashbook_router
 from app.api.insurance_management import router as insurance_management_router
@@ -338,6 +340,8 @@ app.include_router(insurance_management_router, prefix="/api/insurance", tags=["
 # Supplier management (payments, returns, etc.) must come before suppliers_router so /payments matches before /{supplier_id}
 app.include_router(supplier_management_router, prefix="/api/suppliers", tags=["Supplier Management"])
 app.include_router(suppliers_router, prefix="/api/suppliers", tags=["Suppliers"])
+app.include_router(customer_management_router, prefix="/api/customers", tags=["Customer Management"])
+app.include_router(customers_router, prefix="/api/customers", tags=["Customers"])
 app.include_router(excel_import_router, prefix="/api/excel", tags=["Excel Import"])
 app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotations"])
 app.include_router(stock_take_router, prefix="/api/stock-take", tags=["Stock Take"])

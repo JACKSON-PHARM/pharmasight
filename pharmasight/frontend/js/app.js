@@ -945,9 +945,7 @@ async function startAppFlow() {
  */
 async function validateBranchAccess(branchId) {
     try {
-        // Try to fetch branch - if it fails, user doesn't have access
         const branch = await API.branch.get(branchId);
-        // Also check if branch is active
         return branch && branch.is_active !== false;
     } catch (error) {
         console.warn('Branch access validation failed:', error);
@@ -1088,6 +1086,12 @@ window.subNavItems = {
         { page: 'sales', subPage: 'quotations', label: 'Quotations', icon: 'fa-file-invoice' },
         { page: 'sales-history', label: 'Sales History', icon: 'fa-history' },
         { page: 'sales', subPage: 'returns', label: 'Returns', icon: 'fa-undo' }
+    ],
+    wholesale: [
+        { page: 'customers', label: 'Customers', icon: 'fa-handshake' },
+        { page: 'customers', subPage: 'dashboard', label: 'AR Dashboard', icon: 'fa-chart-pie' },
+        { page: 'customers', subPage: 'follow-ups', label: 'Follow-ups', icon: 'fa-bell' },
+        { page: 'sales', subPage: 'invoices', label: 'Wholesale Sales', icon: 'fa-file-invoice-dollar' },
     ],
     purchases: [
         { page: 'purchases', subPage: 'orders', label: 'Purchase Orders', icon: 'fa-file-invoice' },
@@ -1940,6 +1944,13 @@ async function loadPage(pageName) {
                 } else {
                     window.loadSales();
                 }
+            }
+            break;
+        case 'customers':
+            if (window.loadCustomerSubPage && subPage) {
+                void window.loadCustomerSubPage(subPage);
+            } else if (window.loadCustomers) {
+                window.loadCustomers();
             }
             break;
         case 'purchases':

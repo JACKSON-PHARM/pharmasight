@@ -39,7 +39,7 @@ from app.schemas.sale import (
     SalesInvoiceCreate, SalesInvoiceResponse,
     SalesInvoiceItemCreate, SalesInvoiceItemUpdate, SalesInvoiceUpdate,
     BatchSalesInvoiceRequest,
-    InvoicePaymentCreate, InvoicePaymentResponse,
+    InvoicePaymentCreate, InvoicePaymentResponse, RevertPaidStatusRequest,
     CreditNoteCreate, CreditNoteResponse,
 )
 from app.services.inventory_service import InventoryService
@@ -48,6 +48,13 @@ from app.services.document_service import DocumentService
 from app.utils.reversal_audit import client_ip_from_request, pydantic_payload_hash, user_agent_from_request
 from app.services.order_book_service import OrderBookService
 from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
+from app.services.invoice_workflow_policy import default_sales_type_for_branch
+from app.services.invoice_payment_status import (
+    PAYMENT_SETTLEMENT_TOLERANCE,
+    apply_payment_status_from_settled,
+    revert_paid_marking,
+    sum_settled_payments,
+)
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
@@ -196,6 +203,29 @@ def _assert_dev_mode() -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This repair endpoint is available in development mode only.",
         )
+
+
+_ADMIN_MANAGER_ROLE_NAMES = frozenset(
+    {"super admin", "admin", "manager", "administrator", "owner"}
+)
+
+
+def _user_is_admin_or_manager(db: Session, user_id: UUID, branch_id: UUID) -> bool:
+    """Admin, manager, or company-admin permissions (matches frontend collect-payment override)."""
+    if _user_has_permission(db, user_id, "users.edit"):
+        return True
+    if _user_has_permission(db, user_id, "admin.manage_company"):
+        return True
+    role_names = (
+        db.query(UserRole.role_name)
+        .join(UserBranchRole, UserBranchRole.role_id == UserRole.id)
+        .filter(UserBranchRole.user_id == user_id, UserBranchRole.branch_id == branch_id)
+        .all()
+    )
+    for (role_name,) in role_names:
+        if (role_name or "").strip().lower() in _ADMIN_MANAGER_ROLE_NAMES:
+            return True
+    return False
 
 
 def _user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID) -> bool:
@@ -432,7 +462,7 @@ def create_sales_invoice(
         'customer_pin': invoice.customer_pin,
         'payment_mode': invoice.payment_mode,
         'payment_status': invoice.payment_status or "UNPAID",
-        'sales_type': getattr(invoice, 'sales_type', 'RETAIL') or 'RETAIL',
+        'sales_type': getattr(invoice, 'sales_type', None) or default_sales_type_for_branch(db, invoice.branch_id),
         'status': invoice.status or "DRAFT",  # Save as DRAFT
         'total_exclusive': total_exclusive,
         'vat_rate': invoice_vat_rate,
@@ -445,10 +475,22 @@ def create_sales_invoice(
     # Only set customer_phone if the column exists (backward compatibility)
     if hasattr(SalesInvoice, 'customer_phone') and hasattr(invoice, 'customer_phone'):
         invoice_data['customer_phone'] = invoice.customer_phone
-    
+    if getattr(invoice, "customer_id", None):
+        from app.services.invoice_workflow_policy import assert_wholesale_branch_for_customer_sale
+
+        assert_wholesale_branch_for_customer_sale(
+            db, invoice.branch_id, customer_id=invoice.customer_id
+        )
+        invoice_data["customer_id"] = invoice.customer_id
+
     db_invoice = SalesInvoice(**invoice_data)
     db.add(db_invoice)
     db.flush()
+
+    if db_invoice.customer_id:
+        from app.services.customer_sales_service import apply_customer_to_invoice
+
+        apply_customer_to_invoice(db, db_invoice, db_invoice.customer_id, db_invoice.company_id)
     
     # Link items to invoice
     for item in invoice_items:
@@ -536,17 +578,13 @@ def get_sales_invoice_pdf(
                 )
     company = db.query(Company).filter(Company.id == invoice.company_id).first()
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
-    items_data = []
-    for oi in invoice.items:
-        item_name = oi.item.name if oi.item else (getattr(oi, "item_name", None) or "—")
-        items_data.append({
-            "item_name": item_name,
-            "quantity": float(oi.quantity),
-            "unit_name": oi.unit_name or "",
-            "unit_price_exclusive": float(oi.unit_price_exclusive or 0),
-            "line_total_exclusive": float(oi.line_total_exclusive or 0),
-            "line_total_inclusive": float(oi.line_total_inclusive or 0),
-        })
+    from app.services.invoice_workflow_policy import is_wholesale_distribution_branch
+    from app.services.sales_invoice_batch_display import build_sales_invoice_pdf_item_rows
+
+    wholesale_print = is_wholesale_distribution_branch(db, invoice.branch_id)
+    items_data = build_sales_invoice_pdf_item_rows(
+        db, invoice, require_batch_expiry=wholesale_print
+    )
     company_logo_bytes = resolve_company_logo_bytes(getattr(company, "logo_url", None) if company else None, tenant=tenant)
     till_number = getattr(branch, "till_number", None) if branch else None
     paybill = getattr(branch, "paybill", None) if branch else None
@@ -595,6 +633,7 @@ def get_sales_invoice_pdf(
             kra_qr_code=getattr(invoice, "kra_qr_code", None),
             kra_submitted_at=getattr(invoice, "kra_submitted_at", None),
             kra_cu_device_serial=cu_serial_pdf,
+            show_batch_expiry=wholesale_print,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate sales invoice PDF: {str(e)}")
@@ -1573,6 +1612,7 @@ def get_branch_gross_profit(
         "credit_notes_exclusive": str(credit_notes_total),
         "credit_notes_inclusive": str(credit_notes_total_inclusive),
         "credit_note_document_count": credit_note_document_count,
+        "return_cogs": str(return_cogs),
         "net_sales_exclusive": str(net_sales_exclusive),
         "net_sales_inclusive": str(net_sales_inclusive),
         "cogs": str(cogs),
@@ -1668,6 +1708,100 @@ def get_branch_gross_profit(
 
     out["breakdown"] = breakdown
     return out
+
+
+@router.get("/branch/{branch_id}/unpaid-invoices/summary", response_model=dict)
+def get_unpaid_invoices_summary(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Outstanding batched sales invoices awaiting payment (UNPAID or PARTIAL).
+    Point-in-time snapshot for dashboard — not filtered by gross-profit date range.
+    """
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    row = (
+        db.query(
+            func.count(SalesInvoice.id).label("invoice_count"),
+            func.coalesce(func.sum(SalesInvoice.total_exclusive), 0).label("total_exclusive"),
+            func.coalesce(func.sum(SalesInvoice.total_inclusive), 0).label("total_inclusive"),
+        )
+        .filter(
+            SalesInvoice.branch_id == branch_id,
+            SalesInvoice.status == "BATCHED",
+            SalesInvoice.payment_status.in_(["UNPAID", "PARTIAL"]),
+        )
+        .first()
+    )
+    return {
+        "invoice_count": int(getattr(row, "invoice_count", 0) or 0),
+        "total_exclusive": str((row.total_exclusive if row else Decimal("0")) or Decimal("0")),
+        "total_inclusive": str((row.total_inclusive if row else Decimal("0")) or Decimal("0")),
+    }
+
+
+@router.get("/branch/{branch_id}/unpaid-invoices", response_model=dict)
+def get_unpaid_invoices_list(
+    branch_id: UUID,
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """List outstanding batched invoices for dashboard drill-down."""
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    base_q = db.query(SalesInvoice).filter(
+        SalesInvoice.branch_id == branch_id,
+        SalesInvoice.status == "BATCHED",
+        SalesInvoice.payment_status.in_(["UNPAID", "PARTIAL"]),
+    )
+    total = int(base_q.count())
+    rows = (
+        base_q.order_by(
+            SalesInvoice.invoice_date.desc(),
+            SalesInvoice.created_at.desc(),
+            SalesInvoice.invoice_no.desc(),
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    out_rows = []
+    for inv in rows:
+        out_rows.append(
+            {
+                "id": str(inv.id),
+                "invoice_no": inv.invoice_no or "",
+                "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None,
+                "customer_name": inv.customer_name or "",
+                "payment_mode": inv.payment_mode or "",
+                "payment_status": inv.payment_status or "UNPAID",
+                "total_exclusive": float(inv.total_exclusive or 0),
+                "total_inclusive": float(inv.total_inclusive or 0),
+            }
+        )
+    return {"rows": out_rows, "count": total, "limit": limit, "offset": offset}
 
 
 @router.get("/branch/{branch_id}/orders-processed/items-summary", response_model=dict)
@@ -2239,6 +2373,19 @@ def update_sales_invoice(
             )
     
     # Update allowed fields
+    if invoice_update.customer_id is not None:
+        if invoice_update.customer_id:
+            from app.services.invoice_workflow_policy import assert_wholesale_branch_for_customer_sale
+            from app.services.customer_sales_service import apply_customer_to_invoice
+
+            assert_wholesale_branch_for_customer_sale(
+                db, db_invoice.branch_id, customer_id=invoice_update.customer_id
+            )
+            apply_customer_to_invoice(
+                db, db_invoice, invoice_update.customer_id, db_invoice.company_id
+            )
+        else:
+            db_invoice.customer_id = None
     if invoice_update.customer_name is not None:
         db_invoice.customer_name = invoice_update.customer_name
     if invoice_update.customer_pin is not None:
@@ -2256,7 +2403,11 @@ def update_sales_invoice(
     return db_invoice
 
 
-def _apply_optional_batch_invoice_overrides(invoice: SalesInvoice, body: BatchSalesInvoiceRequest) -> None:
+def _apply_optional_batch_invoice_overrides(
+    invoice: SalesInvoice,
+    body: BatchSalesInvoiceRequest,
+    db: Optional[Session] = None,
+) -> None:
     """
     Apply draft header fields from the batch request body (excluding line items).
     Ensures customer PIN / phone / payment mode and invoice date from the UI are persisted even when
@@ -2268,6 +2419,16 @@ def _apply_optional_batch_invoice_overrides(invoice: SalesInvoice, body: BatchSa
         return
     if "invoice_date" in dump and dump["invoice_date"] is not None:
         invoice.invoice_date = dump["invoice_date"]
+    if "customer_id" in dump and dump["customer_id"] and db is not None:
+        from app.services.invoice_workflow_policy import assert_wholesale_branch_for_customer_sale
+        from app.services.customer_sales_service import apply_customer_to_invoice
+
+        assert_wholesale_branch_for_customer_sale(
+            db, invoice.branch_id, customer_id=dump["customer_id"]
+        )
+        apply_customer_to_invoice(db, invoice, dump["customer_id"], invoice.company_id)
+    elif "customer_id" in dump and dump["customer_id"] is None:
+        invoice.customer_id = None
     if "customer_name" in dump:
         invoice.customer_name = dump["customer_name"]
     if "customer_pin" in dump:
@@ -2359,7 +2520,7 @@ def batch_sales_invoice(
         )
 
     if body:
-        _apply_optional_batch_invoice_overrides(invoice, body)
+        _apply_optional_batch_invoice_overrides(invoice, body, db)
 
     # Reject when the UI sends lines that never persisted as sales_invoice_items. Otherwise stock
     # would follow DB lines only while the cashier believed extra lines were included (silent mismatch).
@@ -2609,6 +2770,29 @@ def batch_sales_invoice(
                 )
         else:
             invoice.status = "BATCHED"
+
+        # Wholesale AR: due date, balance sync, ledger debit for credit sales
+        if invoice.customer_id:
+            from app.models import Customer
+            from app.services.customer_sales_service import (
+                assert_customer_credit_for_batch,
+                set_due_date_from_customer,
+                post_customer_ledger_on_batch,
+            )
+            from app.services.customer_invoice_payment_service import sync_customer_invoice_paid_from_settlements
+
+            customer = (
+                db.query(Customer)
+                .filter(Customer.id == invoice.customer_id, Customer.company_id == invoice.company_id)
+                .first()
+            )
+            if customer:
+                assert_customer_credit_for_batch(
+                    db, invoice, customer, invoice.company_id, invoice.branch_id
+                )
+                set_due_date_from_customer(invoice, customer)
+                sync_customer_invoice_paid_from_settlements(db, invoice)
+                post_customer_ledger_on_batch(db, invoice, customer, invoice.company_id)
 
         # Immutable KRA snapshot + transactional outbox when the company has KRA execution enabled
         # and this branch has submission enabled on stored credentials.
@@ -3072,7 +3256,7 @@ def add_invoice_payment(
     ).scalar() or Decimal("0")
     total_paid = existing_payments + payment.amount
     effective_total_after = existing_payments + (Decimal("0") if payment.payment_mode == "insurance" else payment.amount)
-    if effective_total_after > invoice.total_inclusive:
+    if effective_total_after > Decimal(str(invoice.total_inclusive or 0)) + PAYMENT_SETTLEMENT_TOLERANCE:
         raise HTTPException(
             status_code=400,
             detail=f"Payment amount exceeds invoice total. Invoice: {invoice.total_inclusive}, Total paid: {total_paid}"
@@ -3158,15 +3342,11 @@ def add_invoice_payment(
             notes=f"Claim against invoice {invoice.invoice_no}",
         ))
 
-    # Update invoice payment status
-    if effective_total_after >= invoice.total_inclusive:
-        invoice.payment_status = "PAID"
-        invoice.status = "PAID"
-        invoice.cashier_approved = True
-        invoice.approved_by = payment.paid_by
-        invoice.approved_at = datetime.now(timezone.utc)
-    elif effective_total_after > 0:
-        invoice.payment_status = "PARTIAL"
+    apply_payment_status_from_settled(
+        invoice,
+        effective_total_after,
+        approved_by=payment.paid_by,
+    )
 
     try:
         from app.services.commercial_transaction_lifecycle import on_invoice_payment_recorded
@@ -3204,6 +3384,124 @@ def get_invoice_payments(
     return payments
 
 
+@router.post("/invoice/{invoice_id}/revert-paid-status", response_model=dict)
+def revert_invoice_paid_status(
+    invoice_id: UUID,
+    body: Optional[RevertPaidStatusRequest] = None,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Admin/manager only: undo mistaken PAID marking (e.g. batched as cash) and reopen collection.
+
+    Recomputes payment_status from invoice_payments (UNPAID / PARTIAL / PAID).
+    Clears cashier approval when the invoice is not fully settled.
+    Optional clear_payments removes non-insurance payment rows first (batched-cash auto-pay).
+    """
+    user = current_user_and_db[0]
+    invoice = (
+        db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).with_for_update().first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_is_admin_or_manager(db, user.id, invoice.branch_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin or manager can revert paid status on an invoice.",
+        )
+    if invoice.status not in ("BATCHED", "PAID"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot revert payment status for invoice with status {invoice.status}.",
+        )
+    if (invoice.payment_status or "").upper() == "UNPAID" and invoice.status == "BATCHED":
+        raise HTTPException(
+            status_code=400,
+            detail="Invoice is already unpaid. Nothing to revert.",
+        )
+
+    req = body or RevertPaidStatusRequest()
+    payments_removed = 0
+    if req.clear_payments:
+        payments_removed = (
+            db.query(InvoicePayment)
+            .filter(
+                InvoicePayment.invoice_id == invoice.id,
+                InvoicePayment.payment_mode != "insurance",
+            )
+            .delete(synchronize_session=False)
+        )
+
+    previous_status = invoice.status
+    previous_payment_status = invoice.payment_status
+    settled = sum_settled_payments(db, invoice.id)
+    new_payment_status = revert_paid_marking(invoice, settled)
+
+    db.commit()
+    db.refresh(invoice)
+    return {
+        "invoice_id": str(invoice.id),
+        "invoice_no": invoice.invoice_no or "",
+        "status": invoice.status,
+        "payment_status": invoice.payment_status,
+        "previous_status": previous_status,
+        "previous_payment_status": previous_payment_status,
+        "settled_amount": str(settled),
+        "total_inclusive": str(invoice.total_inclusive or 0),
+        "payments_removed": int(payments_removed),
+        "cashier_approved": bool(invoice.cashier_approved),
+        "reason": req.reason,
+    }
+
+
+@router.post("/invoice/{invoice_id}/reconcile-payment-status", response_model=dict)
+def reconcile_invoice_payment_status(
+    invoice_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Recompute payment_status / status from invoice_payments vs total_inclusive.
+    Fixes stale PARTIAL when settled amount fully covers the invoice (within tolerance).
+    """
+    user = current_user_and_db[0]
+    invoice = (
+        db.query(SalesInvoice).filter(SalesInvoice.id == invoice_id).with_for_update().first()
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    require_document_belongs_to_user_company(db, user, invoice, "Invoice", None)
+    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
+    if not _user_has_permission(db, user.id, "sales.edit"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if invoice.status not in ("BATCHED", "PAID"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot reconcile invoice with status {invoice.status}",
+        )
+
+    settled = sum_settled_payments(db, invoice.id)
+    previous = invoice.payment_status
+    new_status = apply_payment_status_from_settled(
+        invoice,
+        settled,
+        approved_by=user.id if invoice.payment_status == "PAID" else None,
+    )
+    db.commit()
+    db.refresh(invoice)
+    return {
+        "invoice_id": str(invoice.id),
+        "payment_status": invoice.payment_status,
+        "status": invoice.status,
+        "previous_payment_status": previous,
+        "settled_amount": str(settled),
+        "total_inclusive": str(invoice.total_inclusive or 0),
+        "reconciled_to": new_status,
+    }
+
+
 @router.delete("/invoice/payments/{payment_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_invoice_payment(
     payment_id: UUID,
@@ -3235,18 +3533,10 @@ def delete_invoice_payment(
         )
     
     db.delete(payment)
-    
-    # Recalculate payment status
-    remaining_payments = db.query(func.sum(InvoicePayment.amount)).filter(
-        InvoicePayment.invoice_id == invoice.id,
-        InvoicePayment.payment_mode != "insurance",
-    ).scalar() or Decimal("0")
-    
-    if remaining_payments <= 0:
-        invoice.payment_status = "UNPAID"
-    elif remaining_payments < invoice.total_inclusive:
-        invoice.payment_status = "PARTIAL"
-    
+
+    remaining = sum_settled_payments(db, invoice.id)
+    apply_payment_status_from_settled(invoice, remaining)
+
     db.commit()
     return None
 

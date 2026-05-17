@@ -1,22 +1,78 @@
 """
 Item search: single entry point for GET /items/search.
-One path only: item_branch_snapshot when branch_id is present. No fallback to heavy path.
-On failure or missing branch_id we return []; fix snapshot/backfill instead of falling back.
+Primary: item_branch_snapshot when branch_id is present.
+Fallback: items master + inventory_balances when snapshot has gaps (then enqueue snapshot refresh).
 """
 import logging
+import re
 import time
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from app.models import ItemBranchSnapshot
+from app.models import InventoryBalance, Item, ItemBranchSnapshot
 from app.services.inventory_service import InventoryService, _unit_for_display
+from app.services.pos_snapshot_service import _search_text_for_item
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
+
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
+
+
+def _compact_alnum(text: str) -> str:
+    """Lowercase letters+digits only (on call strips -> oncallstrips)."""
+    return _TOKEN_SPLIT_RE.sub("", (text or "").lower())
+
+
+def _search_tokens(q: str) -> List[str]:
+    """Split query into tokens (min length 2) for AND matching on search_text."""
+    compact = _compact_alnum(q)
+    tokens: List[str] = []
+    for part in _TOKEN_SPLIT_RE.split((q or "").lower()):
+        p = (part or "").strip()
+        if len(p) >= 2 and p not in tokens:
+            tokens.append(p)
+    if len(compact) >= 2 and compact not in tokens:
+        tokens.append(compact)
+    return tokens[:8]
+
+
+def _snapshot_search_text_compact(column):
+    """SQL expression: search_text with non-alphanumeric removed (PostgreSQL)."""
+    return func.regexp_replace(func.lower(column), "[^a-z0-9]", "", "g")
+
+
+def _snapshot_match_filters(q: str):
+    """OR of phrase, compact substring, and all-token AND — improves e.g. oncal+scr vs on call strips."""
+    q_norm = (q or "").strip().lower()
+    if len(q_norm) < 2:
+        return None
+    clauses = [ItemBranchSnapshot.search_text.ilike(f"%{q_norm}%")]
+    compact_q = _compact_alnum(q_norm)
+    if len(compact_q) >= 2:
+        clauses.append(_snapshot_search_text_compact(ItemBranchSnapshot.search_text).contains(compact_q))
+    tokens = _search_tokens(q_norm)
+    if tokens:
+        clauses.append(and_(*[ItemBranchSnapshot.search_text.ilike(f"%{t}%") for t in tokens]))
+    return or_(*clauses) if len(clauses) > 1 else clauses[0]
+
+
+def _item_like_from_item(item: Item) -> SimpleNamespace:
+    return SimpleNamespace(
+        pack_size=int(item.pack_size or 1),
+        base_unit=item.base_unit or "piece",
+        retail_unit=getattr(item, "retail_unit", None) or item.base_unit or "piece",
+        supplier_unit=getattr(item, "supplier_unit", None) or "",
+        wholesale_unit=getattr(item, "wholesale_unit", None) or item.base_unit or "piece",
+        wholesale_units_per_supplier=float(getattr(item, "wholesale_units_per_supplier", None) or 1),
+        can_break_bulk=bool(getattr(item, "can_break_bulk", True)),
+    )
 
 
 def _item_like_from_snapshot_row(r: Any) -> SimpleNamespace:
@@ -71,16 +127,18 @@ def _search_impl(
     in_stock_only: bool = False,
 ) -> Tuple[List[Dict[str, Any]], str, str]:
     t_start = time.perf_counter()
-    search_term_pattern = f"%{q.lower()}%"
+    search_path = "item_branch_snapshot"
 
     # Single-table snapshot path (no Item join): keeps search <100ms at 1.5M rows.
     if branch_id is not None:
         try:
+            match_filter = _snapshot_match_filters(q)
             snap_q = db.query(ItemBranchSnapshot).filter(
                 ItemBranchSnapshot.company_id == company_id,
                 ItemBranchSnapshot.branch_id == branch_id,
-                ItemBranchSnapshot.search_text.ilike(search_term_pattern),
             )
+            if match_filter is not None:
+                snap_q = snap_q.filter(match_filter)
             if in_stock_only:
                 snap_q = snap_q.filter(ItemBranchSnapshot.current_stock > 0)
             rows = (
@@ -99,6 +157,12 @@ def _search_impl(
                 company_id, branch_id, e,
             )
             return [], "item_branch_snapshot", f"item_branch_snapshot;dur={snapshot_ms:.2f}"
+
+        # Snapshot gap: items exist in master/stock but no (matching) snapshot row yet.
+        if not rows:
+            rows, search_path = _search_master_fallback(
+                db, q, company_id, branch_id, limit, in_stock_only
+            )
 
         # Success (including 0 rows): use snapshot as sole cost/pricing authority
         item_ids = [r.item_id for r in rows]
@@ -146,9 +210,9 @@ def _search_impl(
             result.append(item_data)
         t_done = time.perf_counter()
         snapshot_ms = (t_done - t_start) * 1000
-        logger.info("[search] item_branch_snapshot: %.2f ms (results=%s)", snapshot_ms, len(result))
-        server_timing = f"item_branch_snapshot;dur={snapshot_ms:.2f}"
-        return result, "item_branch_snapshot", server_timing
+        logger.info("[search] %s: %.2f ms (results=%s)", search_path, snapshot_ms, len(result))
+        server_timing = f"{search_path};dur={snapshot_ms:.2f}"
+        return result, search_path, server_timing
 
     # No branch_id: snapshot path only; return empty (caller must pass branch_id for results)
     t_done = time.perf_counter()
@@ -223,6 +287,192 @@ def _canonical_item_from_snapshot_row(
     if price_source is not None:
         out["price_source"] = price_source
     return out
+
+
+def _canonical_item_from_master(
+    item: Item,
+    stock_float: float,
+    stock_val: int,
+) -> Dict[str, Any]:
+    """Build search row from items + balance when item_branch_snapshot row is missing."""
+    item_like = _item_like_from_item(item)
+    stock_display = _format_stock_display(stock_float, item_like)
+    retail_unit = _unit_for_display(getattr(item, "retail_unit", None), "piece")
+    wholesale_unit = _unit_for_display(
+        getattr(item, "wholesale_unit", None), _unit_for_display(item.base_unit, "piece")
+    )
+    supplier_unit = _unit_for_display(getattr(item, "supplier_unit", None), "")
+    pack_size = max(1, int(item.pack_size or 1))
+    wups = float(getattr(item, "wholesale_units_per_supplier", None) or 1.0)
+    default_cost = float(item.default_cost_per_base or 0) if item.default_cost_per_base is not None else 0.0
+    return {
+        "id": str(item.id),
+        "name": item.name or "",
+        "base_unit": _unit_for_display(item.base_unit, "piece"),
+        "retail_unit": retail_unit,
+        "wholesale_unit": wholesale_unit,
+        "supplier_unit": supplier_unit,
+        "pack_size": pack_size,
+        "wholesale_units_per_supplier": max(0.0001, wups),
+        "price": default_cost,
+        "sku": (item.sku or "").strip(),
+        "category": item.category or "",
+        "is_active": bool(item.is_active),
+        "base_quantity": stock_float,
+        "current_stock": stock_val,
+        "stock_display": stock_display,
+        "vat_rate": vat_rate_to_percent(item.vat_rate) if item.vat_rate is not None else 0,
+        "vat_category": (item.vat_category or "ZERO_RATED").strip(),
+        "purchase_price": default_cost if default_cost else None,
+        "sale_price": None,
+        "last_supplier": "",
+        "last_order_date": None,
+        "margin_percent": None,
+        "next_expiry_date": None,
+        "product_category": item.product_category,
+    }
+
+
+def _master_item_match_filter(q: str):
+    """Match active company items by name/sku/barcode (phrase, compact, or all tokens)."""
+    q_norm = (q or "").strip().lower()
+    if len(q_norm) < 2:
+        return None
+    clauses = [
+        or_(
+            Item.name.ilike(f"%{q_norm}%"),
+            Item.sku.ilike(f"%{q_norm}%"),
+            func.coalesce(Item.barcode, "").ilike(f"%{q_norm}%"),
+        )
+    ]
+    compact_q = _compact_alnum(q_norm)
+    if len(compact_q) >= 2:
+        name_c = _snapshot_search_text_compact(Item.name)
+        sku_c = _snapshot_search_text_compact(func.coalesce(Item.sku, ""))
+        clauses.append(or_(name_c.contains(compact_q), sku_c.contains(compact_q)))
+    tokens = _search_tokens(q_norm)
+    if tokens:
+        token_and = []
+        for t in tokens:
+            token_and.append(
+                or_(
+                    Item.name.ilike(f"%{t}%"),
+                    Item.sku.ilike(f"%{t}%"),
+                    func.coalesce(Item.barcode, "").ilike(f"%{t}%"),
+                )
+            )
+        clauses.append(and_(*token_and))
+    return or_(*clauses) if len(clauses) > 1 else clauses[0]
+
+
+def _search_master_fallback(
+    db: Session,
+    q: str,
+    company_id: UUID,
+    branch_id: UUID,
+    limit: int,
+    in_stock_only: bool,
+) -> Tuple[List[Any], str]:
+    """
+  When snapshot search returns nothing, match items master + inventory_balances for this branch.
+  Returns list of ItemBranchSnapshot-like rows (snapshot OR synthetic SimpleNamespace).
+  Enqueues snapshot refresh for matched items so the next search hits item_branch_snapshot.
+    """
+    match_filter = _master_item_match_filter(q)
+    if match_filter is None:
+        return [], "item_branch_snapshot"
+
+    item_q = (
+        db.query(Item)
+        .filter(
+            Item.company_id == company_id,
+            Item.is_active.is_(True),
+            or_(Item.product_category.is_(None), Item.product_category != "SERVICE"),
+            match_filter,
+        )
+        .order_by(Item.name.asc())
+        .limit(limit)
+    )
+    items = item_q.all()
+    if not items:
+        return [], "item_branch_snapshot"
+
+    item_ids = [it.id for it in items]
+    balances = {
+        row.item_id: float(row.current_stock or 0)
+        for row in db.query(InventoryBalance.item_id, InventoryBalance.current_stock).filter(
+            InventoryBalance.company_id == company_id,
+            InventoryBalance.branch_id == branch_id,
+            InventoryBalance.item_id.in_(item_ids),
+        )
+    }
+    if in_stock_only:
+        items = [it for it in items if balances.get(it.id, 0) > 0]
+        if not items:
+            return [], "item_branch_snapshot+master"
+        item_ids = [it.id for it in items]
+
+    snapshots = {
+        row.item_id: row
+        for row in db.query(ItemBranchSnapshot).filter(
+            ItemBranchSnapshot.company_id == company_id,
+            ItemBranchSnapshot.branch_id == branch_id,
+            ItemBranchSnapshot.item_id.in_(item_ids),
+        )
+    }
+
+    out_rows: List[Any] = []
+    enqueue_ids: List[UUID] = []
+    for it in items:
+        snap = snapshots.get(it.id)
+        if snap is not None:
+            out_rows.append(snap)
+        else:
+            stock = balances.get(it.id, 0)
+            # Synthetic row compatible with _canonical_item_from_snapshot_row loop
+            st = _search_text_for_item(it)
+            out_rows.append(
+                SimpleNamespace(
+                    item_id=it.id,
+                    name=it.name,
+                    pack_size=it.pack_size,
+                    base_unit=it.base_unit,
+                    sku=it.sku,
+                    vat_rate=it.vat_rate,
+                    vat_category=it.vat_category,
+                    current_stock=stock,
+                    average_cost=it.default_cost_per_base,
+                    last_purchase_price=it.default_cost_per_base,
+                    selling_price=None,
+                    margin_percent=None,
+                    next_expiry_date=None,
+                    retail_unit=getattr(it, "retail_unit", None),
+                    supplier_unit=getattr(it, "supplier_unit", None),
+                    wholesale_unit=getattr(it, "wholesale_unit", None),
+                    wholesale_units_per_supplier=getattr(it, "wholesale_units_per_supplier", None),
+                    price_source=None,
+                    last_order_date=None,
+                    search_text=st,
+                )
+            )
+            enqueue_ids.append(it.id)
+
+    if enqueue_ids:
+        try:
+            SnapshotRefreshService.enqueue_item_refreshes(db, company_id, branch_id, enqueue_ids)
+        except Exception as e:
+            logger.warning("[search] enqueue snapshot refresh after master fallback failed: %s", e)
+
+    logger.info(
+        "[search] master fallback company=%s branch=%s q=%r hits=%s snapshot_rows=%s enqueued=%s",
+        company_id,
+        branch_id,
+        q[:80],
+        len(out_rows),
+        len(out_rows) - len(enqueue_ids),
+        len(enqueue_ids),
+    )
+    return out_rows, "item_branch_snapshot+master"
 
 
 def _search_heavy_fallback(

@@ -293,6 +293,16 @@ class APIClient {
             }
         } catch (_) {}
 
+        try {
+            if (
+                typeof CONFIG !== 'undefined' &&
+                CONFIG.BRANCH_ID &&
+                endpoint.indexOf('/api/admin/') !== 0
+            ) {
+                config.headers['X-Branch-ID'] = CONFIG.BRANCH_ID;
+            }
+        } catch (_) {}
+
         const authFlags = _pharmasightEndpointAuthFlags(endpoint);
         _applyPharmasightApiAuthHeaders(config.headers, endpoint, authFlags, this);
 
@@ -515,11 +525,18 @@ const API = {
         modules: () => api.get('/api/company/modules'),
     },
     branch: {
-        list: (companyId) => api.get(`/api/branches/company/${companyId}`),
+        /** Branches assigned to the current user (branch picker, daily use). */
+        list: (companyId, options = {}) => {
+            const params = options && options.all ? { all: true } : {};
+            return api.get(`/api/branches/company/${companyId}`, params);
+        },
+        /** All company branches — Settings / user assignment (admin or settings.edit). */
+        listAll: (companyId) => api.get(`/api/branches/company/${companyId}`, { all: true }),
         get: (branchId) => api.get(`/api/branches/${branchId}`),
         create: (data) => api.post('/api/branches', data),
         update: (branchId, data) => api.put(`/api/branches/${branchId}`, data),
         setAsHq: (branchId) => api.post(`/api/branches/${branchId}/set-hq`, null),
+        provisionAccess: (branchId) => api.post(`/api/branches/${branchId}/provision-access`, null),
         getSettings: (branchId) => api.get(`/api/branches/${branchId}/settings`),
         updateSettings: (branchId, data) => api.patch(`/api/branches/${branchId}/settings`, data),
     },
@@ -850,6 +867,10 @@ const API = {
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/orders-processed/items-summary`, params),
         getCreditNotesItemsSummary: (branchId, params = {}) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/credit-notes/items-summary`, params),
+        getUnpaidInvoicesSummary: (branchId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/unpaid-invoices/summary`),
+        getUnpaidInvoicesList: (branchId, params = {}) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/unpaid-invoices`, params),
         updateInvoice: (invoiceId, data) => 
             api.put(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`, data),
         addInvoiceItem: (invoiceId, item) =>
@@ -867,6 +888,10 @@ const API = {
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/payments`, payment),
         getPayments: (invoiceId) => 
             api.get(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/payments`),
+        reconcilePaymentStatus: (invoiceId) =>
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/reconcile-payment-status`, {}),
+        revertPaidStatus: (invoiceId, body = {}) =>
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/revert-paid-status`, body),
         deletePayment: (paymentId) => 
             api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/payments/${paymentId}`),
         convertToQuotation: (invoiceId) => 
@@ -1209,6 +1234,69 @@ const API = {
             if (params.to_date) qs.append('to_date', params.to_date);
             return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/statement?${qs.toString()}`);
         },
+    },
+
+    customers: {
+        search: (q, companyId, limit = 10) =>
+            api.get(`${CONFIG.API_ENDPOINTS.customers}/search`, { q, company_id: companyId, limit }),
+        list: (companyId) => api.get(`${CONFIG.API_ENDPOINTS.customers}/company/${companyId}`),
+        listEnriched: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            return api.get(`${CONFIG.API_ENDPOINTS.customers}/enriched-list?${qs.toString()}`);
+        },
+        get: (customerId) => api.get(`${CONFIG.API_ENDPOINTS.customers}/${customerId}`),
+        create: (data) => api.post(`${CONFIG.API_ENDPOINTS.customers}/`, data),
+        update: (customerId, data) => api.put(`${CONFIG.API_ENDPOINTS.customers}/${customerId}`, data),
+        delete: (customerId) => api.delete(`${CONFIG.API_ENDPOINTS.customers}/${customerId}`),
+        merge: (fromId, toId) =>
+            api.post(`${CONFIG.API_ENDPOINTS.customers}/merge`, {
+                from_customer_id: fromId,
+                to_customer_id: toId,
+            }),
+        listPayments: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.customer_id) qs.append('customer_id', params.customer_id);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            return api.get(`${CONFIG.API_ENDPOINTS.customers}/payments?${qs.toString()}`);
+        },
+        createPayment: (data) => api.post(`${CONFIG.API_ENDPOINTS.customers}/payments`, data),
+        getAging: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.as_of_date) qs.append('as_of_date', params.as_of_date);
+            return api.get(`${CONFIG.API_ENDPOINTS.customers}/reports/aging?${qs.toString()}`);
+        },
+        getStatement: (params) => {
+            const qs = new URLSearchParams();
+            qs.append('customer_id', params.customer_id);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            qs.append('from_date', params.from_date);
+            qs.append('to_date', params.to_date);
+            return api.get(`${CONFIG.API_ENDPOINTS.customers}/statement?${qs.toString()}`);
+        },
+        listActivities: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.customer_id) qs.append('customer_id', params.customer_id);
+            if (params.status) qs.append('status', params.status);
+            return api.get(`${CONFIG.API_ENDPOINTS.customers}/activities?${qs.toString()}`);
+        },
+        listFollowUps: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.due_before) qs.append('due_before', params.due_before);
+            return api.get(`${CONFIG.API_ENDPOINTS.customers}/follow-ups?${qs.toString()}`);
+        },
+        createActivity: (data) => api.post(`${CONFIG.API_ENDPOINTS.customers}/activities`, data),
+        analytics: (customerId, params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            const q = qs.toString();
+            return api.get(
+                `${CONFIG.API_ENDPOINTS.customers}/reports/analytics/${customerId}${q ? `?${q}` : ''}`
+            );
+        },
+        listPortalUsers: (customerId) =>
+            api.get(`${CONFIG.API_ENDPOINTS.customers}/${customerId}/portal-users`),
     },
 
     insurance: {
@@ -1619,6 +1707,7 @@ const API = {
             modules: (tenantId) => api.get(`/api/admin/tenants/${tenantId}/modules`),
         },
         platformLicensing: {
+            pricingCatalog: () => api.get('/api/admin/platform-licensing/pricing-catalog'),
             companies: (params = {}, requestOptions = {}) =>
                 api.get('/api/admin/platform-licensing/companies', params, requestOptions),
             createCompany: (data) => api.post('/api/admin/platform-licensing/companies', data),

@@ -13,6 +13,7 @@ either runs sync refresh or enqueues.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Callable, List, Optional
 from uuid import UUID
 
@@ -22,6 +23,20 @@ from sqlalchemy.orm import Session
 from app.services.pos_snapshot_service import refresh_pos_snapshot_for_item
 
 logger = logging.getLogger(__name__)
+
+_BULK_BRANCH_SQL_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "scripts" / "bulk_refresh_branch_snapshot.sql"
+)
+_bulk_branch_sql_cache: Optional[str] = None
+
+
+def _bulk_branch_snapshot_sql() -> str:
+    global _bulk_branch_sql_cache
+    if _bulk_branch_sql_cache is None:
+        if not _BULK_BRANCH_SQL_PATH.is_file():
+            raise FileNotFoundError(f"Bulk snapshot SQL not found: {_BULK_BRANCH_SQL_PATH}")
+        _bulk_branch_sql_cache = _BULK_BRANCH_SQL_PATH.read_text(encoding="utf-8")
+    return _bulk_branch_sql_cache
 
 
 class SnapshotRefreshService:
@@ -163,6 +178,53 @@ class SnapshotRefreshService:
         ).all()
         for (branch_id,) in branches:
             SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
+
+    @staticmethod
+    def bulk_refresh_branch_sync(
+        db: Session,
+        company_id: UUID,
+        branch_id: UUID,
+        statement_timeout: str = "30min",
+    ) -> None:
+        """
+        Set-based refresh of item_branch_snapshot for one branch (all active items).
+        One SQL statement — suitable after Excel import of thousands of rows.
+        """
+        db.execute(text("SET statement_timeout = :t"), {"t": statement_timeout})
+        db.execute(
+            text(_bulk_branch_snapshot_sql()),
+            {"company_id": str(company_id), "branch_id": str(branch_id)},
+        )
+
+    @staticmethod
+    def finalize_excel_import_snapshots(db: Session, company_id: UUID) -> None:
+        """
+        After a large Excel import: refresh search/POS snapshots for every active branch.
+        Uses bulk SQL per branch; falls back to queue if bulk refresh fails.
+        """
+        from app.models import Branch
+
+        branches = (
+            db.query(Branch.id)
+            .filter(Branch.company_id == company_id, Branch.is_active.is_(True))
+            .all()
+        )
+        for (branch_id,) in branches:
+            try:
+                SnapshotRefreshService.bulk_refresh_branch_sync(db, company_id, branch_id)
+                logger.info(
+                    "Excel import: bulk item_branch_snapshot refresh completed branch=%s",
+                    branch_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Excel import bulk snapshot failed branch=%s (%s); enqueueing branch job",
+                    branch_id,
+                    e,
+                )
+                SnapshotRefreshService.enqueue_branch_refresh(
+                    db, company_id, branch_id, reason="excel_import_bulk_fallback"
+                )
 
     # Chunk size for branch-wide jobs: refresh this many items per transaction, then commit.
     # Prevents long locks, large memory, and slow commits when a branch has thousands of items.

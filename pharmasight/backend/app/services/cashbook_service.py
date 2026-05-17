@@ -22,6 +22,7 @@ SOURCE_TYPE_EXPENSE = "expense"
 SOURCE_TYPE_SUPPLIER_PAYMENT = "supplier_payment"
 SOURCE_TYPE_SALE = "sale"
 SOURCE_TYPE_INSURANCE_SETTLEMENT = "insurance_settlement"
+SOURCE_TYPE_CUSTOMER_PAYMENT = "customer_payment"
 
 
 def _normalize_cashbook_payment_mode(payment_mode: str) -> str:
@@ -194,6 +195,28 @@ def ensure_cashbook_entry_for_expense_if_approved(db: Session, *, expense) -> Op
         reference_number=getattr(expense, "reference_number", None),
         description=getattr(expense, "description", None),
         created_by=expense.created_by,
+    )
+
+
+def ensure_cashbook_entry_for_customer_payment(db: Session, *, payment) -> Optional[CashbookEntry]:
+    """Create cashbook inflow for a wholesale customer payment (AR receipt)."""
+    return create_cashbook_entry_if_missing(
+        db,
+        company_id=payment.company_id,
+        branch_id=payment.branch_id,
+        entry_date=payment.payment_date,
+        amount=payment.amount,
+        payment_mode=_normalize_supplier_method_to_cashbook_payment_mode(getattr(payment, "method", None)),
+        source_type=SOURCE_TYPE_CUSTOMER_PAYMENT,
+        source_id=payment.id,
+        reference_number=getattr(payment, "reference", None),
+        description=(
+            "Customer payment"
+            if getattr(payment, "reference", None) is None
+            else f"Customer payment ({payment.reference})"
+        ),
+        created_by=payment.created_by,
+        entry_type="inflow",
     )
 
 

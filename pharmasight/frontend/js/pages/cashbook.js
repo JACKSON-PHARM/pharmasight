@@ -138,7 +138,7 @@ async function loadCashbookBranches() {
 
     let branches = [];
     try {
-        branches = await API.branch.list(CONFIG.COMPANY_ID);
+        branches = await API.branch.listAll(CONFIG.COMPANY_ID);
     } catch (e) {
         branches = [];
     }

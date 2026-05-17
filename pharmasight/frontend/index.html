@@ -355,8 +355,8 @@
                             <div class="stat-icon stat-icon--muted"><i class="fas fa-undo"></i></div>
                             <div class="stat-info">
                                 <h3 id="creditReturnsCount">—</h3>
-                                <p>Customer credits</p>
-                                <p style="font-size: 0.72rem; opacity: 0.85; margin: 0;">Attributed to sale date</p>
+                                <p>Customer reversals</p>
+                                <p id="creditReturnsSub" style="font-size: 0.72rem; opacity: 0.85; margin: 0;">Attributed to sale date</p>
                             </div>
                         </div>
                         <div class="stat-card stat-card--hero stat-card-clickable" id="todayGrossProfitCard" title="Click to open financial reports" style="cursor: pointer;" onclick="if(typeof window.openFinancialReportsFromDashboard==='function') window.openFinancialReportsFromDashboard()">
@@ -367,6 +367,15 @@
                             </div>
                         </div>
                         <div class="stats-section-label" role="heading" aria-level="3">Needs attention</div>
+                        <div class="stat-card stat-card--alert stat-card-clickable" id="unpaidInvoicesCard" title="Outstanding batched invoices — click to view list" style="cursor: pointer;" onclick="if(typeof showUnpaidInvoicesModal==='function')showUnpaidInvoicesModal()">
+                            <div class="stat-icon stat-icon--alert"><i class="fas fa-file-invoice-dollar"></i></div>
+                            <div class="stat-info">
+                                <h3 id="unpaidInvoicesCount">—</h3>
+                                <p>Unpaid invoices</p>
+                                <p id="unpaidInvoicesSub" style="font-size: 0.72rem; opacity: 0.85; margin: 0;"></p>
+                                <p id="unpaidInvoicesHint" style="font-size: 0.68rem; opacity: 0.75; margin: 0.15rem 0 0 0; line-height: 1.3;">Loads on Apply (point-in-time: batched invoices with UNPAID or PARTIAL).</p>
+                            </div>
+                        </div>
                         <div class="stat-card stat-card--alert stat-card-clickable" id="expiringSoonCard" title="Click to view details" style="cursor: pointer;" onclick="if(typeof showExpiringSoonModal==='function')showExpiringSoonModal()">
                             <div class="stat-icon stat-icon--alert"><i class="fas fa-exclamation-triangle"></i></div>
                             <div class="stat-info">
@@ -394,6 +403,7 @@
                 <!-- Other pages will be loaded dynamically -->
                 <div id="sales" class="page"></div>
                 <div id="purchases" class="page"></div>
+                <div id="customers" class="page"></div>
                 <div id="inventory" class="page"></div>
                 <div id="items" class="page"></div>
                 <div id="stock-take" class="page"></div>
@@ -559,6 +569,7 @@
     <script src="js/components/global_item_search.js"></script>
     <script src="js/components/batch-distribution.js"></script>
     <script src="js/pages/purchases.js?v=24"></script>
+    <script src="js/pages/customers.js?v=1"></script>
     <script src="js/pages/expenses.js?v=1"></script>
     <script src="js/pages/cashbook.js?v=2"></script>
     <script src="js/pages/clinic.js?v=25"></script>

@@ -10,7 +10,9 @@ export const OPERATING_MODEL_META = {
 };
 
 function doctrineLabel(v) {
-    return v === 'ENCOUNTER_CONSOLIDATED' ? 'Encounter consolidated' : 'Retail counter';
+    if (v === 'ENCOUNTER_CONSOLIDATED') return 'Encounter consolidated';
+    if (v === 'WHOLESALE_DISTRIBUTION') return 'Wholesale distribution';
+    return 'Retail counter';
 }
 
 export function renderGovernanceProblems(problems, esc) {
@@ -111,7 +113,8 @@ export function renderOperatingModelPresets(gov, esc) {
     return (
         '<section class="gov-section">' +
         '<h3 class="gov-section-title">Operating model</h3>' +
-        '<p class="gov-section-desc">Parent organizational doctrine. Applying a preset compiles licensed modules and HQ branch fiscal doctrine.</p>' +
+        '<p class="gov-section-desc">Parent organizational doctrine. Applying a preset compiles licensed modules and HQ branch fiscal doctrine. ' +
+        'B2B <strong>Wholesale</strong> is a licensed capability (not a branch fiscal doctrine) — enable it under <em>Licensed capabilities</em> below, or re-apply a preset that includes it.</p>' +
         '<div class="gov-preset-grid">' +
         cards +
         '</div>' +
@@ -152,6 +155,9 @@ export function renderBranchGovernanceTable(gov, esc) {
                 '<option value="ENCOUNTER_CONSOLIDATED"' +
                 (b.invoice_workflow_type === 'ENCOUNTER_CONSOLIDATED' ? ' selected' : '') +
                 '>Encounter consolidated</option>' +
+                '<option value="WHOLESALE_DISTRIBUTION"' +
+                (b.invoice_workflow_type === 'WHOLESALE_DISTRIBUTION' ? ' selected' : '') +
+                '>Wholesale distribution</option>' +
                 '</select>' +
                 warn +
                 '</td>' +
@@ -165,7 +171,8 @@ export function renderBranchGovernanceTable(gov, esc) {
     return (
         '<section class="gov-section">' +
         '<h3 class="gov-section-title">Branch governance</h3>' +
-        '<p class="gov-section-desc">Fiscal doctrine per branch (capabilities do not imply doctrine).</p>' +
+        '<p class="gov-section-desc">Fiscal doctrine per branch (billing seat credits): retail counter (1), wholesale distribution (1.5), encounter consolidated (2). ' +
+        'Wholesale also requires the Wholesale capability on the company license.</p>' +
         '<table class="gov-branch-table"><thead><tr><th>Branch</th><th>Fiscal doctrine</th><th></th></tr></thead><tbody>' +
         rows +
         '</tbody></table></section>'

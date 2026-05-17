@@ -36,6 +36,7 @@ _FALLBACK_LICENSEABLE_MODULES: List[Tuple[str, str]] = [
     ("procurement", "business"),
     ("pos", "business"),
     ("billing", "business"),
+    ("wholesale", "business"),
     ("clinic", "clinical"),
     ("patients", "clinical"),
     ("opd", "clinical"),

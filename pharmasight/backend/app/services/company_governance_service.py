@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.models.company import Branch, Company
 from app.models.company_module import CompanyModule
 from app.module_metadata import get_core_modules
-from app.services.invoice_workflow_policy import normalize_invoice_workflow_type
+from app.services.invoice_workflow_policy import doctrine_label, normalize_invoice_workflow_type
 
 if TYPE_CHECKING:
     from app.utils.company_access import CompanyAccess
@@ -45,7 +45,7 @@ OrganizationOperatingModel = Literal[
     "ENTERPRISE_NETWORK",
 ]
 
-BranchFiscalDoctrine = Literal["RETAIL_COUNTER", "ENCOUNTER_CONSOLIDATED"]
+BranchFiscalDoctrine = Literal["RETAIL_COUNTER", "ENCOUNTER_CONSOLIDATED", "WHOLESALE_DISTRIBUTION"]
 
 OPERATING_MODEL_VALUES: Tuple[str, ...] = (
     "PHARMACY_RETAIL",
@@ -54,7 +54,11 @@ OPERATING_MODEL_VALUES: Tuple[str, ...] = (
     "ENTERPRISE_NETWORK",
 )
 
-BRANCH_DOCTRINE_VALUES: Tuple[str, ...] = ("RETAIL_COUNTER", "ENCOUNTER_CONSOLIDATED")
+BRANCH_DOCTRINE_VALUES: Tuple[str, ...] = (
+    "RETAIL_COUNTER",
+    "ENCOUNTER_CONSOLIDATED",
+    "WHOLESALE_DISTRIBUTION",
+)
 
 # Preset compilation: capabilities (module names) + default HQ branch doctrine.
 _OPERATING_MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -63,7 +67,7 @@ _OPERATING_MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "description": "Retail-first; counter fiscal spine per branch.",
         "modules": ("pharmacy", "inventory", "finance", "procurement", "pos"),
         "hq_workflow": "RETAIL_COUNTER",
-        "allowed_branch_doctrines": ("RETAIL_COUNTER",),
+        "allowed_branch_doctrines": ("RETAIL_COUNTER", "WHOLESALE_DISTRIBUTION"),
     },
     "OUTPATIENT_CLINIC": {
         "label": "Outpatient clinic",
@@ -78,6 +82,7 @@ _OPERATING_MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "modules": (
             "pharmacy",
             "inventory",
+            "wholesale",
             "clinic",
             "patients",
             "opd",
@@ -87,7 +92,11 @@ _OPERATING_MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
             "lab",
         ),
         "hq_workflow": "ENCOUNTER_CONSOLIDATED",
-        "allowed_branch_doctrines": ("RETAIL_COUNTER", "ENCOUNTER_CONSOLIDATED"),
+        "allowed_branch_doctrines": (
+            "RETAIL_COUNTER",
+            "ENCOUNTER_CONSOLIDATED",
+            "WHOLESALE_DISTRIBUTION",
+        ),
     },
     "ENTERPRISE_NETWORK": {
         "label": "Enterprise network",
@@ -95,6 +104,7 @@ _OPERATING_MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "modules": (
             "pharmacy",
             "inventory",
+            "wholesale",
             "finance",
             "procurement",
             "pos",
@@ -109,7 +119,11 @@ _OPERATING_MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
             "emr",
         ),
         "hq_workflow": "RETAIL_COUNTER",
-        "allowed_branch_doctrines": ("RETAIL_COUNTER", "ENCOUNTER_CONSOLIDATED"),
+        "allowed_branch_doctrines": (
+            "RETAIL_COUNTER",
+            "ENCOUNTER_CONSOLIDATED",
+            "WHOLESALE_DISTRIBUTION",
+        ),
     },
 }
 
@@ -371,7 +385,7 @@ def compile_branch_governance(
                 "is_hq": bool(b.is_hq),
                 "is_active": bool(b.is_active),
                 "invoice_workflow_type": doctrine,
-                "doctrine_label": "Retail counter" if doctrine == "RETAIL_COUNTER" else "Encounter consolidated",
+                "doctrine_label": doctrine_label(doctrine),
                 "governance_warnings": warnings,
                 "doctrine_allowed_for_model": doctrine in allowed,
             }

@@ -429,7 +429,7 @@ async function renderBranchesPage() {
     let etimsSummary = null;
     if (CONFIG.COMPANY_ID) {
         try {
-            branches = await API.branch.list(CONFIG.COMPANY_ID);
+            branches = await API.branch.listAll(CONFIG.COMPANY_ID);
         } catch (error) {
             console.error('Error loading branches:', error);
         }
@@ -578,7 +578,7 @@ async function renderDepartmentStoresSettingsPage() {
     }
     let branches = [];
     try {
-        branches = (await API.branch.list(CONFIG.COMPANY_ID)) || [];
+        branches = (await API.branch.listAll(CONFIG.COMPANY_ID)) || [];
     } catch (e) {
         console.error(e);
     }
@@ -818,6 +818,14 @@ function showCreateBranchModal() {
                 <label class="form-label">Paybill</label>
                 <input type="text" class="form-input" name="paybill" placeholder="Paybill (for sales invoice PDF)">
             </div>
+            <div class="form-group">
+                <label class="form-label">Fiscal doctrine</label>
+                <select class="form-input" name="invoice_workflow_type">
+                    <option value="RETAIL_COUNTER">Retail counter (walk-in pharmacy)</option>
+                    <option value="ENCOUNTER_CONSOLIDATED">Encounter consolidated (clinic billing)</option>
+                    <option value="WHOLESALE_DISTRIBUTION">Wholesale distribution (B2B depot)</option>
+                </select>
+            </div>
         </form>
     `;
     
@@ -853,11 +861,19 @@ async function createBranch(event) {
         address: (formData.get('address') || '').trim() || null,
         phone: (formData.get('phone') || '').trim() || null,
         till_number: (formData.get('till_number') || '').trim() || null,
-        paybill: (formData.get('paybill') || '').trim() || null
+        paybill: (formData.get('paybill') || '').trim() || null,
+        invoice_workflow_type: (formData.get('invoice_workflow_type') || 'RETAIL_COUNTER').trim()
     };
     
     try {
         const branch = await API.branch.create(branchData);
+        if (API.branch.provisionAccess) {
+            try {
+                await API.branch.provisionAccess(branch.id);
+            } catch (provErr) {
+                console.warn('Branch provision-access:', provErr);
+            }
+        }
         showToast('Branch created successfully!', 'success');
         closeModal();
         
@@ -1289,7 +1305,7 @@ async function renderUsersPage() {
             roles = await API.users.listRoles();
 
             if (CONFIG.COMPANY_ID) {
-                branches = await API.branch.list(CONFIG.COMPANY_ID);
+                branches = await API.branch.listAll(CONFIG.COMPANY_ID);
             }
         } else {
             errorMessage = 'API not initialized. Please check your configuration.';
@@ -1601,15 +1617,15 @@ async function renderCreateUserForm(page, roles, branches, isAdminUser) {
                         </select>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Branch (Optional)</label>
-                        <select class="form-input" name="branch_id">
-                            <option value="">None (assign later)</option>
+                        <label class="form-label">Branch *</label>
+                        <select class="form-input" name="branch_id" required>
+                            <option value="">Select branch</option>
                             ${branches.map(branch => 
-                                `<option value="${branch.id}">${escapeHtml(branch.name)}</option>`
+                                `<option value="${branch.id}">${escapeHtml(branch.name)}${branch.code ? ' (' + escapeHtml(branch.code) + ')' : ''}</option>`
                             ).join('')}
                         </select>
                         <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
-                            Assign user to a specific branch, or leave empty to assign later
+                            Users only see branches they are assigned to at login. Assign each branch separately when editing the user.
                         </small>
                     </div>
                     <div class="form-group">
@@ -1994,14 +2010,18 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
                         </select>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Branch (Optional)</label>
-                        <select class="form-input" name="branch_id" id="userBranchSelect" onchange="updateUserPermissionsDisplay('${user.id}')">
-                            <option value="">None (assign later)</option>
+                        <label class="form-label">Primary branch *</label>
+                        <select class="form-input" name="branch_id" id="userBranchSelect" required onchange="updateUserPermissionsDisplay('${user.id}')">
+                            <option value="">Select branch</option>
                             ${branches.map(branch => {
                                 const isSelected = user.branch_roles && user.branch_roles.some(ubr => ubr.branch_id === branch.id);
-                                return `<option value="${branch.id}" ${isSelected ? 'selected' : ''}>${escapeHtml(branch.name)}</option>`;
+                                return `<option value="${branch.id}" ${isSelected ? 'selected' : ''}>${escapeHtml(branch.name)}${branch.code ? ' (' + escapeHtml(branch.code) + ')' : ''}</option>`;
                             }).join('')}
                         </select>
+                        ${user.branch_roles && user.branch_roles.length > 1 ? `<small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">Also assigned: ${user.branch_roles.map(ubr => escapeHtml(ubr.branch_name || ubr.branch_id)).join(', ')}</small>` : ''}
+                        <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
+                            Changing branch updates this user&apos;s role on that branch. To add another branch, save and assign again with a different branch selected.
+                        </small>
                     </div>
                     <div class="form-group">
                         <label class="form-checkbox">

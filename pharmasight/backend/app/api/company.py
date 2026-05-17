@@ -2,7 +2,7 @@
 Company and Branch API routes
 """
 import json
-from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -21,6 +21,7 @@ from app.schemas.company import (
 )
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.branch_settings_service import ensure_default_branch_settings
+from app.services.branch_provisioning_service import provision_new_branch
 from app.services.company_provisioning_service import create_company_with_hq_branch_and_registry, HQBranchSpec
 from app.services.tenant_storage_service import (
     upload_stamp,
@@ -41,6 +42,7 @@ _COMPANY_MODULE_ENTITLEMENT_KEYS: List[str] = [
     "pharmacy",
     "inventory",
     "finance",
+    "wholesale",
     "clinic",
     "lab",
     "billing",
@@ -561,10 +563,17 @@ def create_branch(
         
         # Use model_dump() for Pydantic v2, fallback to dict() for v1
         branch_data = branch.model_dump() if hasattr(branch, 'model_dump') else branch.dict()
+        user = current_user_and_db[0]
         db_branch = Branch(**branch_data)
         db.add(db_branch)
         db.flush()
         ensure_default_branch_settings(db, db_branch.id)
+        provision_new_branch(
+            db,
+            company_id=db_branch.company_id,
+            branch_id=db_branch.id,
+            created_by_user_id=user.id,
+        )
         db.commit()
         db.refresh(db_branch)
         return db_branch
@@ -584,16 +593,33 @@ def create_branch(
 @router.get("/branches/company/{company_id}", response_model=List[BranchResponse])
 def get_branches_by_company(
     company_id: UUID,
+    all_branches: bool = Query(
+        False,
+        alias="all",
+        description="If true, return every branch in the company (requires admin or settings.edit). "
+        "Default: only branches assigned to the current user via user_branch_roles.",
+    ),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get all branches for a company. User may only access branches of their effective company."""
+    """
+    List branches for a company.
+
+    By default returns only branches the user is assigned to (user_branch_roles).
+    Pass ``?all=true`` for the full company list when managing users/branches in Settings.
+    """
+    from app.services.branch_provisioning_service import branches_visible_to_user
+
     user = current_user_and_db[0]
     effective_company_id = get_effective_company_id_for_user(db, user)
     if effective_company_id is None or company_id != effective_company_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")
-    branches = db.query(Branch).filter(Branch.company_id == company_id).all()
-    return branches
+    return branches_visible_to_user(
+        db,
+        user.id,
+        company_id,
+        include_all_company_branches=all_branches,
+    )
 
 
 @router.get("/branches/{branch_id}", response_model=BranchResponse)
@@ -610,7 +636,51 @@ def get_branch(
         raise HTTPException(status_code=404, detail="Branch not found")
     if effective_company_id is None or branch.company_id != effective_company_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this branch")
+    from app.services.branch_provisioning_service import user_has_branch_access
+
+    if not user_has_branch_access(db, user.id, branch_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this branch",
+        )
     return branch
+
+
+@router.post("/branches/{branch_id}/provision-access", status_code=status.HTTP_204_NO_CONTENT)
+def provision_branch_access(
+    branch_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Grant branch access (user_branch_roles) and refresh item search snapshots.
+    For admins/owners repairing branches created before auto-provisioning, or after bulk imports.
+    """
+    from app.api.users import _user_has_owner_or_admin_role
+    from app.dependencies import _user_has_permission
+
+    user = current_user_and_db[0]
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or branch.company_id != effective_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this branch")
+    if not _user_has_owner_or_admin_role(db, user.id) and not _user_has_permission(
+        db, user.id, "settings.edit"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only company admins can provision branch access",
+        )
+    provision_new_branch(
+        db,
+        company_id=branch.company_id,
+        branch_id=branch.id,
+        created_by_user_id=user.id,
+    )
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put("/branches/{branch_id}", response_model=BranchResponse)

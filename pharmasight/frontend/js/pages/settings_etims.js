@@ -85,7 +85,7 @@ async function renderEtimsSettingsPage() {
             console.warn('eTIMS wizard: company load failed', e);
         }
         try {
-            branches = await API.branch.list(CONFIG.COMPANY_ID);
+            branches = await API.branch.listAll(CONFIG.COMPANY_ID);
         } catch (e) {
             console.warn('eTIMS wizard: branches load failed', e);
         }

@@ -12,6 +12,7 @@ from .item import Item, ItemPricing, CompanyPricingDefault, CompanyMarginTier, P
 from .inventory import InventoryLedger, ItemMovement
 from .snapshot import InventoryBalance, ItemBranchPurchaseSnapshot, ItemBranchSearchSnapshot, ItemBranchSnapshot
 from .supplier import Supplier
+from .customer import Customer
 from .expense import ExpenseCategory, Expense
 from .purchase import GRN, GRNItem, SupplierInvoice, SupplierInvoiceItem, PurchaseOrder, PurchaseOrderItem
 from .supplier_financial import (
@@ -20,6 +21,13 @@ from .supplier_financial import (
     SupplierReturn,
     SupplierReturnLine,
     SupplierLedgerEntry,
+)
+from .customer_financial import (
+    CustomerPayment,
+    CustomerPaymentAllocation,
+    CustomerLedgerEntry,
+    CustomerActivity,
+    CustomerUser,
 )
 from .insurance_financial import (
     InsuranceProvider,
@@ -99,6 +107,7 @@ __all__ = [
     "ItemBranchSearchSnapshot",
     "ItemBranchSnapshot",
     "Supplier",
+    "Customer",
     "ExpenseCategory",
     "Expense",
     "GRN",
@@ -140,6 +149,11 @@ __all__ = [
     "SupplierReturn",
     "SupplierReturnLine",
     "SupplierLedgerEntry",
+    "CustomerPayment",
+    "CustomerPaymentAllocation",
+    "CustomerLedgerEntry",
+    "CustomerActivity",
+    "CustomerUser",
     "InsuranceProvider",
     "InsuranceClaim",
     "InsuranceSettlement",

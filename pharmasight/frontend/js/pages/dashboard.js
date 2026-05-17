@@ -94,7 +94,7 @@ async function loadDashboard() {
     if (gridRestore) gridRestore.style.display = '';
 
     const branchId = getBranchIdForStock();
-    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'ordersProcessed', 'creditReturnsCount', 'todayGrossProfit', 'expiringItems', 'orderBookPendingToday', 'belowMarginCount'];
+    const cardIds = ['totalItems', 'totalStock', 'totalStockValue', 'todaySales', 'ordersProcessed', 'creditReturnsCount', 'todayGrossProfit', 'unpaidInvoicesCount', 'expiringItems', 'orderBookPendingToday', 'belowMarginCount'];
 
     // Reset cards to placeholder (no auto-fetch)
     cardIds.forEach(function (id) {
@@ -107,6 +107,10 @@ async function loadDashboard() {
     if (salesSub) salesSub.textContent = '';
     const ordersSubReset = document.getElementById('ordersProcessedSub');
     if (ordersSubReset) ordersSubReset.textContent = '';
+    const creditReturnsSubReset = document.getElementById('creditReturnsSub');
+    if (creditReturnsSubReset) creditReturnsSubReset.textContent = 'Attributed to sale date';
+    const unpaidInvoicesSubReset = document.getElementById('unpaidInvoicesSub');
+    if (unpaidInvoicesSubReset) unpaidInvoicesSubReset.textContent = '';
     const gpMeta = document.getElementById('todayGrossProfitMeta');
     if (gpMeta) gpMeta.textContent = 'Gross Profit';
 
@@ -249,6 +253,8 @@ async function applyDashboardFilters() {
                 net_sales_exclusive: parseFloat(gpRes.net_sales_exclusive || 0), // sales after credit notes
                 net_sales_inclusive: parseFloat(gpRes.net_sales_inclusive || 0),
                 credit_notes_inclusive: parseFloat(gpRes.credit_notes_inclusive || 0),
+                credit_notes_exclusive: parseFloat(gpRes.credit_notes_exclusive || 0),
+                return_cogs: parseFloat(gpRes.return_cogs || 0),
                 credit_note_document_count: parseInt(gpRes.credit_note_document_count || 0, 10),
                 gross_profit: parseFloat(gpRes.gross_profit || 0),
                 margin_percent: parseFloat(gpRes.margin_percent || 0),
@@ -310,6 +316,15 @@ async function applyDashboardFilters() {
                     cachedOrderBookPendingToday = (s && s.entries) ? s.entries : [];
                 }).catch(function () { kpis.orderBookPending = 0; cachedOrderBookPendingToday = []; }));
             }
+            if (API.sales && typeof API.sales.getUnpaidInvoicesSummary === 'function') {
+                promises.push(API.sales.getUnpaidInvoicesSummary(branchId).then(function (s) {
+                    kpis.unpaidInvoiceCount = (s && s.invoice_count != null ? s.invoice_count : 0);
+                    kpis.unpaidInvoiceTotalInclusive = parseFloat(s && s.total_inclusive != null ? s.total_inclusive : 0);
+                }).catch(function () {
+                    kpis.unpaidInvoiceCount = 0;
+                    kpis.unpaidInvoiceTotalInclusive = 0;
+                }));
+            }
             await Promise.all(promises);
             kpisData = kpis;
             dashboardCache.kpis = { branchId: branchId, data: kpisData, ts: now };
@@ -323,6 +338,9 @@ async function applyDashboardFilters() {
         const ordersProcessedEl = document.getElementById('ordersProcessed');
         const ordersProcessedSubEl = document.getElementById('ordersProcessedSub');
         const creditReturnsCountEl = document.getElementById('creditReturnsCount');
+        const creditReturnsSubEl = document.getElementById('creditReturnsSub');
+        const unpaidInvoicesCountEl = document.getElementById('unpaidInvoicesCount');
+        const unpaidInvoicesSubEl = document.getElementById('unpaidInvoicesSub');
         const todayGrossProfitEl = document.getElementById('todayGrossProfit');
         const todayGrossProfitMetaEl = document.getElementById('todayGrossProfitMeta');
         const expiringItemsEl = document.getElementById('expiringItems');
@@ -355,6 +373,27 @@ async function applyDashboardFilters() {
         if (creditReturnsCountEl) {
             const ncn = rangeData.credit_note_document_count != null ? rangeData.credit_note_document_count : 0;
             creditReturnsCountEl.textContent = ncn > 0 ? String(ncn) : '0';
+        }
+        if (creditReturnsSubEl) {
+            const cnEx = parseFloat(rangeData.credit_notes_exclusive || 0);
+            const retCogs = parseFloat(rangeData.return_cogs || 0);
+            if (cnEx > 0 || retCogs > 0) {
+                const salesPart = typeof formatCurrency === 'function' ? formatCurrency(cnEx) : String(cnEx);
+                const cogsPart = typeof formatCurrency === 'function' ? formatCurrency(retCogs) : String(retCogs);
+                creditReturnsSubEl.textContent = 'Sales ex VAT ' + salesPart + ' • COGS ' + cogsPart;
+            } else {
+                creditReturnsSubEl.textContent = 'Attributed to sale date';
+            }
+        }
+        if (unpaidInvoicesCountEl) {
+            const unpaidN = kpisData.unpaidInvoiceCount != null ? kpisData.unpaidInvoiceCount : 0;
+            unpaidInvoicesCountEl.textContent = unpaidN > 0 ? String(unpaidN) : '0';
+        }
+        if (unpaidInvoicesSubEl) {
+            const unpaidTotal = kpisData.unpaidInvoiceTotalInclusive != null ? kpisData.unpaidInvoiceTotalInclusive : 0;
+            unpaidInvoicesSubEl.textContent = unpaidTotal > 0 && typeof formatCurrency === 'function'
+                ? ('Outstanding ' + formatCurrency(unpaidTotal) + ' incl. VAT')
+                : '';
         }
         if (todayGrossProfitEl) todayGrossProfitEl.textContent = typeof formatCurrency === 'function' ? formatCurrency(rangeData.gross_profit) : rangeData.gross_profit;
         if (todayGrossProfitMetaEl) {
@@ -552,7 +591,7 @@ async function showCreditReturnsItemsModal() {
     const content = '<div class="spinner" style="margin: 2rem auto;"></div><p style="text-align: center;">Loading credited items...</p>';
     const footer = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
     if (typeof showModal === 'function') {
-        showModal('Customer credits — Item summary (by original sale date)', content, footer, 'modal-large');
+        showModal('Customer reversals — Item summary (by original sale date)', content, footer, 'modal-large');
     }
 
     try {
@@ -560,7 +599,7 @@ async function showCreditReturnsItemsModal() {
         const rows = (res && Array.isArray(res.rows)) ? res.rows : [];
         if (!rows.length) {
             const empty = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No credited line items in this range (credits are matched to the invoice sale date).</p>';
-            if (typeof showModal === 'function') showModal('Customer credits — Item summary (by original sale date)', empty, footer, 'modal-large');
+            if (typeof showModal === 'function') showModal('Customer reversals — Item summary (by original sale date)', empty, footer, 'modal-large');
             return;
         }
         const tr = rows.map(function (r) {
@@ -593,12 +632,120 @@ async function showCreditReturnsItemsModal() {
             '<th style="padding: 0.5rem; border-bottom: 2px solid var(--border-color); text-align:right;">Total (excl.)</th>' +
             '</tr></thead><tbody>' + tr + '</tbody></table></div>'
         );
-        if (typeof showModal === 'function') showModal('Customer credits — Item summary (by original sale date)', table, footer, 'modal-large');
+        if (typeof showModal === 'function') showModal('Customer reversals — Item summary (by original sale date)', table, footer, 'modal-large');
     } catch (e) {
         console.error('Credit returns summary failed:', e);
         const msg = '<p style="color: var(--danger-color); padding: 1rem;">Failed to load summary.</p>';
-        if (typeof showModal === 'function') showModal('Customer credits — Item summary (by original sale date)', msg, footer, 'modal-large');
+        if (typeof showModal === 'function') showModal('Customer reversals — Item summary (by original sale date)', msg, footer, 'modal-large');
     }
+}
+
+async function showUnpaidInvoicesModal() {
+    const branchId = getBranchIdForStock();
+    if (!branchId) {
+        if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
+        return;
+    }
+    if (!API.sales || typeof API.sales.getUnpaidInvoicesList !== 'function') {
+        if (typeof showToast === 'function') showToast('Unpaid invoices list not available.', 'warning');
+        return;
+    }
+
+    const content = '<div class="spinner" style="margin: 2rem auto;"></div><p style="text-align: center;">Loading unpaid invoices...</p>';
+    const footer = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
+    if (typeof showModal === 'function') {
+        showModal('Unpaid invoices', content, footer, 'modal-large');
+    }
+
+    try {
+        const res = await API.sales.getUnpaidInvoicesList(branchId, { limit: 200, offset: 0 });
+        const rows = (res && Array.isArray(res.rows)) ? res.rows : [];
+        if (!rows.length) {
+            const empty = '<p style="padding: 2rem; text-align: center; color: var(--text-secondary);">No outstanding batched invoices (UNPAID or PARTIAL).</p>';
+            if (typeof showModal === 'function') showModal('Unpaid invoices', empty, footer, 'modal-large');
+            return;
+        }
+        const esc = (typeof escapeHtml === 'function') ? escapeHtml : function (s) { return String(s || ''); };
+        const tr = rows.map(function (r) {
+            const invNo = esc(r.invoice_no || '—');
+            const cust = esc(r.customer_name || '—');
+            const dateStr = r.invoice_date ? String(r.invoice_date).slice(0, 10) : '—';
+            const status = esc(r.payment_status || 'UNPAID');
+            const total = (typeof formatCurrency === 'function') ? formatCurrency(r.total_inclusive || 0) : String(r.total_inclusive || 0);
+            const idArg = esc(r.id || '');
+            const noArg = esc(r.invoice_no || '').replace(/'/g, "\\'");
+            return (
+                '<tr style="cursor:pointer;" onclick="if(window.openUnpaidInvoiceFromDashboard)window.openUnpaidInvoiceFromDashboard(\'' + idArg + '\',\'' + noArg + '\')">' +
+                '<td style="padding:0.5rem;border-bottom:1px solid var(--border-color);"><strong style="color:var(--primary-color);">' + invNo + '</strong></td>' +
+                '<td style="padding:0.5rem;border-bottom:1px solid var(--border-color);">' + dateStr + '</td>' +
+                '<td style="padding:0.5rem;border-bottom:1px solid var(--border-color);">' + cust + '</td>' +
+                '<td style="padding:0.5rem;border-bottom:1px solid var(--border-color);">' + status + '</td>' +
+                '<td style="padding:0.5rem;border-bottom:1px solid var(--border-color);text-align:right;">' + total + '</td>' +
+                '</tr>'
+            );
+        }).join('');
+        const table = (
+            '<p style="font-size:0.8rem;color:var(--text-secondary);margin:0 0 0.75rem 0;">Batched invoices awaiting payment. Click a row to open the invoice.</p>' +
+            '<div style="max-height:65vh;overflow:auto;">' +
+            '<table style="width:100%;border-collapse:collapse;">' +
+            '<thead style="position:sticky;top:0;background:white;">' +
+            '<tr>' +
+            '<th style="padding:0.5rem;border-bottom:2px solid var(--border-color);text-align:left;">Invoice</th>' +
+            '<th style="padding:0.5rem;border-bottom:2px solid var(--border-color);text-align:left;">Date</th>' +
+            '<th style="padding:0.5rem;border-bottom:2px solid var(--border-color);text-align:left;">Customer</th>' +
+            '<th style="padding:0.5rem;border-bottom:2px solid var(--border-color);text-align:left;">Status</th>' +
+            '<th style="padding:0.5rem;border-bottom:2px solid var(--border-color);text-align:right;">Amount (incl.)</th>' +
+            '</tr></thead><tbody>' + tr + '</tbody></table></div>'
+        );
+        if (typeof showModal === 'function') showModal('Unpaid invoices', table, footer, 'modal-large');
+    } catch (e) {
+        console.error('Unpaid invoices list failed:', e);
+        const msg = '<p style="color: var(--danger-color); padding: 1rem;">Failed to load unpaid invoices.</p>';
+        if (typeof showModal === 'function') showModal('Unpaid invoices', msg, footer, 'modal-large');
+    }
+}
+
+function openUnpaidInvoiceFromDashboard(invoiceId, invoiceNo) {
+    if (typeof closeModal === 'function') closeModal();
+
+    function openInvoice() {
+        if (invoiceId && typeof window.viewSalesInvoice === 'function') {
+            window.viewSalesInvoice(invoiceId);
+            return;
+        }
+        const branchId = (typeof CONFIG !== 'undefined' && CONFIG.BRANCH_ID) ? CONFIG.BRANCH_ID : null;
+        if (!branchId || !invoiceNo || !API.sales || typeof API.sales.getBranchInvoices !== 'function') {
+            if (typeof showToast === 'function') showToast('Could not open invoice.', 'warning');
+            return;
+        }
+        const normalized = String(invoiceNo).trim().toUpperCase().replace(/\s+/g, '');
+        API.sales.getBranchInvoices(branchId, { invoice_no: normalized, limit: 1 })
+            .then(function (list) {
+                const inv = Array.isArray(list) && list.length ? list[0] : null;
+                if (inv && inv.id && typeof window.viewSalesInvoice === 'function') {
+                    window.viewSalesInvoice(inv.id);
+                } else if (typeof showToast === 'function') {
+                    showToast('Invoice not found: ' + invoiceNo, 'warning');
+                }
+            })
+            .catch(function (err) {
+                console.error('Invoice lookup failed:', err);
+                if (typeof showToast === 'function') showToast(err.message || 'Failed to open invoice', 'error');
+            });
+    }
+
+    if (typeof window.loadPage === 'function') {
+        window.loadPage('sales');
+    } else {
+        window.location.hash = '#sales';
+    }
+    setTimeout(function () {
+        if (typeof window.loadSalesSubPage === 'function') {
+            Promise.resolve(window.loadSalesSubPage('invoices')).then(openInvoice).catch(openInvoice);
+        } else {
+            openInvoice();
+        }
+    }, 300);
 }
 
 /**
@@ -799,3 +946,5 @@ window.showExpiringSoonModal = showExpiringSoonModal;
 window.exportExpiringToCsv = exportExpiringToCsv;
 window.openFinancialReportsFromDashboard = openFinancialReportsFromDashboard;
 window.showBelowMarginModal = showBelowMarginModal;
+window.showUnpaidInvoicesModal = showUnpaidInvoicesModal;
+window.openUnpaidInvoiceFromDashboard = openUnpaidInvoiceFromDashboard;

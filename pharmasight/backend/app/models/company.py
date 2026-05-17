@@ -52,6 +52,7 @@ class Company(Base):
     branches = relationship("Branch", back_populates="company", cascade="all, delete-orphan")
     items = relationship("Item", back_populates="company", cascade="all, delete-orphan")
     suppliers = relationship("Supplier", back_populates="company", cascade="all, delete-orphan")
+    customers = relationship("Customer", back_populates="company", cascade="all, delete-orphan")
     modules = relationship(
         "CompanyModule",
         back_populates="company",

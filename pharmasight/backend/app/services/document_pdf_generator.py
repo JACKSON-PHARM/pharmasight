@@ -106,12 +106,41 @@ def _format_kra_verified_stamp(dt) -> str:
     return str(dt)
 
 
-def _items_table_flowable(items: List[Dict[str, Any]], _doc_type: str) -> Table:
+_ITEM_DESC_STYLE = ParagraphStyle(
+    "ItemDesc",
+    fontName="Helvetica",
+    fontSize=9,
+    leading=11,
+    spaceAfter=0,
+)
+def _description_cell_flowable(row: Dict[str, Any], *, show_batch_expiry: bool) -> Any:
+    name = (row.get("item_name") or row.get("description") or "").strip() or "—"
+    sub = row.get("batch_expiry_subline")
+    if sub is None and show_batch_expiry:
+        from app.services.sales_invoice_batch_display import batch_expiry_subline_text
+
+        sub = batch_expiry_subline_text(row, require=show_batch_expiry)
+    if sub:
+        safe_name = xml_escape(name)
+        safe_sub = xml_escape(str(sub)).replace("\n", "<br/>")
+        return Paragraph(
+            f"{safe_name}<br/><font size='7' color='#333333'>{safe_sub}</font>",
+            _ITEM_DESC_STYLE,
+        )
+    return name
+
+
+def _items_table_flowable(
+    items: List[Dict[str, Any]],
+    _doc_type: str,
+    *,
+    show_batch_expiry: bool = False,
+) -> Table:
     headers = ["Description", "Qty", "Unit Price", "Total"]
     col_widths = [80 * mm, 25 * mm, 35 * mm, 35 * mm]
     data = [headers]
     for row in items:
-        name = (row.get("item_name") or row.get("description") or "").strip() or "—"
+        name = _description_cell_flowable(row, show_batch_expiry=show_batch_expiry)
         qty = row.get("quantity")
         qty_str = f"{qty:,.2f}" if qty is not None else "—"
         unit = row.get("unit_name") or ""
@@ -229,7 +258,8 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
 
     # ----- 5. Items table (all documents) -----
     items = payload.get("items") or []
-    flow.append(_items_table_flowable(items, doc_type))
+    show_batch_expiry = bool(payload.get("show_batch_expiry"))
+    flow.append(_items_table_flowable(items, doc_type, show_batch_expiry=show_batch_expiry))
     flow.append(Spacer(1, 4 * mm))
 
     # ----- 6. Totals -----
@@ -543,6 +573,7 @@ def build_sales_invoice_pdf(
     kra_qr_code: Optional[str] = None,
     kra_submitted_at: Optional[datetime] = None,
     kra_cu_device_serial: Optional[str] = None,
+    show_batch_expiry: bool = False,
 ) -> bytes:
     """Build A4 PDF for a sales invoice. Logo right, company left; footer: prepared/printed/served, till; no status."""
     items = items or []
@@ -587,6 +618,7 @@ def build_sales_invoice_pdf(
         "kra_qr_png_bytes": kra_qr_png_bytes(kra_qr_code),
         "kra_submitted_at": kra_submitted_at,
         "kra_cu_device_serial": (kra_cu_device_serial or "").strip() or None,
+        "show_batch_expiry": show_batch_expiry,
     }
     return build_document_pdf(DOC_TYPE_SALES_INVOICE, payload)
 

@@ -67,6 +67,7 @@ const CONFIG = {
         companies: '/api/companies',
         branches: '/api/branches',
         suppliers: '/api/suppliers',
+        customers: '/api/customers',
         insurance: '/api/insurance',
         branchInventory: '/api/branch-inventory',
     },

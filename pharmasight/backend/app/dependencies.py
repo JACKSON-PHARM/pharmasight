@@ -967,24 +967,12 @@ def _user_has_permission(db: Session, user_id: UUID, permission_name: str) -> bo
 
 def ensure_user_has_branch_access(db: Session, user_id: UUID, branch_id: UUID) -> None:
     """
-    Require a user_branch_roles row for (user_id, branch_id).
-    Raises 403 if the user is not assigned to that branch.
+    Require branch access. Company admins/owners are auto-assigned on first use
+    (see branch_provisioning_service.ensure_user_branch_access_or_grant).
     """
-    from app.models.user import UserBranchRole
-    ok = (
-        db.query(UserBranchRole.id)
-        .filter(
-            UserBranchRole.user_id == user_id,
-            UserBranchRole.branch_id == branch_id,
-        )
-        .first()
-        is not None
-    )
-    if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to this branch",
-        )
+    from app.services.branch_provisioning_service import ensure_user_branch_access_or_grant
+
+    ensure_user_branch_access_or_grant(db, user_id, branch_id)
 
 
 def user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID) -> bool:

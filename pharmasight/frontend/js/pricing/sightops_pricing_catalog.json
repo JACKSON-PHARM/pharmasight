@@ -1,0 +1,246 @@
+{
+  "version": "2026-05-kenya",
+  "currency": "KES",
+  "market": "Kenya",
+  "policy_url": "/marketing/pricing-policy.html",
+  "terms_url": "/marketing/terms.html",
+  "positioning": "Cloud retail pharmacy first (affordable Solo); full capability on Pro and above. Monthly maintenance funds hosting, security, and updates — unlike one-time offline desktop licences.",
+  "retail_anchor_kes_monthly": 1499,
+  "retail_pro_anchor_kes_monthly": 2999,
+  "platform_fee_kes_monthly": 0,
+  "extra_user_kes_monthly": 599,
+  "annual_prepay_months_free": 2,
+  "vat_note": "All list prices are VAT-exclusive unless stated on your tax invoice.",
+  "cloud_vs_desktop_note": "SightOps is cloud-based: your data and users are served from secure infrastructure with continuous updates. A recurring maintenance (subscription) fee applies for each active organisation — not a one-time perpetual licence.",
+  "seat_credits": {
+    "RETAIL_COUNTER": {
+      "label": "Retail pharmacy branch",
+      "credits": 1,
+      "kes_monthly_list": 1499,
+      "kes_monthly_list_pro": 2999,
+      "description": "Counter sales, stock, purchases, expiry — per branch."
+    },
+    "WHOLESALE_DISTRIBUTION": {
+      "label": "Wholesale depot branch",
+      "credits": 1.5,
+      "kes_monthly_list": 4500,
+      "description": "B2B customers, AR, batch/expiry on receipts (Pro+ tiers)."
+    },
+    "ENCOUNTER_CONSOLIDATED": {
+      "label": "Clinic / OPD branch",
+      "credits": 2,
+      "kes_monthly_list": 6000,
+      "description": "Patients, encounters, consolidated billing (Health Network+)."
+    }
+  },
+  "retail_solo_includes": [
+    "One retail branch (counter doctrine)",
+    "Sales & POS, purchases / GRN, stock adjustments",
+    "Expiry and batch visibility on stock",
+    "Up to 2 users, up to 800 products",
+    "Basic sales & stock reports",
+    "Self-setup via tutorials (no included on-site visit)"
+  ],
+  "retail_pro_includes": [
+    "Everything in Retail Solo",
+    "Up to 5 users, up to 5,000 products",
+    "Extended reports and exports",
+    "eTIMS / fiscal workflow support (where licensed)",
+    "Priority email support",
+    "Optional guided setup packages available"
+  ],
+  "feature_matrix": [
+    { "feature": "Cloud access (web, multi-device)", "solo": true, "pro": true },
+    { "feature": "Sales & POS", "solo": true, "pro": true },
+    { "feature": "Purchases & goods received (GRN)", "solo": true, "pro": true },
+    { "feature": "Stock adjustments & branch inventory", "solo": true, "pro": true },
+    { "feature": "Expiry / batch tracking on stock", "solo": true, "pro": true },
+    { "feature": "Basic reports", "solo": true, "pro": true },
+    { "feature": "Extended reports & exports", "solo": false, "pro": true },
+    { "feature": "Additional users (tier caps apply)", "solo": "2", "pro": "5" },
+    { "feature": "Product catalogue limit", "solo": "800", "pro": "5,000" },
+    { "feature": "Multi-branch / branch credits", "solo": false, "pro": false },
+    { "feature": "Wholesale B2B & customer AR", "solo": false, "pro": false },
+    { "feature": "Clinic / OPD modules", "solo": false, "pro": false },
+    { "feature": "eTIMS-ready fiscal workflows", "solo": "Limited", "pro": true },
+    { "feature": "Priority support", "solo": false, "pro": true }
+  ],
+  "setup_packages": [
+    {
+      "slug": "self_setup",
+      "title": "Self-setup",
+      "kes_once": 0,
+      "description": "Tutorials and checklists; you create company, branch, and users."
+    },
+    {
+      "slug": "remote_launch",
+      "title": "Remote launch",
+      "kes_once": 10000,
+      "description": "2–3 hour video session: profile, branch, users, import template, first sale & GRN."
+    },
+    {
+      "slug": "onsite_launch",
+      "title": "On-site launch (half day)",
+      "kes_once": 20000,
+      "description": "Nairobi & environs typical; travel outside by quote. Printer test, go-live support."
+    },
+    {
+      "slug": "migration_basic",
+      "title": "Data migration (basic)",
+      "kes_once": 15000,
+      "description": "Excel item list + opening quantities (up to 800 SKUs)."
+    },
+    {
+      "slug": "etims_assist",
+      "title": "eTIMS activation assist",
+      "kes_once": 12000,
+      "description": "Branch credentials & sanity check — not KRA consulting or tax advice."
+    }
+  ],
+  "training_packages": [
+    {
+      "slug": "owner_remote",
+      "title": "Owner quick start (remote)",
+      "kes_once": 5000,
+      "description": "2 hours, 1–2 people."
+    },
+    {
+      "slug": "staff_half_day",
+      "title": "Staff training (half day)",
+      "kes_once": 14000,
+      "description": "Remote or on-site, up to 5 staff."
+    },
+    {
+      "slug": "staff_full_day",
+      "title": "Staff training (full day)",
+      "kes_once": 24000,
+      "description": "Sales, purchases, stock, reports."
+    }
+  ],
+  "tiers": [
+    {
+      "slug": "demo",
+      "title": "Demo / Trial",
+      "subtitle": "Evaluation — not for production",
+      "price_display": "Free (time-limited)",
+      "kes_monthly": 0,
+      "users": 1,
+      "branches": 1,
+      "branch_credits": 1,
+      "products": 100,
+      "tier_kind": "trial",
+      "default_operating_model": "PHARMACY_RETAIL",
+      "default_hq_doctrine": "RETAIL_COUNTER",
+      "modules_summary": "Tight caps; converts to Retail Solo or Pro when purchased",
+      "stripe_metadata": { "sightops_tier": "demo", "sightops_branch_credits": "1" }
+    },
+    {
+      "slug": "retail_solo",
+      "title": "Retail Solo",
+      "subtitle": "Affordable cloud pharmacy — one shop, self-setup",
+      "price_display": "KES 1,499 / month",
+      "kes_monthly": 1499,
+      "kes_annual": 14990,
+      "users": 2,
+      "branches": 1,
+      "branch_credits": 1,
+      "products": 800,
+      "tier_kind": "maintenance",
+      "featured": false,
+      "default_operating_model": "PHARMACY_RETAIL",
+      "default_hq_doctrine": "RETAIL_COUNTER",
+      "modules_summary": "Core retail only — reserved features on Pro & Growth",
+      "stripe_metadata": {
+        "sightops_tier": "retail_solo",
+        "sightops_branch_credits": "1",
+        "sightops_retail_anchor_kes": "1499"
+      }
+    },
+    {
+      "slug": "retail_pro",
+      "title": "Retail Pro",
+      "subtitle": "Full single-branch pharmacy — recommended",
+      "price_display": "KES 2,999 / month",
+      "kes_monthly": 2999,
+      "kes_annual": 29990,
+      "users": 5,
+      "branches": 1,
+      "branch_credits": 1,
+      "products": 5000,
+      "tier_kind": "maintenance",
+      "featured": true,
+      "default_operating_model": "PHARMACY_RETAIL",
+      "default_hq_doctrine": "RETAIL_COUNTER",
+      "modules_summary": "Complete retail: extended reports, eTIMS path, priority support",
+      "stripe_metadata": {
+        "sightops_tier": "retail_pro",
+        "sightops_branch_credits": "1",
+        "sightops_retail_anchor_kes": "2999"
+      }
+    },
+    {
+      "slug": "retail_growth",
+      "title": "Retail Growth",
+      "subtitle": "Multi-branch shops (retail credits pool)",
+      "price_display": "KES 7,999 / month",
+      "kes_monthly": 7999,
+      "kes_annual": 79990,
+      "users": 10,
+      "branches": 5,
+      "branch_credits": 5,
+      "products": 8000,
+      "tier_kind": "maintenance",
+      "featured": false,
+      "default_operating_model": "PHARMACY_RETAIL",
+      "default_hq_doctrine": "RETAIL_COUNTER",
+      "modules_summary": "Pro capabilities × branches; wholesale/clinic branches use extra credits",
+      "stripe_metadata": {
+        "sightops_tier": "retail_growth",
+        "sightops_branch_credits": "5"
+      }
+    },
+    {
+      "slug": "health_network",
+      "title": "Health Network",
+      "subtitle": "Clinic + pharmacy hybrid",
+      "price_display": "KES 24,999 / month",
+      "kes_monthly": 24999,
+      "kes_annual": null,
+      "users": 40,
+      "branches": 15,
+      "branch_credits": 15,
+      "products": 50000,
+      "tier_kind": "maintenance",
+      "featured": false,
+      "default_operating_model": "HYBRID_HOSPITAL",
+      "default_hq_doctrine": "ENCOUNTER_CONSOLIDATED",
+      "modules_summary": "Mixed doctrines, clinic stack, dedicated onboarding quote",
+      "stripe_metadata": {
+        "sightops_tier": "health_network",
+        "sightops_branch_credits": "15"
+      }
+    },
+    {
+      "slug": "enterprise",
+      "title": "Enterprise",
+      "subtitle": "Hospitals & large chains",
+      "price_display": "Custom",
+      "kes_monthly": null,
+      "users": null,
+      "branches": null,
+      "branch_credits": null,
+      "products": null,
+      "tier_kind": "contract",
+      "featured": false,
+      "default_operating_model": "ENTERPRISE_NETWORK",
+      "default_hq_doctrine": "RETAIL_COUNTER",
+      "modules_summary": "SLA, custom credits, implementation programme",
+      "stripe_metadata": { "sightops_tier": "enterprise" }
+    }
+  ],
+  "legacy_tier_aliases": {
+    "retail_starter": "retail_pro",
+    "pharmacy_growth": "retail_growth",
+    "clinic_starter": "retail_solo"
+  }
+}

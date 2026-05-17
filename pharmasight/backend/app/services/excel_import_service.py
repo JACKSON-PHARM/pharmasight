@@ -751,8 +751,8 @@ class ExcelImportService:
             except Exception as e:
                 logger.warning("Could not load stock validation config: %s", e)
             
-            # Process in batches; smaller size so first progress update shows within ~30–60s (was 1000 → 0% for minutes)
-            batch_size = 200  # 1036 items = 6 batches; first commit after 200 rows so UI shows progress soon
+            # Batches commit progress to import_jobs; snapshot refresh runs once at end (bulk SQL per branch).
+            batch_size = 500
             total_rows = len(excel_data)
             total_batches = (total_rows + batch_size - 1) // batch_size
             
@@ -858,6 +858,29 @@ class ExcelImportService:
                     logger.error(f"Error committing batch {batch_num}: {str(e)}")
                     raise
             
+            logger.info("Refreshing item_branch_snapshot for all branches (bulk SQL)...")
+            try:
+                SnapshotRefreshService.finalize_excel_import_snapshots(db, company_id)
+                db.commit()
+            except Exception as snap_err:
+                logger.warning(
+                    "Post-import bulk snapshot refresh failed (%s); enqueueing branch jobs",
+                    snap_err,
+                )
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                from app.models import Branch
+                for (bid,) in db.query(Branch.id).filter(
+                    Branch.company_id == company_id,
+                    Branch.is_active.is_(True),
+                ).all():
+                    SnapshotRefreshService.enqueue_branch_refresh(
+                        db, company_id, bid, reason="excel_import_finalize_failed"
+                    )
+                db.commit()
+
             total_time = time.time() - start_time
             logger.info(
                 f"AUTHORITATIVE import completed in {total_time/60:.1f} minutes: "
@@ -1130,10 +1153,8 @@ class ExcelImportService:
                 if stock_qty > 0:
                     result['opening_balance_created'] = 1
                 else:
-                    # No ledger row for qty 0 (DB constraint); still load snapshot so search finds the item.
-                    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(
-                        db, company_id, item.id
-                    )
+                    # No ledger row for qty 0; branch snapshot is refreshed in bulk at end of import.
+                    pass
             except Exception as stock_error:
                 logger.warning(f"Could not create opening balance for item '{item_name}': {stock_error}")
                 raise
@@ -1201,9 +1222,7 @@ class ExcelImportService:
         item.default_cost_per_base = _default_cost_per_base_from_row(row)
 
         if result.get("item_created"):
-            SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(
-                db, company_id, item.id
-            )
+            SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item.id)
         
         # NO opening balances in non-destructive mode
         # Stock is immutable once live transactions exist
@@ -1421,7 +1440,7 @@ class ExcelImportService:
                 document_number="OPENING",
             )
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
-            SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, company_id, item_id)
+            SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
         else:
             ledger_entry = InventoryLedger(
                 company_id=company_id,
@@ -1444,7 +1463,7 @@ class ExcelImportService:
                 document_number="OPENING",
             )
             SnapshotService.upsert_purchase_snapshot(db, company_id, branch_id, item_id, unit_cost, None, None)
-            SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(db, company_id, item_id)
+            SnapshotRefreshService.refresh_item_sync(db, company_id, branch_id, item_id)
             from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
 
             enqueue_kra_stock_in_for_ledger(db, ledger_entry, source="stock.opening_balance")
@@ -1833,31 +1852,7 @@ class ExcelImportService:
             except Exception as e:
                 logger.warning(f"Some opening balances failed bulk insert: {e}")
 
-        # Step 12: item_branch_snapshot for every item in this batch (including 0 opening stock).
-        # Step 8 only adds opening_balances when stock_qty > 0, so without this, zero-stock uploads are invisible in search.
-        batch_snapshot_item_ids = [iid for iid in all_item_ids_batch if iid not in items_with_real_tx_set]
-        batch_snapshot_item_ids = list(dict.fromkeys(batch_snapshot_item_ids))
-        if batch_snapshot_item_ids:
-            snapshot_refresh_mode = "sync_items_all_branches"
-            if len(batch_snapshot_item_ids) <= 5000:
-                for iid in batch_snapshot_item_ids:
-                    SnapshotRefreshService.schedule_snapshot_refresh_for_item_all_branches(
-                        db, company_id, iid
-                    )
-            else:
-                snapshot_refresh_mode = "enqueue_branch_refresh_all"
-                for (bid,) in db.query(Branch.id).filter(
-                    Branch.company_id == company_id,
-                    Branch.is_active == True,
-                ).all():
-                    SnapshotRefreshService.enqueue_branch_refresh(
-                        db, company_id, bid, reason="excel_import_bulk_oversize"
-                    )
-            logger.info(
-                "Excel bulk batch snapshot refresh (%s): %s items",
-                snapshot_refresh_mode,
-                len(batch_snapshot_item_ids),
-            )
+        # item_branch_snapshot: deferred — authoritative import runs bulk SQL per branch once at end.
 
         return result
     

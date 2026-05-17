@@ -41,6 +41,7 @@ from app.models.company_kra_profile import CompanyKraProfile
 from app.services.etims.kra_profile_service import KraProfileService
 from app.models.company_module import CompanyModule
 from app.module_enforcement import get_company_module_license_catalog
+from app.services.pricing_catalog import load_pricing_catalog
 from app.utils.company_plan_limits import (
     company_branch_limit,
     company_product_limit,
@@ -176,6 +177,12 @@ class CreatePlatformCompanyRequest(BaseModel):
         default="PHARMACY_RETAIL",
         description="Governance preset applied at provisioning (modules + HQ branch doctrine).",
     )
+
+
+@router.get("/pricing-catalog", response_model=Dict[str, Any])
+def get_pricing_catalog(_admin: None = Depends(get_current_admin)) -> Dict[str, Any]:
+    """Kenya-facing commercial catalog (tiers, seat credits, Stripe metadata hints)."""
+    return load_pricing_catalog()
 
 
 @router.get("/companies", response_model=List[PlatformCompanyListItem])

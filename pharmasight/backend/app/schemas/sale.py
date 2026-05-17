@@ -39,6 +39,7 @@ class BatchSalesInvoiceRequest(BaseModel):
         default=None,
         description="Current line items from UI (quantity, unit_name, unit_price_exclusive, etc.). If provided, draft lines are updated to match before stock deduction.",
     )
+    customer_id: Optional[UUID] = None
     customer_name: Optional[str] = None
     customer_pin: Optional[str] = None
     customer_phone: Optional[str] = None
@@ -92,6 +93,7 @@ class SalesInvoiceBase(BaseModel):
     """Sales invoice base schema"""
     branch_id: UUID
     invoice_date: date
+    customer_id: Optional[UUID] = None
     customer_name: Optional[str] = None
     customer_pin: Optional[str] = None
     customer_phone: Optional[str] = None  # Required if payment_mode is 'credit'
@@ -112,6 +114,7 @@ class SalesInvoiceCreate(SalesInvoiceBase):
 class SalesInvoiceUpdate(BaseModel):
     """Update sales invoice (limited - KRA compliance)"""
     payment_status: Optional[str] = None
+    customer_id: Optional[UUID] = None
     customer_name: Optional[str] = None
     customer_pin: Optional[str] = None
     customer_phone: Optional[str] = None
@@ -122,6 +125,9 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     """Sales invoice response (includes company/branch/user for print letterhead)"""
     id: UUID
     company_id: UUID
+    due_date: Optional[date] = None
+    amount_paid: Optional[Decimal] = None
+    balance: Optional[Decimal] = None
     invoice_no: str
     total_exclusive: Decimal
     vat_rate: Decimal
@@ -314,6 +320,7 @@ class QuotationBase(BaseModel):
     """Quotation base schema"""
     branch_id: UUID
     quotation_date: date
+    customer_id: Optional[UUID] = None
     customer_name: Optional[str] = None
     customer_pin: Optional[str] = None
     reference: Optional[str] = None
@@ -408,3 +415,12 @@ class InvoicePaymentResponse(InvoicePaymentBase):
 
     class Config:
         from_attributes = True
+
+
+class RevertPaidStatusRequest(BaseModel):
+    """Admin/manager: undo mistaken PAID marking and reopen for cash collection."""
+    clear_payments: bool = Field(
+        False,
+        description="Delete non-insurance invoice_payments before recomputing (e.g. batched-as-cash auto-pay).",
+    )
+    reason: Optional[str] = Field(None, max_length=500)

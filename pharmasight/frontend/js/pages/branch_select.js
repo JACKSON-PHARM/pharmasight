@@ -269,8 +269,7 @@ function renderBranchSelection() {
     }
     
     if (availableBranches.length === 0) {
-        // Company exists but no branches: first user creates first branch here
-        renderCreateFirstBranch();
+        renderNoAssignedBranches();
         return;
     }
 
@@ -442,6 +441,45 @@ function renderBranchSelection() {
     }
 }
 
+async function renderNoAssignedBranches() {
+    const page = document.getElementById('branch-select');
+    if (!page) return;
+    const companyId = CONFIG.COMPANY_ID;
+    if (!companyId) {
+        renderCreateFirstBranch();
+        return;
+    }
+    let companyHasBranches = false;
+    if (API.branch.listAll) {
+        try {
+            const all = await API.branch.listAll(companyId);
+            companyHasBranches = Array.isArray(all) && all.length > 0;
+        } catch (e) {
+            console.warn('[BRANCH SELECT] listAll failed:', e);
+        }
+    }
+    if (!companyHasBranches) {
+        renderCreateFirstBranch();
+        return;
+    }
+    page.innerHTML = `
+        <div class="login-container">
+            <div class="login-card">
+                ${BRANCH_SELECT_CARD_BRAND_SNIPPET}
+                <h2>No branch assigned</h2>
+                <div class="error-message" style="display: block; margin: 1rem 0;">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    Your account is not assigned to any branch yet. Ask a company administrator to assign you
+                    in <strong>Settings → Users</strong> (choose a role and branch).
+                </div>
+                <button class="btn btn-secondary btn-block" onclick="window.AuthBootstrap.signOut().then(() => window.location.reload())">
+                    <i class="fas fa-sign-out-alt"></i> Sign Out
+                </button>
+            </div>
+        </div>
+    `;
+}
+
 function renderCreateFirstBranch() {
     const page = document.getElementById('branch-select');
     if (!page) return;
@@ -509,6 +547,13 @@ function renderCreateFirstBranch() {
                     phone: phone,
                     is_active: true
                 });
+                if (API.branch.provisionAccess) {
+                    try {
+                        await API.branch.provisionAccess(result.id);
+                    } catch (provErr) {
+                        console.warn('Branch provision-access:', provErr);
+                    }
+                }
                 const user = AuthBootstrap.getCurrentUser();
                 if (user && user.id && API.users && typeof API.users.assignRole === 'function') {
                     await API.users.assignRole(user.id, { role_name: 'admin', branch_id: result.id });

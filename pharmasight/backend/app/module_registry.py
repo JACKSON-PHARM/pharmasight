@@ -23,6 +23,7 @@ _PERMISSION_PREFIX_TO_MODULE: list[tuple[str, str]] = [
     ("inventory.", "pharmacy"),
     ("items.", "pharmacy"),
     ("suppliers.", "pharmacy"),
+    ("customers.", "wholesale"),
     ("orders.", "pharmacy"),
     ("quotations.", "pharmacy"),
     ("reports.", "pharmacy"),
@@ -47,7 +48,7 @@ _PERMISSION_NAME_TO_MODULE: dict[str, str] = {
 
 # Explicit RBAC for top-bar module pills (permissions named modules.<slug>).
 _MODULE_SWITCHER_SLUGS = frozenset(
-    {"pharmacy", "clinic", "lab", "billing", "finance", "management"}
+    {"pharmacy", "clinic", "lab", "billing", "finance", "wholesale", "management"}
 )
 
 

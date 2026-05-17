@@ -76,7 +76,8 @@ function setBranchInternal(branch, shouldBroadcast = true) {
             name: branch.name,
             company_id: branch.company_id,
             code: branch.code,
-            is_hq: !!branch.is_hq
+            is_hq: !!branch.is_hq,
+            invoice_workflow_type: branch.invoice_workflow_type || 'RETAIL_COUNTER',
         }));
         if (typeof CONFIG !== 'undefined') CONFIG.IS_HQ = !!branch.is_hq;
     } else {
@@ -128,6 +129,20 @@ function setBranch(branch) {
  */
 function getBranch() {
     return selectedBranch;
+}
+
+function getInvoiceWorkflowType() {
+    const b = selectedBranch;
+    if (!b || !b.invoice_workflow_type) return 'RETAIL_COUNTER';
+    return String(b.invoice_workflow_type).trim().toUpperCase();
+}
+
+function isWholesaleDistributionBranch() {
+    return getInvoiceWorkflowType() === 'WHOLESALE_DISTRIBUTION';
+}
+
+function isEncounterConsolidatedBranch() {
+    return getInvoiceWorkflowType() === 'ENCOUNTER_CONSOLIDATED';
 }
 
 /**
@@ -191,6 +206,9 @@ const BranchContext = {
     init: initBranchContext,
     setBranch,
     getBranch,
+    getInvoiceWorkflowType,
+    isWholesaleDistributionBranch,
+    isEncounterConsolidatedBranch,
     clearBranch,
     onBranchChange,
     loadFromStorage: loadBranchFromStorage

@@ -1421,7 +1421,7 @@ async function renderCreateSalesInvoicePage() {
                     <!-- Metadata: tight grid, max 2 rows, inline labels -->
                     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.25rem 0.75rem; align-items: center; margin-bottom: 0.5rem; flex-shrink: 0;">
                         <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Date *</label><input type="date" class="form-input" name="invoice_date" value="${invoiceDate}" required style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
-                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Customer</label><input type="text" class="form-input" name="customer_name" value="${invoiceData?.customer_name || ''}" placeholder="Name (optional)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
+                        ${typeof salesWholesaleCustomerFieldHtml === 'function' ? salesWholesaleCustomerFieldHtml(invoiceData) : `<div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Customer</label><input type="text" class="form-input" name="customer_name" value="${invoiceData?.customer_name || ''}" placeholder="Name (optional)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>`}
                         <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">PIN</label><input type="text" class="form-input" name="customer_pin" value="${invoiceData?.customer_pin || ''}" placeholder="PIN" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
                         <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Phone</label><input type="text" class="form-input" name="customer_phone" id="customerPhoneInput" value="${invoiceData?.customer_phone || ''}" placeholder="Phone (credit)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
                         <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Sales Type</label><select class="form-select" name="sales_type" id="salesTypeSelect" onchange="handleSalesTypeChange()" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;" ${currentInvoice && currentInvoice.id ? 'disabled' : ''}><option value="RETAIL" ${invoiceData?.sales_type === 'RETAIL' || !invoiceData?.sales_type ? 'selected' : ''}>Retail</option><option value="WHOLESALE" ${invoiceData?.sales_type === 'WHOLESALE' ? 'selected' : ''}>Wholesale</option><option value="SUPPLIER" ${invoiceData?.sales_type === 'SUPPLIER' ? 'selected' : ''}>Supplier</option></select></div>
@@ -1599,6 +1599,7 @@ function getSalesInvoiceFormData() {
     const fd = new FormData(form);
     return {
         invoice_date: fd.get('invoice_date') || new Date().toISOString().split('T')[0],
+        customer_id: (document.getElementById('wholesaleCustomerId') || {}).value || null,
         customer_name: fd.get('customer_name') || null,
         customer_pin: fd.get('customer_pin') || null,
         customer_phone: fd.get('customer_phone') || null,
@@ -2084,13 +2085,16 @@ async function saveSalesInvoice(event) {
         try {
             showToast('Updating invoice...', 'info');
 
-            await API.sales.updateInvoice(currentInvoice.id, {
+            const updatePayload = {
                 customer_name: formData.get('customer_name') || null,
                 customer_pin: formData.get('customer_pin') || null,
                 customer_phone: formData.get('customer_phone') || null,
                 payment_mode: formData.get('payment_mode') || 'cash',
-                payment_status: 'UNPAID'  // Keep as UNPAID for DRAFT
-            });
+                payment_status: 'UNPAID',
+            };
+            const cidEl = document.getElementById('wholesaleCustomerId');
+            if (cidEl && cidEl.value) updatePayload.customer_id = cidEl.value;
+            await API.sales.updateInvoice(currentInvoice.id, updatePayload);
 
             showToast('Invoice updated successfully', 'success');
             await viewSalesInvoice(currentInvoice.id);
@@ -2969,6 +2973,10 @@ async function viewSalesInvoice(invoiceId) {
         // Determine which buttons to show
         const showPrint = status === 'BATCHED' || status === 'PAID';
         const showPayment = status === 'BATCHED' && invoice.payment_status !== 'PAID';
+        const isAdminOrManager = await checkIfAdminOrManager();
+        const showRevertPaid = isAdminOrManager
+            && (status === 'BATCHED' || status === 'PAID')
+            && String(invoice.payment_status || '').toUpperCase() === 'PAID';
         
         page.innerHTML = `
             <div class="card">
@@ -2982,6 +2990,11 @@ async function viewSalesInvoice(invoiceId) {
                         ${showPayment ? `
                             <button type="button" class="btn btn-success" onclick="if(window.collectPayment) window.collectPayment('${invoiceId}')" title="Collect Payment">
                                 <i class="fas fa-money-bill-wave"></i> Collect Payment
+                            </button>
+                        ` : ''}
+                        ${showRevertPaid ? `
+                            <button type="button" class="btn btn-warning" onclick="if(window.revertInvoicePaidStatus) window.revertInvoicePaidStatus('${invoiceId}')" title="Reopen for cash collection (admin/manager)">
+                                <i class="fas fa-undo-alt"></i> Revert paid
                             </button>
                         ` : ''}
                         <button type="button" class="btn btn-outline" onclick="if(window.downloadSalesInvoicePdf) window.downloadSalesInvoicePdf('${invoiceId}', '${String(invoice.invoice_no || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'")}')" title="Download PDF">
@@ -3525,6 +3538,8 @@ async function batchSalesInvoice(invoiceId, buttonEl) {
         }
         if (canUseForm && body) {
             const fd = new FormData(form);
+            const cidEl = document.getElementById('wholesaleCustomerId');
+            if (cidEl && cidEl.value) body.customer_id = cidEl.value;
             body.customer_name = (fd.get('customer_name') || '').trim() || null;
             body.customer_pin = (fd.get('customer_pin') || '').trim() || null;
             body.customer_phone = (fd.get('customer_phone') || '').trim() || null;
@@ -3592,31 +3607,94 @@ async function deleteSalesInvoice(invoiceId) {
     }
 }
 
+const PAYMENT_SETTLEMENT_TOLERANCE = 0.01;
+
+function sumSettledPayments(payments) {
+    return (payments || [])
+        .filter((p) => String(p.payment_mode || '').toLowerCase() !== 'insurance')
+        .reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+}
+
+function invoicePaymentBalance(invoice, payments) {
+    const total = parseFloat(invoice.total_inclusive || 0);
+    return Math.max(0, total - sumSettledPayments(payments));
+}
+
+async function revertInvoicePaidStatus(invoiceId) {
+    if (!invoiceId) return;
+    const isAdminOrManager = await checkIfAdminOrManager();
+    if (!isAdminOrManager) {
+        showToast('Only admin or manager can revert paid status.', 'error');
+        return;
+    }
+    if (!API.sales || typeof API.sales.revertPaidStatus !== 'function') {
+        showToast('Revert paid status is not available.', 'warning');
+        return;
+    }
+    if (!confirm('Revert this invoice from PAID and reopen it for cash collection?')) {
+        return;
+    }
+    const clearPayments = confirm(
+        'Also remove existing payment rows?\n\n' +
+        'OK = Yes (batched as cash but not actually collected)\n' +
+        'Cancel = No (keep payments; status recalculated from recorded amounts)'
+    );
+    const reason = window.prompt('Reason for reverting paid status (optional):') || null;
+    try {
+        showToast('Reverting paid status...', 'info');
+        const result = await API.sales.revertPaidStatus(invoiceId, {
+            clear_payments: clearPayments,
+            reason: reason,
+        });
+        const msg = result && result.payment_status
+            ? `Invoice reopened: ${result.payment_status} (document ${result.status || 'BATCHED'})`
+            : 'Paid status reverted.';
+        showToast(msg, 'success');
+        await viewSalesInvoice(invoiceId);
+        await fetchAndRenderSalesInvoicesData();
+    } catch (error) {
+        console.error('Revert paid status failed:', error);
+        showToast(error.message || 'Failed to revert paid status', 'error');
+    }
+}
+
 async function collectPayment(invoiceId) {
     try {
-        // Load invoice details
-        const invoice = await API.sales.getInvoice(invoiceId);
-        
-        // Show split payment modal
-        showSplitPaymentModal(invoice);
+        let invoice = await API.sales.getInvoice(invoiceId);
+        const payments = await API.sales.getPayments(invoiceId);
+        const balance = invoicePaymentBalance(invoice, payments);
+        if (
+            balance <= PAYMENT_SETTLEMENT_TOLERANCE
+            && String(invoice.payment_status || '').toUpperCase() !== 'PAID'
+            && API.sales
+            && typeof API.sales.reconcilePaymentStatus === 'function'
+        ) {
+            await API.sales.reconcilePaymentStatus(invoiceId);
+            invoice = await API.sales.getInvoice(invoiceId);
+            if (String(invoice.payment_status || '').toUpperCase() === 'PAID') {
+                showToast('Invoice is fully paid.', 'success');
+                await fetchAndRenderSalesInvoicesData();
+                return;
+            }
+        }
+        showSplitPaymentModal(invoice, payments);
     } catch (error) {
         console.error('Error loading invoice for payment:', error);
         showToast(error.message || 'Failed to load invoice', 'error');
     }
 }
 
-function showSplitPaymentModal(invoice) {
+function showSplitPaymentModal(invoice, paymentsPreloaded) {
     const totalAmount = parseFloat(invoice.total_inclusive || 0);
     const isCreditInvoice = invoice.payment_mode === 'credit';
-    
-    // Load existing payments
-    API.sales.getPayments(invoice.id).then(async payments => {
-        const paidSoFar = payments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
-        const balance = totalAmount - paidSoFar;
+
+    const renderModal = async (payments) => {
+        const paidSoFar = sumSettledPayments(payments);
+        const balance = invoicePaymentBalance(invoice, payments);
         const isAdminOrManager = await checkIfAdminOrManager();
         
         // Warning for non-credit invoices requiring full payment
-        const paymentWarning = !isCreditInvoice && balance > 0 
+        const paymentWarning = !isCreditInvoice && balance > PAYMENT_SETTLEMENT_TOLERANCE
             ? `<div style="margin-bottom: 1rem; padding: 0.75rem; background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 0.25rem;">
                 <i class="fas fa-exclamation-triangle" style="color: #f59e0b;"></i>
                 <strong style="margin-left: 0.5rem;">Full Payment Required</strong>
@@ -3642,7 +3720,7 @@ function showSplitPaymentModal(invoice) {
                     </div>
                     <div style="display: flex; justify-content: space-between; padding-top: 0.5rem; border-top: 2px solid var(--border-color);">
                         <span style="font-weight: 600;">Balance:</span>
-                        <strong style="color: ${balance > 0 ? 'var(--danger-color)' : 'var(--success-color)'};">${formatCurrency(balance)}</strong>
+                        <strong style="color: ${balance > PAYMENT_SETTLEMENT_TOLERANCE ? 'var(--danger-color)' : 'var(--success-color)'};">${formatCurrency(balance)}</strong>
                     </div>
                 </div>
                 
@@ -3710,7 +3788,7 @@ function showSplitPaymentModal(invoice) {
         showModal('Collect Payment', modalContent);
         
         // If non-credit and not admin, lock amount to full balance
-        if (!isCreditInvoice && !isAdminOrManager && balance > 0) {
+        if (!isCreditInvoice && !isAdminOrManager && balance > PAYMENT_SETTLEMENT_TOLERANCE) {
             const amountInput = document.getElementById('paymentAmount');
             if (amountInput) {
                 amountInput.value = balance.toFixed(2);
@@ -3727,10 +3805,17 @@ function showSplitPaymentModal(invoice) {
                 sel.appendChild(opt);
             }
         }).catch(() => {});
-    }).catch(error => {
+    };
+
+    const onPaymentsError = function (error) {
         console.error('Error loading payments:', error);
         showToast('Error loading payment details', 'error');
-    });
+    };
+    if (paymentsPreloaded) {
+        renderModal(paymentsPreloaded).catch(onPaymentsError);
+    } else {
+        API.sales.getPayments(invoice.id).then(renderModal).catch(onPaymentsError);
+    }
 }
 
 async function submitSplitPayment(event, invoiceId) {
@@ -3751,18 +3836,15 @@ async function submitSplitPayment(event, invoiceId) {
         // Load invoice to check payment mode and balance
         const invoice = await API.sales.getInvoice(invoiceId);
         const existingPayments = await API.sales.getPayments(invoiceId);
-        const paidSoFar = existingPayments
-            .filter((p) => String(p.payment_mode || '').toLowerCase() !== 'insurance')
-            .reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
         if (paymentMode === 'insurance' && !insuranceProviderId) {
             showToast('Select insurance provider', 'error');
             return;
         }
-        const balance = parseFloat(invoice.total_inclusive || 0) - paidSoFar;
+        const balance = invoicePaymentBalance(invoice, existingPayments);
         const isCreditInvoice = invoice.payment_mode === 'credit';
         
         // Check if this is a partial payment on a non-credit invoice
-        if (!isCreditInvoice && amount < balance) {
+        if (!isCreditInvoice && amount + PAYMENT_SETTLEMENT_TOLERANCE < balance) {
             // Require admin/manager approval for partial payment
             const isAdminOrManager = await checkIfAdminOrManager();
             
@@ -3798,8 +3880,8 @@ async function submitSplitPayment(event, invoiceId) {
             closeModal();
             await fetchAndRenderSalesInvoicesData();
         } else {
-            // Show updated payment modal
-            showSplitPaymentModal(updatedInvoice);
+            const refreshedPayments = await API.sales.getPayments(invoiceId);
+            showSplitPaymentModal(updatedInvoice, refreshedPayments);
         }
     } catch (error) {
         console.error('Error adding payment:', error);
@@ -4034,23 +4116,44 @@ function formatExpiryForPrint(exp) {
     } catch (_) { return ''; }
 }
 
-function buildBatchExpiryLine(item, showBatch, showExp) {
-    if (!showBatch && !showExp) return '';
+function isWholesaleBranchForPrint() {
+    try {
+        if (window.BranchContext && typeof BranchContext.isWholesaleDistributionBranch === 'function') {
+            return BranchContext.isWholesaleDistributionBranch();
+        }
+    } catch (_) {}
+    return false;
+}
+
+function buildBatchExpiryLine(item, showBatch, showExp, options) {
+    const opts = options || {};
+    const enforce = opts.enforce === true;
+    if (!showBatch && !showExp && !enforce) return '';
+    const subClass = enforce ? 'item-sub wholesale-batch-line' : 'item-sub batch-faint';
     const allocs = item.batch_allocations && Array.isArray(item.batch_allocations) ? item.batch_allocations : null;
     if (allocs && allocs.length > 0) {
         const lines = allocs.map(a => {
-            const b = showBatch && (a.batch_number != null) ? `Batch: ${escapeHtml(String(a.batch_number))}` : '';
-            const e = showExp && a.expiry_date ? `Exp: ${formatExpiryForPrint(a.expiry_date)}` : '';
+            const b = (showBatch || enforce) && (a.batch_number != null && String(a.batch_number).trim() !== '')
+                ? `Batch: ${escapeHtml(String(a.batch_number))}` : '';
+            const e = (showExp || enforce) && a.expiry_date ? `Exp: ${formatExpiryForPrint(a.expiry_date)}` : '';
             const q = (a.quantity != null) ? ` (${formatQuantityForPrint(a.quantity)})` : '';
-            return [b, e].filter(Boolean).join(' ') + q;
+            const joined = [b, e].filter(Boolean).join(' ');
+            if (joined) return joined + q;
+            if (enforce) return `Batch: —  Exp: —${q}`;
+            return '';
         }).filter(Boolean);
-        if (lines.length === 0) return '';
-        return '<div class="item-sub batch-faint">' + lines.join('</div><div class="item-sub batch-faint">') + '</div>';
+        if (lines.length === 0) {
+            if (enforce) return `<div class="${subClass}">Batch: —  Exp: —</div>`;
+            return '';
+        }
+        return '<div class="' + subClass + '">' + lines.join('</div><div class="' + subClass + '">') + '</div>';
     }
-    const b = showBatch && (item.batch_number != null && item.batch_number !== '') ? `Batch: ${escapeHtml(String(item.batch_number))}` : '';
-    const e = showExp && item.expiry_date ? `Exp: ${formatExpiryForPrint(item.expiry_date)}` : '';
-    const line = [b, e].filter(Boolean).join(' ');
-    return line ? '<div class="item-sub batch-faint">' + line + '</div>' : '';
+    const b = (showBatch || enforce) && (item.batch_number != null && item.batch_number !== '')
+        ? `Batch: ${escapeHtml(String(item.batch_number))}` : '';
+    const e = (showExp || enforce) && item.expiry_date ? `Exp: ${formatExpiryForPrint(item.expiry_date)}` : '';
+    let line = [b, e].filter(Boolean).join(' ');
+    if (!line && enforce) line = 'Batch: —  Exp: —';
+    return line ? '<div class="' + subClass + '">' + line + '</div>' : '';
 }
 
 /** 2dp money helper (uses utils roundMoney2 when loaded). */
@@ -4089,10 +4192,13 @@ function generateInvoicePrintHTML(invoice, printType) {
     const showUnit = getPrintOpt('PRINT_ITEM_UNIT', true);
     const showVat = getPrintOpt('PRINT_SHOW_VAT', false);
     const showDiscount = getPrintOpt('PRINT_SHOW_DISCOUNT', false);
-    const showBatch = !isThermal && getPrintOpt('PRINT_ITEM_BATCH', true); // Batch/expiry only on A4, not thermal
-    const showExp = !isThermal && getPrintOpt('PRINT_ITEM_EXP', true);
+    const wholesalePrint = isWholesaleBranchForPrint();
+    const showBatch = wholesalePrint || (!isThermal && getPrintOpt('PRINT_ITEM_BATCH', true));
+    const showExp = wholesalePrint || (!isThermal && getPrintOpt('PRINT_ITEM_EXP', true));
+    const batchPrintOpts = wholesalePrint ? { enforce: true } : null;
     const thermalHeaderFontPt = Math.min(12, Math.max(6, parseInt(getPrintOpt('PRINT_THERMAL_HEADER_FONT_PT', 9), 10) || 9));
     const thermalItemFontPt = Math.min(10, Math.max(5, parseInt(getPrintOpt('PRINT_THERMAL_ITEM_FONT_PT', 8), 10) || 8));
+    const wholesaleBatchFontPt = Math.max(6, thermalItemFontPt - 1.5);
 
     const colCount = 4 + (showDiscount ? 1 : 0) + (showVat ? 1 : 0);
 
@@ -4116,7 +4222,7 @@ function generateInvoicePrintHTML(invoice, printType) {
             const nameContent = showItemCode && itemCode
                 ? `${escapeHtml(itemName)} (${escapeHtml(itemCode)})`
                 : escapeHtml(itemName);
-            const batchExpiryLine = buildBatchExpiryLine(item, showBatch, showExp);
+            const batchExpiryLine = buildBatchExpiryLine(item, showBatch, showExp, batchPrintOpts);
             const nameCell = batchExpiryLine ? `<td>${nameContent}${batchExpiryLine}</td>` : `<td>${nameContent}</td>`;
             const qtyUnit = (item.unit_display_short != null && item.unit_display_short !== '') ? item.unit_display_short : (item.unit_name || '');
             const qtyCell = showUnit ? `${formatQuantityForPrint(item.quantity)} ${escapeHtml(qtyUnit)}` : formatQuantityForPrint(item.quantity);
@@ -4183,6 +4289,7 @@ function generateInvoicePrintHTML(invoice, printType) {
            ${colCount === 4 ? 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 45%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 15%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 20%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 20%; }' : colCount === 5 ? 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 38%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 12%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 18%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 12%; } table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 20%; }' : 'table.thermal-receipt th:nth-child(1), table.thermal-receipt td:nth-child(1) { width: 35%; min-width: 0; } table.thermal-receipt th:nth-child(2), table.thermal-receipt td:nth-child(2) { width: 10%; } table.thermal-receipt th:nth-child(3), table.thermal-receipt td:nth-child(3) { width: 14%; } table.thermal-receipt th:nth-child(4), table.thermal-receipt td:nth-child(4) { width: 10%; } table.thermal-receipt th:nth-child(5), table.thermal-receipt td:nth-child(5) { width: 12%; } table.thermal-receipt th:nth-child(6), table.thermal-receipt td:nth-child(6) { width: 19%; }'}
            .item-sub { font-size: 7pt; color: #555; }
            .batch-faint { font-size: 6pt; color: #999; opacity: 0.9; }
+           .wholesale-batch-line { font-size: ${wholesaleBatchFontPt}pt; color: #222; line-height: 1.25; margin-top: 0.4mm; font-weight: 500; }
            .total { font-size: ${thermalItemFontPt + 1}pt; }
            .no-print { display: none !important; }
            .print-content-wrap { margin-top: 0 !important; max-width: ${contentWidthMm}mm; }`
@@ -4194,6 +4301,7 @@ function generateInvoicePrintHTML(invoice, printType) {
            .company-details { font-size: 0.9em; color: #333; line-height: 1.4; }
            .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
            .batch-faint { font-size: 0.75em; color: #999; opacity: 0.9; }
+           .wholesale-batch-line { font-size: 10px; color: #333; line-height: 1.3; margin-top: 2px; font-weight: 500; }
            th, td { padding: 8px; }
            .no-print { display: none !important; }
            .print-content-wrap { margin-top: 0 !important; }`;
@@ -4580,6 +4688,7 @@ function generateQuotationPrintHTML(quotation, printType) {
            .header { text-align: ${headerAlign}; }
            .item-sub { font-size: 0.85em; color: #555; border-bottom: 1px dotted #ccc; margin-top: 2px; padding-bottom: 2px; }
            .batch-faint { font-size: 0.75em; color: #999; opacity: 0.9; }
+           .wholesale-batch-line { font-size: 10px; color: #333; line-height: 1.3; margin-top: 2px; font-weight: 500; }
            th, td { padding: 8px; }`;
 
     const autoCutSpacer = (isThermal && autoCut) ? '<div class="thermal-autocut-spacer" style="height: 40mm; min-height: 40mm; page-break-after: always;"></div>' : '';
@@ -4884,6 +4993,7 @@ if (typeof window !== 'undefined') {
     window.batchSalesInvoice = batchSalesInvoice;
     window.deleteSalesInvoice = deleteSalesInvoice;
     window.collectPayment = collectPayment;
+    window.revertInvoicePaidStatus = revertInvoicePaidStatus;
     window.printSalesInvoice = printSalesInvoice;
     window.downloadSalesInvoicePdf = downloadSalesInvoicePdf;
     window.submitSplitPayment = submitSplitPayment;
@@ -4893,3 +5003,69 @@ if (typeof window !== 'undefined') {
     window.printQuotation = printQuotation;
     window.downloadQuotationPdf = downloadQuotationPdf;
 }
+
+function isWholesaleModuleEnabled() {
+    try {
+        if (window.BranchContext && typeof BranchContext.isWholesaleDistributionBranch === 'function') {
+            if (!BranchContext.isWholesaleDistributionBranch()) return false;
+        }
+        return window.ModuleUI && window.ModuleUI.enabledModules && window.ModuleUI.enabledModules.has('wholesale');
+    } catch (_) {
+        return false;
+    }
+}
+
+function salesWholesaleCustomerFieldHtml(invoiceData) {
+    const cid = invoiceData && invoiceData.customer_id ? String(invoiceData.customer_id) : '';
+    const cname = (invoiceData && invoiceData.customer_name) || '';
+    if (!isWholesaleModuleEnabled()) {
+        return `<div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Customer</label><input type="text" class="form-input" name="customer_name" value="${cname}" placeholder="Name (optional)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:0.35rem;position:relative;grid-column:span 2;">
+        <label style="margin:0;font-size:0.8rem;font-weight:500;white-space:nowrap;">B2B Customer</label>
+        <input type="hidden" id="wholesaleCustomerId" value="${cid}">
+        <input type="text" class="form-input" id="wholesaleCustomerSearch" value="${cname}" placeholder="Search customer…" autocomplete="off"
+            onkeyup="searchWholesaleCustomersInline(event)" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:0;">
+        <input type="text" class="form-input" name="customer_name" id="wholesaleCustomerName" value="${cname}" placeholder="Display name" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:0;">
+        <div id="wholesaleCustomerDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ddd;z-index:50;max-height:200px;overflow:auto;"></div>
+    </div>`;
+}
+
+async function searchWholesaleCustomersInline(event) {
+    const input = event.target;
+    const q = (input.value || '').trim();
+    const dropdown = document.getElementById('wholesaleCustomerDropdown');
+    if (!dropdown || !window.API || !API.customers) return;
+    if (q.length < 2) {
+        dropdown.style.display = 'none';
+        return;
+    }
+    const companyId = window.CONFIG && CONFIG.COMPANY_ID;
+    if (!companyId) return;
+    try {
+        const rows = await API.customers.search(q, companyId, 12);
+        dropdown.innerHTML = (rows || []).map((r) =>
+            `<div style="padding:0.4rem 0.6rem;cursor:pointer;border-bottom:1px solid #eee;" onclick="selectWholesaleCustomer('${r.id}','${String(r.name).replace(/'/g, "\\'")}')">${r.name}</div>`
+        ).join('') || '<div style="padding:0.4rem;">No matches</div>';
+        dropdown.style.display = 'block';
+    } catch (_) {
+        dropdown.style.display = 'none';
+    }
+}
+
+function selectWholesaleCustomer(id, name) {
+    const hid = document.getElementById('wholesaleCustomerId');
+    const search = document.getElementById('wholesaleCustomerSearch');
+    const nm = document.getElementById('wholesaleCustomerName');
+    const dd = document.getElementById('wholesaleCustomerDropdown');
+    if (hid) hid.value = id;
+    if (search) search.value = name;
+    if (nm) nm.value = name;
+    if (dd) dd.style.display = 'none';
+    const st = document.getElementById('salesTypeSelect');
+    if (st) st.value = 'WHOLESALE';
+}
+
+window.searchWholesaleCustomersInline = searchWholesaleCustomersInline;
+window.selectWholesaleCustomer = selectWholesaleCustomer;
+window.salesWholesaleCustomerFieldHtml = salesWholesaleCustomerFieldHtml;

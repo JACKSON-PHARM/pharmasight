@@ -13,6 +13,7 @@
 
     const MODULE_LABELS = {
         pharmacy: 'Pharmacy',
+        wholesale: 'Wholesale',
         clinic: 'Clinic',
         lab: 'Lab',
         billing: 'Billing',
@@ -23,6 +24,7 @@
     /** Default hash route when entering a module or when current route is not allowed. */
     const MODULE_DEFAULT_PAGE = {
         pharmacy: 'dashboard',
+        wholesale: 'customers',
         finance: 'cashbook',
         management: 'dashboard',
         clinic: 'patients',
@@ -74,6 +76,16 @@
                 items: [{ page: 'purchases', label: 'Purchases', icon: 'fa-shopping-bag', hasSub: true }],
             },
         ],
+        wholesale: [
+            {
+                section: 'Customers',
+                items: [{ page: 'customers', label: 'Customers', icon: 'fa-handshake', hasSub: true }],
+            },
+            {
+                section: 'Sales',
+                items: [{ page: 'sales', label: 'Sales', icon: 'fa-shopping-cart', hasSub: true }],
+            },
+        ],
         clinic: [
             {
                 section: 'OPD',
@@ -121,7 +133,7 @@
     const MODULE_ROUTE_BYPASS = new Set(['branch-select', 'invite', 'stock-take']);
 
     /** Display order for the module switcher (not entitlement source). */
-    const MODULE_SWITCHER_ORDER = ['pharmacy', 'clinic', 'lab', 'billing', 'finance', 'management'];
+    const MODULE_SWITCHER_ORDER = ['pharmacy', 'wholesale', 'clinic', 'lab', 'billing', 'finance', 'management'];
 
     let _modules = [];
     let _selected = null;
@@ -315,6 +327,15 @@
             if (base.startsWith('reports')) return true;
             if (base.startsWith('expenses')) return true;
             if (base === 'cashbook') return true;
+            return false;
+        }
+        if (m === 'wholesale') {
+            if (base === 'landing') return false;
+            if (base.startsWith('customers')) return true;
+            if (base.startsWith('sales')) return true;
+            if (base.startsWith('settings')) return true;
+            if (base.startsWith('reports')) return true;
+            if (base === 'dashboard') return true;
             return false;
         }
         if (m === 'finance') {
@@ -541,14 +562,51 @@
         }
     }
 
+    function isWholesaleCapabilityLicensed() {
+        return _enabledModules && _enabledModules.has('wholesale');
+    }
+
+    function isWholesaleBranchOperational() {
+        try {
+            if (!isWholesaleCapabilityLicensed()) return false;
+            if (window.BranchContext && typeof BranchContext.isWholesaleDistributionBranch === 'function') {
+                return BranchContext.isWholesaleDistributionBranch();
+            }
+        } catch (_) {}
+        return false;
+    }
+
     function computeVisibleSwitcherModules(userList) {
         const u = userList.map(normalizeModuleName).filter(Boolean);
-        // `/api/modules/me` already returns the safe visibility set:
-        // (user RBAC modules) ∩ (core modules ∪ licensed company_modules).
-        // So module switcher does not need to re-apply entitlement checks.
         let visible = MODULE_SWITCHER_ORDER.filter((m) => u.includes(m));
         if (!visible.length) visible = u;
+        if (!isWholesaleBranchOperational()) {
+            visible = visible.filter((m) => m !== 'wholesale');
+        }
         return visible;
+    }
+
+    async function refreshModulesForBranchContext() {
+        let userMods = await fetchUserModuleList();
+        if (!userMods.length) {
+            try {
+                userMods = Array.from(_enabledModules || []);
+            } catch (_) {
+                userMods = [];
+            }
+            if (!userMods.length) userMods = ['pharmacy'];
+        }
+        const next = computeVisibleSwitcherModules(userMods);
+        _modules = next;
+        if (_selected === 'wholesale' && !next.includes('wholesale')) {
+            const fallback = next.includes('pharmacy') ? 'pharmacy' : next[0];
+            if (fallback) await setSelectedModule(fallback, { navigate: true });
+        } else if (isWholesaleBranchOperational() && next.includes('wholesale') && _selected === 'pharmacy') {
+            await setSelectedModule('wholesale', { navigate: false });
+        }
+        renderModuleSwitcher();
+        await refreshClinicDepartmentStoresNav();
+        renderSidebar(_selected);
     }
 
     async function init() {
@@ -581,6 +639,14 @@
         renderModuleSwitcher();
         await refreshClinicDepartmentStoresNav();
         renderSidebar(_selected);
+
+        if (window.BranchContext && typeof BranchContext.onBranchChange === 'function') {
+            BranchContext.onBranchChange(() => {
+                refreshModulesForBranchContext().catch((e) => {
+                    console.warn('[MODULE UI] branch context refresh failed', e && e.message);
+                });
+            });
+        }
 
         return { modules: _modules, selected: _selected };
     }
@@ -624,6 +690,8 @@
     window.ModuleUI = {
         loadCompanyModules,
         enabledModules: new Set(_enabledModules),
+        isWholesaleBranchOperational,
+        refreshModulesForBranchContext,
         init,
         getModules: () => _modules.slice(),
         getSelectedModule: () => _selected,

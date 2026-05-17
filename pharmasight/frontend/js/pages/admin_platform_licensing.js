@@ -5,71 +5,30 @@
  * so platform ops stay inside admin.html without requiring an app user session.
  */
 
+import {
+    loadPricingCatalog,
+    saasTiersFromCatalog,
+    renderPricingPlaybookHtml,
+    tierBySlug as catalogTierBySlug,
+} from '/js/pricing/sightops_pricing_catalog.js?v=2026-05';
+
 const LIC_SEARCH_STORAGE_KEY = 'pharmasight_admin_lic_search';
 /** Prevents stale list responses (e.g. initial full list finishing after a search) from overwriting the table. */
 let _licListLoadSeq = 0;
 
-/**
- * Predefined SaaS tiers (slug = companies.subscription_plan).
- * Limits map to company caps (null = no numeric cap / “unlimited” in enforcement).
- * Pricing is indicative for ops UI; Stripe checkout still uses configured Price IDs.
- */
-const SAAS_TIERS = [
-    {
-        slug: 'demo',
-        title: 'Demo',
-        subtitle: 'Self-service evaluation & trials',
-        price: '$0',
-        users: 1,
-        branches: 1,
-        products: 100,
-        modules: 'Core + demo scope (tight caps)',
-    },
-    {
-        slug: 'clinic_starter',
-        title: 'Clinic Starter',
-        subtitle: 'Solo practice & small outpatient teams',
-        price: 'Contact for pricing',
-        users: 3,
-        branches: 1,
-        products: 800,
-        modules: 'POS, stock, dispensing, patient register, basic reporting',
-    },
-    {
-        slug: 'pharmacy_growth',
-        title: 'Growth',
-        subtitle: 'Multi-branch retail & outpatient operations',
-        price: 'Contact for pricing',
-        users: 10,
-        branches: 4,
-        products: 8000,
-        modules: 'Starter + branch coordination, purchasing, eTIMS-ready, extended reports',
-    },
-    {
-        slug: 'health_network',
-        title: 'Network',
-        subtitle: 'Regional groups & growing branch networks',
-        price: 'Contact for pricing',
-        users: 40,
-        branches: 15,
-        products: 50000,
-        modules: 'Growth + clinic modules, finance add-ons, higher throughput',
-    },
-    {
-        slug: 'enterprise',
-        title: 'Enterprise',
-        subtitle: 'Hospital systems, large chains, custom integrations',
-        price: 'Custom',
-        users: null,
-        branches: null,
-        products: null,
-        modules: 'All licensed modules · priority support · SLAs (contract-driven)',
-    },
-];
+/** Populated from sightops_pricing_catalog.json in init(). slug = companies.subscription_plan */
+let SAAS_TIERS = [];
+let PRICING_CATALOG = null;
 
 function _tierBySlug(slug) {
     const s = (slug || '').trim().toLowerCase();
-    return SAAS_TIERS.find((t) => t.slug === s) || null;
+    const direct = SAAS_TIERS.find((t) => t.slug === s);
+    if (direct) return direct;
+    if (PRICING_CATALOG) {
+        const t = catalogTierBySlug(PRICING_CATALOG, s);
+        if (t) return saasTiersFromCatalog(PRICING_CATALOG).find((x) => x.slug === t.slug) || null;
+    }
+    return null;
 }
 
 function _licFormatCap(n) {
@@ -79,7 +38,8 @@ function _licFormatCap(n) {
 
 function createClientCompanySectionHtml(esc) {
     const tierOpts = SAAS_TIERS.map(
-        (t) => `<option value="${esc(t.slug)}">${esc(t.title)} (${esc(t.slug)})</option>`,
+        (t) =>
+            `<option value="${esc(t.slug)}"${t.slug === 'retail_solo' ? ' selected' : ''}>${esc(t.title)} — ${esc(t.price)} (${esc(t.slug)})</option>`,
     ).join('');
     return `
             <div class="lic-create-client" style="margin-bottom: 20px; padding: 16px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff;">
@@ -125,6 +85,7 @@ function createClientCompanySectionHtml(esc) {
                             <option value="">— Not set (paid trial tenant row) —</option>
                             ${tierOpts}
                         </select>
+                        <div style="margin-top:6px; font-size:0.78rem; color:#64748b;">New retail clients: <strong>retail_solo</strong> or <strong>retail_pro</strong>. See <a href="/marketing/pricing-policy.html" target="_blank" rel="noopener">Pricing Policy</a>.</div>
                     </div>
                     <div>
                         <button type="submit" class="btn btn-primary" id="lic-create-client-submit">Create company</button>
@@ -247,6 +208,14 @@ export async function init() {
     const mount = document.getElementById('platform-licensing-mount');
     if (!mount) return;
 
+    try {
+        PRICING_CATALOG = await loadPricingCatalog();
+        SAAS_TIERS = saasTiersFromCatalog(PRICING_CATALOG);
+    } catch (e) {
+        console.warn('[licensing] pricing catalog load failed', e);
+        SAAS_TIERS = [];
+    }
+
     const esc = (s) => {
         const d = document.createElement('div');
         d.textContent = s == null ? '' : String(s);
@@ -273,9 +242,11 @@ export async function init() {
         const qNorm = typeof q === 'string' ? q.trim() : '';
         saveLastLicSearch(qNorm);
         const seq = ++_licListLoadSeq;
+        const playbookHtml = PRICING_CATALOG ? renderPricingPlaybookHtml(PRICING_CATALOG, esc) : '';
 
         mount.innerHTML = `
             <div class="card" style="padding:16px;">
+                ${playbookHtml}
                 ${createClientCompanySectionHtml(esc)}
                 ${publicDemoSignupSectionHtml()}
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
@@ -502,6 +473,7 @@ export async function init() {
 
     const MODULE_DISPLAY = {
         pharmacy: 'Pharmacy',
+        wholesale: 'Pharmacy wholesale (B2B customers)',
         inventory: 'Inventory',
         finance: 'Finance',
         procurement: 'Procurement',
@@ -695,7 +667,8 @@ export async function init() {
                         <div style="border:1px solid #e2e8f0; border-radius:10px; padding:12px; grid-column: 1 / -1;">
                             <h3 style="margin:0 0 6px 0;">Subscription &amp; plan</h3>
                             <p style="margin:0 0 12px 0; color:#64748b; font-size:0.88rem; line-height:1.4;">
-                                Choose a tier to preset caps. Fields below show <strong>stored</strong> caps when set; otherwise they show the same numbers as <strong>Enforced caps</strong> above (demo defaults from server config when the slug is demo and columns are empty). Non-demo plans with blank caps mean no numeric limit unless you set one.
+                                Kenya list prices and branch <strong>seat credits</strong> are in the playbook at the top of this page.
+                                Choose a tier to preset caps. <strong>retail_solo</strong> = affordable; <strong>retail_pro</strong> = full retail (recommended).
                             </p>
                             <div id="lic-tier-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap:10px;">
                                 ${SAAS_TIERS.map((t) => {
@@ -711,6 +684,7 @@ export async function init() {
                                     <ul style="margin:8px 0 0; padding-left:18px; color:#475569; font-size:0.78rem; line-height:1.35;">
                                         <li>Users: ${_licFormatCap(t.users)}</li>
                                         <li>Branches: ${_licFormatCap(t.branches)}</li>
+                                        <li>Branch credits: ${_licFormatCap(t.branch_credits != null ? t.branch_credits : t.branches)}</li>
                                         <li>Products: ${_licFormatCap(t.products)}</li>
                                     </ul>
                                     <div style="margin-top:8px; color:#64748b; font-size:0.72rem;">${esc(t.modules)}</div>
@@ -721,7 +695,7 @@ export async function init() {
                             <details style="margin-top:12px;">
                                 <summary style="cursor:pointer; color:#475569; font-size:0.88rem;">Advanced · raw plan slug</summary>
                                 <label style="display:block; font-weight:600; margin:8px 0 4px;">subscription_plan (stored value)</label>
-                                <input id="lic-plan-slug-adv" value="${esc(c.subscription_plan || '')}" placeholder="e.g. clinic_starter" style="width:100%; max-width:420px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px; font-family:monospace; font-size:12px;">
+                                <input id="lic-plan-slug-adv" value="${esc(c.subscription_plan || '')}" placeholder="e.g. retail_solo or retail_pro" style="width:100%; max-width:420px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px; font-family:monospace; font-size:12px;">
                             </details>
                             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-top:12px;">
                                 <div>
