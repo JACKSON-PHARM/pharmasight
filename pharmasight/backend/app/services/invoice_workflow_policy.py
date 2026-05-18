@@ -110,16 +110,27 @@ def assert_wholesale_branch_for_customer_sale(
     *,
     customer_id: Optional[UUID],
 ) -> None:
-    """B2B customer master links require a wholesale-distribution branch."""
+    """Linked customer master records require retail counter or wholesale distribution branch."""
+    assert_customer_linked_sale_allowed(db, branch_id, customer_id=customer_id)
+
+
+def assert_customer_linked_sale_allowed(
+    db: Session,
+    branch_id: UUID,
+    *,
+    customer_id: Optional[UUID],
+) -> None:
     if not customer_id:
         return
-    if not is_wholesale_distribution_branch(db, branch_id):
-        from fastapi import HTTPException
+    wf = get_invoice_workflow_type_for_branch(db, branch_id)
+    if wf in (RETAIL_COUNTER, WHOLESALE_DISTRIBUTION):
+        return
+    from fastapi import HTTPException
 
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Linked B2B customers are only allowed on branches with "
-                "Wholesale distribution doctrine."
-            ),
-        )
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Linked customers are only allowed on Retail counter or "
+            "Wholesale distribution branches."
+        ),
+    )

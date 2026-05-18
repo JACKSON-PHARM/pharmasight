@@ -641,5 +641,10 @@ def set_branch_fiscal_doctrine(
     if enforce and warnings:
         raise ValueError(warnings[0])
     branch.invoice_workflow_type = normalized
+    from app.finance.events.branch_policy import _pack_id_for_invoice_workflow
+
+    pack_id = _pack_id_for_invoice_workflow(normalized)
+    if pack_id:
+        branch.finance_policy_pack = pack_id
     db.flush()
     return branch, warnings

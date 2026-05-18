@@ -1464,6 +1464,7 @@ async function renderCreateSalesInvoicePage() {
     // Set up payment mode change handler
     setTimeout(() => {
         handlePaymentModeChange();
+        if (typeof applyCustomerPrefillFromSession === 'function') applyCustomerPrefillFromSession();
     }, 100);
 
     // If opened from landing quick-search: prefill search row only (do not add to table)
@@ -5004,31 +5005,66 @@ if (typeof window !== 'undefined') {
     window.downloadQuotationPdf = downloadQuotationPdf;
 }
 
-function isWholesaleModuleEnabled() {
+function isCustomerMasterSaleEnabled() {
     try {
         if (window.BranchContext && typeof BranchContext.isWholesaleDistributionBranch === 'function') {
-            if (!BranchContext.isWholesaleDistributionBranch()) return false;
+            if (BranchContext.isWholesaleDistributionBranch()) {
+                return (
+                    window.ModuleUI &&
+                    window.ModuleUI.enabledModules &&
+                    window.ModuleUI.enabledModules.has('wholesale')
+                );
+            }
         }
-        return window.ModuleUI && window.ModuleUI.enabledModules && window.ModuleUI.enabledModules.has('wholesale');
-    } catch (_) {
-        return false;
-    }
+        if (window.BranchContext && typeof BranchContext.getInvoiceWorkflowType === 'function') {
+            return BranchContext.getInvoiceWorkflowType() === 'RETAIL_COUNTER';
+        }
+    } catch (_) {}
+    return false;
+}
+
+function isWholesaleModuleEnabled() {
+    return (
+        isCustomerMasterSaleEnabled() &&
+        window.BranchContext &&
+        typeof BranchContext.isWholesaleDistributionBranch === 'function' &&
+        BranchContext.isWholesaleDistributionBranch()
+    );
 }
 
 function salesWholesaleCustomerFieldHtml(invoiceData) {
     const cid = invoiceData && invoiceData.customer_id ? String(invoiceData.customer_id) : '';
     const cname = (invoiceData && invoiceData.customer_name) || '';
-    if (!isWholesaleModuleEnabled()) {
+    if (!isCustomerMasterSaleEnabled()) {
         return `<div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Customer</label><input type="text" class="form-input" name="customer_name" value="${cname}" placeholder="Name (optional)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>`;
     }
-    return `<div style="display:flex;align-items:center;gap:0.35rem;position:relative;grid-column:span 2;">
-        <label style="margin:0;font-size:0.8rem;font-weight:500;white-space:nowrap;">B2B Customer</label>
+    const label = 'Customer';
+    return `<div style="display:flex;align-items:center;gap:0.35rem;position:relative;grid-column:span 2;flex-wrap:wrap;">
+        <label style="margin:0;font-size:0.8rem;font-weight:500;white-space:nowrap;">${label}</label>
         <input type="hidden" id="wholesaleCustomerId" value="${cid}">
-        <input type="text" class="form-input" id="wholesaleCustomerSearch" value="${cname}" placeholder="Search customer…" autocomplete="off"
-            onkeyup="searchWholesaleCustomersInline(event)" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:0;">
-        <input type="text" class="form-input" name="customer_name" id="wholesaleCustomerName" value="${cname}" placeholder="Display name" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:0;">
+        <input type="text" class="form-input" id="wholesaleCustomerSearch" value="${cname}" placeholder="Search account…" autocomplete="off"
+            onkeyup="searchWholesaleCustomersInline(event)" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:120px;">
+        <input type="text" class="form-input" name="customer_name" id="wholesaleCustomerName" value="${cname}" placeholder="Display name" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:120px;">
+        <a href="#customers" class="btn btn-outline btn-sm" style="white-space:nowrap;font-size:0.75rem;">+ Account</a>
         <div id="wholesaleCustomerDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ddd;z-index:50;max-height:200px;overflow:auto;"></div>
     </div>`;
+}
+
+function applyCustomerPrefillFromSession() {
+    try {
+        const raw = sessionStorage.getItem('pharmasight_sale_customer_prefill');
+        if (!raw) return;
+        sessionStorage.removeItem('pharmasight_sale_customer_prefill');
+        const data = JSON.parse(raw);
+        if (data && data.customer_id && data.customer_name) {
+            selectWholesaleCustomer(String(data.customer_id), String(data.customer_name));
+            const pm = document.getElementById('paymentModeSelect');
+            if (pm) {
+                pm.value = 'credit';
+                if (typeof handlePaymentModeChange === 'function') handlePaymentModeChange();
+            }
+        }
+    } catch (_) {}
 }
 
 async function searchWholesaleCustomersInline(event) {
@@ -5063,9 +5099,10 @@ function selectWholesaleCustomer(id, name) {
     if (nm) nm.value = name;
     if (dd) dd.style.display = 'none';
     const st = document.getElementById('salesTypeSelect');
-    if (st) st.value = 'WHOLESALE';
+    if (st && isWholesaleModuleEnabled()) st.value = 'WHOLESALE';
 }
 
 window.searchWholesaleCustomersInline = searchWholesaleCustomersInline;
+window.applyCustomerPrefillFromSession = applyCustomerPrefillFromSession;
 window.selectWholesaleCustomer = selectWholesaleCustomer;
 window.salesWholesaleCustomerFieldHtml = salesWholesaleCustomerFieldHtml;

@@ -25,7 +25,7 @@
     const MODULE_DEFAULT_PAGE = {
         pharmacy: 'dashboard',
         wholesale: 'customers',
-        finance: 'finance-events',
+        finance: 'finance-confidence',
         management: 'dashboard',
         clinic: 'patients',
         lab: 'module-coming-soon',
@@ -254,6 +254,28 @@
             ];
         }
         let blocks = root.slice();
+        if (m === 'pharmacy') {
+            try {
+                if (
+                    window.BranchContext &&
+                    typeof BranchContext.getInvoiceWorkflowType === 'function' &&
+                    BranchContext.getInvoiceWorkflowType() === 'RETAIL_COUNTER'
+                ) {
+                    const salesIdx = blocks.findIndex((b) => b && b.section === 'Sales');
+                    if (salesIdx >= 0 && Array.isArray(blocks[salesIdx].items)) {
+                        const has = blocks[salesIdx].items.some((it) => it && it.page === 'customers');
+                        if (!has) {
+                            blocks[salesIdx].items.push({
+                                page: 'customers',
+                                label: 'Customers',
+                                icon: 'fa-user-clock',
+                                hasSub: true,
+                            });
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
         if (m === 'management' || m === 'finance') {
             if (m === 'finance') {
                 blocks = blocks.concat(FINANCE_EXTRA_SETTINGS_BLOCK);
@@ -311,6 +333,7 @@
         const deptNavMatch = /^deptstore-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i.exec(base);
         if (deptNavMatch) return 'deptnav-' + deptNavMatch[1];
         if (base === 'sales-history') return 'sales';
+        if (base.startsWith('customers')) return 'customers';
         if (base.startsWith('finance-') || base === 'finance') return 'finance';
         if (base === 'cashbook') {
             try {
@@ -338,6 +361,7 @@
                 return true;
             }
             if (base.startsWith('sales')) return true;
+            if (base.startsWith('customers')) return true;
             if (base.startsWith('purchases')) return true;
             if (base.startsWith('inventory')) return true;
             if (base.startsWith('settings')) return true;

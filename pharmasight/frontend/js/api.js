@@ -1884,6 +1884,26 @@ const API = {
                 return api.get(`/api/finance/reconciliation/treasury-movement?${qs.toString()}`);
             },
         },
+        intelligence: {
+            branchConfidence: (params = {}) => {
+                const qs = new URLSearchParams();
+                if (!params.branch_id) throw new Error('branch_id required');
+                qs.append('branch_id', params.branch_id);
+                if (params.since) qs.append('since', params.since);
+                if (params.until) qs.append('until', params.until);
+                return api.get(`/api/finance/intelligence/branch-confidence?${qs.toString()}`);
+            },
+            recoveryExposure: (params = {}) => {
+                const qs = new URLSearchParams();
+                if (!params.branch_id) throw new Error('branch_id required');
+                if (!params.since) throw new Error('since required');
+                if (!params.until) throw new Error('until required');
+                qs.append('branch_id', params.branch_id);
+                qs.append('since', params.since);
+                qs.append('until', params.until);
+                return api.get(`/api/finance/intelligence/recovery-exposure?${qs.toString()}`);
+            },
+        },
     },
 };
 

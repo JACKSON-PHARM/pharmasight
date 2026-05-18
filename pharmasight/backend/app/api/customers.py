@@ -8,8 +8,11 @@ from typing import List
 from uuid import UUID
 
 from app.dependencies import get_tenant_db, get_current_user
-from app.module_enforcement import require_module
-from app.utils.wholesale_branch_context import require_wholesale_distribution_branch
+from app.utils.customer_access import (
+    default_sales_type_for_hub_mode,
+    get_customer_hub_mode,
+    require_customer_hub_branch,
+)
 from app.models import (
     Customer,
     SalesInvoice,
@@ -26,12 +29,7 @@ from app.schemas.customer import (
     CustomerMergeRequest,
 )
 
-router = APIRouter(
-    dependencies=[
-        Depends(require_module("wholesale")),
-        Depends(require_wholesale_distribution_branch()),
-    ]
-)
+router = APIRouter(dependencies=[Depends(require_customer_hub_branch())])
 
 
 @router.get("/search")
@@ -39,15 +37,18 @@ def search_customers(
     q: str = Query(..., min_length=2),
     company_id: UUID = Query(...),
     limit: int = Query(10, ge=1, le=20),
+    mode=Depends(get_customer_hub_mode),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
+    sales_type = default_sales_type_for_hub_mode(mode)
     search_term = f"%{q.lower()}%"
     rows = (
         db.query(Customer.id, Customer.name)
         .filter(
             Customer.company_id == company_id,
             Customer.is_active == True,
+            Customer.default_sales_type == sales_type,
             or_(
                 func.lower(Customer.name).like(search_term),
                 func.lower(Customer.contact_person).like(search_term),
@@ -78,6 +79,7 @@ def list_customers(
 @router.post("/", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
 def create_customer(
     customer: CustomerCreate,
+    mode=Depends(get_customer_hub_mode),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -112,7 +114,7 @@ def create_customer(
         credit_limit=customer.credit_limit,
         allow_over_credit=customer.allow_over_credit or False,
         credit_enabled=customer.credit_enabled if customer.credit_enabled is not None else True,
-        default_sales_type=customer.default_sales_type or "WHOLESALE",
+        default_sales_type=customer.default_sales_type or default_sales_type_for_hub_mode(mode),
         opening_balance=customer.opening_balance or 0,
         notes=customer.notes,
         portal_enabled=bool(customer.portal_enabled),

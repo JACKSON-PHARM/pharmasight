@@ -326,6 +326,7 @@ from app.api.finance_doctrine import router as finance_doctrine_router
 from app.api.finance_semantics import router as finance_semantics_router
 from app.api.finance_accounting import router as finance_accounting_router
 from app.api.finance_reconciliation import router as finance_reconciliation_router
+from app.api.finance_intelligence import router as finance_intelligence_router
 from app.api.impersonation import router as impersonation_router
 from app.api.admin_metrics import router as admin_metrics_router
 from app.api.admin_platform_licensing import router as admin_platform_licensing_router
@@ -352,6 +353,7 @@ app.include_router(finance_doctrine_router, prefix="/api", tags=["Finance Doctri
 app.include_router(finance_semantics_router, prefix="/api", tags=["Finance Semantics"])
 app.include_router(finance_accounting_router, prefix="/api", tags=["Finance Accounting"])
 app.include_router(finance_reconciliation_router, prefix="/api", tags=["Finance Reconciliation"])
+app.include_router(finance_intelligence_router, prefix="/api", tags=["Finance Intelligence"])
 app.include_router(insurance_management_router, prefix="/api/insurance", tags=["Insurance Management"])
 # Supplier management (payments, returns, etc.) must come before suppliers_router so /payments matches before /{supplier_id}
 app.include_router(supplier_management_router, prefix="/api/suppliers", tags=["Supplier Management"])

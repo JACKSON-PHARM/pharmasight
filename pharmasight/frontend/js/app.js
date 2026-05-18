@@ -1104,10 +1104,12 @@ window.subNavItems = {
         { page: 'sales-history', label: 'Sales History', icon: 'fa-history' },
         { page: 'sales', subPage: 'returns', label: 'Returns', icon: 'fa-undo' }
     ],
-    wholesale: [
-        { page: 'customers', label: 'Customers', icon: 'fa-handshake' },
-        { page: 'customers', subPage: 'dashboard', label: 'AR Dashboard', icon: 'fa-chart-pie' },
+    customers: [
+        { page: 'customers', label: 'All customers', icon: 'fa-handshake' },
+        { page: 'customers', subPage: 'dashboard', label: 'Overview', icon: 'fa-chart-pie' },
         { page: 'customers', subPage: 'follow-ups', label: 'Follow-ups', icon: 'fa-bell' },
+    ],
+    wholesale: [
         { page: 'sales', subPage: 'invoices', label: 'Wholesale Sales', icon: 'fa-file-invoice-dollar' },
     ],
     purchases: [
@@ -1145,11 +1147,19 @@ window.subNavItems = {
         { page: 'expenses', subPage: 'reports', label: 'Reports', icon: 'fa-chart-pie' }
     ],
     finance: [
-        { page: 'finance', subPage: 'events', label: 'Event Explorer', icon: 'fa-stream' },
-        { page: 'finance', subPage: 'projections', label: 'Projection Explorer', icon: 'fa-chart-area' },
-        { page: 'finance', subPage: 'proposals', label: 'Proposal Inbox', icon: 'fa-inbox' },
-        { page: 'finance', subPage: 'integrity', label: 'Replay & Integrity', icon: 'fa-shield-alt' },
-        { page: 'finance', subPage: 'reconciliation', label: 'Treasury Reconciliation', icon: 'fa-balance-scale' },
+        { page: 'finance', subPage: 'confidence', label: 'Financial Confidence', icon: 'fa-chart-line' },
+        { page: 'finance', subPage: 'treasury', label: 'Treasury Intelligence', icon: 'fa-wallet' },
+        { page: 'finance', subPage: 'recovery', label: 'Revenue Recovery', icon: 'fa-hand-holding-usd' },
+        {
+            header: 'Governance tools',
+            icon: 'fa-cog',
+            items: [
+                { page: 'finance', subPage: 'events', label: 'Event Explorer', icon: 'fa-stream' },
+                { page: 'finance', subPage: 'projections', label: 'Projection Explorer', icon: 'fa-chart-area' },
+                { page: 'finance', subPage: 'proposals', label: 'Accounting interpretations', icon: 'fa-inbox' },
+                { page: 'finance', subPage: 'integrity', label: 'Replay & Integrity', icon: 'fa-shield-alt' },
+            ],
+        },
     ],
     reports: [
         { page: 'reports-sales', label: 'Sales Reports', icon: 'fa-chart-line' },
@@ -1991,6 +2001,9 @@ async function loadPage(pageName) {
             }
             break;
         case 'customers':
+            if (typeof showSubNav === 'function') {
+                showSubNav('customers', 'Customers');
+            }
             if (window.loadCustomerSubPage && subPage) {
                 void window.loadCustomerSubPage(subPage);
             } else if (window.loadCustomers) {
@@ -2049,7 +2062,7 @@ async function loadPage(pageName) {
             break;
         case 'finance':
             if (typeof window.loadFinance === 'function') {
-                window.loadFinance(subPage || 'events');
+                window.loadFinance(subPage || 'confidence');
             } else {
                 console.error('loadFinance function not found');
                 const page = document.getElementById('finance');

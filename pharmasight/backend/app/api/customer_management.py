@@ -15,7 +15,6 @@ from sqlalchemy.sql import literal_column
 from app.dependencies import get_tenant_db, get_current_user
 from app.finance.governance.access import guard_finance_branch_query_param
 from app.finance.governance.classification import MANAGEMENT
-from app.module_enforcement import require_module
 from app.models import (
     Customer,
     SalesInvoice,
@@ -47,14 +46,13 @@ from app.schemas.customer_management import (
     CustomerAnalyticsResponse,
 )
 
-from app.utils.wholesale_branch_context import require_wholesale_distribution_branch
-
-router = APIRouter(
-    dependencies=[
-        Depends(require_module("wholesale")),
-        Depends(require_wholesale_distribution_branch()),
-    ]
+from app.utils.customer_access import (
+    default_sales_type_for_hub_mode,
+    get_customer_hub_mode,
+    require_customer_hub_branch,
 )
+
+router = APIRouter(dependencies=[Depends(require_customer_hub_branch())])
 
 
 def _effective_company_id(request: Request) -> UUID:
@@ -76,10 +74,12 @@ def _sales_invoice_effective_due_sql():
 def list_customers_enriched(
     request: Request,
     branch_id: Optional[UUID] = Query(None),
+    mode=Depends(get_customer_hub_mode),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
     company_id = _effective_company_id(request)
+    sales_type = default_sales_type_for_hub_mode(mode)
     today = date.today()
     month_start = today.replace(day=1)
     if today.month == 12:
@@ -89,7 +89,11 @@ def list_customers_enriched(
 
     customers = (
         db.query(Customer)
-        .filter(Customer.company_id == company_id, Customer.is_active == True)
+        .filter(
+            Customer.company_id == company_id,
+            Customer.is_active == True,
+            Customer.default_sales_type == sales_type,
+        )
         .order_by(Customer.name.asc())
         .all()
     )

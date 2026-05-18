@@ -48,9 +48,9 @@
     function migrationBannerHtml() {
         return `
             <div class="finance-ops-banner" style="margin-bottom:1rem;padding:0.75rem 1rem;border-radius:8px;background:var(--surface-alt, rgba(59,130,246,0.08));border:1px solid var(--border-color);font-size:0.9rem;line-height:1.45;">
-                <strong>Finance Operations</strong> — lineage-derived views for observability and controlled migration.
-                Operational records remain authoritative; projections and journal proposals are derived interpretations (no stored balances).
-                <span style="display:block;margin-top:0.35rem;opacity:0.85;">Legacy Cashbook and Reports stay available under Compatibility until projections are validated in parallel.</span>
+                <strong>Operational financial intelligence</strong> — business meaning from governed lineage (liquidity, recovery, confidence).
+                Operational records remain authoritative; intelligence is explainable and traceable to lineage — not a stored ledger.
+                <span style="display:block;margin-top:0.35rem;opacity:0.85;">Legacy Cashbook stays under Compatibility until your branch reaches projection-trusted maturity.</span>
             </div>`;
     }
 

@@ -72,6 +72,20 @@
         lineage_ahead_of_cashbook: 'Lineage ahead of cashbook',
     };
 
+    const AUTHORITY_LEVEL_LABELS = {
+        reconciliation_only: 'Reconciliation only',
+        shadow: 'Shadow governance',
+        projection_assisted: 'Projection assisted',
+        projection_trusted: 'Projection trusted',
+    };
+
+    const AGING_LABELS = {
+        '0_30': '0–30 days',
+        '31_60': '31–60 days',
+        '61_90': '61–90 days',
+        '90_plus': '90+ days (at risk)',
+    };
+
     const DRIFT_LABELS = {
         matched: 'Matched',
         timing_drift: 'Timing difference',
@@ -130,6 +144,14 @@
         return LEGITIMACY_LABELS[category] || (category || '—').replace(/_/g, ' ');
     }
 
+    function authorityLevelLabel(level) {
+        return AUTHORITY_LEVEL_LABELS[level] || (level || '—').replace(/_/g, ' ');
+    }
+
+    function agingLabel(bucket) {
+        return AGING_LABELS[bucket] || bucket || '—';
+    }
+
     global.FinanceOpsLabels = {
         eventLabel,
         domainLabel,
@@ -140,9 +162,12 @@
         projectionLabel,
         driftLabel,
         legitimacyLabel,
+        authorityLevelLabel,
+        agingLabel,
         LEGITIMACY_LABELS,
         EVENT_LABELS,
         PROJECTION_LABELS,
         DRIFT_LABELS,
+        AUTHORITY_LEVEL_LABELS,
     };
 })(typeof window !== 'undefined' ? window : global);

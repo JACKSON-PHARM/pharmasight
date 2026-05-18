@@ -9,13 +9,12 @@ async function renderFinanceReconciliation() {
     const range = FO.defaultDateRange();
 
     root.innerHTML = FO.pageShell(
-        'Treasury Movement Reconciliation',
-        'fa-balance-scale',
+        'Treasury Intelligence',
+        'fa-wallet',
         `
         <p style="margin:0 0 1rem;opacity:0.85;font-size:0.92rem;">
-            Compares <strong>legacy cashbook</strong> (compatibility reference) with
-            <strong>lineage-derived movement</strong> (governed). Divergence exposes
-            ungoverned vs governed pathways — not “projection is wrong.”
+            Branch liquidity and cash-movement health from governed lineage, with legacy cashbook as compatibility reference.
+            Drift and coverage explain governance maturity — not “the projection is wrong.”
         </p>
         ${FO.filterToolbarHtml({ since: range.since, until: range.until, showEventType: false })}
         <button type="button" class="btn btn-primary" id="foRunReconcileBtn" style="margin-bottom:1rem;">

@@ -59,6 +59,14 @@ def _today() -> date:
     return datetime.now(timezone.utc).date()
 
 
+def _safe_print(msg: str) -> None:
+    """Avoid Windows charmap failures on summary lines (backfill still commits)."""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"))
+
+
 def _min_operational_date(db, company_id: UUID, branch_id: UUID) -> Optional[date]:
     candidates: List[date] = []
 
@@ -246,21 +254,22 @@ def main() -> int:
                     date_to=p.date_to,
                     actor_user_id=None,
                 )
-                after = _count_events(db, p.company_id, p.branch_id)
-                totals["created"] += outcome.events_created
-                totals["duplicate"] += outcome.events_duplicate
-                totals["failed"] += outcome.events_failed
-                totals["branches_ok"] += 1
-                companies_touched.add(p.company_id)
-                print(
-                    f"    status={outcome.status} run={outcome.run_id} "
-                    f"emitter_counts(created/dupe/fail)={outcome.events_created}/"
-                    f"{outcome.events_duplicate}/{outcome.events_failed} "
-                    f"events_in_db: {before} → {after} (+{after - before})"
-                )
             except Exception as exc:
                 totals["branches_err"] += 1
-                print(f"    ERROR: {exc}")
+                _safe_print(f"    ERROR: {exc}")
+                continue
+            after = _count_events(db, p.company_id, p.branch_id)
+            totals["created"] += outcome.events_created
+            totals["duplicate"] += outcome.events_duplicate
+            totals["failed"] += outcome.events_failed
+            totals["branches_ok"] += 1
+            companies_touched.add(p.company_id)
+            _safe_print(
+                f"    status={outcome.status} run={outcome.run_id} "
+                f"emitter_counts(created/dupe/fail)={outcome.events_created}/"
+                f"{outcome.events_duplicate}/{outcome.events_failed} "
+                f"events_in_db: {before} -> {after} (+{after - before})"
+            )
 
         print("=" * 72)
         print(
