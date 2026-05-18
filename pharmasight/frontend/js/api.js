@@ -129,6 +129,22 @@ function _applyPharmasightApiAuthHeaders(headers, endpoint, flags, apiClient) {
     } catch (_) {}
 }
 
+/** True when app API credentials exist (memory or storage). Supabase session alone is not enough. */
+function _pharmasightHasAppSessionCredentials(apiClient) {
+    try {
+        if (apiClient && typeof apiClient.getBearerAccessToken === 'function') {
+            if (apiClient.getBearerAccessToken()) return true;
+        }
+        if (typeof localStorage !== 'undefined') {
+            return !!(
+                localStorage.getItem('pharmasight_access_token') ||
+                localStorage.getItem('pharmasight_refresh_token')
+            );
+        }
+    } catch (_) {}
+    return false;
+}
+
 function _canAttemptPharmasightInternalRefresh(endpoint, flags, apiClient) {
     if (!flags) return false;
     const { isAuthEndpoint, isAdminRoute } = flags;
@@ -150,26 +166,54 @@ function _canAttemptPharmasightInternalRefresh(endpoint, flags, apiClient) {
 
 /** Full session teardown when the session is considered dead (not used for grace-window soft 401s). */
 function _pharmasightSessionExpiredLogoutAndRedirect() {
-    if (typeof window.showToast === 'function') {
-        window.showToast('Session expired. Please log in again.', 'warning');
+    if (window.__pharmasightSessionExpiryInFlight || window.__pharmasightLoggingOut) {
+        return;
+    }
+    const now = Date.now();
+    if (
+        window.__pharmasightSessionExpiryHandledAt &&
+        now - window.__pharmasightSessionExpiryHandledAt < 3000
+    ) {
+        return;
+    }
+    window.__pharmasightSessionExpiryInFlight = true;
+    window.__pharmasightSessionExpiryHandledAt = now;
+    window.__pharmasightAuthRedirecting = true;
+
+    if (!window.__pharmasightAuthExpiredToastShown) {
+        window.__pharmasightAuthExpiredToastShown = true;
+        if (typeof window.showToast === 'function') {
+            window.showToast('Session expired. Please log in again.', 'warning');
+        }
     }
     try {
         if (typeof window.closeModal === 'function') {
             window.closeModal();
         }
     } catch (_) {}
+
+    // Do not loadPage('login') here: Supabase may still show a user while app tokens are
+    // cleared, which makes loadLogin() bounce back into the app shell and re-hit protected APIs.
+    if (typeof window.globalLogout === 'function') {
+        void window.globalLogout().finally(function () {
+            window.__pharmasightSessionExpiryInFlight = false;
+            window.__pharmasightAuthRedirecting = false;
+            window.__pharmasightAuthExpiredToastShown = false;
+        });
+        return;
+    }
+
     try {
-        if (!window.__pharmasightAuthRedirecting) {
-            window.__pharmasightAuthRedirecting = true;
-            window.location.hash = '#login';
-            if (typeof window.loadPage === 'function') {
-                window.loadPage('login');
-            }
+        window.location.hash = '#login';
+        if (typeof window.renderAuthLayout === 'function') {
+            window.renderAuthLayout();
+        }
+        if (typeof window.loadPage === 'function') {
+            window.loadPage('login');
         }
     } catch (_) {}
-    if (typeof window.globalLogout === 'function') {
-        window.globalLogout();
-    }
+    window.__pharmasightSessionExpiryInFlight = false;
+    window.__pharmasightAuthRedirecting = false;
 }
 
 class APIClient {
@@ -390,6 +434,14 @@ class APIClient {
                         }
                     }
 
+                    // Already logged out or teardown in progress — do not re-enter logout / toast storm.
+                    if (window.__pharmasightSessionExpiryInFlight || window.__pharmasightLoggingOut) {
+                        throw error;
+                    }
+                    if (!_pharmasightHasAppSessionCredentials(this)) {
+                        throw error;
+                    }
+
                     // Logout: no refresh path, refresh failed, or post-retry 401 outside grace window.
                     _pharmasightSessionExpiredLogoutAndRedirect();
                 }
@@ -482,6 +534,7 @@ const API = {
     setInternalAccessToken: (token) => api.setInternalAccessToken(token),
     clearInternalAccessToken: () => api.clearInternalAccessToken(),
     getBearerAccessToken: () => api.getBearerAccessToken(),
+    hasAppSessionCredentials: () => _pharmasightHasAppSessionCredentials(api),
 
     // Startup (Complete initialization)
     startup: {
@@ -1748,9 +1801,96 @@ const API = {
             requestVolume: () => api.get('/api/admin/metrics/request-volume'),
         },
     },
+
+    /** Governed finance (lineage, projections, accounting proposals) — Finance Operations Console */
+    financeOps: {
+        events: {
+            list: (params = {}) => {
+                const qs = new URLSearchParams();
+                if (params.branch_id) qs.append('branch_id', params.branch_id);
+                if (params.event_type) qs.append('event_type', params.event_type);
+                if (params.source_entity_type) qs.append('source_entity_type', params.source_entity_type);
+                if (params.occurred_from) qs.append('occurred_from', params.occurred_from);
+                if (params.occurred_to) qs.append('occurred_to', params.occurred_to);
+                if (params.limit != null) qs.append('limit', params.limit);
+                if (params.offset != null) qs.append('offset', params.offset);
+                const q = qs.toString();
+                return api.get(`/api/finance/events${q ? `?${q}` : ''}`);
+            },
+            get: (eventId) => api.get(`/api/finance/events/${eventId}`),
+            registry: () => api.get('/api/finance/events/registry'),
+            integrity: (params = {}) => {
+                const qs = new URLSearchParams();
+                if (params.branch_id) qs.append('branch_id', params.branch_id);
+                if (params.since) qs.append('since', params.since);
+                const q = qs.toString();
+                return api.get(`/api/finance/events/integrity${q ? `?${q}` : ''}`);
+            },
+            failures: (params = {}) => {
+                const qs = new URLSearchParams();
+                if (params.unresolved_only != null) qs.append('unresolved_only', params.unresolved_only);
+                if (params.limit != null) qs.append('limit', params.limit);
+                const q = qs.toString();
+                return api.get(`/api/finance/events/failures${q ? `?${q}` : ''}`);
+            },
+            replayFailure: (failureId) =>
+                api.post(`/api/finance/events/failures/${failureId}/replay`, null),
+            replayUnresolved: (params = {}) => {
+                const qs = new URLSearchParams();
+                if (params.limit != null) qs.append('limit', params.limit);
+                const q = qs.toString();
+                return api.post(`/api/finance/events/failures/replay-unresolved${q ? `?${q}` : ''}`, null);
+            },
+        },
+        projections: {
+            registry: () => api.get('/api/finance/projections/registry'),
+            run: (projectionId, params = {}) => {
+                const qs = new URLSearchParams();
+                if (params.branch_id) qs.append('branch_id', params.branch_id);
+                if (params.since) qs.append('since', params.since);
+                if (params.until) qs.append('until', params.until);
+                const q = qs.toString();
+                return api.get(`/api/finance/projections/${encodeURIComponent(projectionId)}${q ? `?${q}` : ''}`);
+            },
+        },
+        accounting: {
+            listProposals: (params = {}) => {
+                const qs = new URLSearchParams();
+                if (params.status) qs.append('status', params.status);
+                if (params.branch_id) qs.append('branch_id', params.branch_id);
+                if (params.limit != null) qs.append('limit', params.limit);
+                const q = qs.toString();
+                return api.get(`/api/finance/accounting/proposals${q ? `?${q}` : ''}`);
+            },
+            getProposal: (proposalId) => api.get(`/api/finance/accounting/proposals/${proposalId}`),
+            eligibility: (financialEventId, forPost = false) => {
+                const qs = forPost ? '?for_post=true' : '';
+                return api.get(`/api/finance/accounting/eligibility/${financialEventId}${qs}`);
+            },
+            generate: (body) => api.post('/api/finance/accounting/proposals/generate', body),
+            approve: (proposalId) => api.post(`/api/finance/accounting/proposals/${proposalId}/approve`, null),
+            post: (proposalId) => api.post(`/api/finance/accounting/proposals/${proposalId}/post`, null),
+            reverse: (proposalId) => api.post(`/api/finance/accounting/proposals/${proposalId}/reverse`, null),
+        },
+        reconciliation: {
+            treasuryMovement: (params = {}) => {
+                const qs = new URLSearchParams();
+                if (!params.branch_id) throw new Error('branch_id required');
+                if (!params.since) throw new Error('since required');
+                if (!params.until) throw new Error('until required');
+                qs.append('branch_id', params.branch_id);
+                qs.append('since', params.since);
+                qs.append('until', params.until);
+                return api.get(`/api/finance/reconciliation/treasury-movement?${qs.toString()}`);
+            },
+        },
+    },
 };
 
 // Expose API to window for global access
 if (typeof window !== 'undefined') {
     window.API = API;
+    window.pharmasightHasAppSessionCredentials = function pharmasightHasAppSessionCredentials() {
+        return _pharmasightHasAppSessionCredentials(api);
+    };
 }

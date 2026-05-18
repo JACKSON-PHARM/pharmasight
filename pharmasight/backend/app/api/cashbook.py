@@ -11,17 +11,17 @@ from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_current_user, get_tenant_db, get_effective_company_id_for_user, _user_has_permission
-from app.models import CashbookEntry, Branch, UserBranchRole, User
+from app.dependencies import get_current_user, get_tenant_db, get_effective_company_id_for_user
+from app.finance.governance.access import require_finance_branch
+from app.finance.governance.classification import BRANCH_FINANCE
+from app.models import CashbookEntry, User
 from app.schemas.cashbook import CashbookEntryResponse, CashbookSummaryResponse, CashbookDailyRow
 from app.services.cashbook_service import backfill_cashbook_entries
 
-# TODO(company_modules): Same as expenses — require_module("finance") needs company_modules defaults
-# aligned before router-level gating to avoid breaking existing cashbook users.
 router = APIRouter()
 
 
@@ -33,49 +33,6 @@ def _effective_company_id(request: Request, db: Session, user) -> UUID:
     if cid is None:
         raise HTTPException(status_code=400, detail="Company context not available")
     return cid
-
-
-def _parse_uuid(x: Optional[str]) -> Optional[UUID]:
-    if not x:
-        return None
-    try:
-        return UUID(str(x).strip())
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid UUID value")
-
-
-def _require_reports_view_and_branch_access(
-    request: Request,
-    branch_id_query: Optional[UUID],
-    x_branch_id: Optional[str],
-    user_db: Tuple[User, Session],
-) -> Tuple[object, Session, UUID]:
-    user, db = user_db
-    if not _user_has_permission(db, user.id, "reports.view"):
-        raise HTTPException(status_code=403, detail="Permission reports.view required")
-
-    company_id = _effective_company_id(request, db, user)
-
-    branch_id_final = branch_id_query or _parse_uuid(x_branch_id)
-    if not branch_id_final:
-        raise HTTPException(status_code=400, detail="branch_id (or X-Branch-ID header) is required")
-
-    # Branch access guard
-    has_branch_access = (
-        db.query(UserBranchRole)
-        .filter(UserBranchRole.user_id == user.id, UserBranchRole.branch_id == branch_id_final)
-        .first()
-        is not None
-    )
-    if not has_branch_access:
-        raise HTTPException(status_code=403, detail="You do not have access to this branch")
-
-    # Branch existence guard (optional but clearer errors)
-    branch = db.query(Branch).filter(Branch.id == branch_id_final).first()
-    if not branch or str(branch.company_id) != str(company_id):
-        raise HTTPException(status_code=404, detail="Branch not found")
-
-    return user, db, branch_id_final
 
 
 def _normalize_payment_mode(v: Optional[str]) -> Optional[str]:
@@ -114,13 +71,18 @@ def list_cashbook_entries(
     user_db: Tuple[User, Session] = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    user, db, branch_id_final = _require_reports_view_and_branch_access(
-        request=request,
+    user, db = user_db
+    company_id = _effective_company_id(request, db, user)
+    _, branch_id_final = require_finance_branch(
+        db,
+        user,
+        company_id,
+        "finance.cashbook.view_branch",
+        BRANCH_FINANCE,
         branch_id_query=branch_id,
         x_branch_id=x_branch_id,
-        user_db=(user_db[0], db),
+        registry_id="cashbook.list_entries",
     )
-    company_id = _effective_company_id(request, db, user)
 
     if date_from and date_to and date_from > date_to:
         raise HTTPException(status_code=400, detail="date_from must be <= date_to")
@@ -128,7 +90,6 @@ def list_cashbook_entries(
     payment_mode = _normalize_payment_mode(payment_mode)
     source_type = _normalize_source_type(source_type)
 
-    # IMPORTANT: apply filters BEFORE calling limit()/offset().
     q = db.query(CashbookEntry).filter(
         CashbookEntry.company_id == company_id,
         CashbookEntry.branch_id == branch_id_final,
@@ -159,13 +120,18 @@ def cashbook_summary(
     user_db: Tuple[User, Session] = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    user, db, branch_id_final = _require_reports_view_and_branch_access(
-        request=request,
+    user, db = user_db
+    company_id = _effective_company_id(request, db, user)
+    _, branch_id_final = require_finance_branch(
+        db,
+        user,
+        company_id,
+        "finance.cashbook.view_branch",
+        BRANCH_FINANCE,
         branch_id_query=branch_id,
         x_branch_id=x_branch_id,
-        user_db=(user_db[0], db),
+        registry_id="cashbook.summary",
     )
-    company_id = _effective_company_id(request, db, user)
 
     if start_date > end_date:
         raise HTTPException(status_code=400, detail="date_from must be <= date_to")
@@ -263,15 +229,20 @@ def cashbook_backfill(
 ):
     """
     Backfill cashbook entries from existing records for the given branch/date range.
-    Idempotent: skips sources that already exist in cashbook_entries.
+    Idempotent. Requires finance.cashbook.reconcile_branch (legacy: settings.edit only).
     """
-    user, db, branch_id_final = _require_reports_view_and_branch_access(
-        request=request,
+    user, db = user_db
+    company_id = _effective_company_id(request, db, user)
+    _, branch_id_final = require_finance_branch(
+        db,
+        user,
+        company_id,
+        "finance.cashbook.reconcile_branch",
+        BRANCH_FINANCE,
         branch_id_query=branch_id,
         x_branch_id=x_branch_id,
-        user_db=(user_db[0], db),
+        registry_id="cashbook.backfill",
     )
-    company_id = _effective_company_id(request, db, user)
 
     result = backfill_cashbook_entries(
         db,
@@ -283,4 +254,3 @@ def cashbook_backfill(
     )
     db.commit()
     return result
-

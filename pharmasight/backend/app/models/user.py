@@ -89,6 +89,13 @@ class UserBranchRole(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
     role_id = Column(UUID(as_uuid=True), ForeignKey("user_roles.id", ondelete="CASCADE"), nullable=False)
+    finance_visibility_scope = Column(String(20), nullable=False, server_default="BRANCH")
+    max_finance_classification = Column(String(20), nullable=False, server_default="management")
+    department_store_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("department_stores.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     # Relationships

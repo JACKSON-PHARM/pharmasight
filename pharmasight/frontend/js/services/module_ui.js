@@ -25,7 +25,7 @@
     const MODULE_DEFAULT_PAGE = {
         pharmacy: 'dashboard',
         wholesale: 'customers',
-        finance: 'cashbook',
+        finance: 'finance-events',
         management: 'dashboard',
         clinic: 'patients',
         lab: 'module-coming-soon',
@@ -104,9 +104,20 @@
             },
         ],
         finance: [
-            { page: 'cashbook', label: 'Cashbook', icon: 'fa-cash-register', hasSub: false },
-            { page: 'expenses', label: 'Expenses', icon: 'fa-money-bill-wave', hasSub: true },
-            { page: 'reports', label: 'Reports', icon: 'fa-chart-bar', hasSub: true },
+            {
+                section: 'Finance Operations',
+                items: [
+                    { page: 'finance', label: 'Finance Operations', icon: 'fa-landmark', hasSub: true },
+                ],
+            },
+            {
+                section: 'Compatibility',
+                items: [
+                    { page: 'cashbook', label: 'Legacy Cashbook', icon: 'fa-cash-register', hasSub: false },
+                    { page: 'expenses', label: 'Expenses', icon: 'fa-money-bill-wave', hasSub: true },
+                    { page: 'reports', label: 'Legacy Reports', icon: 'fa-chart-bar', hasSub: true },
+                ],
+            },
         ],
         management: [
             {
@@ -300,7 +311,13 @@
         const deptNavMatch = /^deptstore-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i.exec(base);
         if (deptNavMatch) return 'deptnav-' + deptNavMatch[1];
         if (base === 'sales-history') return 'sales';
-        if (base === 'cashbook') return 'reports';
+        if (base.startsWith('finance-') || base === 'finance') return 'finance';
+        if (base === 'cashbook') {
+            try {
+                if (window.ModuleUI && window.ModuleUI.getSelectedModule() === 'finance') return 'cashbook';
+            } catch (_) {}
+            return 'reports';
+        }
         if (base === 'expenses-categories' || base === 'expenses-reports') return 'expenses';
         if (!base.includes('-')) return base;
         const first = base.split('-')[0];
@@ -341,6 +358,7 @@
         if (m === 'finance') {
             if (base === 'landing') return false;
             if (base.startsWith('settings')) return true;
+            if (base.startsWith('finance-') || base === 'finance') return true;
             if (base === 'cashbook') return true;
             if (base.startsWith('expenses')) return true;
             if (base.startsWith('reports')) return true;
@@ -521,8 +539,36 @@
         }
     }
 
+    function hasAppApiCredentials() {
+        try {
+            if (typeof window.pharmasightHasAppSessionCredentials === 'function') {
+                return window.pharmasightHasAppSessionCredentials();
+            }
+            if (window.API && typeof window.API.hasAppSessionCredentials === 'function') {
+                return window.API.hasAppSessionCredentials();
+            }
+            if (window.API && typeof window.API.getBearerAccessToken === 'function') {
+                return !!window.API.getBearerAccessToken();
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function reset() {
+        _initialized = false;
+        _companyModulesLoaded = false;
+        _modules = [];
+        _selected = null;
+        _clinicDeptNavRows = [];
+        _enabledModules = new Set(['pharmacy']);
+        if (window.ModuleUI) {
+            window.ModuleUI.enabledModules = new Set(['pharmacy']);
+        }
+    }
+
     async function loadCompanyModules() {
         if (_companyModulesLoaded) return;
+        if (!hasAppApiCredentials()) return;
         try {
             if (!window.API || !API.company || typeof API.company.modules !== 'function') {
                 _enabledModules = new Set(['pharmacy']);
@@ -549,6 +595,9 @@
     }
 
     async function fetchUserModuleList() {
+        if (!hasAppApiCredentials()) {
+            return [];
+        }
         try {
             if (!window.API || !API.modules || typeof API.modules.me !== 'function') {
                 return [];
@@ -689,6 +738,7 @@
 
     window.ModuleUI = {
         loadCompanyModules,
+        reset,
         enabledModules: new Set(_enabledModules),
         isWholesaleBranchOperational,
         refreshModulesForBranchContext,

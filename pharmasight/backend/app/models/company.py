@@ -92,6 +92,7 @@ class Branch(Base):
         default="RETAIL_COUNTER",
         server_default="RETAIL_COUNTER",
     )
+    finance_policy_pack = Column(String(40), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

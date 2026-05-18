@@ -74,6 +74,12 @@ async function clearAppState() {
             window.API.clearInternalAccessToken();
         }
     } catch (_) {}
+
+    try {
+        if (window.ModuleUI && typeof window.ModuleUI.reset === 'function') {
+            window.ModuleUI.reset();
+        }
+    } catch (_) {}
 }
 
 /**
@@ -127,12 +133,26 @@ async function globalLogout() {
     if (_pharmasightGlobalLogoutInFlight) {
         return _pharmasightGlobalLogoutInFlight;
     }
+    try {
+        window.__pharmasightLoggingOut = true;
+    } catch (_) {}
     _pharmasightGlobalLogoutInFlight = (async function _doGlobalLogout() {
     console.log('[LOGOUT] Starting logout process...');
     
     try {
         // STEP 1: Revoke token on backend so session is terminated (token cannot be used again)
         await callBackendLogout();
+
+        // Drop app JWTs immediately so protected API calls stop while Supabase signOut runs.
+        try {
+            if (window.API && typeof window.API.clearInternalAccessToken === 'function') {
+                window.API.clearInternalAccessToken();
+            }
+            if (typeof localStorage !== 'undefined') {
+                localStorage.removeItem('pharmasight_access_token');
+                localStorage.removeItem('pharmasight_refresh_token');
+            }
+        } catch (_) {}
         
         // STEP 2: Force immediate switch to auth layout and #login (CRITICAL: before signOut)
         if (window.renderAuthLayout) {
@@ -179,6 +199,12 @@ async function globalLogout() {
         await _pharmasightGlobalLogoutInFlight;
     } finally {
         _pharmasightGlobalLogoutInFlight = null;
+        try {
+            window.__pharmasightLoggingOut = false;
+            window.__pharmasightSessionExpiryInFlight = false;
+            window.__pharmasightAuthRedirecting = false;
+            window.__pharmasightAuthExpiredToastShown = false;
+        } catch (_) {}
     }
 }
 

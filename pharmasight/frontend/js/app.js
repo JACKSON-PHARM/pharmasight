@@ -647,6 +647,23 @@ async function startAppFlow() {
         }
         
         console.log('✅ User authenticated:', user.email || user.id);
+
+        const hasAppApiSession =
+            typeof window.pharmasightHasAppSessionCredentials === 'function'
+                ? window.pharmasightHasAppSessionCredentials()
+                : window.API &&
+                  typeof window.API.getBearerAccessToken === 'function' &&
+                  !!window.API.getBearerAccessToken();
+        if (!hasAppApiSession) {
+            console.log('[APP FLOW] Supabase session without app API token; staying on login');
+            if (currentScreen !== 'login') {
+                currentScreen = 'login';
+                renderAuthLayout();
+                loadPage('login');
+            }
+            isInitializing = false;
+            return;
+        }
         
         // Update UI
         updateUserUI(user);
@@ -1127,6 +1144,13 @@ window.subNavItems = {
         { page: 'expenses', subPage: 'categories', label: 'Categories', icon: 'fa-folder' },
         { page: 'expenses', subPage: 'reports', label: 'Reports', icon: 'fa-chart-pie' }
     ],
+    finance: [
+        { page: 'finance', subPage: 'events', label: 'Event Explorer', icon: 'fa-stream' },
+        { page: 'finance', subPage: 'projections', label: 'Projection Explorer', icon: 'fa-chart-area' },
+        { page: 'finance', subPage: 'proposals', label: 'Proposal Inbox', icon: 'fa-inbox' },
+        { page: 'finance', subPage: 'integrity', label: 'Replay & Integrity', icon: 'fa-shield-alt' },
+        { page: 'finance', subPage: 'reconciliation', label: 'Treasury Reconciliation', icon: 'fa-balance-scale' },
+    ],
     reports: [
         { page: 'reports-sales', label: 'Sales Reports', icon: 'fa-chart-line' },
         { page: 'reports-inventory', label: 'Inventory Reports', icon: 'fa-warehouse' },
@@ -1593,7 +1617,27 @@ async function loadPage(pageName) {
     const isPasswordResetPage = pageName === 'password-reset' || pageName === 'reset-password';
     const isPasswordSetPage = pageName === 'password-set';
     const isSetupPage = pageName === 'setup';
-    if (isAuthPage && authenticated && !isPasswordResetPage && !isPasswordSetPage && !isSetupPage && layoutRendered !== 'auth' && !isOnBranchSelectRoute) {
+    const hasAppApiSessionForRoute =
+        typeof window.pharmasightHasAppSessionCredentials === 'function'
+            ? window.pharmasightHasAppSessionCredentials()
+            : window.API &&
+              typeof window.API.getBearerAccessToken === 'function' &&
+              !!window.API.getBearerAccessToken();
+    const sessionTeardownInProgress =
+        window.__pharmasightLoggingOut ||
+        window.__pharmasightSessionExpiryInFlight ||
+        window.__pharmasightAuthRedirecting;
+    if (
+        isAuthPage &&
+        authenticated &&
+        hasAppApiSessionForRoute &&
+        !sessionTeardownInProgress &&
+        !isPasswordResetPage &&
+        !isPasswordSetPage &&
+        !isSetupPage &&
+        layoutRendered !== 'auth' &&
+        !isOnBranchSelectRoute
+    ) {
         console.warn('[ROUTING] Auth page requested but user is authenticated, redirecting to landing...');
         // Don't load auth pages in app layout - redirect to landing
         // UNLESS it's a password reset page
@@ -2000,6 +2044,18 @@ async function loadPage(pageName) {
                 const page = document.getElementById('expenses');
                 if (page) {
                     page.innerHTML = '<div class="card" style="padding: 2rem;"><h3>Expenses</h3><p>Expenses module is not available. Please refresh the page.</p></div>';
+                }
+            }
+            break;
+        case 'finance':
+            if (typeof window.loadFinance === 'function') {
+                window.loadFinance(subPage || 'events');
+            } else {
+                console.error('loadFinance function not found');
+                const page = document.getElementById('finance');
+                if (page) {
+                    page.innerHTML =
+                        '<div class="card" style="padding:2rem;"><h3>Finance Operations</h3><p>Module failed to load. Refresh the page.</p></div>';
                 }
             }
             break;

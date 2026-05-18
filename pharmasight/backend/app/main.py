@@ -318,6 +318,14 @@ from app.api.auth import router as auth_router
 from app.api.public_marketing import router as public_marketing_router
 from app.api.company_billing import router as company_billing_router
 from app.api.reports import router as reports_router
+from app.api.financial_events import router as financial_events_router
+from app.api.finance_projections import router as finance_projections_router
+from app.api.finance_treasury import router as finance_treasury_router
+from app.api.finance_backfill import router as finance_backfill_router
+from app.api.finance_doctrine import router as finance_doctrine_router
+from app.api.finance_semantics import router as finance_semantics_router
+from app.api.finance_accounting import router as finance_accounting_router
+from app.api.finance_reconciliation import router as finance_reconciliation_router
 from app.api.impersonation import router as impersonation_router
 from app.api.admin_metrics import router as admin_metrics_router
 from app.api.admin_platform_licensing import router as admin_platform_licensing_router
@@ -336,6 +344,14 @@ app.include_router(inventory_router, prefix="/api/inventory", tags=["Inventory"]
 app.include_router(expenses_router, prefix="/api/expenses", tags=["Expenses"])
 # Cashbook (money movement tracking; sourced from expenses + supplier payments)
 app.include_router(cashbook_router, prefix="/api", tags=["Cashbook"])
+app.include_router(financial_events_router, prefix="/api", tags=["Financial Events"])
+app.include_router(finance_projections_router, prefix="/api", tags=["Finance Projections"])
+app.include_router(finance_treasury_router, prefix="/api", tags=["Finance Treasury"])
+app.include_router(finance_backfill_router, prefix="/api", tags=["Finance Backfill"])
+app.include_router(finance_doctrine_router, prefix="/api", tags=["Finance Doctrine"])
+app.include_router(finance_semantics_router, prefix="/api", tags=["Finance Semantics"])
+app.include_router(finance_accounting_router, prefix="/api", tags=["Finance Accounting"])
+app.include_router(finance_reconciliation_router, prefix="/api", tags=["Finance Reconciliation"])
 app.include_router(insurance_management_router, prefix="/api/insurance", tags=["Insurance Management"])
 # Supplier management (payments, returns, etc.) must come before suppliers_router so /payments matches before /{supplier_id}
 app.include_router(supplier_management_router, prefix="/api/suppliers", tags=["Supplier Management"])

@@ -23,6 +23,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_tenant_db, _user_has_permission, get_effective_company_id_for_user
+from app.finance.governance.access import guard_finance_branch_query_param
+from app.finance.governance.classification import MANAGEMENT
 from app.models import Expense, ExpenseCategory
 from app.models.settings import CompanySetting
 from app.services.cashbook_service import ensure_cashbook_entry_for_expense_if_approved
@@ -285,6 +287,18 @@ def create_expense(
         ensure_cashbook_entry_for_expense_if_approved(db, expense=exp)
     db.commit()
     db.refresh(exp)
+    if exp.status == "approved":
+        try:
+            from app.finance.events.hooks import on_expense_approved_financial_event
+
+            on_expense_approved_financial_event(db, exp)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "financial_events: expense create hook failed (non-fatal) expense=%s",
+                exp.id,
+            )
 
     out = ExpenseResponse.model_validate(exp)
     out.category_name = cat.name
@@ -396,6 +410,17 @@ def approve_expense(
     ensure_cashbook_entry_for_expense_if_approved(db, expense=exp)
     db.commit()
     db.refresh(exp)
+    try:
+        from app.finance.events.hooks import on_expense_approved_financial_event
+
+        on_expense_approved_financial_event(db, exp)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "financial_events: expense approve hook failed (non-fatal) expense=%s",
+            expense_id,
+        )
 
     cat_name = (
         db.query(ExpenseCategory.name)
@@ -421,9 +446,16 @@ def get_expense_summary(
     db: Session = Depends(get_tenant_db),
 ):
     user, _ = user_db
-    if not _user_has_permission(db, user.id, "reports.view"):
-        raise HTTPException(status_code=403, detail="Permission reports.view required")
     company_id = _effective_company_id(request, db, user)
+    report_ctx = guard_finance_branch_query_param(
+        db,
+        user=user,
+        company_id=company_id,
+        permission="finance.reports.management",
+        classification=MANAGEMENT,
+        branch_id=branch_id,
+        registry_id="expenses.summary",
+    )
     if start_date > end_date:
         raise HTTPException(status_code=400, detail="start_date must be <= end_date")
 
@@ -433,8 +465,7 @@ def get_expense_summary(
         Expense.expense_date >= start_date,
         Expense.expense_date <= end_date,
     )
-    if branch_id:
-        q = q.filter(Expense.branch_id == branch_id)
+    q = report_ctx.apply_branch_filter(q, Expense.branch_id, branch_id)
     total = q.scalar() or Decimal("0")
 
     breakdown: List[ExpenseDailyRow] = []
@@ -448,8 +479,7 @@ def get_expense_summary(
             Expense.expense_date >= start_date,
             Expense.expense_date <= end_date,
         )
-        if branch_id:
-            qb = qb.filter(Expense.branch_id == branch_id)
+        qb = report_ctx.apply_branch_filter(qb, Expense.branch_id, branch_id)
         rows = qb.group_by(Expense.expense_date).order_by(Expense.expense_date.asc()).all()
         breakdown = [ExpenseDailyRow(date=r.d, total_expenses=r.total) for r in rows]
 

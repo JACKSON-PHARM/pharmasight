@@ -38,6 +38,8 @@ from .insurance_financial import (
 )
 # Cashbook (money movement tracking)
 from .cashbook import CashbookEntry
+from .cashbook_account import CashbookAccount
+from .finance_backfill import FinanceBackfillRun
 # Backward compatibility aliases
 PurchaseInvoice = SupplierInvoice
 PurchaseInvoiceItem = SupplierInvoiceItem
@@ -83,6 +85,18 @@ from .etims_sync_cursor import EtimsSyncCursor
 from .kra_audit_event import KraAuditEvent
 from .kra_event_outbox import KraEventOutbox
 from .commercial_transaction import CommercialTransaction, CommercialTransactionTransition
+from .financial_event import (
+    FinancialEvent,
+    FinancialEventEmissionFailure,
+    FinancialEventReplayLog,
+    FinancialEventSettlementLink,
+)
+from .journal_proposal import (
+    AccountingPostingRecord,
+    JournalProposal,
+    JournalProposalEvidence,
+    JournalProposalLine,
+)
 
 __all__ = [
     "Base",
@@ -160,6 +174,8 @@ __all__ = [
     "InsuranceSettlementAllocation",
     "InsuranceLedgerEntry",
     "CashbookEntry",
+    "CashbookAccount",
+    "FinanceBackfillRun",
     "Patient",
     "Encounter",
     "EncounterNote",
@@ -185,4 +201,12 @@ __all__ = [
     "KraEventOutbox",
     "CommercialTransaction",
     "CommercialTransactionTransition",
+    "FinancialEvent",
+    "FinancialEventEmissionFailure",
+    "FinancialEventReplayLog",
+    "FinancialEventSettlementLink",
+    "JournalProposal",
+    "JournalProposalLine",
+    "JournalProposalEvidence",
+    "AccountingPostingRecord",
 ]

@@ -23,6 +23,8 @@ from app.dependencies import (
     get_effective_company_id_for_user,
     ensure_user_has_branch_access,
 )
+from app.finance.governance.classification import MANAGEMENT
+from app.finance.governance.context import assert_access, resolve_finance_access_context
 from app.module_enforcement import require_module
 from app.services.document_pdf_generator import build_sales_invoice_pdf
 from app.services.tenant_storage_service import get_signed_url, resolve_company_logo_bytes
@@ -1476,7 +1478,7 @@ def get_branch_gross_profit(
     COGS = per invoice: sum of SALE inventory-ledger total_cost when that invoice has ledger rows,
     otherwise recomputed from line snapshots (legacy invoices without SALE ledger). Minus SALE_RETURN
     cost for returns linked to credit notes on invoices whose invoice_date falls in the range
-    (aligned with net sales). Gross profit = Net sales − COGS.
+    (aligned with net sales).     Gross profit = Net sales − COGS.
     """
     user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
@@ -1485,9 +1487,15 @@ def get_branch_gross_profit(
     effective_company_id = get_effective_company_id_for_user(db, user)
     if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
         raise HTTPException(status_code=403, detail="Access denied to this branch")
-    ensure_user_has_branch_access(db, user.id, branch_id)
-    if not _user_has_permission(db, user.id, "sales.view"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    ctx = resolve_finance_access_context(user, db, effective_company_id)
+    assert_access(
+        ctx,
+        MANAGEMENT,
+        db,
+        branch_id=branch_id,
+        permission="finance.reports.management",
+        registry_id="sales.gross_profit",
+    )
 
     sd, ed = _resolve_date_range(preset, start_date, end_date)
 
@@ -2880,6 +2888,15 @@ def batch_sales_invoice(
         )
 
     db.refresh(invoice)
+    try:
+        from app.finance.events.hooks import on_sales_invoice_batched_financial_event
+
+        on_sales_invoice_batched_financial_event(db, invoice)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "financial_events: sales invoice batch hook failed (non-fatal) invoice=%s",
+            invoice_id,
+        )
 
     try:
         order_book_entries = OrderBookService.process_sale_for_order_book(
@@ -3330,6 +3347,15 @@ def add_invoice_payment(
         )
         db.add(claim)
         db.flush()
+        try:
+            from app.finance.events.hooks import on_insurance_claim_financial_event
+
+            on_insurance_claim_financial_event(db, claim, lifecycle_status="submitted")
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "financial_events: insurance claim hook failed (non-fatal) claim=%s",
+                claim.id,
+            )
         db.add(InsuranceLedgerEntry(
             company_id=invoice.company_id,
             branch_id=invoice.branch_id,

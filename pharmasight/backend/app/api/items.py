@@ -22,6 +22,9 @@ from app.dependencies import (
     _user_has_permission,
     ensure_user_has_branch_access,
 )
+from app.finance.governance.access import resolve_finance_branch_id
+from app.finance.governance.classification import OPERATIONAL
+from app.finance.governance.context import resolve_finance_access_context
 from app.module_enforcement import require_module
 from decimal import Decimal
 from app.models import (
@@ -860,21 +863,21 @@ def get_item_batches_endpoint(
     """
     List distinct batches for an item at a branch (tenant- and branch-scoped).
     Used to populate the batch dropdown in Batch Movement Report.
-    Requires reports.view and branch access.
+    Requires finance.reports.operational and branch access.
     """
     user, _ = current_user_and_db
-    if not _user_has_permission(db, user.id, "reports.view"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Permission reports.view required.",
-        )
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found.")
-    branch = db.query(Branch).filter(Branch.id == branch_id).first()
-    if not branch or branch.company_id != item.company_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found or does not belong to item company.")
-    ensure_user_has_branch_access(db, user.id, branch_id)
+    ctx = resolve_finance_access_context(user, db, item.company_id)
+    resolve_finance_branch_id(
+        ctx,
+        db,
+        branch_id_query=branch_id,
+        classification=OPERATIONAL,
+        permission="finance.reports.operational",
+        registry_id="items.batch_dropdown",
+    )
     batches = get_item_batches(db, company_id=item.company_id, branch_id=branch_id, item_id=item_id)
     return ItemBatchesResponse(batches=batches)
 

@@ -7,14 +7,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.dependencies import get_current_user, get_tenant_db, _user_has_permission
+from app.dependencies import get_current_user, get_tenant_db
+from app.finance.governance.access import (
+    deny_unless_finance_permission,
+    guard_finance_report_access,
+    resolve_finance_branch_id,
+)
+from app.finance.governance.classification import BRANCH_FINANCE, MANAGEMENT
+from app.finance.governance.context import assert_access, resolve_finance_access_context
 from app.models import (
     InsuranceProvider,
     InsuranceClaim,
     InsuranceSettlement,
     InsuranceSettlementAllocation,
     InsuranceLedgerEntry,
-    SalesInvoice,
     Branch,
 )
 from app.schemas.insurance_management import (
@@ -57,9 +63,11 @@ def list_providers(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "sales.view"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
+    deny_unless_finance_permission(
+        db, user, company_id, "hospital.insurance.view", BRANCH_FINANCE,
+        registry_id="insurance.providers_list",
+    )
     q = db.query(InsuranceProvider).filter(InsuranceProvider.company_id == company_id)
     if active_only:
         q = q.filter(InsuranceProvider.is_active == True)
@@ -74,9 +82,11 @@ def create_provider(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "settings.edit"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
+    deny_unless_finance_permission(
+        db, user, company_id, "hospital.insurance.manage_providers", MANAGEMENT,
+        registry_id="insurance.providers_create",
+    )
     row = InsuranceProvider(company_id=company_id, **body.model_dump())
     db.add(row)
     db.commit()
@@ -84,7 +94,7 @@ def create_provider(
     return row
 
 
-@router.put("/providers/{provider_id}", response_model=InsuranceProviderResponse)
+@router.patch("/providers/{provider_id}", response_model=InsuranceProviderResponse)
 def update_provider(
     provider_id: UUID,
     body: InsuranceProviderUpdate,
@@ -93,10 +103,14 @@ def update_provider(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "settings.edit"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
-    row = db.query(InsuranceProvider).filter(InsuranceProvider.id == provider_id, InsuranceProvider.company_id == company_id).first()
+    deny_unless_finance_permission(
+        db, user, company_id, "hospital.insurance.manage_providers", MANAGEMENT,
+        registry_id="insurance.providers_update",
+    )
+    row = db.query(InsuranceProvider).filter(
+        InsuranceProvider.id == provider_id, InsuranceProvider.company_id == company_id
+    ).first()
     if not row:
         raise HTTPException(status_code=404, detail="Provider not found")
     for k, v in body.model_dump(exclude_unset=True).items():
@@ -115,14 +129,17 @@ def list_claims(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "sales.view"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
+    report_ctx = guard_finance_report_access(
+        db, user, company_id, "hospital.insurance.view", BRANCH_FINANCE,
+        registry_id="insurance.claims_list",
+    )
     q = db.query(InsuranceClaim).filter(InsuranceClaim.company_id == company_id)
     if provider_id:
         q = q.filter(InsuranceClaim.insurance_provider_id == provider_id)
     if status_filter:
         q = q.filter(InsuranceClaim.status == status_filter)
+    q = report_ctx.apply_branch_filter(q, InsuranceClaim.branch_id)
     return q.order_by(InsuranceClaim.created_at.desc()).all()
 
 
@@ -135,12 +152,19 @@ def update_claim_status(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "sales.edit"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
+    ctx = resolve_finance_access_context(user, db, company_id)
     row = db.query(InsuranceClaim).filter(InsuranceClaim.id == claim_id, InsuranceClaim.company_id == company_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Claim not found")
+    assert_access(
+        ctx,
+        MANAGEMENT,
+        db,
+        branch_id=row.branch_id,
+        permission="hospital.insurance.settle",
+        registry_id="insurance.claim_status",
+    )
     row.status = body.status
     if body.approved_amount is not None:
         row.approved_amount = body.approved_amount
@@ -148,6 +172,17 @@ def update_claim_status(
         row.notes = body.notes
     db.commit()
     db.refresh(row)
+    try:
+        from app.finance.events.hooks import on_insurance_claim_financial_event
+
+        on_insurance_claim_financial_event(db, row, lifecycle_status=row.status)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "financial_events: insurance claim status hook failed (non-fatal) claim=%s",
+            claim_id,
+        )
     return row
 
 
@@ -159,9 +194,19 @@ def create_settlement(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "sales.edit"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
+    ctx = deny_unless_finance_permission(
+        db, user, company_id, "hospital.insurance.settle", MANAGEMENT,
+        registry_id="insurance.settlement_create",
+    )
+    resolve_finance_branch_id(
+        ctx,
+        db,
+        branch_id_query=body.branch_id,
+        classification=MANAGEMENT,
+        permission="hospital.insurance.settle",
+        registry_id="insurance.settlement_create",
+    )
     branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.company_id == company_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
@@ -180,23 +225,20 @@ def create_settlement(
     db.add(settlement)
     db.flush()
     allocated_total = Decimal("0")
-    for alloc in body.allocations:
+    for alloc in body.allocations or []:
         claim = db.query(InsuranceClaim).filter(
-            InsuranceClaim.id == alloc.insurance_claim_id,
-            InsuranceClaim.company_id == company_id,
-            InsuranceClaim.insurance_provider_id == body.insurance_provider_id,
-        ).with_for_update().first()
+            InsuranceClaim.id == alloc.insurance_claim_id, InsuranceClaim.company_id == company_id
+        ).first()
         if not claim:
-            raise HTTPException(status_code=404, detail=f"Claim not found: {alloc.insurance_claim_id}")
-        if alloc.allocated_amount > claim.outstanding_amount:
-            raise HTTPException(status_code=400, detail=f"Allocation exceeds claim outstanding: {claim.claim_number}")
-        db.add(InsuranceSettlementAllocation(
+            raise HTTPException(status_code=404, detail=f"Claim {alloc.insurance_claim_id} not found")
+        assert_access(ctx, MANAGEMENT, db, branch_id=claim.branch_id)
+        allocation = InsuranceSettlementAllocation(
             insurance_settlement_id=settlement.id,
-            insurance_claim_id=claim.id,
+            insurance_claim_id=alloc.insurance_claim_id,
             allocated_amount=alloc.allocated_amount,
-        ))
-        claim.settled_amount = Decimal(str(claim.settled_amount or 0)) + alloc.allocated_amount
-        claim.outstanding_amount = Decimal(str(claim.outstanding_amount or 0)) - alloc.allocated_amount
+        )
+        db.add(allocation)
+        claim.outstanding_amount = (claim.outstanding_amount or Decimal("0")) - alloc.allocated_amount
         claim.status = "settled" if claim.outstanding_amount <= Decimal("0.0001") else "partially_settled"
         allocated_total += alloc.allocated_amount
     db.add(InsuranceLedgerEntry(
@@ -212,7 +254,25 @@ def create_settlement(
     ))
     ensure_cashbook_entry_for_insurance_settlement(db, settlement=settlement)
     db.commit()
-    return db.query(InsuranceSettlement).options(selectinload(InsuranceSettlement.allocations)).filter(InsuranceSettlement.id == settlement.id).first()
+    settlement_row = (
+        db.query(InsuranceSettlement)
+        .options(selectinload(InsuranceSettlement.allocations))
+        .filter(InsuranceSettlement.id == settlement.id)
+        .first()
+    )
+    try:
+        from app.finance.events.hooks import on_insurance_settlement_financial_event
+
+        if settlement_row:
+            on_insurance_settlement_financial_event(db, settlement_row)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "financial_events: insurance settlement hook failed (non-fatal) settlement=%s",
+            settlement.id,
+        )
+    return settlement_row
 
 
 @router.get("/settlements", response_model=list[InsuranceSettlementResponse])
@@ -223,12 +283,17 @@ def list_settlements(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "sales.view"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
-    q = db.query(InsuranceSettlement).options(selectinload(InsuranceSettlement.allocations)).filter(InsuranceSettlement.company_id == company_id)
+    report_ctx = guard_finance_report_access(
+        db, user, company_id, "hospital.insurance.view", BRANCH_FINANCE,
+        registry_id="insurance.settlements_list",
+    )
+    q = db.query(InsuranceSettlement).options(selectinload(InsuranceSettlement.allocations)).filter(
+        InsuranceSettlement.company_id == company_id
+    )
     if provider_id:
         q = q.filter(InsuranceSettlement.insurance_provider_id == provider_id)
+    q = report_ctx.apply_branch_filter(q, InsuranceSettlement.branch_id)
     return q.order_by(InsuranceSettlement.settlement_date.desc()).all()
 
 
@@ -240,14 +305,17 @@ def insurer_statement(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "reports.view"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
-    rows = db.query(InsuranceLedgerEntry).filter(
+    report_ctx = guard_finance_report_access(
+        db, user, company_id, "hospital.insurance.view", BRANCH_FINANCE,
+        registry_id="insurance.statement",
+    )
+    q = db.query(InsuranceLedgerEntry).filter(
         InsuranceLedgerEntry.company_id == company_id,
         InsuranceLedgerEntry.insurance_provider_id == provider_id,
-    ).order_by(InsuranceLedgerEntry.date.asc(), InsuranceLedgerEntry.created_at.asc()).all()
-    return rows
+    )
+    q = report_ctx.apply_branch_filter(q, InsuranceLedgerEntry.branch_id)
+    return q.order_by(InsuranceLedgerEntry.date.asc(), InsuranceLedgerEntry.created_at.asc()).all()
 
 
 @router.get("/aging", response_model=list[InsuranceAgingRow])
@@ -257,16 +325,20 @@ def insurer_aging(
     db: Session = Depends(get_tenant_db),
 ):
     user = current_user_and_db[0]
-    if not _user_has_permission(db, user.id, "reports.view"):
-        raise HTTPException(status_code=403, detail="Permission denied")
     company_id = _effective_company_id(request)
+    report_ctx = guard_finance_report_access(
+        db, user, company_id, "hospital.insurance.view", BRANCH_FINANCE,
+        registry_id="insurance.aging",
+    )
     today = date.today()
-    claims = db.query(InsuranceClaim, InsuranceProvider).join(
+    q = db.query(InsuranceClaim, InsuranceProvider).join(
         InsuranceProvider, InsuranceProvider.id == InsuranceClaim.insurance_provider_id
     ).filter(
         InsuranceClaim.company_id == company_id,
         InsuranceClaim.outstanding_amount > 0,
-    ).all()
+    )
+    q = report_ctx.apply_branch_filter(q, InsuranceClaim.branch_id)
+    claims = q.all()
     buckets = {}
     for claim, provider in claims:
         key = str(provider.id)
@@ -287,4 +359,3 @@ def insurer_aging(
         total = v["current"] + v["days_31_60"] + v["days_61_90"] + v["days_91_plus"]
         out.append(InsuranceAgingRow(**v, total=total))
     return sorted(out, key=lambda x: x.total, reverse=True)
-

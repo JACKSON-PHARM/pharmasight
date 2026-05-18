@@ -2175,7 +2175,17 @@ def batch_supplier_invoice(
         db.rollback()
         _log.exception("Batch supplier invoice failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+    try:
+        from app.finance.events.hooks import on_supplier_invoice_batched_financial_event
+
+        on_supplier_invoice_batched_financial_event(db, invoice)
+    except Exception:
+        _log.exception(
+            "financial_events: supplier invoice batch hook failed (non-fatal) invoice=%s",
+            invoice_id,
+        )
+
     # Response from eagerly loaded relations (no extra queries)
     if invoice.supplier:
         invoice.supplier_name = invoice.supplier.name

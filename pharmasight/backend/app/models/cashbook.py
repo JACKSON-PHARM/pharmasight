@@ -37,6 +37,9 @@ class CashbookEntry(Base):
 
     reference_number = Column(String(100))
     description = Column(Text)
+    cashbook_account_id = Column(
+        UUID(as_uuid=True), ForeignKey("cashbook_accounts.id", ondelete="SET NULL"), nullable=True
+    )
 
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())

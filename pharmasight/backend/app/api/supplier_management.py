@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import literal_column
 
 from app.dependencies import get_tenant_db, get_current_user, require_document_belongs_to_user_company
+from app.finance.governance.access import guard_finance_branch_query_param
+from app.finance.governance.classification import MANAGEMENT
 from app.models import (
     Supplier,
     SupplierInvoice,
@@ -287,6 +289,18 @@ def create_supplier_payment(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+    try:
+        from app.finance.events.hooks import on_supplier_payment_financial_event
+
+        on_supplier_payment_financial_event(db, payment)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "financial_events: supplier payment hook failed (non-fatal) payment=%s",
+            payment.id,
+        )
 
     # Load relations for response
     payment = db.query(SupplierPayment).options(
@@ -613,7 +627,17 @@ def get_supplier_aging_report(
     db: Session = Depends(get_tenant_db),
 ):
     """Aging buckets: 0-30, 31-60, 61-90, 90+ days overdue. Uses effective due date (explicit due_date or invoice_date + supplier terms)."""
+    user = current_user_and_db[0]
     company_id = _effective_company_id(request)
+    report_ctx = guard_finance_branch_query_param(
+        db,
+        user=user,
+        company_id=company_id,
+        permission="finance.reports.management",
+        classification=MANAGEMENT,
+        branch_id=branch_id,
+        registry_id="suppliers.aging",
+    )
     as_of = as_of_date or date.today()
 
     eff_due = _supplier_invoice_effective_due_sql()
@@ -660,8 +684,7 @@ def get_supplier_aging_report(
         (SupplierInvoice.balance.is_(None) | (SupplierInvoice.balance > 0)),
         SupplierInvoice.status == "BATCHED",
     )
-    if branch_id:
-        q = q.filter(SupplierInvoice.branch_id == branch_id)
+    q = report_ctx.apply_branch_filter(q, SupplierInvoice.branch_id, branch_id)
     q = q.group_by(SupplierInvoice.supplier_id, Supplier.name)
     rows = q.all()
 

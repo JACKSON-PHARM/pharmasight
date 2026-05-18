@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import literal_column
 
 from app.dependencies import get_tenant_db, get_current_user
+from app.finance.governance.access import guard_finance_branch_query_param
+from app.finance.governance.classification import MANAGEMENT
 from app.module_enforcement import require_module
 from app.models import (
     Customer,
@@ -271,6 +273,18 @@ def create_customer_payment(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+    try:
+        from app.finance.events.hooks import on_customer_payment_financial_event
+
+        on_customer_payment_financial_event(db, payment)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "financial_events: customer payment hook failed (non-fatal) payment=%s",
+            payment.id,
+        )
+
     payment = (
         db.query(CustomerPayment)
         .options(
@@ -410,7 +424,17 @@ def get_customer_aging_report(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
+    user = current_user_and_db[0]
     company_id = _effective_company_id(request)
+    report_ctx = guard_finance_branch_query_param(
+        db,
+        user=user,
+        company_id=company_id,
+        permission="wholesale.ar.view",
+        classification=MANAGEMENT,
+        branch_id=branch_id,
+        registry_id="customers.aging",
+    )
     as_of = as_of_date or date.today()
     eff_due = _sales_invoice_effective_due_sql()
 
@@ -443,8 +467,7 @@ def get_customer_aging_report(
         (SalesInvoice.balance.is_(None) | (SalesInvoice.balance > 0)),
         SalesInvoice.status.in_(["BATCHED", "PAID"]),
     )
-    if branch_id:
-        q = q.filter(SalesInvoice.branch_id == branch_id)
+    q = report_ctx.apply_branch_filter(q, SalesInvoice.branch_id, branch_id)
     q = q.group_by(SalesInvoice.customer_id, Customer.name)
     rows = q.all()
 

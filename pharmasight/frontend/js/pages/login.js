@@ -21,7 +21,17 @@ async function loadLogin() {
     } catch (_) {}
     // Check if already logged in (using AuthBootstrap for consistency)
     const user = AuthBootstrap.getCurrentUser();
-    if (user && isAuthenticated()) {
+    const hasAppApiSession =
+        typeof window.pharmasightHasAppSessionCredentials === 'function'
+            ? window.pharmasightHasAppSessionCredentials()
+            : window.API &&
+              typeof window.API.getBearerAccessToken === 'function' &&
+              !!window.API.getBearerAccessToken();
+    const sessionTeardownInProgress =
+        window.__pharmasightLoggingOut ||
+        window.__pharmasightSessionExpiryInFlight ||
+        window.__pharmasightAuthRedirecting;
+    if (user && isAuthenticated() && hasAppApiSession && !sessionTeardownInProgress) {
         // Already logged in, switch to app layout and continue app flow
         renderAppLayout();
         if (window.startAppFlow) {

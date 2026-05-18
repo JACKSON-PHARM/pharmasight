@@ -408,6 +408,7 @@
                 <div id="items" class="page"></div>
                 <div id="stock-take" class="page"></div>
                 <div id="expenses" class="page"></div>
+                <div id="finance" class="page"></div>
                 <div id="cashbook" class="page"></div>
                 <div id="patients" class="page"></div>
                 <div id="encounters" class="page"></div>
@@ -513,7 +514,7 @@
             } catch (_) {}
         })();
     </script>
-    <script src="js/api.js?v=26"></script>
+    <script src="js/api.js?v=28"></script>
     <!-- Global Supabase Client (must load before auth modules) -->
     <script src="js/services/supabase_client.js?v=1"></script>
     <!-- Legacy auth (backward compatibility) -->
@@ -541,11 +542,11 @@
     <script src="js/utils/permissions.js?v=2"></script>
     <script src="js/services/subscription_ui.js?v=4"></script>
     <!-- Module switcher + dynamic sidebar (UI-only visibility) -->
-    <script src="js/services/module_ui.js?v=9"></script>
+    <script src="js/services/module_ui.js?v=10"></script>
     <!-- Stock Take (before app.js so loadStockTake exists when router runs) -->
     <script src="js/pages/stock_take.js?v=11"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
-    <script src="js/app.js?v=35"></script>
+    <script src="js/app.js?v=36"></script>
     <script src="js/pages/login.js?v=12"></script>
     <script src="js/pages/password_reset.js?v=3"></script>
     <script src="js/pages/tenant_invite_setup.js?v=1"></script>
@@ -571,6 +572,14 @@
     <script src="js/pages/purchases.js?v=24"></script>
     <script src="js/pages/customers.js?v=1"></script>
     <script src="js/pages/expenses.js?v=1"></script>
+    <script src="js/finance/finance_ops_labels.js?v=3"></script>
+    <script src="js/finance/finance_ops_shared.js?v=1"></script>
+    <script src="js/pages/finance_events.js?v=1"></script>
+    <script src="js/pages/finance_projections.js?v=1"></script>
+    <script src="js/pages/finance_proposals.js?v=1"></script>
+    <script src="js/pages/finance_integrity.js?v=1"></script>
+    <script src="js/pages/finance_reconciliation.js?v=2"></script>
+    <script src="js/pages/finance.js?v=2"></script>
     <script src="js/pages/cashbook.js?v=2"></script>
     <script src="js/pages/clinic.js?v=25"></script>
     <script src="js/pages/billing_insurance.js?v=1"></script>
