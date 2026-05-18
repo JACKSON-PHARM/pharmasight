@@ -97,6 +97,11 @@ def create_company_with_hq_branch_and_registry(
     app_db.add(branch)
     app_db.flush()
     ensure_default_branch_settings(app_db, branch.id)
+    from app.accounting.coa_service import provision_default_chart_of_accounts
+    from app.accounting.fiscal_period_service import provision_current_open_period
+
+    provision_default_chart_of_accounts(app_db, company.id)
+    provision_current_open_period(app_db, company.id)
     app_db.commit()
     app_db.refresh(company)
     app_db.refresh(branch)

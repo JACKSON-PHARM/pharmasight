@@ -266,6 +266,14 @@ class APIClient {
     }
 
     async request(endpoint, options = {}) {
+        if (typeof window !== 'undefined' && typeof window.pharmasightSyncApiBaseUrl === 'function') {
+            window.pharmasightSyncApiBaseUrl();
+        }
+        if (!this.baseURL) {
+            throw new Error(
+                'API base URL is not configured. Restart python start.py and hard-refresh the browser (Ctrl+Shift+R).'
+            );
+        }
         const url = `${this.baseURL}${endpoint}`;
         const method = (options.method || 'GET').toUpperCase();
         
@@ -527,6 +535,17 @@ const api = new APIClient(CONFIG.API_BASE_URL);
 try {
     api.hydrateInternalAccessTokenFromStorage();
 } catch (_) {}
+
+function pharmasightSyncApiBaseUrl() {
+    const base =
+        typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL != null ? String(CONFIG.API_BASE_URL) : '';
+    api.baseURL = base.replace(/\/+$/, '');
+}
+
+if (typeof window !== 'undefined') {
+    window.pharmasightSyncApiBaseUrl = pharmasightSyncApiBaseUrl;
+    pharmasightSyncApiBaseUrl();
+}
 
 // API Methods
 const API = {
@@ -1328,6 +1347,48 @@ const API = {
             qs.append('to_date', params.to_date);
             return api.get(`${CONFIG.API_ENDPOINTS.customers}/statement?${qs.toString()}`);
         },
+        downloadStatementPdf: async (params) => {
+            const qs = new URLSearchParams();
+            qs.append('customer_id', params.customer_id);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            qs.append('from_date', params.from_date);
+            qs.append('to_date', params.to_date);
+            if (params.block_on_fail) qs.append('block_on_fail', 'true');
+            const base = CONFIG.API_ENDPOINTS.customers || '/api/customers';
+            const url = `${api.baseURL}${base}/statement/pdf?${qs.toString()}`;
+            const headers = {};
+            try {
+                const sub = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pharmasight_tenant_subdomain') || (typeof localStorage !== 'undefined' && localStorage.getItem('pharmasight_tenant_subdomain'));
+                if (sub) headers['X-Tenant-Subdomain'] = sub;
+                const token = api.getBearerAccessToken();
+                if (token) headers['Authorization'] = 'Bearer ' + token;
+                if (CONFIG.BRANCH_ID) headers['X-Branch-ID'] = CONFIG.BRANCH_ID;
+            } catch (_) {}
+            const res = await fetch(url, { method: 'GET', headers });
+            if (!res.ok) {
+                let msg = 'Failed to download statement PDF';
+                try {
+                    const text = await res.text();
+                    let data;
+                    try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                    let d = data.detail || data.message;
+                    if (res.status === 409 && d && typeof d === 'object' && d.message) d = d.message;
+                    if (d) msg += ': ' + (typeof d === 'string' ? d : JSON.stringify(d));
+                } catch (_) {}
+                throw new Error(msg);
+            }
+            const integrity = res.headers.get('X-Statement-Integrity') || '';
+            const blob = await res.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            const safe = (params.customer_name || 'customer').toString().replace(/\s+/g, '-').slice(0, 40);
+            const prefix = integrity === 'FAIL' ? 'DRAFT-' : '';
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = `${prefix}customer-statement-${safe}-${params.from_date}-${params.to_date}.pdf`;
+            a.click();
+            URL.revokeObjectURL(blobUrl);
+            return { integrity };
+        },
         listActivities: (params = {}) => {
             const qs = new URLSearchParams();
             if (params.customer_id) qs.append('customer_id', params.customer_id);
@@ -1904,6 +1965,56 @@ const API = {
                 return api.get(`/api/finance/intelligence/recovery-exposure?${qs.toString()}`);
             },
         },
+    },
+
+    /** Operational Financial Command Center — business-facing position & branch health */
+    financeCommandCenter: {
+        overview: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.from_date) qs.append('from_date', params.from_date);
+            if (params.to_date) qs.append('to_date', params.to_date);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            const q = qs.toString();
+            return api.get(`/api/finance/command-center/overview${q ? `?${q}` : ''}`);
+        },
+    },
+
+    /** M1 authoritative GL — trial balance, P&L, control reconciliation */
+    accountingGl: {
+        trialBalance: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.as_of_date) qs.append('as_of_date', params.as_of_date);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            return api.get(`/api/accounting/trial-balance?${qs.toString()}`);
+        },
+        profitAndLoss: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.from_date) qs.append('from_date', params.from_date);
+            if (params.to_date) qs.append('to_date', params.to_date);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            return api.get(`/api/accounting/profit-and-loss?${qs.toString()}`);
+        },
+        balanceSheet: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.as_of_date) qs.append('as_of_date', params.as_of_date);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            return api.get(`/api/accounting/balance-sheet?${qs.toString()}`);
+        },
+        controlReconciliation: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.as_of_date) qs.append('as_of_date', params.as_of_date);
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            return api.get(`/api/accounting/reconciliation/control?${qs.toString()}`);
+        },
+        postingFailures: (params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.unresolved_only != null) qs.append('unresolved_only', params.unresolved_only);
+            if (params.limit != null) qs.append('limit', params.limit);
+            const q = qs.toString();
+            return api.get(`/api/accounting/posting-failures${q ? `?${q}` : ''}`);
+        },
+        resolvePostingFailure: (failureId) =>
+            api.post(`/api/accounting/posting-failures/${failureId}/resolve`, null),
     },
 };
 

@@ -4,15 +4,16 @@ company_id from session only.
 """
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import List, Optional, Dict, Tuple
+from typing import Any, List, Optional, Dict, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
+from fastapi.responses import Response
 from sqlalchemy import func, and_, case
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import literal_column
 
-from app.dependencies import get_tenant_db, get_current_user
+from app.dependencies import get_tenant_db, get_current_user, get_tenant_optional, _user_has_permission, ensure_user_has_branch_access
 from app.finance.governance.access import guard_finance_branch_query_param
 from app.finance.governance.classification import MANAGEMENT
 from app.models import (
@@ -23,6 +24,8 @@ from app.models import (
     CustomerLedgerEntry,
     CustomerActivity,
     Branch,
+    Company,
+    User,
 )
 from app.services.customer_ledger_service import CustomerLedgerService
 from app.services.customer_invoice_payment_service import (
@@ -40,6 +43,7 @@ from app.schemas.customer_management import (
     CustomerAgingReportResponse,
     CustomerStatementResponse,
     CustomerStatementLine,
+    CustomerStatementIntegrity,
     CustomerActivityCreate,
     CustomerActivityUpdate,
     CustomerActivityResponse,
@@ -51,6 +55,11 @@ from app.utils.customer_access import (
     get_customer_hub_mode,
     require_customer_hub_branch,
 )
+from app.services.customer_statement_service import (
+    StatementBuildContext,
+    build_operational_customer_statement,
+)
+from app.services.document_pdf_generator import build_customer_statement_pdf
 
 router = APIRouter(dependencies=[Depends(require_customer_hub_branch())])
 
@@ -269,6 +278,19 @@ def create_customer_payment(
             credit=body.amount,
         )
         ensure_cashbook_entry_for_customer_payment(db, payment=payment)
+
+        try:
+            from app.accounting.posting.customer_payment import post_gl_for_customer_payment
+
+            post_gl_for_customer_payment(db, payment, posted_by=user.id)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "accounting: GL customer payment failed for payment %s (non-fatal)",
+                payment.id,
+            )
+
         db.commit()
         db.refresh(payment)
     except HTTPException:
@@ -515,6 +537,50 @@ def get_customer_aging_report(
     )
 
 
+def _require_customer_statement_access(
+    db: Session,
+    user,
+    *,
+    branch_id: Optional[UUID],
+) -> None:
+    if not _user_has_permission(db, user.id, "customers.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied: customers.view")
+    if branch_id is not None:
+        ensure_user_has_branch_access(db, user.id, branch_id)
+
+
+def _statement_response_from_build(data: dict) -> CustomerStatementResponse:
+    integrity_raw = data.get("statement_integrity") or {}
+    return CustomerStatementResponse(
+        customer_id=data["customer_id"],
+        customer_name=data["customer_name"],
+        customer_pin=data.get("customer_pin"),
+        company_id=data.get("company_id"),
+        company_name=data.get("company_name"),
+        branch_id=data.get("branch_id"),
+        branch_name=data.get("branch_name"),
+        from_date=data["from_date"],
+        to_date=data["to_date"],
+        opening_balance=data["opening_balance"],
+        closing_balance=data["closing_balance"],
+        lines=[
+            CustomerStatementLine(
+                date=ln["date"],
+                entry_type=ln["entry_type"],
+                description=ln.get("description"),
+                reference=ln.get("reference"),
+                debit=ln["debit"],
+                credit=ln["credit"],
+                balance=ln["balance"],
+            )
+            for ln in data.get("lines") or []
+        ],
+        statement_integrity=CustomerStatementIntegrity(**integrity_raw) if integrity_raw else None,
+        prepared_by=data.get("prepared_by"),
+        doctrine=data.get("doctrine", "operational_ar_v1"),
+    )
+
+
 @router.get("/statement", response_model=CustomerStatementResponse)
 def get_customer_statement(
     request: Request,
@@ -525,69 +591,138 @@ def get_customer_statement(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
+    """
+    Operational AR customer statement (customer_ledger_entries only).
+    Stable order: date, created_at, id. Includes statement_integrity certificate.
+    """
+    user = current_user_and_db[0]
     company_id = _effective_company_id(request)
+    _require_customer_statement_access(db, user, branch_id=branch_id)
+
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be on or before to_date")
+
     customer = db.query(Customer).filter(Customer.id == customer_id, Customer.company_id == company_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    q = db.query(CustomerLedgerEntry).filter(
-        CustomerLedgerEntry.company_id == company_id,
-        CustomerLedgerEntry.customer_id == customer_id,
-        CustomerLedgerEntry.date <= to_date,
-    )
-    if branch_id:
-        q = q.filter(CustomerLedgerEntry.branch_id == branch_id)
-    entries = q.order_by(CustomerLedgerEntry.date.asc(), CustomerLedgerEntry.created_at.asc()).all()
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    branch = db.query(Branch).filter(Branch.id == branch_id).first() if branch_id else None
+    if branch_id and not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
 
-    opening = Decimal("0")
-    lines: List[CustomerStatementLine] = []
-    running = Decimal("0")
-    for e in entries:
-        d = Decimal(str(e.debit or 0))
-        c = Decimal(str(e.credit or 0))
-        if e.date < from_date:
-            opening += d - c
-            continue
-        running = opening + d - c if not lines else running + d - c
-        if e.date > to_date:
-            continue
-        running = (lines[-1].balance if lines else opening) + d - c
-        ref = None
-        if e.entry_type == "invoice" and e.reference_id:
-            inv = db.query(SalesInvoice.invoice_no).filter(SalesInvoice.id == e.reference_id).first()
-            ref = inv[0] if inv else str(e.reference_id)
-        lines.append(
-            CustomerStatementLine(
-                date=e.date,
-                entry_type=e.entry_type,
-                reference=ref,
-                debit=d,
-                credit=c,
-                balance=running,
-            )
+    prepared_by = getattr(user, "full_name", None) or getattr(user, "username", None) or str(user.id)
+    built = build_operational_customer_statement(
+        db,
+        StatementBuildContext(
+            company=company,
+            branch=branch,
+            customer=customer,
+            from_date=from_date,
+            to_date=to_date,
+            branch_id=branch_id,
+            prepared_by=prepared_by,
+        ),
+    )
+    return _statement_response_from_build(built)
+
+
+@router.get("/statement/pdf")
+def get_customer_statement_pdf(
+    request: Request,
+    customer_id: UUID = Query(...),
+    from_date: date = Query(...),
+    to_date: date = Query(...),
+    branch_id: Optional[UUID] = Query(None),
+    block_on_fail: bool = Query(False, description="If true, return 409 when integrity status is FAIL"),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
+):
+    """PDF export for operational AR statement. FAIL integrity → DRAFT watermark unless block_on_fail."""
+    from app.services.tenant_storage_service import resolve_company_logo_bytes
+
+    user = current_user_and_db[0]
+
+    company_id = _effective_company_id(request)
+    _require_customer_statement_access(db, user, branch_id=branch_id)
+
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be on or before to_date")
+
+    customer = db.query(Customer).filter(Customer.id == customer_id, Customer.company_id == company_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    branch = db.query(Branch).filter(Branch.id == branch_id).first() if branch_id else None
+    if branch_id and not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    prepared_by = getattr(user, "full_name", None) or getattr(user, "username", None) or str(user.id)
+    built = build_operational_customer_statement(
+        db,
+        StatementBuildContext(
+            company=company,
+            branch=branch,
+            customer=customer,
+            from_date=from_date,
+            to_date=to_date,
+            branch_id=branch_id,
+            prepared_by=prepared_by,
+        ),
+    )
+    integrity = built.get("statement_integrity") or {}
+    integrity_status = integrity.get("status", "PASS")
+    if block_on_fail and integrity_status == "FAIL":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Statement failed operational AR integrity checks. PDF blocked.",
+                "statement_integrity": integrity,
+            },
         )
 
-    closing = opening
-    for e in entries:
-        if from_date <= e.date <= to_date:
-            closing += Decimal(str(e.debit or 0)) - Decimal(str(e.credit or 0))
-        elif e.date < from_date:
-            pass
-    if lines:
-        closing = lines[-1].balance
-    elif entries:
-        for e in entries:
-            if e.date <= to_date:
-                closing += Decimal(str(e.debit or 0)) - Decimal(str(e.credit or 0))
+    logo_bytes = resolve_company_logo_bytes(getattr(company, "logo_url", None) if company else None, tenant=tenant)
+    try:
+        pdf_bytes = build_customer_statement_pdf(
+            company_name=company.name if company else "—",
+            company_address=getattr(company, "address", None) if company else None,
+            company_phone=getattr(company, "phone", None) if company else None,
+            company_pin=getattr(company, "pin", None) if company else None,
+            company_logo_bytes=logo_bytes,
+            branch_name=branch.name if branch else None,
+            branch_address=getattr(branch, "address", None) if branch else None,
+            customer_name=customer.name,
+            customer_pin=customer.pin,
+            from_date=from_date,
+            to_date=to_date,
+            opening_balance=built["opening_balance"],
+            closing_balance=built["closing_balance"],
+            lines=built.get("lines") or [],
+            prepared_by=prepared_by,
+            generated_at_utc=integrity.get("generated_at_utc"),
+            integrity_status=integrity_status,
+            doctrine=built.get("doctrine", "operational_ar_v1"),
+            integrity_warnings=integrity.get("warnings") or [],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate statement PDF: {e}") from e
 
-    return CustomerStatementResponse(
-        customer_id=customer_id,
-        customer_name=customer.name,
-        from_date=from_date,
-        to_date=to_date,
-        opening_balance=opening,
-        closing_balance=closing,
-        lines=lines,
+    prefix = "DRAFT-" if integrity_status == "FAIL" else ""
+    safe_name = (customer.name or "customer").replace(" ", "-")[:40]
+    filename = f"{prefix}customer-statement-{safe_name}-{from_date}-{to_date}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Statement-Integrity": integrity_status,
+        },
     )
 
 

@@ -722,3 +722,128 @@ def build_supplier_invoice_pdf(
         "notes": notes,
     }
     return build_document_pdf(DOC_TYPE_SUPPLIER_INVOICE, payload)
+
+
+def build_customer_statement_pdf(
+    *,
+    company_name: str,
+    company_address: Optional[str] = None,
+    company_phone: Optional[str] = None,
+    company_pin: Optional[str] = None,
+    company_logo_bytes: Optional[bytes] = None,
+    branch_name: Optional[str] = None,
+    branch_address: Optional[str] = None,
+    customer_name: str,
+    customer_pin: Optional[str] = None,
+    from_date: date,
+    to_date: date,
+    opening_balance: Decimal,
+    closing_balance: Decimal,
+    lines: List[Dict[str, Any]],
+    prepared_by: Optional[str] = None,
+    generated_at_utc: Optional[str] = None,
+    integrity_status: str = "PASS",
+    doctrine: str = "operational_ar_v1",
+    integrity_warnings: Optional[List[str]] = None,
+) -> bytes:
+    """
+    Operational AR customer statement PDF.
+    On integrity FAIL, adds a prominent DRAFT watermark (not for external use).
+    """
+    integrity_fail = (integrity_status or "").upper() == "FAIL"
+    styles = get_document_styles()
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=20 * mm, bottomMargin=20 * mm)
+
+    def _watermark(canv, _doc):
+        if not integrity_fail:
+            return
+        canv.saveState()
+        canv.setFont("Helvetica-Bold", 42)
+        canv.setFillColor(colors.HexColor("#cc0000"), alpha=0.12)
+        canv.translate(A4[0] / 2, A4[1] / 2)
+        canv.rotate(35)
+        canv.drawCentredString(0, 0, "DRAFT — NOT FOR EXTERNAL USE")
+        canv.restoreState()
+
+    story: List[Any] = []
+    header = build_document_header(
+        company_name=company_name,
+        company_address=company_address,
+        company_phone=company_phone,
+        company_pin=company_pin,
+        company_logo_bytes=company_logo_bytes,
+        branch_name=branch_name,
+        branch_address=branch_address,
+    )
+    story.append(header)
+    story.append(Spacer(1, 7 * mm))
+    story.append(Paragraph("CUSTOMER ACCOUNT STATEMENT", styles["heading"]))
+    story.append(Spacer(1, 6))
+    gen_at = generated_at_utc or datetime.now(timezone.utc).isoformat()
+    meta = [
+        ("Customer:", customer_name),
+        ("PIN:", customer_pin or "—"),
+        ("Period:", f"{_format_date(from_date)} to {_format_date(to_date)}"),
+        ("Generated (UTC):", gen_at[:19].replace("T", " ") if gen_at else "—"),
+        ("Prepared by:", prepared_by or "—"),
+        ("Doctrine:", doctrine),
+        ("Integrity:", integrity_status),
+    ]
+    meta_table = Table([[Paragraph(xml_escape(k), styles["detail"]), Paragraph(xml_escape(str(v)), styles["detail"])] for k, v in meta], colWidths=[90, 380])
+    meta_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+    story.append(meta_table)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(f"Opening balance: {_money(opening_balance)}", styles["detail"]))
+    table_data = [["Date", "Description", "Reference", "Debit", "Credit", "Balance"]]
+    for line in lines:
+        table_data.append(
+            [
+                _format_date(line.get("date")),
+                xml_escape(str(line.get("description") or line.get("entry_type") or "")),
+                xml_escape(str(line.get("reference") or "—")),
+                _money(line.get("debit")),
+                _money(line.get("credit")),
+                _money(line.get("balance")),
+            ]
+        )
+    t = Table(table_data, colWidths=[55, 120, 85, 55, 55, 55], repeatRows=1)
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+            ]
+        )
+    )
+    story.append(t)
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(f"<b>Closing balance:</b> {_money(closing_balance)}", styles["detail"]))
+    if integrity_warnings:
+        story.append(Spacer(1, 6))
+        story.append(Paragraph("<b>Integrity notes:</b>", styles["detail"]))
+        for w in integrity_warnings[:8]:
+            story.append(Paragraph(f"• {xml_escape(w)}", styles.get("detail_small", styles["normal"])))
+    if integrity_fail:
+        story.append(Spacer(1, 8))
+        story.append(
+            Paragraph(
+                "<font color='#b91c1c'><b>This statement failed operational AR reconciliation. "
+                "Do not issue externally without investigation.</b></font>",
+                styles["detail"],
+            )
+        )
+
+    doc.build(story, onFirstPage=_watermark, onLaterPages=_watermark)
+    return buf.getvalue()
+
+
+def _money(v) -> str:
+    try:
+        d = Decimal(str(v or 0))
+        return f"{d:,.2f}"
+    except Exception:
+        return str(v or "0.00")

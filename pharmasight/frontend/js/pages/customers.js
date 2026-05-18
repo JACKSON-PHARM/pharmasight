@@ -18,6 +18,23 @@
         return 'KES ' + x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
+    function localDateString(d) {
+        const dt = d || new Date();
+        const y = dt.getFullYear();
+        const m = String(dt.getMonth() + 1).padStart(2, '0');
+        const day = String(dt.getDate()).padStart(2, '0');
+        return y + '-' + m + '-' + day;
+    }
+
+    function localMonthStart(d) {
+        const dt = d || new Date();
+        return localDateString(new Date(dt.getFullYear(), dt.getMonth(), 1));
+    }
+
+    const customerStatementDateFrom = {};
+    const customerStatementDateTo = {};
+    const customerDetailTab = {};
+
     function companyId() {
         return window.CONFIG && CONFIG.COMPANY_ID;
     }
@@ -393,6 +410,131 @@
         }
     }
 
+    window.switchCustomerDetailTab = function (customerId, tab) {
+        customerDetailTab[customerId] = tab;
+        const prof = document.getElementById('customerDetailTabProfile');
+        const stmt = document.getElementById('customerDetailTabStatement');
+        if (prof) prof.style.display = tab === 'statement' ? 'none' : '';
+        if (stmt) stmt.style.display = tab === 'statement' ? '' : 'none';
+        document.querySelectorAll('.customer-detail-tab').forEach((btn) => {
+            const active = btn.getAttribute('data-tab') === tab;
+            btn.classList.toggle('btn-primary', active);
+            btn.classList.toggle('btn-secondary', !active);
+        });
+        if (tab === 'statement' && stmt) {
+            renderCustomerStatementTab(customerId, window._customerDetailName || '', stmt);
+        }
+    };
+
+    async function renderCustomerStatementTab(customerId, customerName, container) {
+        const today = new Date();
+        const fromDate = customerStatementDateFrom[customerId] || localMonthStart(today);
+        const toDate = customerStatementDateTo[customerId] || localDateString(today);
+        container.innerHTML = '<p><i class="fas fa-spinner fa-spin"></i> Loading statement…</p>';
+        try {
+            const st = await API.customers.getStatement({
+                customer_id: customerId,
+                branch_id: branchId(),
+                from_date: fromDate,
+                to_date: toDate,
+            });
+            const integrity = st.statement_integrity || {};
+            const status = (integrity.status || 'PASS').toUpperCase();
+            const statusColor =
+                status === 'PASS' ? 'var(--success-color)' : status === 'PASS_WITH_WARNINGS' ? 'var(--warning-color)' : 'var(--danger-color)';
+            const warnHtml = (integrity.warnings || []).length
+                ? '<ul style="margin:0.35rem 0 0;padding-left:1.2rem;font-size:0.85rem;">' +
+                  integrity.warnings.map((w) => '<li>' + esc(w) + '</li>').join('') +
+                  '</ul>'
+                : '';
+            container.innerHTML = `
+                <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-bottom:1rem;align-items:flex-end;">
+                    <div class="form-group" style="margin:0;"><label class="form-label">From</label>
+                    <input type="date" id="custStatementDateFrom" class="form-input" value="${esc(fromDate)}"></div>
+                    <div class="form-group" style="margin:0;"><label class="form-label">To</label>
+                    <input type="date" id="custStatementDateTo" class="form-input" value="${esc(toDate)}"></div>
+                    <button type="button" class="btn btn-primary" id="custStatementApply">Apply</button>
+                    <button type="button" class="btn btn-secondary" id="custStatementPrint"><i class="fas fa-print"></i> Print</button>
+                    <button type="button" class="btn btn-secondary" id="custStatementPdf"><i class="fas fa-file-pdf"></i> PDF</button>
+                </div>
+                <div id="customerStatementPrint" class="card" style="padding:1.25rem;background:#fff;">
+                    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;margin-bottom:1rem;">
+                        <div>
+                            <h4 style="margin:0;">${esc(st.customer_name || customerName)}</h4>
+                            <p class="text-muted" style="margin:0.25rem 0 0;font-size:0.85rem;">
+                                ${esc(st.company_name || '')}${st.branch_name ? ' · ' + esc(st.branch_name) : ''}
+                            </p>
+                            <p style="margin:0.35rem 0 0;font-size:0.85rem;">Period: ${esc(st.from_date)} to ${esc(st.to_date)}</p>
+                            <p style="margin:0.25rem 0 0;font-size:0.85rem;">Opening: ${fmtMoney(st.opening_balance)} · Closing: ${fmtMoney(st.closing_balance)}</p>
+                        </div>
+                        <div style="text-align:right;font-size:0.8rem;">
+                            <div><strong>Integrity:</strong> <span style="color:${statusColor}">${esc(status)}</span></div>
+                            <div>Doctrine: ${esc(st.doctrine || 'operational_ar_v1')}</div>
+                            ${st.prepared_by ? '<div>Prepared by: ' + esc(st.prepared_by) + '</div>' : ''}
+                        </div>
+                    </div>
+                    ${status === 'FAIL' ? '<p style="color:var(--danger-color);font-weight:600;margin:0 0 0.75rem;">DRAFT — NOT FOR EXTERNAL USE until reconciliation passes.</p>' : ''}
+                    <table class="data-table" style="width:100%;font-size:0.875rem;">
+                        <thead><tr><th>Date</th><th>Description</th><th>Reference</th><th class="text-right">Debit</th><th class="text-right">Credit</th><th class="text-right">Balance</th></tr></thead>
+                        <tbody>${(st.lines || [])
+                            .map(
+                                (l) => `<tr>
+                            <td>${esc(l.date)}</td>
+                            <td>${esc(l.description || l.entry_type)}</td>
+                            <td>${esc(l.reference || '—')}</td>
+                            <td class="text-right">${fmtMoney(l.debit)}</td>
+                            <td class="text-right">${fmtMoney(l.credit)}</td>
+                            <td class="text-right">${fmtMoney(l.balance)}</td>
+                        </tr>`
+                            )
+                            .join('')}</tbody>
+                    </table>
+                    <div style="margin-top:1rem;font-size:0.85rem;">
+                        <div>Ledger closing: ${fmtMoney(integrity.ledger_closing_balance != null ? integrity.ledger_closing_balance : st.closing_balance)}</div>
+                        <div>Invoice open total: ${fmtMoney(integrity.invoice_open_balance_sum)} · Delta: ${fmtMoney(integrity.delta)}</div>
+                        ${warnHtml}
+                    </div>
+                </div>`;
+            document.getElementById('custStatementApply').addEventListener('click', () => {
+                customerStatementDateFrom[customerId] = document.getElementById('custStatementDateFrom').value;
+                customerStatementDateTo[customerId] = document.getElementById('custStatementDateTo').value;
+                renderCustomerStatementTab(customerId, customerName, container);
+            });
+            document.getElementById('custStatementPrint').addEventListener('click', () => {
+                const el = document.getElementById('customerStatementPrint');
+                if (!el) return;
+                const w = window.open('', '_blank');
+                if (!w) return;
+                w.document.write('<html><head><title>Customer statement</title></head><body>' + el.innerHTML + '</body></html>');
+                w.document.close();
+                w.print();
+            });
+            document.getElementById('custStatementPdf').addEventListener('click', async () => {
+                const btn = document.getElementById('custStatementPdf');
+                if (btn) btn.disabled = true;
+                try {
+                    const r = await API.customers.downloadStatementPdf({
+                        customer_id: customerId,
+                        branch_id: branchId(),
+                        from_date: document.getElementById('custStatementDateFrom').value,
+                        to_date: document.getElementById('custStatementDateTo').value,
+                        customer_name: customerName,
+                        block_on_fail: false,
+                    });
+                    if (r && r.integrity === 'FAIL' && typeof showToast === 'function') {
+                        showToast('PDF saved with DRAFT watermark (integrity FAIL)', 'warning');
+                    }
+                } catch (err) {
+                    if (typeof showToast === 'function') showToast(err.message || 'PDF failed', 'error');
+                } finally {
+                    if (btn) btn.disabled = false;
+                }
+            });
+        } catch (e) {
+            container.innerHTML = '<p style="color:var(--danger-color);">Failed to load statement: ' + esc(e.message || e) + '</p>';
+        }
+    };
+
     async function loadCustomerDetail(customerId) {
         const page = document.getElementById('customers');
         if (!page) return;
@@ -436,6 +578,11 @@
                     <div class="card" style="padding:0.75rem;"><div class="text-muted" style="font-size:0.8rem;">Credit limit</div><strong>${creditLine}</strong></div>
                     <div class="card" style="padding:0.75rem;"><div class="text-muted" style="font-size:0.8rem;">Payment terms</div><strong>${terms}</strong></div>
                 </div>
+                <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;border-bottom:1px solid var(--border-color);">
+                    <button type="button" class="btn btn-secondary btn-sm customer-detail-tab" data-tab="profile" onclick="switchCustomerDetailTab('${customerId}','profile')">Profile</button>
+                    <button type="button" class="btn btn-secondary btn-sm customer-detail-tab" data-tab="statement" onclick="switchCustomerDetailTab('${customerId}','statement')">Statement</button>
+                </div>
+                <div id="customerDetailTabProfile">
                 <div class="card" style="padding:1rem;margin-bottom:1rem;">
                     <h3 style="margin:0 0 0.75rem;">${esc(copy.profileHeading)}</h3>
                     <form id="customerProfileForm" onsubmit="return saveCustomerProfile(event, '${customerId}')">
@@ -475,8 +622,12 @@
                         </div>
                     </form>
                     <div id="customerActivitiesList" style="margin-top:0.75rem;">Loading activities…</div>
-                </div>`;
+                </div>
+                </div>
+                <div id="customerDetailTabStatement" style="display:none;"></div>`;
+            window._customerDetailName = c.name;
             loadCustomerActivities(customerId);
+            switchCustomerDetailTab(customerId, customerDetailTab[customerId] || 'profile');
             try {
                 const focusId = sessionStorage.getItem('customer_hub_focus_followup');
                 if (focusId && String(focusId) === String(customerId)) {

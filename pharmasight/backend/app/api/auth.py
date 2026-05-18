@@ -427,6 +427,15 @@ def auth_me(
     return row
 
 
+def _find_user_in_shared_db(normalized_username: str, check_email: bool) -> Optional[User]:
+    """Single-DB user lookup (shared SessionLocal)."""
+    db = SessionLocal()
+    try:
+        return _find_user_in_db(db, normalized_username, check_email)
+    finally:
+        db.close()
+
+
 def _find_user_in_db(db: Session, normalized_username: str, check_email: bool) -> Optional[User]:
     """Look up user by username (and optionally email) in the given session."""
     user = db.query(User).filter(
@@ -566,8 +575,9 @@ def username_login(
     try:
         normalized_username = body.username.lower().strip()
         check_email = "@" in body.username
+        logger.info("username-login attempt for %s", normalized_username[:50])
 
-        # 1) Legacy DB first
+        # 1) Shared app DB (SessionLocal)
         legacy_db = SessionLocal()
         try:
             user = _find_user_in_db(legacy_db, normalized_username, check_email)
@@ -581,92 +591,47 @@ def username_login(
         finally:
             legacy_db.close()
 
-        # 2) Not in legacy: discover in all tenant DBs (from master)
-        logger.info("Username not in legacy DB, searching all tenants for username=%s", normalized_username[:50])
-        found_list = _find_user_in_all_tenants(master_db, normalized_username, check_email)
-        if len(found_list) == 0:
-            # If client sent a tenant hint (e.g. from ?tenant= in URL), check if that org is deleted/deactivated
-            tenant_hint = (body.tenant or "").strip().lower() or None
-            if tenant_hint:
-                hinted = master_db.query(Tenant).filter(func.lower(Tenant.subdomain) == tenant_hint).first()
-                if hinted:
-                    hn = (hinted.name or "").strip()
-                    if hn:
-                        hinted_co_db = SessionLocal()
-                        try:
-                            from app.models.company import Company
+        # Single-DB tenancy: users live only in the shared app database (SessionLocal above).
+        # Do NOT call _find_user_in_all_tenants — tenant_db_session already uses SessionLocal and
+        # the old fan-out repeated the same query up to MAX_TENANTS_TO_SEARCH times (~45s+ timeouts).
 
-                            co = (
-                                hinted_co_db.query(Company)
-                                .filter(func.lower(func.trim(Company.name)) == hn.lower())
-                                .first()
+        tenant_hint = (body.tenant or "").strip().lower() or None
+        if tenant_hint:
+            hinted = master_db.query(Tenant).filter(func.lower(Tenant.subdomain) == tenant_hint).first()
+            if hinted:
+                hn = (hinted.name or "").strip()
+                if hn:
+                    hinted_co_db = SessionLocal()
+                    try:
+                        from app.models.company import Company
+
+                        co = (
+                            hinted_co_db.query(Company)
+                            .filter(func.lower(func.trim(Company.name)) == hn.lower())
+                            .first()
+                        )
+                        if co and get_company_access(co) == "blocked":
+                            logger.info(
+                                "User not found; hinted tenant %s matches inactive company",
+                                tenant_hint,
                             )
-                            if co and get_company_access(co) == "blocked":
-                                logger.info(
-                                    "User not found; hinted tenant %s matches inactive company",
-                                    tenant_hint,
-                                )
-                                raise HTTPException(
-                                    status_code=status.HTTP_403_FORBIDDEN,
-                                    detail=(
-                                        "This organization is no longer active. Your account was part of an organization that has been deactivated. "
-                                        "Please contact your administrator or support if you need access."
-                                    ),
-                                )
-                        finally:
-                            hinted_co_db.close()
-            logger.warning(
-                "User not found in legacy DB or any tenant DB (username=%s). "
-                "Ensure tenant DBs are reachable and public.tenants have database_url set.",
-                normalized_username[:50],
-            )
-            # 401 (not 404): avoids confusion in browser DevTools where 404 looks like a missing API route.
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid username or password",
-            )
-        if len(found_list) == 1:
-            tenant, user = found_list[0]
-            # Expired non-demo trials may still sign in; the app restricts features until they upgrade.
-            _require_password_if_internal(user, body.password)
-            # User found in legacy/app DB (tenant is None) or in a tenant DB (use app DB if tenant DB unreachable)
-            if tenant is None:
-                db = SessionLocal()
-                try:
-                    _enforce_login_company_access(db, user)
-                    resp = _build_login_response(user, tenant, body.password, db=db)
-                finally:
-                    db.close()
-            else:
-                try:
-                    with tenant_db_session(tenant) as tenant_db:
-                        _enforce_login_company_access(tenant_db, user)
-                        resp = _build_login_response(user, tenant, body.password, db=tenant_db)
-                except OperationalError as e:
-                    if "Tenant or user not found" in str(e) or "FATAL:" in str(e).upper():
-                        db = SessionLocal()
-                        try:
-                            _enforce_login_company_access(db, user)
-                            resp = _build_login_response(user, tenant, body.password, db=db)
-                        finally:
-                            db.close()
-                    else:
-                        raise
-            if resp.refresh_token:
-                _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
-            return resp
-        # Same username in multiple tenants
-        tenants_info = [{"subdomain": t.subdomain, "name": t.name} for t, _ in found_list]
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                detail=(
+                                    "This organization is no longer active. Your account was part of an organization that has been deactivated. "
+                                    "Please contact your administrator or support if you need access."
+                                ),
+                            )
+                    finally:
+                        hinted_co_db.close()
+
+        logger.warning(
+            "User not found in shared DB (username=%s)",
+            normalized_username[:50],
+        )
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "multiple_tenants",
-                "message": (
-                    "This username exists in more than one organization. "
-                    "Please sign in using the link from your invite email, or add ?tenant=SUBDOMAIN to the URL."
-                ),
-                "tenants": tenants_info,
-            },
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
         )
     except OperationalError as e:
         _raise_http_for_db_unreachable(e)
@@ -1005,7 +970,8 @@ def auth_request_reset(
     if not email_or_username:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email or username required")
     check_email = "@" in email_or_username
-    found_list = _find_user_in_all_tenants(master_db, email_or_username, check_email)
+    user = _find_user_in_shared_db(email_or_username, check_email)
+    found_list = [(None, user)] if user else []
     if not found_list:
         logger.info("[request-reset] No user found for %s; not sending email (same response for security)", email_or_username[:3] + "***")
         print("[request-reset] No user found for this email; no email sent. (Use an email that exists in your tenant DB.)")

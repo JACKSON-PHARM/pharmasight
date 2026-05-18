@@ -2156,6 +2156,16 @@ def batch_supplier_invoice(
             credit=Decimal("0"),
         )
 
+        try:
+            from app.accounting.posting.supplier import post_gl_for_supplier_invoice_batch
+
+            post_gl_for_supplier_invoice_batch(db, invoice, posted_by=user.id)
+        except Exception:
+            _log.exception(
+                "accounting: GL supplier invoice batch failed for invoice %s (non-fatal)",
+                invoice_id,
+            )
+
         # Order book lifecycle: mark ORDERED entries as received and archive to history (CLOSED)
         invoice_item_ids = list({e.item_id for e in ledger_entries})
         OrderBookService.mark_items_received(

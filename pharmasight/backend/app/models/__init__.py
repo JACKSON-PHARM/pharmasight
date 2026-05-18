@@ -97,6 +97,13 @@ from .journal_proposal import (
     JournalProposalEvidence,
     JournalProposalLine,
 )
+from .accounting import (
+    ChartOfAccount,
+    FiscalPeriod,
+    GlJournalEntry,
+    GlJournalLine,
+    GlPostingFailure,
+)
 
 __all__ = [
     "Base",
@@ -209,4 +216,9 @@ __all__ = [
     "JournalProposalLine",
     "JournalProposalEvidence",
     "AccountingPostingRecord",
+    "ChartOfAccount",
+    "FiscalPeriod",
+    "GlJournalEntry",
+    "GlJournalLine",
+    "GlPostingFailure",
 ]

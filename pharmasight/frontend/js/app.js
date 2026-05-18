@@ -1147,17 +1147,42 @@ window.subNavItems = {
         { page: 'expenses', subPage: 'reports', label: 'Reports', icon: 'fa-chart-pie' }
     ],
     finance: [
-        { page: 'finance', subPage: 'confidence', label: 'Financial Confidence', icon: 'fa-chart-line' },
-        { page: 'finance', subPage: 'treasury', label: 'Treasury Intelligence', icon: 'fa-wallet' },
-        { page: 'finance', subPage: 'recovery', label: 'Revenue Recovery', icon: 'fa-hand-holding-usd' },
         {
-            header: 'Governance tools',
-            icon: 'fa-cog',
+            header: 'Financial operations',
+            icon: 'fa-chart-pie',
             items: [
-                { page: 'finance', subPage: 'events', label: 'Event Explorer', icon: 'fa-stream' },
-                { page: 'finance', subPage: 'projections', label: 'Projection Explorer', icon: 'fa-chart-area' },
-                { page: 'finance', subPage: 'proposals', label: 'Accounting interpretations', icon: 'fa-inbox' },
-                { page: 'finance', subPage: 'integrity', label: 'Replay & Integrity', icon: 'fa-shield-alt' },
+                { page: 'finance', subPage: 'overview', label: 'Overview', icon: 'fa-tachometer-alt' },
+                { page: 'finance', subPage: 'cash', label: 'Cash & Liquidity', icon: 'fa-wallet' },
+                { page: 'finance', subPage: 'receivables', label: 'Receivables', icon: 'fa-hand-holding-usd' },
+                { page: 'finance', subPage: 'payables', label: 'Payables', icon: 'fa-truck' },
+                { page: 'finance', subPage: 'branches', label: 'Branch Performance', icon: 'fa-code-branch' },
+                { page: 'finance', subPage: 'expenses', label: 'Expenses', icon: 'fa-money-bill-wave' },
+                { page: 'finance', subPage: 'inventory', label: 'Inventory Exposure', icon: 'fa-boxes' },
+                { page: 'finance', subPage: 'profitability', label: 'Profitability', icon: 'fa-chart-line' },
+            ],
+        },
+        {
+            header: 'Business risks',
+            icon: 'fa-exclamation-triangle',
+            items: [
+                { page: 'finance', subPage: 'slow-stock', label: 'Slow-Moving Stock', icon: 'fa-hourglass-half' },
+                { page: 'finance', subPage: 'high-risk-customers', label: 'High-Risk Customers', icon: 'fa-user-times' },
+                { page: 'finance', subPage: 'claims', label: 'Outstanding Claims', icon: 'fa-file-invoice' },
+                { page: 'finance', subPage: 'supplier-exposure', label: 'Supplier Exposure', icon: 'fa-industry' },
+                { page: 'finance', subPage: 'cash-pressure', label: 'Cash Pressure', icon: 'fa-compress-arrows-alt' },
+            ],
+        },
+        {
+            header: 'Financial governance',
+            icon: 'fa-shield-alt',
+            items: [
+                { page: 'finance', subPage: 'reconciliation', label: 'Reconciliation', icon: 'fa-balance-scale' },
+                { page: 'finance', subPage: 'events', label: 'Financial Activity', icon: 'fa-stream' },
+                { page: 'finance', subPage: 'proposals', label: 'Accounting Review', icon: 'fa-inbox' },
+                { page: 'finance', subPage: 'integrity', label: 'Integrity & Replay', icon: 'fa-redo' },
+                { page: 'finance', subPage: 'posting-failures', label: 'Posting Failures', icon: 'fa-exclamation-circle' },
+                { page: 'finance', subPage: 'confidence', label: 'Financial Confidence', icon: 'fa-chart-area' },
+                { page: 'finance', subPage: 'projections', label: 'Projection Explorer', icon: 'fa-project-diagram' },
             ],
         },
     ],
@@ -2062,7 +2087,7 @@ async function loadPage(pageName) {
             break;
         case 'finance':
             if (typeof window.loadFinance === 'function') {
-                window.loadFinance(subPage || 'confidence');
+                window.loadFinance(subPage || 'overview');
             } else {
                 console.error('loadFinance function not found');
                 const page = document.getElementById('finance');

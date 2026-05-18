@@ -4,6 +4,38 @@
  * Handles user authentication via Supabase Auth
  */
 
+const LOGIN_FETCH_TIMEOUT_MS = 45000;
+
+async function loginFetch(url, options = {}, timeoutMs = LOGIN_FETCH_TIMEOUT_MS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: ctrl.signal });
+    } catch (err) {
+        if (err && err.name === 'AbortError') {
+            throw new Error(
+                `Request timed out after ${Math.round(timeoutMs / 1000)}s. ` +
+                    'Check that the backend is running and the API URL matches start.py (see browser console for CONFIG.API_BASE_URL).'
+            );
+        }
+        throw err;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function loginApiBaseUrl() {
+    if (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL) {
+        return String(CONFIG.API_BASE_URL).replace(/\/+$/, '');
+    }
+    if (typeof window.getDefaultLocalApiBase === 'function') {
+        return window.getDefaultLocalApiBase();
+    }
+    return window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+        ? 'http://localhost:8000'
+        : window.location.origin;
+}
+
 async function loadLogin() {
     try {
         // Set tenant context from URL so username-login uses the correct tenant DB (e.g. after invite: ?tenant=pharmasight-meds-ltd)
@@ -629,6 +661,15 @@ async function loadLogin() {
             setSubmitting(true);
             let didComplete = false;
 
+            if (typeof window.pharmasightSyncApiBaseUrl === 'function') {
+                window.pharmasightSyncApiBaseUrl();
+            }
+            if (typeof window.reconcileLocalApiBaseUrl === 'function') {
+                window.reconcileLocalApiBaseUrl();
+            }
+            const apiBase = loginApiBaseUrl();
+            console.log('[LOGIN] API base URL:', apiBase);
+
             const username = document.getElementById('loginUsername').value.trim();
             const password = document.getElementById('loginPassword').value;
             
@@ -714,7 +755,7 @@ async function loadLogin() {
                 if (isAdminLogin) {
                     // Admin panel login: username "admin" + admin password → tenant management
                     try {
-                        const adminResponse = await fetch(`${CONFIG.API_BASE_URL}/api/admin/auth/login`, {
+                        const adminResponse = await loginFetch(`${apiBase}/api/admin/auth/login`, {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
@@ -769,7 +810,7 @@ async function loadLogin() {
                     }
                     const loginBody = { username, password };
                     if (tenantForLogin) loginBody.tenant = tenantForLogin;
-                    let usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
+                    let usernameResponse = await loginFetch(`${apiBase}/api/auth/username-login`, {
                         method: 'POST',
                         headers,
                         body: JSON.stringify(loginBody)
@@ -780,7 +821,7 @@ async function loadLogin() {
                         const isUnreachable = (typeof detail.detail === 'string' && detail.detail.toLowerCase().includes('unreachable')) || (detail.detail && String(detail.detail).toLowerCase().includes('unreachable'));
                         if (isUnreachable) {
                             headers = { 'Content-Type': 'application/json' };
-                            usernameResponse = await fetch(`${CONFIG.API_BASE_URL}/api/auth/username-login`, {
+                            usernameResponse = await loginFetch(`${apiBase}/api/auth/username-login`, {
                                 method: 'POST',
                                 headers,
                                 body: JSON.stringify({ username, password })
@@ -919,11 +960,16 @@ async function loadLogin() {
                     if (window.LoginSecurity) {
                         window.LoginSecurity.recordFailedAttempt(username);
                     }
-                    // "Failed to fetch" = backend unreachable (not running, wrong URL, or CORS)
                     let errorMsg = error.message || 'Invalid username or password';
-                    if (errorMsg.includes('Failed to fetch') || errorMsg.includes('Load failed') || errorMsg.includes('NetworkError')) {
-                        const apiUrl = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL) ? CONFIG.API_BASE_URL : 'backend';
-                        errorMsg = 'Cannot reach the server. Check that the backend is running (e.g. ' + apiUrl + '). If using localhost, start the API on port 8000.';
+                    if (error && error.name === 'AbortError') {
+                        errorMsg =
+                            `Request timed out. Check that the backend is running at ${apiBase} ` +
+                            '(restart python start.py after code changes).';
+                    } else if (errorMsg.includes('Failed to fetch') || errorMsg.includes('Load failed') || errorMsg.includes('NetworkError')) {
+                        errorMsg =
+                            'Cannot reach the server at ' +
+                            apiBase +
+                            '. Run python start.py and use the Backend API URL it prints (often http://localhost:8001 if port 8000 is busy).';
                     }
                     if (errorDiv) {
                         errorDiv.innerHTML = '<span>' + String(errorMsg).replace(/</g, '&lt;') + '</span>' +

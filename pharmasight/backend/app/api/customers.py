@@ -120,6 +120,10 @@ def create_customer(
         portal_enabled=bool(customer.portal_enabled),
     )
     db.add(db_customer)
+    db.flush()
+    from app.services.customer_opening_balance import ensure_opening_balance_ledger_entry
+
+    ensure_opening_balance_ledger_entry(db, customer=db_customer)
     db.commit()
     db.refresh(db_customer)
     return db_customer
@@ -188,6 +192,11 @@ def update_customer(
     for key, value in data.items():
         if hasattr(db_customer, key):
             setattr(db_customer, key, value)
+    db.flush()
+    if "opening_balance" in data:
+        from app.services.customer_opening_balance import ensure_opening_balance_ledger_entry
+
+        ensure_opening_balance_ledger_entry(db, customer=db_customer)
     db.commit()
     db.refresh(db_customer)
     return db_customer

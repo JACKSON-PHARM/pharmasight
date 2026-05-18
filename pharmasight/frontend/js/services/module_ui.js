@@ -25,7 +25,7 @@
     const MODULE_DEFAULT_PAGE = {
         pharmacy: 'dashboard',
         wholesale: 'customers',
-        finance: 'finance-confidence',
+        finance: 'finance-overview',
         management: 'dashboard',
         clinic: 'patients',
         lab: 'module-coming-soon',
@@ -107,7 +107,7 @@
             {
                 section: 'Finance Operations',
                 items: [
-                    { page: 'finance', label: 'Finance Operations', icon: 'fa-landmark', hasSub: true },
+                    { page: 'finance', label: 'Financial command center', icon: 'fa-landmark', hasSub: true },
                 ],
             },
             {

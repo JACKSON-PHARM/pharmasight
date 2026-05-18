@@ -408,6 +408,17 @@ def approve_expense(
     exp.approved_at = datetime.now(timezone.utc)
     # Cashbook should reflect approved expenses only (dedupe by source_type/source_id).
     ensure_cashbook_entry_for_expense_if_approved(db, expense=exp)
+    try:
+        from app.accounting.posting.expense import post_gl_for_expense_approved
+
+        post_gl_for_expense_approved(db, exp, posted_by=user.id)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "accounting: GL expense approve failed for expense %s (non-fatal)",
+            expense_id,
+        )
     db.commit()
     db.refresh(exp)
     try:

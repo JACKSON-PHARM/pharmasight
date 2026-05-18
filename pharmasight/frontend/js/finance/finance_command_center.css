@@ -1,0 +1,49 @@
+/* Operational Financial Command Center */
+.fcc-scope { max-width: 1280px; }
+.fcc-hero { margin-bottom: 1.25rem; }
+.fcc-hero h2 { margin: 0 0 0.35rem; font-size: 1.35rem; font-weight: 700; }
+.fcc-hero p { margin: 0; opacity: 0.8; font-size: 0.92rem; max-width: 52rem; }
+
+.fcc-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+.fcc-card {
+    background: var(--card-bg, #fff);
+    border: 1px solid var(--border-color, #e5e7eb);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.fcc-card-label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; margin-bottom: 0.35rem; }
+.fcc-card-value { font-size: 1.35rem; font-weight: 700; line-height: 1.2; }
+.fcc-card-sub { font-size: 0.8rem; opacity: 0.75; margin-top: 0.25rem; }
+.fcc-card--positive .fcc-card-value { color: var(--success-color, #059669); }
+.fcc-card--negative .fcc-card-value { color: var(--danger-color, #dc2626); }
+.fcc-card--warn .fcc-card-value { color: #d97706; }
+
+.fcc-alert { padding: 0.65rem 0.9rem; border-radius: 8px; margin-bottom: 0.5rem; font-size: 0.9rem; }
+.fcc-alert--critical { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+.fcc-alert--warning { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+.fcc-alert--info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+
+.fcc-section { margin-bottom: 1.5rem; }
+.fcc-section h4 { margin: 0 0 0.75rem; font-size: 1rem; font-weight: 600; }
+
+.fcc-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.fcc-table th, .fcc-table td { padding: 0.55rem 0.65rem; border-bottom: 1px solid var(--border-color, #e5e7eb); text-align: left; }
+.fcc-table th { font-size: 0.75rem; text-transform: uppercase; opacity: 0.7; }
+.fcc-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.fcc-badge { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; }
+.fcc-badge--healthy { background: #d1fae5; color: #065f46; }
+.fcc-badge--warning { background: #fef3c7; color: #92400e; }
+.fcc-badge--critical { background: #fee2e2; color: #991b1b; }
+.fcc-badge--loss { background: #fce7f3; color: #9d174d; }
+
+.fcc-toolbar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-bottom: 1rem; }
+.fcc-toolbar .form-group { margin: 0; min-width: 160px; }
+
+.fcc-gov-link { font-size: 0.85rem; opacity: 0.85; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color); }

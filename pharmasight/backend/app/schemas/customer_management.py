@@ -107,20 +107,42 @@ class CustomerAgingReportResponse(BaseModel):
 class CustomerStatementLine(BaseModel):
     date: date
     entry_type: str
+    description: Optional[str] = None
     reference: Optional[str] = None
     debit: Decimal
     credit: Decimal
     balance: Decimal
 
 
+class CustomerStatementIntegrity(BaseModel):
+    ledger_closing_balance: Decimal
+    invoice_open_balance_sum: Decimal
+    ledger_service_outstanding: Optional[Decimal] = None
+    delta: Decimal
+    status: str
+    warnings: List[str] = []
+    generated_at_utc: str
+    branch_id: Optional[str] = None
+    customer_id: str
+    doctrine: str = "operational_ar_v1"
+
+
 class CustomerStatementResponse(BaseModel):
     customer_id: UUID
     customer_name: str
+    customer_pin: Optional[str] = None
+    company_id: Optional[UUID] = None
+    company_name: Optional[str] = None
+    branch_id: Optional[UUID] = None
+    branch_name: Optional[str] = None
     from_date: date
     to_date: date
     opening_balance: Decimal
     closing_balance: Decimal
     lines: List[CustomerStatementLine] = []
+    statement_integrity: Optional[CustomerStatementIntegrity] = None
+    prepared_by: Optional[str] = None
+    doctrine: str = "operational_ar_v1"
 
 
 class CustomerActivityCreate(BaseModel):

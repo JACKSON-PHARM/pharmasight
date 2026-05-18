@@ -37,13 +37,81 @@
 
 /** Default API base on localhost when not using same-origin hosting (matches start.py / runtime_config.json). */
 function getDefaultLocalApiBase() {
+    let base = '';
     try {
         const rc = typeof window !== 'undefined' && window.RUNTIME_CONFIG && window.RUNTIME_CONFIG.apiBaseUrl;
         if (rc && typeof rc === 'string' && rc.trim()) {
-            return rc.trim().replace(/\/+$/, '');
+            base = rc.trim().replace(/\/+$/, '');
         }
     } catch (_) {}
-    return 'http://localhost:8000';
+    if (!base) {
+        base = 'http://localhost:8000';
+    }
+    // Match page hostname (app often opens on 127.0.0.1 while runtime_config says localhost).
+    try {
+        const pageHost = typeof window !== 'undefined' && window.location && window.location.hostname;
+        if (pageHost === '127.0.0.1' && base.includes('://localhost')) {
+            base = base.replace('://localhost', '://127.0.0.1');
+        } else if (pageHost === 'localhost' && base.includes('://127.0.0.1')) {
+            base = base.replace('://127.0.0.1', '://localhost');
+        }
+    } catch (_) {}
+    return base;
+}
+
+/** On localhost, prefer runtime_config.json port over stale saved :8000 when start.py uses :8001. */
+function reconcileLocalApiBaseUrl() {
+    if (typeof window === 'undefined' || !window.location) return;
+    const host = window.location.hostname;
+    if (host !== 'localhost' && host !== '127.0.0.1') return;
+
+    const runtime = getDefaultLocalApiBase();
+    if (!runtime) return;
+
+    const current = (CONFIG.API_BASE_URL || '').trim().replace(/\/+$/, '');
+    const isLocalSaved =
+        !current || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(current);
+
+    if (!isLocalSaved) return;
+
+    let shouldUseRuntime = !current;
+    try {
+        if (current) {
+            const cur = new URL(current);
+            const run = new URL(runtime);
+            shouldUseRuntime =
+                cur.hostname !== run.hostname ||
+                (cur.port || (cur.protocol === 'https:' ? '443' : '80')) !==
+                    (run.port || (run.protocol === 'https:' ? '443' : '80'));
+        }
+    } catch (_) {
+        shouldUseRuntime = true;
+    }
+
+    if (!shouldUseRuntime) return;
+
+    CONFIG.API_BASE_URL = runtime;
+    try {
+        const saved = localStorage.getItem('pharmasight_config');
+        if (saved) {
+            const cfg = JSON.parse(saved);
+            if (
+                cfg.API_BASE_URL &&
+                /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(String(cfg.API_BASE_URL))
+            ) {
+                cfg.API_BASE_URL = runtime;
+                localStorage.setItem('pharmasight_config', JSON.stringify(cfg));
+            }
+        }
+        const override = localStorage.getItem('pharmasight_api_base_url');
+        if (override && /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(override)) {
+            localStorage.setItem('pharmasight_api_base_url', runtime);
+        }
+    } catch (_) {}
+
+    if (typeof window.pharmasightSyncApiBaseUrl === 'function') {
+        window.pharmasightSyncApiBaseUrl();
+    }
 }
 
 const CONFIG = {
@@ -170,6 +238,8 @@ function loadConfig() {
     if (!CONFIG.APP_PUBLIC_URL && typeof window !== 'undefined' && window.location && window.location.origin) {
         CONFIG.APP_PUBLIC_URL = window.location.origin;
     }
+
+    reconcileLocalApiBaseUrl();
 }
 
 /** Build print config object for API storage (company-level settings) */
@@ -310,6 +380,7 @@ loadConfig();
 if (typeof window !== 'undefined') {
     window.CONFIG = CONFIG;
     window.getDefaultLocalApiBase = getDefaultLocalApiBase;
+    window.reconcileLocalApiBaseUrl = reconcileLocalApiBaseUrl;
     window.saveConfig = saveConfig;
     window.loadConfig = loadConfig;
     window.loadCompanyPrintSettings = loadCompanyPrintSettings;

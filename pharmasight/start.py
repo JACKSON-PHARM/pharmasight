@@ -125,7 +125,8 @@ def write_frontend_runtime_config(project_root: Path, backend_port: int) -> None
     (e.g. 8001 when 8000 is still occupied after taskkill attempts).
     """
     path = project_root / "frontend" / "js" / "runtime_config.json"
-    data = {"apiBaseUrl": f"http://localhost:{backend_port}"}
+    # Use 127.0.0.1 so it matches the usual ERP URL (http://127.0.0.1:3000/app) in dev.
+    data = {"apiBaseUrl": f"http://127.0.0.1:{backend_port}"}
     try:
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         print_colored(f"   Wrote {path.name} -> {data['apiBaseUrl']}", Colors.CYAN)

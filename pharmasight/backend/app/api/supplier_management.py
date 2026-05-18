@@ -282,6 +282,18 @@ def create_supplier_payment(
         # without altering supplier balances/ledgers.
         ensure_cashbook_entry_for_supplier_payment(db, payment=payment)
 
+        try:
+            from app.accounting.posting.supplier import post_gl_for_supplier_payment
+
+            post_gl_for_supplier_payment(db, payment, posted_by=user.id)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "accounting: GL supplier payment failed for payment %s (non-fatal)",
+                payment.id,
+            )
+
         db.commit()
         db.refresh(payment)
     except HTTPException:

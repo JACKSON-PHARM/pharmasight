@@ -1709,6 +1709,15 @@ def adjust_stock(
                     + str(kra_stock_push_error)[:500]
                     + (f" (outbox: {kra_outbox_status})" if kra_outbox_status else "")
                 ).strip()
+    try:
+        from app.accounting.posting.stock_adjustment import post_gl_for_stock_adjustment
+
+        post_gl_for_stock_adjustment(db, ledger_entry, posted_by=current_user.id)
+    except Exception:
+        logger.exception(
+            "accounting: GL stock adjustment failed for ledger %s (non-fatal)",
+            ledger_entry.id,
+        )
     db.commit()
 
     new_stock = InventoryService.get_current_stock(db, item_id, body.branch_id)

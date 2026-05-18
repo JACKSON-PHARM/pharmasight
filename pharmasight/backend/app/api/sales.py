@@ -2278,6 +2278,31 @@ def create_credit_note(
         SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
 
     try:
+        from app.services.customer_credit_note_ledger import post_customer_ledger_on_credit_note
+
+        post_customer_ledger_on_credit_note(
+            db,
+            credit_note=credit_note,
+            invoice=invoice,
+            company_id=body.company_id,
+        )
+        try:
+            from app.accounting.posting.credit_note import post_gl_for_credit_note
+
+            post_gl_for_credit_note(
+                db,
+                credit_note,
+                invoice,
+                ledger_entries,
+                posted_by=user.id,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "accounting: GL credit note failed for %s (non-fatal)",
+                credit_note.id,
+            )
         from app.services.etims.inventory_kra_stock_hooks import enqueue_kra_stock_in_for_ledger
 
         for entry in ledger_entries:
@@ -2801,6 +2826,19 @@ def batch_sales_invoice(
                 set_due_date_from_customer(invoice, customer)
                 sync_customer_invoice_paid_from_settlements(db, invoice)
                 post_customer_ledger_on_batch(db, invoice, customer, invoice.company_id)
+
+        # M1 GL: revenue + COGS from operational batch (soft-fail; does not roll back stock batch)
+        try:
+            from app.accounting.posting.sales import post_gl_for_sales_invoice_batch
+
+            post_gl_for_sales_invoice_batch(
+                db, invoice, ledger_entries, posted_by=batched_by
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "accounting: GL sales batch hook failed for invoice %s (non-fatal)",
+                invoice_id,
+            )
 
         # Immutable KRA snapshot + transactional outbox when the company has KRA execution enabled
         # and this branch has submission enabled on stored credentials.
