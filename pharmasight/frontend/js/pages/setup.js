@@ -18,6 +18,23 @@ async function loadSetup() {
         loadPage('login');
         return;
     }
+
+    // Existing company: never show first-time setup wizard (go to branch selection).
+    if (typeof TenantCompany !== 'undefined' && TenantCompany.resolveUserCompanyId) {
+        try {
+            const existingCompanyId = await TenantCompany.resolveUserCompanyId();
+            if (existingCompanyId) {
+                CONFIG.COMPANY_ID = existingCompanyId;
+                saveConfig();
+                console.log('[SETUP] Company already exists, redirecting to branch-select');
+                window.location.hash = '#branch-select';
+                loadPage('branch-select');
+                return;
+            }
+        } catch (e) {
+            console.warn('[SETUP] Could not resolve existing company:', e);
+        }
+    }
     
     // Set admin user data from authenticated user
     setupData.admin_user = {

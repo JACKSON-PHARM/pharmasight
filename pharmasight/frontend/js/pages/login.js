@@ -906,8 +906,13 @@ async function loadLogin() {
                                 if (window.loadPage) window.loadPage('password-set');
                                 else window.location.hash = '#password-set';
                             } else {
-                                if (window.loadPage) window.loadPage('branch-select');
-                                else window.location.hash = '#branch-select';
+                                if (typeof window.startAppFlow === 'function') {
+                                    await window.startAppFlow();
+                                } else if (window.loadPage) {
+                                    window.loadPage('branch-select');
+                                } else {
+                                    window.location.hash = '#branch-select';
+                                }
                             }
                             return;
                         }

@@ -818,54 +818,68 @@ async function startAppFlow() {
         // ---- CENTRAL NAVIGATION DECISION (single authority) ----
         // Only this block decides where to go after login.
 
-        // 1) Determine if a company exists
-        let hasCompany = false;
+        // 1) Resolve company (auth/me, JWT, list, config — do not treat API errors as "no company")
         let companyId = CONFIG.COMPANY_ID || null;
-        const normalizeCompanies = (res) => {
-            if (Array.isArray(res)) return res;
-            if (res && Array.isArray(res.companies)) return res.companies;
-            return [];
-        };
-        const normalizeBranches = (res) => {
-            if (Array.isArray(res)) return res;
-            if (res && Array.isArray(res.branches)) return res.branches;
-            return [];
-        };
-
-        if (API && API.company && typeof API.company.list === 'function') {
-            try {
-                const companies = normalizeCompanies(await API.company.list());
-                if (companies.length > 0) {
-                    hasCompany = true;
-                    if (!companyId) {
-                        companyId = companies[0].id;
-                        CONFIG.COMPANY_ID = companyId;
-                        saveConfig();
-                    }
-                }
-            } catch (e) {
-                console.warn('[APP FLOW] company.list failed; assuming no company for navigation:', e);
-            }
-        }
-
-        // 2) If no company or no branches, go to setup
+        let hasCompany = false;
         let hasBranches = false;
-        if (hasCompany && API && API.branch && typeof API.branch.list === 'function') {
+
+        if (typeof TenantCompany !== 'undefined' && TenantCompany.resolveUserCompanyId) {
             try {
-                const branches = normalizeBranches(await API.branch.list(companyId));
-                if (branches.length > 0) {
-                    hasBranches = true;
+                const resolved = await TenantCompany.resolveUserCompanyId();
+                if (resolved) {
+                    hasCompany = true;
+                    companyId = resolved;
+                    CONFIG.COMPANY_ID = companyId;
+                    saveConfig();
                 }
             } catch (e) {
-                console.warn('[APP FLOW] branch.list failed; assuming no branches for navigation:', e);
+                console.warn('[APP FLOW] resolveUserCompanyId failed:', e);
             }
         }
 
-        if (!hasCompany || !hasBranches) {
-            if (currentScreen !== 'setup') {
-                console.log('⚙️ No company or branches found, redirecting to setup wizard...');
-                currentScreen = 'setup';
-                loadPage('setup');
+        // 2) Setup wizard = brand-new tenant only. Existing company → branch-select if no branch yet.
+        if (!hasCompany) {
+            let showSetup = true;
+            if (typeof TenantCompany !== 'undefined' && TenantCompany.shouldShowSetupWizard) {
+                try {
+                    showSetup = await TenantCompany.shouldShowSetupWizard();
+                } catch (e) {
+                    console.warn('[APP FLOW] shouldShowSetupWizard failed:', e);
+                    showSetup = false;
+                }
+            }
+            if (showSetup) {
+                if (currentScreen !== 'setup') {
+                    console.log('[APP FLOW] No company for this account — setup wizard');
+                    currentScreen = 'setup';
+                    loadPage('setup');
+                }
+                isInitializing = false;
+                return;
+            }
+            if (currentScreen !== 'branch-select') {
+                console.log('[APP FLOW] Company state unclear — branch-select (not setup)');
+                currentScreen = 'branch-select';
+                loadPage('branch-select');
+            }
+            isInitializing = false;
+            return;
+        }
+
+        if (typeof TenantCompany !== 'undefined' && TenantCompany.resolveUserBranches) {
+            try {
+                const br = await TenantCompany.resolveUserBranches(companyId);
+                hasBranches = br.hasVisibleBranches;
+            } catch (e) {
+                console.warn('[APP FLOW] resolveUserBranches failed:', e);
+            }
+        }
+
+        if (!hasBranches) {
+            if (currentScreen !== 'branch-select') {
+                console.log('[APP FLOW] Company exists but no branch visible for user — branch-select (not setup)');
+                currentScreen = 'branch-select';
+                loadPage('branch-select');
             }
             isInitializing = false;
             return;
