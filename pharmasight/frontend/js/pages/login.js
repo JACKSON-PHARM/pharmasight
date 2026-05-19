@@ -25,15 +25,32 @@ async function loginFetch(url, options = {}, timeoutMs = LOGIN_FETCH_TIMEOUT_MS)
 }
 
 function loginApiBaseUrl() {
-    if (typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL) {
-        return String(CONFIG.API_BASE_URL).replace(/\/+$/, '');
+    if (typeof window.reconcileApiBaseUrlForCurrentHost === 'function') {
+        window.reconcileApiBaseUrlForCurrentHost();
     }
-    if (typeof window.getDefaultLocalApiBase === 'function') {
+    const host = window.location.hostname;
+    const fromConfig =
+        typeof CONFIG !== 'undefined' && CONFIG.API_BASE_URL
+            ? String(CONFIG.API_BASE_URL).replace(/\/+$/, '')
+            : '';
+    if (
+        fromConfig &&
+        !(
+            !isLocalDevLoginHost(host) &&
+            typeof window.isLocalDevApiUrl === 'function' &&
+            window.isLocalDevApiUrl(fromConfig)
+        )
+    ) {
+        return fromConfig;
+    }
+    if (isLocalDevLoginHost(host) && typeof window.getDefaultLocalApiBase === 'function') {
         return window.getDefaultLocalApiBase();
     }
-    return window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-        ? 'http://localhost:8000'
-        : window.location.origin;
+    return isLocalDevLoginHost(host) ? 'http://localhost:8000' : '';
+}
+
+function isLocalDevLoginHost(hostname) {
+    return hostname === 'localhost' || hostname === '127.0.0.1';
 }
 
 async function loadLogin() {
@@ -966,10 +983,12 @@ async function loadLogin() {
                             `Request timed out. Check that the backend is running at ${apiBase} ` +
                             '(restart python start.py after code changes).';
                     } else if (errorMsg.includes('Failed to fetch') || errorMsg.includes('Load failed') || errorMsg.includes('NetworkError')) {
-                        errorMsg =
-                            'Cannot reach the server at ' +
-                            apiBase +
-                            '. Run python start.py and use the Backend API URL it prints (often http://localhost:8001 if port 8000 is busy).';
+                        const isLocal = isLocalDevLoginHost(window.location.hostname);
+                        errorMsg = isLocal
+                            ? 'Cannot reach the server at ' +
+                              (apiBase || 'http://localhost:8000') +
+                              '. Run python start.py and use the Backend API URL it prints (often http://localhost:8001 if port 8000 is busy).'
+                            : 'Cannot reach the application API on this site. Hard-refresh (Ctrl+Shift+R). If you previously used localhost, clear site data for this domain or use a private window.';
                     }
                     if (errorDiv) {
                         errorDiv.innerHTML = '<span>' + String(errorMsg).replace(/</g, '&lt;') + '</span>' +

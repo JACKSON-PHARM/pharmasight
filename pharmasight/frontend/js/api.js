@@ -266,7 +266,9 @@ class APIClient {
     }
 
     async request(endpoint, options = {}) {
-        if (typeof window !== 'undefined' && typeof window.pharmasightSyncApiBaseUrl === 'function') {
+        if (typeof window !== 'undefined' && typeof window.reconcileApiBaseUrlForCurrentHost === 'function') {
+            window.reconcileApiBaseUrlForCurrentHost();
+        } else if (typeof window !== 'undefined' && typeof window.pharmasightSyncApiBaseUrl === 'function') {
             window.pharmasightSyncApiBaseUrl();
         }
         if (!this.baseURL) {

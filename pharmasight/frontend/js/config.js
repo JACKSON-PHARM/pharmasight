@@ -35,6 +35,22 @@
     }
 })();
 
+function isLocalDevHostname(hostname) {
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+}
+
+/** True when URL points at a machine-local API (must not be used from Render/production). */
+function isLocalDevApiUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    const trimmed = url.trim();
+    if (!trimmed) return false;
+    try {
+        return isLocalDevHostname(new URL(trimmed).hostname);
+    } catch (_) {
+        return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(trimmed);
+    }
+}
+
 /** Default API base on localhost when not using same-origin hosting (matches start.py / runtime_config.json). */
 function getDefaultLocalApiBase() {
     let base = '';
@@ -59,11 +75,48 @@ function getDefaultLocalApiBase() {
     return base;
 }
 
+/**
+ * Ensure API base URL matches where the page is served.
+ * - Local dev: use runtime_config.json / start.py port.
+ * - Production (Render, etc.): same-origin '' — never localhost from localStorage.
+ */
+function reconcileApiBaseUrlForCurrentHost() {
+    if (typeof window === 'undefined' || !window.location) return;
+    const host = window.location.hostname;
+    if (isLocalDevHostname(host)) {
+        reconcileLocalApiBaseUrl();
+        return;
+    }
+
+    const current = (CONFIG.API_BASE_URL || '').trim().replace(/\/+$/, '');
+    if (current && isLocalDevApiUrl(current)) {
+        CONFIG.API_BASE_URL = '';
+        try {
+            const saved = localStorage.getItem('pharmasight_config');
+            if (saved) {
+                const cfg = JSON.parse(saved);
+                if (cfg.API_BASE_URL && isLocalDevApiUrl(String(cfg.API_BASE_URL))) {
+                    cfg.API_BASE_URL = '';
+                    localStorage.setItem('pharmasight_config', JSON.stringify(cfg));
+                }
+            }
+            const override = localStorage.getItem('pharmasight_api_base_url');
+            if (override && isLocalDevApiUrl(override)) {
+                localStorage.removeItem('pharmasight_api_base_url');
+            }
+        } catch (_) {}
+    }
+
+    if (typeof window.pharmasightSyncApiBaseUrl === 'function') {
+        window.pharmasightSyncApiBaseUrl();
+    }
+}
+
 /** On localhost, prefer runtime_config.json port over stale saved :8000 when start.py uses :8001. */
 function reconcileLocalApiBaseUrl() {
     if (typeof window === 'undefined' || !window.location) return;
     const host = window.location.hostname;
-    if (host !== 'localhost' && host !== '127.0.0.1') return;
+    if (!isLocalDevHostname(host)) return;
 
     const runtime = getDefaultLocalApiBase();
     if (!runtime) return;
@@ -239,7 +292,7 @@ function loadConfig() {
         CONFIG.APP_PUBLIC_URL = window.location.origin;
     }
 
-    reconcileLocalApiBaseUrl();
+    reconcileApiBaseUrlForCurrentHost();
 }
 
 /** Build print config object for API storage (company-level settings) */
@@ -380,7 +433,9 @@ loadConfig();
 if (typeof window !== 'undefined') {
     window.CONFIG = CONFIG;
     window.getDefaultLocalApiBase = getDefaultLocalApiBase;
+    window.isLocalDevApiUrl = isLocalDevApiUrl;
     window.reconcileLocalApiBaseUrl = reconcileLocalApiBaseUrl;
+    window.reconcileApiBaseUrlForCurrentHost = reconcileApiBaseUrlForCurrentHost;
     window.saveConfig = saveConfig;
     window.loadConfig = loadConfig;
     window.loadCompanyPrintSettings = loadCompanyPrintSettings;
