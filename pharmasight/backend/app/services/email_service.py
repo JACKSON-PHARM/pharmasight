@@ -45,6 +45,7 @@ class EmailService:
         tenant_name: str,
         setup_url: str,
         username: Optional[str] = None,
+        org_login_url: Optional[str] = None,
     ) -> bool:
         """
         Send tenant setup invite email with link and optional username.
@@ -69,6 +70,14 @@ class EmailService:
             <p>Use this username to log in after you set your password.</p>
             """
 
+        safe_login = _escape(org_login_url) if org_login_url else ""
+        login_block = ""
+        if org_login_url:
+            login_block = f"""
+            <p><strong>After setup, sign in here:</strong> <a href="{safe_login}">{safe_login}</a></p>
+            <p style="font-size:14px;color:#666;">Bookmark this link for day-to-day sign-in. It includes your organization code so users land in the correct workspace.</p>
+            """
+
         brand = settings.APP_NAME
         html_body = f"""
         <!DOCTYPE html>
@@ -79,6 +88,7 @@ class EmailService:
             <p><a href="{safe_url}" style="background:#14b8a6;color:#0f172a;padding:10px 20px;text-decoration:none;border-radius:8px;display:inline-block;font-weight:600;">Complete setup</a></p>
             <p style="word-break:break-all;font-size:12px;color:#666;">Or copy this link: {safe_url}</p>
             {username_block}
+            {login_block}
             <p style="color:#666;font-size:14px;">This link expires in 7 days. If you didn't expect this email, you can ignore it.</p>
         </body>
         </html>
@@ -87,6 +97,8 @@ class EmailService:
         plain = f"""You're invited to set up {tenant_name} on {settings.APP_NAME}.\n\nComplete your setup: {setup_url}\n"""
         if username:
             plain += f"\nYour username: {username}\nUse this to log in after setting your password.\n"
+        if org_login_url:
+            plain += f"\nSign-in link (after setup): {org_login_url}\n"
         plain += "\nThis link expires in 7 days.\n"
 
         msg = MIMEMultipart("alternative")

@@ -16,6 +16,36 @@ const LIC_SEARCH_STORAGE_KEY = 'pharmasight_admin_lic_search';
 /** Prevents stale list responses (e.g. initial full list finishing after a search) from overwriting the table. */
 let _licListLoadSeq = 0;
 
+async function copyTextToClipboard(text, toastFn) {
+    const value = String(text || '').trim();
+    if (!value) {
+        if (toastFn) toastFn('No link to copy', 'error');
+        return false;
+    }
+    try {
+        await navigator.clipboard.writeText(value);
+        if (toastFn) toastFn('Login link copied', 'success');
+        return true;
+    } catch (_) {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = value;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            if (toastFn) toastFn('Login link copied', 'success');
+            return true;
+        } catch (e2) {
+            if (toastFn) toastFn('Could not copy link', 'error');
+            return false;
+        }
+    }
+}
+
 /** Populated from sightops_pricing_catalog.json in init(). slug = companies.subscription_plan */
 let SAAS_TIERS = [];
 let PRICING_CATALOG = null;
@@ -270,11 +300,12 @@ export async function init() {
                                 <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Status</th>
                                 <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Trial expires</th>
                                 <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Active</th>
+                                <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Login link</th>
                                 <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="lic-tbody">
-                            <tr><td colspan="8" style="padding:12px; color:#666;">Loading…</td></tr>
+                            <tr><td colspan="9" style="padding:12px; color:#666;">Loading…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -315,7 +346,8 @@ export async function init() {
                 try {
                     const out = await api.createCompany(payload);
                     const tid = out.tenant_id;
-                    const sub = out.subdomain || '—';
+                    const sub = out.subdomain || out.org_slug || '—';
+                    const orgLoginUrl = out.org_login_url || '';
                     const cid = out.company?.id || '—';
                     const inv = out.initial_invite || null;
                     const invWarn = out.invite_warning ? String(out.invite_warning) : '';
@@ -326,6 +358,18 @@ export async function init() {
                         <p style="margin:0 0 8px 0; font-weight:600;">Company created</p>
                         <p style="margin:0 0 8px 0;">Company ID: <code>${esc(cid)}</code></p>
                         <p style="margin:0 0 8px 0;">Tenant ID: <code>${esc(tid)}</code> · Subdomain: <code>${esc(sub)}</code></p>
+                        ${
+                            orgLoginUrl
+                                ? `<div style="margin:0 0 10px 0;">
+                            <label style="display:block; font-weight:600; font-size:0.85rem; margin-bottom:4px;">Organization sign-in link (share with users)</label>
+                            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                                <input type="text" readonly value="${esc(orgLoginUrl)}" style="flex:1; min-width:220px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:8px; font-size:12px;">
+                                <button type="button" class="btn btn-outline btn-sm lic-copy-login-inline" data-login-url="${esc(orgLoginUrl)}">Copy login link</button>
+                                <a href="${esc(orgLoginUrl)}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Open</a>
+                            </div>
+                        </div>`
+                                : ''
+                        }
                         ${
                             invWarn
                                 ? `<p style="margin:0 0 8px 0; color:#b45309;">Invite: ${esc(invWarn)}</p>`
@@ -346,6 +390,10 @@ export async function init() {
                         <span id="lic-create-client-invite-status" style="margin-left:10px; color:#64748b;"></span>
                     `;
                     toast('Company created. Invite created — check Manage if email did not arrive.', 'success');
+                    resultEl.querySelector('.lic-copy-login-inline')?.addEventListener('click', () => {
+                        const url = resultEl.querySelector('.lic-copy-login-inline')?.getAttribute('data-login-url');
+                        if (url) void copyTextToClipboard(url, toast);
+                    });
                     document.getElementById('lic-create-client-invite-btn')?.addEventListener('click', async () => {
                         const st = document.getElementById('lic-create-client-invite-status');
                         if (st) st.textContent = 'Sending…';
@@ -396,6 +444,10 @@ export async function init() {
                               : ''
                       }`
                     : '—';
+                const loginUrl = (c.org_login_url || '').trim();
+                const loginCell = loginUrl
+                    ? `<button type="button" class="btn btn-outline btn-sm lic-copy-login" data-login-url="${esc(loginUrl)}" title="${esc(loginUrl)}">Copy login link</button>`
+                    : `<span style="color:#b45309;font-size:0.8rem;">No subdomain</span>`;
                 return `
                     <tr data-cid="${cid}" style="cursor:pointer;">
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(c.name || '—')}</td>
@@ -405,6 +457,7 @@ export async function init() {
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${esc(effectiveStatus)}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${trialCell}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9;">${active}</td>
+                        <td style="padding:10px; border-bottom:1px solid #f1f5f9; white-space:nowrap;">${loginCell}</td>
                         <td style="padding:10px; border-bottom:1px solid #f1f5f9; white-space:nowrap;">
                             <button type="button" class="btn btn-primary btn-sm lic-open-manage" data-cid="${cid}">Manage</button>
                         </td>
@@ -412,9 +465,16 @@ export async function init() {
                 `;
             }).join('');
             if (seq !== _licListLoadSeq) return;
-            tbody.innerHTML = rows || '<tr><td colspan="8" style="padding:12px; color:#666;">No companies match.</td></tr>';
+            tbody.innerHTML = rows || '<tr><td colspan="9" style="padding:12px; color:#666;">No companies match.</td></tr>';
 
             tbody.addEventListener('click', (e) => {
+                const copyBtn = e.target.closest('.lic-copy-login');
+                if (copyBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void copyTextToClipboard(copyBtn.getAttribute('data-login-url'), toast);
+                    return;
+                }
                 const btn = e.target.closest('.lic-open-manage');
                 if (btn) {
                     e.preventDefault();
@@ -431,7 +491,7 @@ export async function init() {
             });
         } catch (e) {
             if (seq !== _licListLoadSeq) return;
-            tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; color:#b91c1c;">Failed: ${esc(e.message || 'Error')}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="9" style="padding:12px; color:#b91c1c;">Failed: ${esc(e.message || 'Error')}</td></tr>`;
         }
 
         if (seq !== _licListLoadSeq) return;
@@ -540,6 +600,8 @@ export async function init() {
             const trialForInput = c.trial_expires_at || c.trial_display_expires_at;
             const trialListLabel = trialForInput ? new Date(trialForInput).toLocaleString() : '—';
             const tenantIdForInvite = (c.tenant_id || '').trim();
+            const orgLoginUrl = (resp.org_login_url || c.org_login_url || '').trim();
+            const orgSlug = (resp.org_slug || c.org_slug || c.tenant_subdomain || '').trim();
             const core = new Set((resp.core_modules || []).map((x) => String(x).toLowerCase()));
             const mods = Array.isArray(resp.modules) ? resp.modules : [];
             const catalog = Array.isArray(resp.module_catalog) ? resp.module_catalog : [];
@@ -624,8 +686,24 @@ export async function init() {
 
                     <div style="margin-top:16px; border:1px solid #e2e8f0; border-radius:10px; padding:14px; background:#fafafa;">
                         <h3 style="margin:0 0 6px 0;">Organization &amp; setup invite</h3>
+                        ${
+                            orgLoginUrl
+                                ? `<div style="margin:0 0 14px 0; padding:12px; border-radius:8px; background:#ecfdf5; border:1px solid #a7f3d0;">
+                            <div style="font-weight:600; color:#065f46; margin-bottom:6px;">Customer sign-in link</div>
+                            <p style="margin:0 0 8px 0; color:#047857; font-size:0.88rem; line-height:1.45;">
+                                Share this with staff for day-to-day login. It includes <code>?org=${esc(orgSlug)}</code> so the app opens the correct company.
+                                Password-reset emails use the same link.
+                            </p>
+                            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                                <input id="lic-org-login-url" type="text" readonly value="${esc(orgLoginUrl)}" style="flex:1; min-width:240px; padding:8px 10px; border:1px solid #cbd5e1; border-radius:8px; font-size:12px;">
+                                <button type="button" id="lic-copy-org-login" class="btn btn-outline btn-sm">Copy login link</button>
+                                <a href="${esc(orgLoginUrl)}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">Open</a>
+                            </div>
+                        </div>`
+                                : `<p style="margin:0 0 12px 0; color:#b45309; font-size:0.88rem;">No organization subdomain is linked — repair tenant registry before sharing a login link.</p>`
+                        }
                         <p style="margin:0 0 12px 0; color:#64748b; font-size:0.88rem; line-height:1.4;">
-                            Fix typos in the owner contact, then resend the setup email so they can choose a password. If SMTP is not configured on the server, copy the setup link from the toast / server logs or configure <code>SMTP_*</code> in the backend environment.
+                            Fix typos in the owner contact, then resend the setup email so they can choose a password. If SMTP is not configured on the server, copy the setup link below or configure <code>SMTP_*</code> in the backend environment.
                         </p>
                         <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
                             <div style="grid-column: 1 / -1;">
@@ -907,6 +985,11 @@ export async function init() {
             }
 
             document.getElementById('lic-back')?.addEventListener('click', () => void loadCompanies());
+
+            document.getElementById('lic-copy-org-login')?.addEventListener('click', () => {
+                const url = document.getElementById('lic-org-login-url')?.value || orgLoginUrl;
+                if (url) void copyTextToClipboard(url, toast);
+            });
 
             document.getElementById('lic-save-profile')?.addEventListener('click', async () => {
                 try {

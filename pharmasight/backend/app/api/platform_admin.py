@@ -421,26 +421,18 @@ def get_company(
         .order_by(CompanyModule.module_name.asc())
         .all()
     )
-    org_slug = None
-    org_login_url = None
-    try:
-        from app.services.company_context import build_org_login_url
-        from app.models.tenant import Tenant
+    company_payload = PlatformCompanyResponse.model_validate(c).model_dump()
+    from app.services.company_context import enrich_company_payload_with_org_context
 
-        tenant = master_db.query(Tenant).filter(Tenant.company_id == company_id).first()
-        if tenant and tenant.subdomain:
-            org_slug = tenant.subdomain
-            org_login_url = build_org_login_url(org_slug)
-    except Exception:
-        pass
+    enrich_company_payload_with_org_context(company_payload, master_db)
 
     return {
-        "company": PlatformCompanyResponse.model_validate(c).model_dump(),
+        "company": company_payload,
         "modules": [{"name": r.module_name, "enabled": bool(r.is_enabled)} for r in rows],
         "module_catalog": get_company_module_license_catalog(db, company_id),
         "core_modules": sorted(list(get_core_modules(db))),
-        "org_slug": org_slug,
-        "org_login_url": org_login_url,
+        "org_slug": company_payload.get("org_slug"),
+        "org_login_url": company_payload.get("org_login_url"),
     }
 
 

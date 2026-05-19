@@ -1153,7 +1153,10 @@ def auth_request_reset(
             uname = (getattr(user, "username", None) or "").strip() or None
             sign_in_url = None
             if subdomain_for_token and subdomain_for_token != LEGACY_TENANT_SUBDOMAIN:
-                sign_in_url = f"{base.rstrip('/')}/app?tenant={subdomain_for_token}#login"
+                sign_in_url = build_org_login_url(
+                    subdomain_for_token,
+                    base_url=base.rstrip("/"),
+                )
             sent = EmailService.send_password_reset(
                 to_email,
                 reset_url,

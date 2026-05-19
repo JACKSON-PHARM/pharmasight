@@ -113,6 +113,9 @@ class PlatformCompanyListItem(PlatformCompanyResponse):
     governance_access_label: Optional[str] = None
     governance_access_state: Optional[str] = None
     governance_uses_legacy: bool = False
+    tenant_subdomain: Optional[str] = None
+    org_slug: Optional[str] = None
+    org_login_url: Optional[str] = None
 
 
 class ModuleToggle(BaseModel):
@@ -190,6 +193,7 @@ def list_companies(
     q: Optional[str] = Query(None),
     _admin: None = Depends(get_current_admin),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     query = db.query(Company)
     if q and str(q).strip():
@@ -202,6 +206,8 @@ def list_companies(
         governance_access_display,
     )
 
+    from app.services.company_context import enrich_company_payload_with_org_context
+
     for c in rows:
         base = PlatformCompanyResponse.model_validate(c).model_dump()
         base["trial_display_expires_at"] = company_trial_expires_effective(c)
@@ -209,6 +215,7 @@ def list_companies(
         base["governance_access_label"] = access_disp["label"]
         base["governance_access_state"] = access_disp["state"]
         base["governance_uses_legacy"] = access_disp["uses_legacy_fallback"]
+        enrich_company_payload_with_org_context(base, master_db)
         out.append(PlatformCompanyListItem(**base))
     return out
 
@@ -344,10 +351,16 @@ def create_platform_company(
         logger.exception("Auto-invite failed after company create")
         invite_warning = "Invite could not be created; use Manage → resend invite."
 
+    from app.services.company_context import build_org_login_url, normalize_org_slug
+
+    org_slug = normalize_org_slug(tenant.subdomain) or tenant.subdomain
+    org_login_url = build_org_login_url(org_slug) if org_slug else None
     return {
         "company": PlatformCompanyResponse.model_validate(company).model_dump(),
         "tenant_id": str(tenant.id),
         "subdomain": tenant.subdomain,
+        "org_slug": org_slug,
+        "org_login_url": org_login_url,
         "hq_branch_id": str(branch.id),
         "initial_invite": initial_invite.model_dump() if initial_invite else None,
         "invite_warning": invite_warning,
@@ -421,8 +434,13 @@ def get_company(
         company_payload["tenant_id"] = None
         company_payload["tenant_subdomain"] = None
         company_payload["tenant_admin_full_name"] = None
+    from app.services.company_context import enrich_company_payload_with_org_context
+
+    enrich_company_payload_with_org_context(company_payload, master_db)
     return {
         "company": company_payload,
+        "org_slug": company_payload.get("org_slug"),
+        "org_login_url": company_payload.get("org_login_url"),
         "modules": [{"name": r.module_name, "enabled": bool(r.is_enabled)} for r in rows],
         "module_catalog": get_company_module_license_catalog(db, company_id),
         "core_modules": sorted(list(get_core_modules(db))),
@@ -500,7 +518,14 @@ def patch_company_profile(
     company_payload["tenant_id"] = str(tenant.id)
     company_payload["tenant_subdomain"] = tenant.subdomain
     company_payload["tenant_admin_full_name"] = tenant.admin_full_name
-    return {"company": company_payload}
+    from app.services.company_context import enrich_company_payload_with_org_context
+
+    enrich_company_payload_with_org_context(company_payload, master_db)
+    return {
+        "company": company_payload,
+        "org_slug": company_payload.get("org_slug"),
+        "org_login_url": company_payload.get("org_login_url"),
+    }
 
 
 @router.patch("/company/{company_id}/modules", response_model=Dict[str, Any])

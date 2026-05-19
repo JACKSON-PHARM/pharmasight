@@ -149,9 +149,47 @@ def preferred_company_id_from_request(request: Request, master_db: Session) -> O
 def build_org_login_url(org_slug: str, *, base_url: Optional[str] = None) -> str:
     base = (base_url or settings.effective_erp_app_url or "").strip().rstrip("/")
     slug = normalize_org_slug(org_slug) or ""
+    if not slug:
+        return f"{base}/app#login" if base else "/app#login"
     if not base:
         return f"/app?org={slug}#login"
     return f"{base}/app?org={slug}#login"
+
+
+def enrich_company_payload_with_org_context(
+    company_payload: dict,
+    master_db: Session,
+    *,
+    base_url: Optional[str] = None,
+) -> dict:
+    """
+    Attach tenant subdomain + shareable ERP login URL for admin UI and emails.
+    """
+    company_id = company_payload.get("id")
+    if not company_id:
+        company_payload.setdefault("tenant_subdomain", None)
+        company_payload.setdefault("org_slug", None)
+        company_payload.setdefault("org_login_url", None)
+        return company_payload
+    try:
+        cid = company_id if isinstance(company_id, UUID) else UUID(str(company_id))
+    except (TypeError, ValueError):
+        company_payload["tenant_subdomain"] = None
+        company_payload["org_slug"] = None
+        company_payload["org_login_url"] = None
+        return company_payload
+
+    tenant = master_db.query(Tenant).filter(Tenant.company_id == cid).first()
+    if tenant and tenant.subdomain:
+        slug = normalize_org_slug(tenant.subdomain) or str(tenant.subdomain).strip().lower()
+        company_payload["tenant_subdomain"] = slug
+        company_payload["org_slug"] = slug
+        company_payload["org_login_url"] = build_org_login_url(slug, base_url=base_url)
+    else:
+        company_payload["tenant_subdomain"] = None
+        company_payload["org_slug"] = None
+        company_payload["org_login_url"] = None
+    return company_payload
 
 
 def org_bootstrap_payload(tenant: Tenant, company: Optional[Company]) -> dict:

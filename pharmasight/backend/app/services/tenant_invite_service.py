@@ -21,6 +21,7 @@ from app.dependencies import is_tenant_ready_for_invite, tenant_or_app_db_sessio
 from app.models.tenant import Tenant, TenantInvite
 from app.schemas.tenant import TenantInviteCreate, TenantInviteResponse
 from app.services.email_service import EmailService
+from app.services.company_context import build_org_login_url, normalize_org_slug
 from app.utils.public_url import get_public_base_url
 from app.utils.username_generator import generate_username_from_name
 
@@ -92,6 +93,8 @@ def create_tenant_invite(
 
     base_url = get_public_base_url(request)
     setup_url = f"{base_url.rstrip('/')}/setup?token={invite.token}"
+    org_slug = normalize_org_slug(tenant.subdomain) or (tenant.subdomain or "")
+    org_login_url = build_org_login_url(org_slug, base_url=base_url.rstrip("/")) if org_slug else None
 
     invite_response = TenantInviteResponse.model_validate(invite)
     invite_response.username = generated_username
@@ -129,6 +132,7 @@ def create_tenant_invite(
                         tenant_name=tenant.name,
                         setup_url=setup_url,
                         username=generated_username,
+                        org_login_url=org_login_url,
                     )
                     if result:
                         logger.info("Background task: Successfully sent invite email to %s", tenant.admin_email)
