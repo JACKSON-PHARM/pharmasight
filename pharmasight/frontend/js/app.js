@@ -1213,6 +1213,7 @@ window.subNavItems = {
             icon: 'fa-shield-alt',
             items: [
                 { page: 'finance', subPage: 'reconciliation', label: 'Reconciliation', icon: 'fa-balance-scale' },
+                { page: 'finance', subPage: 'patient-journeys', label: 'Patient Financial Journeys', icon: 'fa-heartbeat' },
                 { page: 'finance', subPage: 'events', label: 'Financial Activity', icon: 'fa-stream' },
                 { page: 'finance', subPage: 'proposals', label: 'Accounting Review', icon: 'fa-inbox' },
                 { page: 'finance', subPage: 'integrity', label: 'Integrity & Replay', icon: 'fa-redo' },

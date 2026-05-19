@@ -57,6 +57,13 @@ from .branch_inventory import (
     BranchReceipt,
     BranchReceiptLine,
 )
+from .hospital_economic import (
+    PatientFinancialJourney,
+    CareCharge,
+    PfjCoverageProfile,
+    LiabilityAllocationRun,
+    LiabilityAllocationLine,
+)
 from .clinic import (
     Patient,
     Encounter,
@@ -183,6 +190,11 @@ __all__ = [
     "CashbookEntry",
     "CashbookAccount",
     "FinanceBackfillRun",
+    "PatientFinancialJourney",
+    "CareCharge",
+    "PfjCoverageProfile",
+    "LiabilityAllocationRun",
+    "LiabilityAllocationLine",
     "Patient",
     "Encounter",
     "EncounterNote",

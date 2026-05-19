@@ -30,6 +30,7 @@ class CorrelationKind(str, Enum):
     TREASURY_FLOW = "treasury_flow"
     POSTING_CANDIDATE = "posting_candidate"
     AUDIT_SESSION = "audit_session"
+    PATIENT_FINANCIAL_JOURNEY = "patient_financial_journey"
 
 
 def build_correlation_group(kind: CorrelationKind, entity_id: str | UUID, *, suffix: str | None = None) -> str:
@@ -62,6 +63,10 @@ def correlation_group_for_payment(payment_id: str | UUID, *, prefix: str | None 
 
 def correlation_group_for_supplier_payment(payment_id: str | UUID) -> str:
     return build_correlation_group(CorrelationKind.SUPPLIER_PAYMENT, payment_id)
+
+
+def correlation_group_for_patient_financial_journey(pfj_id: str | UUID) -> str:
+    return build_correlation_group(CorrelationKind.PATIENT_FINANCIAL_JOURNEY, pfj_id)
 
 
 def correlation_group_for_insurance_claim(claim_id: str | UUID) -> str:
@@ -119,4 +124,5 @@ _KIND_DESCRIPTIONS: dict[CorrelationKind, str] = {
     CorrelationKind.TREASURY_FLOW: "Treasury routing movement stream",
     CorrelationKind.POSTING_CANDIDATE: "Reserved: future accounting staging (no GL in E6)",
     CorrelationKind.AUDIT_SESSION: "Audit investigation grouping",
+    CorrelationKind.PATIENT_FINANCIAL_JOURNEY: "Hospital PFJ longitudinal economic lineage",
 }

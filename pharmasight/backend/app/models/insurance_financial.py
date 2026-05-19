@@ -46,6 +46,9 @@ class InsuranceClaim(Base):
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
     insurance_provider_id = Column(UUID(as_uuid=True), ForeignKey("insurance_providers.id", ondelete="CASCADE"), nullable=False)
     sales_invoice_id = Column(UUID(as_uuid=True), ForeignKey("sales_invoices.id", ondelete="CASCADE"), nullable=False)
+    pfj_id = Column(
+        UUID(as_uuid=True), ForeignKey("patient_financial_journeys.id", ondelete="SET NULL"), nullable=True
+    )
     claim_number = Column(String(100), nullable=False)
     status = Column(String(30), nullable=False, default="submitted")
     billed_amount = Column(Numeric(20, 4), nullable=False, default=0)

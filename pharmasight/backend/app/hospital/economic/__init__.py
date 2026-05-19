@@ -1,0 +1,1 @@
+"""Hospital economic orchestration (kernel)."""

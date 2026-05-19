@@ -23,6 +23,7 @@ const FINANCE_OPS_SUBPAGES = {
     treasury: { title: 'Treasury Intelligence', loader: 'renderFinanceReconciliation' },
     recovery: { title: 'Revenue Recovery', loader: 'renderFinanceRecovery' },
     projections: { title: 'Projection Explorer', loader: 'renderFinanceProjections' },
+    'patient-journeys': { title: 'Patient Financial Journeys', loader: 'renderFinanceHospitalJourneys' },
 };
 
 async function renderFinanceExpenses() {

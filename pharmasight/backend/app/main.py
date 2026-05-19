@@ -282,6 +282,7 @@ from app.api import (
     clinic_router,
     department_supply_router,
 )
+from app.api.hospital_economic import router as hospital_economic_router
 from app.api import etims
 from app.api import etims_debug as etims_debug_router
 from app.api.company import router as company_router
@@ -374,6 +375,7 @@ app.include_router(branch_inventory_router, prefix="/api/branch-inventory", tags
 app.include_router(department_supply_router, prefix="/api/department-supply", tags=["Department Supply"])
 app.include_router(modules_router, prefix="/api", tags=["Modules"])
 app.include_router(clinic_router, prefix="/api", tags=["Clinic / OPD"])
+app.include_router(hospital_economic_router, prefix="/api", tags=["Hospital Economic Kernel"])
 app.include_router(etims.router, prefix="/api/etims", tags=["ETIMS"])
 app.include_router(etims_debug_router.router, prefix="/etims", tags=["ETIMS Forensic"])
 app.include_router(reports_router, prefix="/api", tags=["Reports"])

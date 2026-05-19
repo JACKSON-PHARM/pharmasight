@@ -71,6 +71,12 @@ class Encounter(Base):
     initial_destination = Column(String(30), nullable=True)
     intake_payment_mode = Column(Text, nullable=True)
     intake_insurance_scheme = Column(Text, nullable=True)
+    pfj_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("patient_financial_journeys.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     sales_invoice_id = Column(
         UUID(as_uuid=True),
         ForeignKey("sales_invoices.id", ondelete="SET NULL"),

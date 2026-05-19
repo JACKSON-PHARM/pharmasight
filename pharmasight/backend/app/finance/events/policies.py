@@ -60,6 +60,11 @@ HOSPITAL_INSURANCE = FinancialEventPolicyPack(
             "expense_recognized",
             "receivable_accrued",
             "cash_received",
+            "care_value_accrued",
+            "care_value_reversed",
+            "liability_allocated",
+            "patient_receivable_recognized",
+            "insurer_receivable_recognized",
         }
     ),
     settlement_linking_enabled=True,

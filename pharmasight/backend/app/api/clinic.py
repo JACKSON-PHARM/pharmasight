@@ -735,13 +735,23 @@ def create_encounter(
     db.add(enc)
     try:
         db.flush()
-        ensure_draft_invoice_for_encounter(
+        invoice = ensure_draft_invoice_for_encounter(
             db,
             encounter_id=enc.id,
             company_id=company_id,
             patient=patient,
             user_id=user.id,
         )
+        try:
+            from app.hospital.economic.charge_engine import bridge_consultation_from_encounter_invoice
+            from app.hospital.economic.pfj_service import ensure_pfj_for_encounter
+
+            ensure_pfj_for_encounter(db, encounter=enc, patient=patient)
+            bridge_consultation_from_encounter_invoice(
+                db, encounter=enc, patient=patient, invoice=invoice
+            )
+        except Exception:
+            logger.exception("hospital kernel: encounter create charge bridge (non-fatal)")
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -1786,6 +1796,28 @@ def execute_clinical_service(
             db, led.company_id, led.branch_id, led.item_id, led.quantity_delta, document_number=led.document_number
         )
     _recompute_invoice_totals(db, invoice.id)
+    try:
+        from app.hospital.economic.charge_engine import bridge_service_execution_charge
+
+        last_line = (
+            db.query(SalesInvoiceItem)
+            .filter(SalesInvoiceItem.sales_invoice_id == invoice.id)
+            .order_by(SalesInvoiceItem.id.desc())
+            .first()
+        )
+        bridge_service_execution_charge(
+            db,
+            encounter=enc,
+            patient=enc.patient,
+            execution_id=execution.id,
+            service_id=svc.id,
+            service_name=svc.name or "Clinical service",
+            billed_amount=billed_amount,
+            invoice=invoice,
+            invoice_line=last_line,
+        )
+    except Exception:
+        logger.exception("hospital kernel: service execution charge bridge (non-fatal)")
     db.commit()
     return (
         db.query(EncounterServiceExecution)

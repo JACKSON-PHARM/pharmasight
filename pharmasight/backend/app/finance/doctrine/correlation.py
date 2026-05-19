@@ -25,6 +25,7 @@ REGISTERED_CORRELATION_PREFIXES: FrozenSet[str] = frozenset(
         "treasury_flow",
         "posting_candidate",
         "audit_session",
+        "patient_financial_journey",
     }
 )
 
@@ -109,6 +110,11 @@ CORRELATION_GOVERNANCE: tuple[CorrelationGovernanceRule, ...] = (
     CorrelationGovernanceRule(
         kind="audit_session",
         purpose="Audit investigation grouping (read governance)",
+    ),
+    CorrelationGovernanceRule(
+        kind="patient_financial_journey",
+        purpose="Hospital patient financial journey — care accrual, liability, recognition lineage",
+        may_include_settlement=True,
     ),
 )
 
