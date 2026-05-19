@@ -230,7 +230,7 @@ async function loadBranches() {
                         <i class="fas fa-exclamation-triangle"></i> 
                         ${escapeHtml(msg)}
                     </div>
-                    ${isNetwork ? '<p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Make sure the backend server is running (e.g. <code>http://localhost:8000</code>). Then retry or go to setup to complete your company profile.</p>' : ''}
+                    ${isNetwork || /API base URL/i.test(msg) ? '<p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">On production, use the same host for app and API (e.g. <code>https://yourservice.onrender.com/app</code>). Locally, run <code>python start.py</code> and hard-refresh (Ctrl+Shift+R).</p>' : ''}
                     <button class="btn btn-primary btn-block" onclick="window.location.reload()">
                         <i class="fas fa-sync-alt"></i> Retry
                     </button>

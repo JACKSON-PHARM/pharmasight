@@ -265,18 +265,37 @@ class APIClient {
         } catch (_) {}
     }
 
-    async request(endpoint, options = {}) {
+    _requestBaseUrl() {
         if (typeof window !== 'undefined' && typeof window.reconcileApiBaseUrlForCurrentHost === 'function') {
             window.reconcileApiBaseUrlForCurrentHost();
         } else if (typeof window !== 'undefined' && typeof window.pharmasightSyncApiBaseUrl === 'function') {
             window.pharmasightSyncApiBaseUrl();
         }
-        if (!this.baseURL) {
+        if (this.baseURL == null || this.baseURL === undefined) {
+            return null;
+        }
+        return String(this.baseURL).replace(/\/+$/, '');
+    }
+
+    async request(endpoint, options = {}) {
+        const urlBase = this._requestBaseUrl();
+        const host =
+            typeof window !== 'undefined' && window.location ? window.location.hostname : '';
+        const isLocalDev = host === 'localhost' || host === '127.0.0.1';
+        if (urlBase === null) {
+            throw new Error(
+                isLocalDev
+                    ? 'API base URL is not configured. Restart python start.py and hard-refresh the browser (Ctrl+Shift+R).'
+                    : 'API base URL is not configured. Hard-refresh the page (Ctrl+Shift+R) or contact support.'
+            );
+        }
+        // Empty string = same-origin API (Render/production). Local dev must use an explicit port.
+        if (urlBase === '' && isLocalDev) {
             throw new Error(
                 'API base URL is not configured. Restart python start.py and hard-refresh the browser (Ctrl+Shift+R).'
             );
         }
-        const url = `${this.baseURL}${endpoint}`;
+        const url = `${urlBase}${endpoint}`;
         const method = (options.method || 'GET').toUpperCase();
         
         // Add timeout using AbortController (default 60 seconds for startup)
