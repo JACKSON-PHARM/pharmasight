@@ -914,15 +914,26 @@ async function loadLogin() {
                     } else {
                         const errorData = await usernameResponse.json().catch(() => ({}));
                         const detailStr = typeof errorData.detail === 'string' ? errorData.detail : (errorData.detail && errorData.detail.message) || '';
-                        const is503Unreachable = usernameResponse.status === 503 && (detailStr.toLowerCase().includes('unreachable') || detailStr.toLowerCase().includes('temporarily'));
-                        if (is503Unreachable && errorDiv) {
-                            errorDiv.innerHTML = '<span>' + String(detailStr || 'The database for this organization is temporarily unreachable.').replace(/</g, '&lt;') + '</span>' +
-                                '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">If you belong to a <strong>different organization</strong>, clear the URL (remove <code>?tenant=...</code>) and sign in again so we can look up your organization. Or use the link from your invite email.</p>';
+                        const is503 =
+                            usernameResponse.status === 503 ||
+                            (detailStr && /database|unreachable|temporarily|busy|connect/i.test(detailStr));
+                        if (is503 && errorDiv) {
+                            const msg =
+                                detailStr ||
+                                'The server could not reach the database. On Render, verify DATABASE_URL uses the Supabase Session pooler (IPv4, port 5432), not a broken direct host.';
+                            errorDiv.innerHTML =
+                                '<span>' + String(msg).replace(/</g, '&lt;') + '</span>' +
+                                '<p class="login-hint" style="margin-top:0.6rem;font-size:0.9rem;color:var(--text-secondary,#666);">' +
+                                'The app process may still be running while the database connection fails. Check Render environment variables and Supabase project status. ' +
+                                'If you belong to a <strong>different organization</strong>, remove <code>?tenant=...</code> from the URL and try again.</p>';
                             errorDiv.style.display = 'block';
                             return;
                         }
-                        if (is503Unreachable && !errorDiv) {
-                            showToast(detailStr || 'Organization database temporarily unreachable. Try without ?tenant= in the URL.', 'error');
+                        if (is503 && !errorDiv) {
+                            showToast(
+                                detailStr || 'Database temporarily unreachable. Check DATABASE_URL on Render.',
+                                'error'
+                            );
                             return;
                         }
                         // Same username in more than one organization (legacy subdomain routing): show picker
@@ -984,11 +995,14 @@ async function loadLogin() {
                             '(restart python start.py after code changes).';
                     } else if (errorMsg.includes('Failed to fetch') || errorMsg.includes('Load failed') || errorMsg.includes('NetworkError')) {
                         const isLocal = isLocalDevLoginHost(window.location.hostname);
+                        const effectiveApi = apiBase || window.location.origin || '';
                         errorMsg = isLocal
                             ? 'Cannot reach the server at ' +
-                              (apiBase || 'http://localhost:8000') +
+                              (effectiveApi || 'http://localhost:8000') +
                               '. Run python start.py and use the Backend API URL it prints (often http://localhost:8001 if port 8000 is busy).'
-                            : 'Cannot reach the application API on this site. Hard-refresh (Ctrl+Shift+R). If you previously used localhost, clear site data for this domain or use a private window.';
+                            : 'Cannot reach the API at ' +
+                              (effectiveApi || window.location.origin) +
+                              '. Wait 30s if the Render service just woke up, then hard-refresh (Ctrl+Shift+R). Clear site data for this domain if login still points at localhost.';
                     }
                     if (errorDiv) {
                         errorDiv.innerHTML = '<span>' + String(errorMsg).replace(/</g, '&lt;') + '</span>' +

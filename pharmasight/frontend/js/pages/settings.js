@@ -198,7 +198,23 @@ function saveGeneralSettings(event) {
     const form = event.target;
     const formData = new FormData(form);
     
-    CONFIG.API_BASE_URL = (formData.get('api_base_url') || '').trim() || null;
+    const apiBaseInput = (formData.get('api_base_url') || '').trim();
+    const host = window.location.hostname;
+    const onProd =
+        host !== 'localhost' && host !== '127.0.0.1';
+    if (
+        onProd &&
+        apiBaseInput &&
+        typeof window.isLocalDevApiUrl === 'function' &&
+        window.isLocalDevApiUrl(apiBaseInput)
+    ) {
+        showToast(
+            'Cannot save a localhost API URL on the live site. Leave API Base URL empty to use this server.',
+            'error'
+        );
+        return;
+    }
+    CONFIG.API_BASE_URL = apiBaseInput || null;
     CONFIG.COMPANY_ID = formData.get('company_id') || null;
     CONFIG.BRANCH_ID = formData.get('branch_id') || null;
     CONFIG.USER_ID = formData.get('user_id') || null;

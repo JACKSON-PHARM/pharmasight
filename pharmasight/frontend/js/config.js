@@ -51,6 +51,37 @@ function isLocalDevApiUrl(url) {
     }
 }
 
+/** On production, prefer server /api/config (authoritative) over stale browser storage. */
+function loadServerPublicConfigSync() {
+    if (typeof window === 'undefined' || !window.location) return;
+    const host = window.location.hostname;
+    if (isLocalDevHostname(host)) return;
+    try {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/config', false);
+        xhr.send(null);
+        if (xhr.status !== 200 || !xhr.responseText) return;
+        const data = JSON.parse(xhr.responseText);
+        const base = (data.api_base_url || '').trim().replace(/\/+$/, '');
+        if (!base || isLocalDevApiUrl(base)) {
+            CONFIG.API_BASE_URL = '';
+            return;
+        }
+        try {
+            const resolved = new URL(base, window.location.origin);
+            CONFIG.API_BASE_URL =
+                resolved.origin === window.location.origin ? '' : resolved.origin;
+        } catch (_) {
+            CONFIG.API_BASE_URL = base;
+        }
+        if (data.app_public_url) {
+            CONFIG.APP_PUBLIC_URL = String(data.app_public_url).trim().replace(/\/+$/, '');
+        }
+    } catch (e) {
+        console.warn('[CONFIG] Could not load /api/config', e && e.message);
+    }
+}
+
 /** Default API base on localhost when not using same-origin hosting (matches start.py / runtime_config.json). */
 function getDefaultLocalApiBase() {
     let base = '';
@@ -293,6 +324,10 @@ function loadConfig() {
     }
 
     reconcileApiBaseUrlForCurrentHost();
+    loadServerPublicConfigSync();
+    if (typeof window.pharmasightSyncApiBaseUrl === 'function') {
+        window.pharmasightSyncApiBaseUrl();
+    }
 }
 
 /** Build print config object for API storage (company-level settings) */

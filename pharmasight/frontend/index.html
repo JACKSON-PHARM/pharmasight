@@ -17,6 +17,27 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Production: clear dev API URL from localStorage before config.js (fixes Render login calling localhost). -->
+    <script>
+    (function () {
+        var h = location.hostname;
+        if (h === 'localhost' || h === '127.0.0.1') return;
+        try {
+            var raw = localStorage.getItem('pharmasight_config');
+            if (raw) {
+                var c = JSON.parse(raw);
+                if (c.API_BASE_URL && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(String(c.API_BASE_URL))) {
+                    c.API_BASE_URL = '';
+                    localStorage.setItem('pharmasight_config', JSON.stringify(c));
+                }
+            }
+            var override = localStorage.getItem('pharmasight_api_base_url');
+            if (override && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(override)) {
+                localStorage.removeItem('pharmasight_api_base_url');
+            }
+        } catch (e) {}
+    })();
+    </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -505,7 +526,7 @@
             console.log('✅ Window load event fired - all resources loaded');
         });
     </script>
-    <script src="js/config.js?v=10"></script>
+    <script src="js/config.js?v=11"></script>
     <script src="js/brand.js?v=2"></script>
     <script>
         (function () {
@@ -515,7 +536,7 @@
             } catch (_) {}
         })();
     </script>
-    <script src="js/api.js?v=28"></script>
+    <script src="js/api.js?v=29"></script>
     <!-- Global Supabase Client (must load before auth modules) -->
     <script src="js/services/supabase_client.js?v=1"></script>
     <!-- Legacy auth (backward compatibility) -->
@@ -548,7 +569,7 @@
     <script src="js/pages/stock_take.js?v=11"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
     <script src="js/app.js?v=36"></script>
-    <script src="js/pages/login.js?v=12"></script>
+    <script src="js/pages/login.js?v=13"></script>
     <script src="js/pages/password_reset.js?v=3"></script>
     <script src="js/pages/tenant_invite_setup.js?v=1"></script>
     <script>
