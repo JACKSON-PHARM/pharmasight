@@ -333,17 +333,30 @@ class APIClient {
 
         const executeRequest = async () => {
 
-        // Tenant context (database-per-tenant): send X-Tenant-Subdomain for app APIs when set.
-        // Skip for /api/admin/* (master-only). No header → legacy DB.
+        // Organization context (?org= / tenants.subdomain) for deterministic company resolution.
         try {
-            // Prefer per-tab tenant (sessionStorage) to avoid cross-tab collisions; fall back to localStorage.
-            var sub = null;
-            try {
-                if (typeof sessionStorage !== 'undefined') sub = sessionStorage.getItem('pharmasight_tenant_subdomain');
-            } catch (_) {}
-            if (!sub && typeof localStorage !== 'undefined') sub = localStorage.getItem('pharmasight_tenant_subdomain');
-            if (sub && endpoint.indexOf('/api/admin/') !== 0) {
-                config.headers['X-Tenant-Subdomain'] = sub;
+            if (endpoint.indexOf('/api/admin/') !== 0) {
+                if (typeof OrgContext !== 'undefined' && OrgContext.applyOrgHeaders) {
+                    OrgContext.applyOrgHeaders(config.headers);
+                } else {
+                    var sub = null;
+                    try {
+                        if (typeof sessionStorage !== 'undefined') {
+                            sub =
+                                sessionStorage.getItem('pharmasight_org_slug') ||
+                                sessionStorage.getItem('pharmasight_tenant_subdomain');
+                        }
+                    } catch (_) {}
+                    if (!sub && typeof localStorage !== 'undefined') {
+                        sub =
+                            localStorage.getItem('pharmasight_org_slug') ||
+                            localStorage.getItem('pharmasight_tenant_subdomain');
+                    }
+                    if (sub) {
+                        config.headers['X-Company-Org'] = sub;
+                        config.headers['X-Tenant-Subdomain'] = sub;
+                    }
+                }
             }
         } catch (_) {}
 
@@ -1568,10 +1581,15 @@ const API = {
         restore: (userId) => api.post(`/api/users/${userId}/restore`, null),
         sendInvitation: (userId) => api.post(`/api/users/${userId}/send-invitation`, null),
         assignRole: (userId, roleData) => api.post(`/api/users/${userId}/roles`, roleData),
-        listRoles: () => api.get('/api/users/roles'),
+        listRoles: (opts = {}) => {
+            const params = {};
+            if (opts.assignableOnly === false) params.assignable_only = false;
+            return api.get('/api/users/roles', params);
+        },
         updateRole: (roleId, data) => api.patch(`/api/users/roles/${roleId}`, data),
         getRolePermissions: (roleId) => api.get(`/api/users/roles/${roleId}/permissions`),
         updateRolePermissions: (roleId, permissions) => api.put(`/api/users/roles/${roleId}/permissions`, { permissions }),
+        applyRoleTemplate: (roleId) => api.post(`/api/users/roles/${roleId}/apply-template`, null),
         getUserPermissions: (userId, branchId = null) => {
             const params = branchId ? { branch_id: branchId } : {};
             return api.get(`/api/users/${userId}/permissions`, params);

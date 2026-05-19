@@ -31,6 +31,7 @@ from app.api.platform_etims_common import (
 )
 from app.dependencies import get_current_user, get_tenant_db
 from app.dependencies import get_effective_company_id_for_user
+from app.database_master import get_master_db
 from app.models.company import Company
 from app.models.company import Branch, BranchEtimsCredentials
 from app.models.company_module import CompanyModule
@@ -408,6 +409,7 @@ def get_company(
     company_id: UUID,
     auth: Tuple[User, Session] = Depends(require_platform_super_admin),
     db: Session = Depends(get_tenant_db),
+    master_db: Session = Depends(get_master_db),
 ):
     _user, _ = auth
     c = db.query(Company).filter(Company.id == company_id).first()
@@ -419,11 +421,26 @@ def get_company(
         .order_by(CompanyModule.module_name.asc())
         .all()
     )
+    org_slug = None
+    org_login_url = None
+    try:
+        from app.services.company_context import build_org_login_url
+        from app.models.tenant import Tenant
+
+        tenant = master_db.query(Tenant).filter(Tenant.company_id == company_id).first()
+        if tenant and tenant.subdomain:
+            org_slug = tenant.subdomain
+            org_login_url = build_org_login_url(org_slug)
+    except Exception:
+        pass
+
     return {
         "company": PlatformCompanyResponse.model_validate(c).model_dump(),
         "modules": [{"name": r.module_name, "enabled": bool(r.is_enabled)} for r in rows],
         "module_catalog": get_company_module_license_catalog(db, company_id),
         "core_modules": sorted(list(get_core_modules(db))),
+        "org_slug": org_slug,
+        "org_login_url": org_login_url,
     }
 
 

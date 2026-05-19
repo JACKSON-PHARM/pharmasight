@@ -3,7 +3,7 @@ Authentication API
 Handles username-based login (looks up email from username).
 Internal auth only: verifies password and returns internal JWT.
 
-Login always uses legacy + tenant discovery (ignores X-Tenant-Subdomain for lookup).
+Login resolves users within an organization when ``org`` / ``tenant`` context is provided (see company_context).
 Logout revokes the access token server-side so the session is fully terminated.
 """
 import logging
@@ -65,6 +65,17 @@ from app.utils.auth_internal import (
     verify_password,
 )
 from app.services.demo_signup_service import create_demo_tenant
+from app.services.company_context import (
+    build_org_login_url,
+    company_ids_for_user,
+    find_user_for_company_login,
+    normalize_org_slug,
+    org_slug_from_request,
+    preferred_company_id_from_request,
+    tenant_for_org_slug,
+)
+from app.services.branch_provisioning_service import ensure_user_assigned_to_company_hq
+from app.services.tenant_registry_service import ensure_tenant_row_for_company
 from app.utils.company_access import get_company_access, get_subscription_access
 from app.services.company_governance_service import (
     derive_commercial_access,
@@ -136,20 +147,33 @@ class AuthMeResponse(BaseModel):
     subscription_used_default_tenant_fallback: Optional[bool] = None
     company_id: Optional[str] = None
     company_access: Optional[str] = None
+    org_slug: Optional[str] = Field(
+        None,
+        description="Organization subdomain for shareable login URL (tenants.subdomain).",
+    )
+    org_login_url: Optional[str] = Field(
+        None,
+        description="Full ERP login URL including ?org= for this organization.",
+    )
 
 
 # When user is found only in default/legacy DB (no tenant DB), reset token uses this subdomain.
 LEGACY_TENANT_SUBDOMAIN = "__default__"
 
 
-def _enforce_login_company_access(db: Session, user: User) -> None:
+def _enforce_login_company_access(
+    db: Session,
+    user: User,
+    company_id: Optional[Any] = None,
+) -> None:
     """
     Access control for password login uses companies only (see get_company_access).
     Blocks inactive companies; blocks expired self-service demos (subscription_plan == demo).
     """
     from app.models.company import Company
 
-    company_id = get_effective_company_id_for_user(db, user)
+    if company_id is None:
+        company_id = get_effective_company_id_for_user(db, user)
     company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
     access = get_company_access(company)
     if access == "blocked":
@@ -196,7 +220,8 @@ class UsernameLoginRequest(BaseModel):
     """Username-based login request"""
     username: str
     password: str
-    tenant: Optional[str] = None  # Optional hint: when login fails, used to show "organization deactivated" vs "user not found"
+    tenant: Optional[str] = None  # Organization slug (tenants.subdomain); alias: org query param on SPA
+    org: Optional[str] = None
 
 
 class UsernameLoginResponse(BaseModel):
@@ -215,6 +240,9 @@ class UsernameLoginResponse(BaseModel):
     refresh_token: Optional[str] = None
     # When True, client should force user to change password (e.g. after admin-create)
     must_change_password: Optional[bool] = None
+    company_id: Optional[str] = None
+    org_slug: Optional[str] = Field(None, description="Organization subdomain (tenants.subdomain).")
+    org_login_url: Optional[str] = None
 
 
 class StartDemoRequest(BaseModel):
@@ -297,6 +325,7 @@ def _portal_redacted_me(payload: dict) -> dict:
 def auth_me(
     request: Request,
     user_db: Tuple[User, Session] = Depends(get_current_user),
+    master_db: Session = Depends(get_master_db),
 ):
     """
     Return current authenticated user_id, RBAC role names, and subscription/trial context
@@ -336,12 +365,34 @@ def auth_me(
     # Company access (single source of truth)
     company_id = None
     company = None
+    preferred = preferred_company_id_from_request(request, master_db)
+    jwt_cid = None
+    if token:
+        pl_jwt, _ = decode_internal_token_or_reason(token)
+        if pl_jwt:
+            try:
+                raw_c = (pl_jwt.get(CLAIM_COMPANY_ID) or "").strip()
+                if raw_c:
+                    from uuid import UUID as _UUID
+
+                    jwt_cid = _UUID(raw_c)
+            except (ValueError, TypeError):
+                jwt_cid = None
+    if preferred is None and jwt_cid is not None:
+        preferred = jwt_cid
+
+    org_slug = None
+    org_login_url = None
     try:
-        company_id = get_effective_company_id_for_user(db, user)
+        company_id = get_effective_company_id_for_user(db, user, preferred_company_id=preferred)
         if company_id:
             from app.models.company import Company
 
             company = db.query(Company).filter(Company.id == company_id).first()
+            tenant_row = master_db.query(Tenant).filter(Tenant.company_id == company_id).first()
+            if tenant_row and tenant_row.subdomain:
+                org_slug = normalize_org_slug(tenant_row.subdomain) or tenant_row.subdomain
+                org_login_url = build_org_login_url(org_slug)
     except Exception:
         company_id = None
         company = None
@@ -417,6 +468,8 @@ def auth_me(
         "subscription_used_default_tenant_fallback": False,
         "company_id": str(company_id) if company_id else None,
         "company_access": company_access,
+        "org_slug": org_slug,
+        "org_login_url": org_login_url,
         "governance": governance_summary,
     }
 
@@ -465,25 +518,45 @@ def _build_login_response(
     tenant: Optional[Tenant],
     password: Optional[str] = None,
     db: Optional[Session] = None,
+    *,
+    company_id: Optional[Any] = None,
 ) -> UsernameLoginResponse:
-    """Build login response; if user has password_hash and password matches, add tokens. company_id from user's DB for JWT."""
-    subdomain = tenant.subdomain if tenant else None
+    """Build login response; if user has password_hash and password matches, add tokens."""
+    from uuid import UUID as _UUID
+
+    subdomain = normalize_org_slug(tenant.subdomain if tenant else None)
     company_id_str = None
-    if db:
-        company_id = get_effective_company_id_for_user(db, user)
-        company_id_str = str(company_id) if company_id else None
+    if company_id is not None:
+        company_id_str = str(company_id)
+    elif db:
+        resolved = get_effective_company_id_for_user(db, user)
+        company_id_str = str(resolved) if resolved else None
+    org_login_url = build_org_login_url(subdomain) if subdomain else None
     out = UsernameLoginResponse(
         email=user.email,
         user_id=str(user.id),
         username=getattr(user, "username", None) or None,
         full_name=user.full_name,
         tenant_subdomain=subdomain,
+        company_id=company_id_str,
+        org_slug=subdomain,
+        org_login_url=org_login_url,
         must_change_password=getattr(user, "must_change_password", None),
     )
     if getattr(user, "password_hash", None) and password is not None:
         if verify_password(password, user.password_hash):
-            out.access_token = create_access_token(str(user.id), user.email, subdomain, company_id=company_id_str)
-            out.refresh_token = create_refresh_token(str(user.id), user.email, subdomain, company_id=company_id_str)
+            pref = None
+            if company_id_str:
+                try:
+                    pref = _UUID(company_id_str)
+                except (ValueError, TypeError):
+                    pref = None
+            out.access_token = create_access_token(
+                str(user.id), user.email, subdomain, company_id=company_id_str
+            )
+            out.refresh_token = create_refresh_token(
+                str(user.id), user.email, subdomain, company_id=company_id_str
+            )
     return out
 
 
@@ -558,6 +631,37 @@ def _find_user_in_all_tenants(
     return found
 
 
+def _login_blocked_company_message() -> str:
+    return (
+        "This organization is no longer active. Your account was part of an organization that has been deactivated. "
+        "Please contact your administrator or support if you need access."
+    )
+
+
+def _resolve_user_for_org_login(
+    db: Session,
+    normalized_username: str,
+    check_email: bool,
+    company_id,
+) -> Optional[User]:
+    """
+    Find user for org-scoped login. Prefer branch-assigned users; for legacy accounts with
+    no roles anywhere, auto-assign HQ in this company once (same as branch list lazy grant).
+    """
+    user = find_user_for_company_login(db, normalized_username, check_email, company_id)
+    if user:
+        return user
+    user = _find_user_in_db(db, normalized_username, check_email)
+    if not user:
+        return None
+    assigned = company_ids_for_user(db, user.id)
+    if assigned and company_id not in assigned:
+        return None
+    if not assigned:
+        ensure_user_assigned_to_company_hq(db, user.id, company_id, commit=True)
+    return user
+
+
 @router.post("/auth/username-login", response_model=UsernameLoginResponse)
 @limiter.limit("5/minute")
 def username_login(
@@ -566,73 +670,112 @@ def username_login(
     master_db: Session = Depends(get_master_db),
 ):
     """
-    Lookup user by username and return email. Rate limited: 5 attempts per minute per IP.
+    Password login scoped to an organization when ``org`` / ``tenant`` context is present.
 
-    Always uses legacy + tenant discovery: first search legacy DB, then all tenant DBs
-    (from master). Ignores X-Tenant-Subdomain for lookup so master and tenant users
-    both resolve correctly regardless of frontend state.
+    Without org context, login succeeds only when the user belongs to a single company
+    (branch assignment) or the database has a single company (dev / legacy).
     """
     try:
+        from app.models.company import Company
+        from uuid import UUID as _UUID
+
         normalized_username = body.username.lower().strip()
         check_email = "@" in body.username
-        logger.info("username-login attempt for %s", normalized_username[:50])
-
-        # 1) Shared app DB (SessionLocal)
-        legacy_db = SessionLocal()
-        try:
-            user = _find_user_in_db(legacy_db, normalized_username, check_email)
-            if user:
-                _require_password_if_internal(user, body.password)
-                _enforce_login_company_access(legacy_db, user)
-                resp = _build_login_response(user, None, body.password, db=legacy_db)
-                if resp.refresh_token:
-                    _persist_refresh_token_on_login(None, str(user.id), resp.refresh_token)
-                return resp
-        finally:
-            legacy_db.close()
-
-        # Single-DB tenancy: users live only in the shared app database (SessionLocal above).
-        # Do NOT call _find_user_in_all_tenants — tenant_db_session already uses SessionLocal and
-        # the old fan-out repeated the same query up to MAX_TENANTS_TO_SEARCH times (~45s+ timeouts).
-
-        tenant_hint = (body.tenant or "").strip().lower() or None
-        if tenant_hint:
-            hinted = master_db.query(Tenant).filter(func.lower(Tenant.subdomain) == tenant_hint).first()
-            if hinted:
-                hn = (hinted.name or "").strip()
-                if hn:
-                    hinted_co_db = SessionLocal()
-                    try:
-                        from app.models.company import Company
-
-                        co = (
-                            hinted_co_db.query(Company)
-                            .filter(func.lower(func.trim(Company.name)) == hn.lower())
-                            .first()
-                        )
-                        if co and get_company_access(co) == "blocked":
-                            logger.info(
-                                "User not found; hinted tenant %s matches inactive company",
-                                tenant_hint,
-                            )
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail=(
-                                    "This organization is no longer active. Your account was part of an organization that has been deactivated. "
-                                    "Please contact your administrator or support if you need access."
-                                ),
-                            )
-                    finally:
-                        hinted_co_db.close()
-
-        logger.warning(
-            "User not found in shared DB (username=%s)",
+        org_slug = (
+            normalize_org_slug(body.org)
+            or normalize_org_slug(body.tenant)
+            or org_slug_from_request(request)
+        )
+        logger.info(
+            "username-login attempt user=%s org=%s",
             normalized_username[:50],
+            org_slug or "(none)",
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-        )
+
+        db = SessionLocal()
+        try:
+            if org_slug:
+                tenant = tenant_for_org_slug(master_db, org_slug)
+                if not tenant or not tenant.company_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Unknown organization. Check your login link or ask your administrator for the correct URL.",
+                    )
+                company = db.query(Company).filter(Company.id == tenant.company_id).first()
+                if company and get_company_access(company) == "blocked":
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=_login_blocked_company_message(),
+                    )
+                user = _resolve_user_for_org_login(
+                    db, normalized_username, check_email, tenant.company_id
+                )
+                if not user:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid username or password for this organization.",
+                    )
+                _require_password_if_internal(user, body.password)
+                ensure_user_assigned_to_company_hq(db, user.id, tenant.company_id, commit=True)
+                _enforce_login_company_access(db, user, tenant.company_id)
+                resp = _build_login_response(
+                    user,
+                    tenant,
+                    body.password,
+                    db=db,
+                    company_id=tenant.company_id,
+                )
+                if resp.refresh_token:
+                    _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
+                return resp
+
+            user = _find_user_in_db(db, normalized_username, check_email)
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid username or password",
+                )
+
+            assigned = company_ids_for_user(db, user.id)
+            if len(assigned) > 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Your account belongs to more than one organization. "
+                        "Sign in using your organization's link (it includes ?org= in the URL). "
+                        "Ask your administrator if you do not have it."
+                    ),
+                )
+
+            company_id = assigned[0] if len(assigned) == 1 else get_effective_company_id_for_user(db, user)
+            if not company_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=(
+                        "No branch is assigned to your account yet. "
+                        "Ask your administrator to assign you to a branch, or use your organization's login link."
+                    ),
+                )
+
+            tenant = master_db.query(Tenant).filter(Tenant.company_id == company_id).first()
+            if not tenant:
+                tenant = ensure_tenant_row_for_company(master_db, _UUID(str(company_id)))
+
+            _require_password_if_internal(user, body.password)
+            ensure_user_assigned_to_company_hq(db, user.id, company_id, commit=True)
+            _enforce_login_company_access(db, user, company_id)
+            resp = _build_login_response(
+                user,
+                tenant,
+                body.password,
+                db=db,
+                company_id=company_id,
+            )
+            if resp.refresh_token:
+                _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
+            return resp
+        finally:
+            db.close()
     except OperationalError as e:
         _raise_http_for_db_unreachable(e)
 

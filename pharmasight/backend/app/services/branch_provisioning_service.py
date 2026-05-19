@@ -113,6 +113,75 @@ def user_can_list_all_company_branches(
     return user_is_company_privileged(db, user_id, company_id)
 
 
+def hq_branch_for_company(db: Session, company_id: UUID) -> Optional[Branch]:
+    """HQ branch for company, else first branch by name."""
+    hq = (
+        db.query(Branch)
+        .filter(Branch.company_id == company_id, Branch.is_hq.is_(True))
+        .order_by(Branch.name)
+        .first()
+    )
+    if hq:
+        return hq
+    return (
+        db.query(Branch)
+        .filter(Branch.company_id == company_id)
+        .order_by(Branch.name)
+        .first()
+    )
+
+
+def _default_staff_role_id(db: Session) -> Optional[UUID]:
+    """Prefer operational roles for auto HQ assignment; admin only as last resort."""
+    for name in ("cashier", "staff", "sales", "pharmacist", "dispenser", "manager"):
+        row = db.query(UserRole.id).filter(func.lower(UserRole.role_name) == name).first()
+        if row:
+            return row[0]
+    return _admin_fallback_role_id(db)
+
+
+def ensure_user_assigned_to_company_hq(
+    db: Session,
+    user_id: UUID,
+    company_id: UUID,
+    *,
+    commit: bool = False,
+) -> bool:
+    """
+    If the user has no branch assignment in this company, grant access to the HQ branch
+    (or the company's first branch) with a default staff role. Admins may reassign later.
+    Returns True when a new UserBranchRole row was added.
+    """
+    if branch_ids_assigned_to_user(db, user_id, company_id):
+        return False
+    branch = hq_branch_for_company(db, company_id)
+    if not branch:
+        logger.warning(
+            "ensure_user_assigned_to_company_hq: no branch for company_id=%s user_id=%s",
+            company_id,
+            user_id,
+        )
+        return False
+    role_id = _default_staff_role_id(db)
+    if role_id is None:
+        logger.warning("ensure_user_assigned_to_company_hq: no roles in DB")
+        return False
+    added = _ensure_user_branch_role(
+        db, user_id=user_id, branch_id=branch.id, role_id=role_id
+    )
+    if added:
+        if commit:
+            db.commit()
+        logger.info(
+            "Auto-assigned user to HQ branch user_id=%s company_id=%s branch_id=%s role_id=%s",
+            user_id,
+            company_id,
+            branch.id,
+            role_id,
+        )
+    return added
+
+
 def branch_ids_assigned_to_user(
     db: Session, user_id: UUID, company_id: UUID
 ) -> List[UUID]:

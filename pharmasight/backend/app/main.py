@@ -334,7 +334,9 @@ from app.api.admin_metrics import router as admin_metrics_router
 from app.api.admin_platform_licensing import router as admin_platform_licensing_router
 from app.api.platform_admin import router as platform_admin_router
 from app.api.admin_site_settings import router as admin_site_settings_router
+from app.api.org_context import router as org_context_router
 
+app.include_router(org_context_router, prefix="/api", tags=["Organization Context"])
 app.include_router(invite_router, prefix="/api", tags=["User Invitation & Setup"])
 app.include_router(startup_router, prefix="/api", tags=["Startup & Initialization"])
 app.include_router(company_router, prefix="/api", tags=["Company & Branch"])

@@ -141,6 +141,15 @@
                         </div>
 
                         <div class="card" style="padding:0.75rem;">
+                            <h3 style="margin:0 0 0.5rem;">Organization login URL</h3>
+                            <p style="margin:0 0 0.5rem; color:var(--text-secondary); font-size:0.85rem;">
+                                Share with users (<code>?org=</code> in the URL).
+                            </p>
+                            <input id="paOrgLoginUrl" class="form-input" readonly value="${escapeHtml(resp.org_login_url || '')}" />
+                            <button type="button" class="btn btn-outline btn-sm" id="paCopyOrgUrl" style="margin-top:0.5rem;">Copy link</button>
+                        </div>
+
+                        <div class="card" style="padding:0.75rem;">
                             <h3 style="margin:0 0 0.5rem;">Status</h3>
                             <label style="display:flex; gap:0.5rem; align-items:center; cursor:pointer;">
                                 <input id="paIsActive" type="checkbox" ${c.is_active ? 'checked' : ''} />
@@ -190,6 +199,27 @@
             document.getElementById('paBackBtn')?.addEventListener('click', () => {
                 window.location.hash = '#platform-admin-companies';
                 if (typeof window.loadPage === 'function') void window.loadPage('platform-admin-companies');
+            });
+
+            document.getElementById('paCopyOrgUrl')?.addEventListener('click', async () => {
+                const input = document.getElementById('paOrgLoginUrl');
+                const url = (input && input.value) || '';
+                if (!url) {
+                    showErr('No organization login URL is set for this company.');
+                    return;
+                }
+                try {
+                    await navigator.clipboard.writeText(url);
+                    showOk('Login link copied');
+                } catch (_) {
+                    try {
+                        input.select();
+                        document.execCommand('copy');
+                        showOk('Login link copied');
+                    } catch (e2) {
+                        showErr('Could not copy link');
+                    }
+                }
             });
 
             const card = document.getElementById('paCompanyCard');

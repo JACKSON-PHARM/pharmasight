@@ -608,12 +608,16 @@ def get_branches_by_company(
     By default returns only branches the user is assigned to (user_branch_roles).
     Pass ``?all=true`` for the full company list when managing users/branches in Settings.
     """
-    from app.services.branch_provisioning_service import branches_visible_to_user
+    from app.services.branch_provisioning_service import (
+        branches_visible_to_user,
+        ensure_user_assigned_to_company_hq,
+    )
 
     user = current_user_and_db[0]
     effective_company_id = get_effective_company_id_for_user(db, user)
     if effective_company_id is None or company_id != effective_company_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this company")
+    ensure_user_assigned_to_company_hq(db, user.id, company_id, commit=True)
     return branches_visible_to_user(
         db,
         user.id,

@@ -17,6 +17,15 @@ class UserRoleResponse(BaseModel):
     role_name: str
     description: Optional[str] = None
     created_at: datetime
+    role_key: Optional[str] = Field(
+        None,
+        description="Canonical slug (e.g. super_admin, admin) for stable UI and templates.",
+    )
+    display_label: Optional[str] = Field(None, description="Human-friendly role label.")
+    is_assignable: bool = Field(
+        True,
+        description="False for platform-only roles (e.g. platform_super_admin).",
+    )
 
     class Config:
         from_attributes = True
@@ -51,7 +60,11 @@ class UserCreate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
     role_name: str = Field(..., description="Role name (e.g., 'admin', 'pharmacist', 'cashier')")
-    branch_id: Optional[UUID] = Field(None, description="Optional branch ID to assign user to")
+    branch_id: Optional[UUID] = Field(None, description="Single branch (legacy); use branch_ids for multiple")
+    branch_ids: Optional[List[UUID]] = Field(
+        None,
+        description="Branches the user may access at login (same role on each branch)",
+    )
     
     class Config:
         json_schema_extra = {
@@ -75,6 +88,10 @@ class UserUpdate(BaseModel):
     designation: Optional[str] = None
     role_name: Optional[str] = None
     branch_id: Optional[UUID] = None
+    branch_ids: Optional[List[UUID]] = Field(
+        None,
+        description="Replace branch access in the current company with this list (same role on each)",
+    )
 
 
 class UserResponse(BaseModel):
@@ -139,7 +156,8 @@ class AdminCreateUserRequest(BaseModel):
     phone: Optional[str] = None
     username: Optional[str] = Field(None, description="Login username; auto-generated from full_name if omitted")
     role_name: str = Field(..., description="Role name (e.g. admin, pharmacist, cashier)")
-    branch_id: Optional[UUID] = Field(None, description="Branch to assign user to")
+    branch_id: Optional[UUID] = Field(None, description="Single branch (legacy); use branch_ids for multiple")
+    branch_ids: Optional[List[UUID]] = Field(None, description="Branches to assign (same role on each)")
 
 
 class AdminCreateUserResponse(BaseModel):

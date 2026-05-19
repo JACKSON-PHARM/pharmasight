@@ -55,12 +55,13 @@ function isLocalDevLoginHost(hostname) {
 
 async function loadLogin() {
     try {
-        // Set tenant context from URL so username-login uses the correct tenant DB (e.g. after invite: ?tenant=pharmasight-meds-ltd)
         const params = new URLSearchParams(window.location.search || '');
-        const tenantFromUrl = params.get('tenant') || params.get('subdomain');
-        if (tenantFromUrl) {
-            try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', tenantFromUrl); } catch (_) {}
-            try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', tenantFromUrl); } catch (_) {}
+        const orgFromUrl = params.get('org') || params.get('tenant') || params.get('subdomain');
+        if (orgFromUrl && typeof OrgContext !== 'undefined' && OrgContext.persistOrgSlug) {
+            OrgContext.persistOrgSlug(orgFromUrl);
+        } else if (orgFromUrl) {
+            try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_org_slug', orgFromUrl); } catch (_) {}
+            try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_org_slug', orgFromUrl); } catch (_) {}
         }
         if (sessionStorage.getItem('tenant_invite_setup_done') === '1') {
             sessionStorage.removeItem('tenant_invite_setup_done');
@@ -813,55 +814,47 @@ async function loadLogin() {
                     }
                 }
                 
-                // When we know the tenant (from URL or storage), send it so the backend looks in that tenant's DB.
-                // On 503 (tenant DB unreachable), retry once WITHOUT tenant so backend can find user in another org.
                 let userEmail = null;
                 try {
-                    const params = new URLSearchParams(window.location.search || '');
-                    let tenantForLogin = params.get('tenant') || params.get('subdomain')
-                        || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('pharmasight_tenant_subdomain') : null)
-                        || (typeof localStorage !== 'undefined' ? localStorage.getItem('pharmasight_tenant_subdomain') : null);
+                    const orgForLogin =
+                        typeof OrgContext !== 'undefined' && OrgContext.getOrgSlug
+                            ? OrgContext.getOrgSlug()
+                            : null;
                     let headers = { 'Content-Type': 'application/json' };
-                    if (tenantForLogin) {
-                        headers['X-Tenant-Subdomain'] = tenantForLogin;
+                    if (orgForLogin) {
+                        headers['X-Company-Org'] = orgForLogin;
+                        headers['X-Tenant-Subdomain'] = orgForLogin;
                     }
                     const loginBody = { username, password };
-                    if (tenantForLogin) loginBody.tenant = tenantForLogin;
-                    let usernameResponse = await loginFetch(`${apiBase}/api/auth/username-login`, {
+                    if (orgForLogin) {
+                        loginBody.org = orgForLogin;
+                        loginBody.tenant = orgForLogin;
+                    }
+                    const usernameResponse = await loginFetch(`${apiBase}/api/auth/username-login`, {
                         method: 'POST',
                         headers,
                         body: JSON.stringify(loginBody)
                     });
-                    // If this org's DB is unreachable (503), retry once without tenant so backend can find user in another organization.
-                    if (usernameResponse.status === 503 && tenantForLogin) {
-                        const detail = await usernameResponse.json().catch(() => ({}));
-                        const isUnreachable = (typeof detail.detail === 'string' && detail.detail.toLowerCase().includes('unreachable')) || (detail.detail && String(detail.detail).toLowerCase().includes('unreachable'));
-                        if (isUnreachable) {
-                            headers = { 'Content-Type': 'application/json' };
-                            usernameResponse = await loginFetch(`${apiBase}/api/auth/username-login`, {
-                                method: 'POST',
-                                headers,
-                                body: JSON.stringify({ username, password })
-                            });
-                        }
-                    }
                     // 403 with "organization ... no longer active" = deleted/deactivated tenant; show message as-is
                     if (usernameResponse.ok) {
                         const userData = await usernameResponse.json();
                         userEmail = userData.email;
                         // Tenant isolation: always use the tenant from the login response (where this user was found).
                         // This ensures Grace (Harte) never sees Pharmasight's company/branches even if URL or storage had another tenant.
-                        if (userData.tenant_subdomain) {
-                            try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
-                            try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_tenant_subdomain', userData.tenant_subdomain); } catch (_) {}
-                        } else {
-                            // IMPORTANT: Do not clear an existing tenant context when the backend doesn't return one.
-                            // In single-tenant / legacy deployments, tenant_subdomain may be null even though the app
-                            // still needs a stable tenant context to load company/branches correctly.
+                        const orgSlug = userData.org_slug || userData.tenant_subdomain;
+                        if (orgSlug && typeof OrgContext !== 'undefined' && OrgContext.persistOrgSlug) {
+                            OrgContext.persistOrgSlug(orgSlug);
+                        } else if (orgSlug) {
+                            try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('pharmasight_org_slug', orgSlug); } catch (_) {}
+                            try { if (typeof localStorage !== 'undefined') localStorage.setItem('pharmasight_org_slug', orgSlug); } catch (_) {}
                         }
-                        // Clear company/branch from any previous session so we never show another tenant's data.
+                        // Clear branch from any previous session; keep company from login response / org context.
                         if (typeof CONFIG !== 'undefined') {
-                            CONFIG.COMPANY_ID = null;
+                            if (userData.company_id) {
+                                CONFIG.COMPANY_ID = userData.company_id;
+                            } else {
+                                CONFIG.COMPANY_ID = null;
+                            }
                             CONFIG.BRANCH_ID = null;
                             if (typeof saveConfig === 'function') saveConfig();
                         }
@@ -894,26 +887,47 @@ async function loadLogin() {
                             saveConfig();
                             localStorage.removeItem('admin_token');
                             localStorage.removeItem('is_admin');
-                            await AuthBootstrap.refresh();
+                            const dataUser = { id: userData.user_id, email: userData.email };
+                            window.__authMe = {
+                                user_id: userData.user_id,
+                                company_id: userData.company_id || null,
+                                org_slug: userData.org_slug || userData.tenant_subdomain || null,
+                                username: userData.username || username,
+                            };
+                            window.__authMeRoles = [];
                             showToast('Welcome!', 'success');
                             if (window.renderAppLayout) window.renderAppLayout();
                             if (window.SessionTimeout) window.SessionTimeout.init();
-                            if (window.currentScreen !== undefined) window.currentScreen = null;
-                            const dataUser = { id: userData.user_id, email: userData.email };
                             const needsPassword = await AuthBootstrap.needsPasswordSetup(dataUser, 'login');
                             didComplete = true;
                             if (needsPassword) {
+                                if (window.currentScreen !== undefined) window.currentScreen = 'password-set';
                                 if (window.loadPage) window.loadPage('password-set');
                                 else window.location.hash = '#password-set';
+                            } else if (typeof window.navigateAfterLoginToBranchSelect === 'function') {
+                                await window.navigateAfterLoginToBranchSelect();
+                            } else if (window.loadPage) {
+                                window.currentScreen = 'branch-select';
+                                window.location.hash = '#branch-select';
+                                await window.loadPage('branch-select');
                             } else {
-                                if (typeof window.startAppFlow === 'function') {
-                                    await window.startAppFlow();
-                                } else if (window.loadPage) {
-                                    window.loadPage('branch-select');
-                                } else {
-                                    window.location.hash = '#branch-select';
-                                }
+                                window.location.hash = '#branch-select';
                             }
+                            void AuthBootstrap.refresh();
+                            void (async function () {
+                                try {
+                                    if (window.API && API.auth && typeof API.auth.me === 'function') {
+                                        const me = await API.auth.me();
+                                        window.__authMe = me || window.__authMe;
+                                        window.__authMeRoles = Array.isArray(me?.roles)
+                                            ? me.roles.map((r) => String(r).toLowerCase())
+                                            : [];
+                                    }
+                                } catch (_) {}
+                                if (typeof window.startAppFlow === 'function') {
+                                    window.startAppFlow({ deferHeavyInit: true, skipAuthMe: true });
+                                }
+                            })();
                             return;
                         }
                     } else {

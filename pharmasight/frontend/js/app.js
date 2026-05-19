@@ -585,7 +585,23 @@ async function renderInviteHandler() {
  * Determines which screen to show based on auth state
  * IDEMPOTENT: Uses currentScreen guard to prevent duplicate navigation
  */
-async function startAppFlow() {
+/**
+ * Fast path after password login: show branch-select immediately; defer heavy init.
+ */
+async function navigateAfterLoginToBranchSelect() {
+    currentScreen = 'branch-select';
+    window.location.hash = '#branch-select';
+    try {
+        sessionStorage.setItem('last_app_flow_run', String(Date.now()));
+    } catch (_) {}
+    if (typeof renderAppLayout === 'function') renderAppLayout();
+    if (typeof loadPage === 'function') {
+        await loadPage('branch-select');
+    }
+}
+
+async function startAppFlow(options) {
+    const opts = options && typeof options === 'object' ? options : {};
     // Guard: Prevent multiple simultaneous calls
     if (isInitializing) {
         console.log('[APP FLOW] Already initializing, skipping...');
@@ -693,7 +709,9 @@ async function startAppFlow() {
 
         // Roles + subscription/trial context (before ModuleUI so sidebar can restrict to dashboard-only)
         try {
-            if (window.API && API.auth && typeof API.auth.me === 'function') {
+            if (opts.skipAuthMe && window.__authMe && window.__authMe.company_id) {
+                window.__authMeRoles = window.__authMeRoles || [];
+            } else if (window.API && API.auth && typeof API.auth.me === 'function') {
                 const me = await API.auth.me();
                 window.__authMe = me || null;
                 window.__authMeRoles = Array.isArray(me?.roles) ? me.roles.map((r) => String(r).toLowerCase()) : [];
@@ -718,25 +736,29 @@ async function startAppFlow() {
             window.__authMe = null;
             window.__authMeRoles = [];
         }
-        if (window.SubscriptionUI && typeof window.SubscriptionUI.refreshBannerAndShell === 'function') {
-            window.SubscriptionUI.refreshBannerAndShell();
-        }
-        if (window.SubscriptionUI && typeof window.SubscriptionUI.flushPendingFromApiFlag === 'function') {
-            window.SubscriptionUI.flushPendingFromApiFlag();
+        if (!opts.deferHeavyInit) {
+            if (window.SubscriptionUI && typeof window.SubscriptionUI.refreshBannerAndShell === 'function') {
+                window.SubscriptionUI.refreshBannerAndShell();
+            }
+            if (window.SubscriptionUI && typeof window.SubscriptionUI.flushPendingFromApiFlag === 'function') {
+                window.SubscriptionUI.flushPendingFromApiFlag();
+            }
         }
 
         // UI module visibility: company entitlements first, then switcher + sidebar
-        try {
-            if (window.ModuleUI) {
-                if (typeof ModuleUI.loadCompanyModules === 'function') {
-                    await ModuleUI.loadCompanyModules();
+        if (!opts.deferHeavyInit) {
+            try {
+                if (window.ModuleUI) {
+                    if (typeof ModuleUI.loadCompanyModules === 'function') {
+                        await ModuleUI.loadCompanyModules();
+                    }
+                    if (typeof ModuleUI.init === 'function') {
+                        await ModuleUI.init();
+                    }
                 }
-                if (typeof ModuleUI.init === 'function') {
-                    await ModuleUI.init();
-                }
+            } catch (e) {
+                console.warn('[APP FLOW] Module UI init skipped:', e);
             }
-        } catch (e) {
-            console.warn('[APP FLOW] Module UI init skipped:', e);
         }
 
         if (window.SubscriptionUI && typeof window.SubscriptionUI.getRedirectIfOutsideSubscription === 'function') {
@@ -2382,6 +2404,7 @@ window.loadPage = loadPage;
 window.currentPage = currentPage;
 window.updateStatusBar = updateStatusBar;
 window.startAppFlow = startAppFlow;
+window.navigateAfterLoginToBranchSelect = navigateAfterLoginToBranchSelect;
 window.renderAppLayout = renderAppLayout;
 window.renderAuthLayout = renderAuthLayout;
 window.isAuthenticated = isAuthenticated;

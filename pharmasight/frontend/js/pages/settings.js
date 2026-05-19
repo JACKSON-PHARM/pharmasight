@@ -1222,6 +1222,81 @@ function validatePhone(phone) {
     return { valid: true, message: '' };
 }
 
+/** Unique branch IDs from user.branch_roles (avoids duplicate labels in UI). */
+function userAssignedBranchIds(user) {
+    if (!user || !Array.isArray(user.branch_roles)) return [];
+    const seen = new Set();
+    const ids = [];
+    user.branch_roles.forEach((ubr) => {
+        const id = String(ubr.branch_id);
+        if (ubr.branch_id && !seen.has(id)) {
+            seen.add(id);
+            ids.push(String(ubr.branch_id));
+        }
+    });
+    return ids;
+}
+
+function renderBranchAccessCheckboxes(branches, assignedBranchIds, onChangeAttr) {
+    const assigned = new Set((assignedBranchIds || []).map(String));
+    const sorted = [...(branches || [])].sort((a, b) => {
+        if (a.is_hq && !b.is_hq) return -1;
+        if (!a.is_hq && b.is_hq) return 1;
+        return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+    if (!sorted.length) {
+        return '<p style="color: var(--text-secondary); font-style: italic;">No branches in this company yet.</p>';
+    }
+    return sorted
+        .map((branch) => {
+            const id = String(branch.id);
+            const checked = assigned.has(id) ? ' checked' : '';
+            const hq = branch.is_hq ? ' <span class="badge badge-secondary" style="font-size:0.7rem;">HQ</span>' : '';
+            return `
+                <label class="form-checkbox" style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:0.5rem;cursor:pointer;">
+                    <input type="checkbox" name="branch_ids" value="${escapeHtml(id)}"${checked} ${onChangeAttr || ''}>
+                    <span>${escapeHtml(branch.name || 'Branch')}${branch.code ? ' (' + escapeHtml(branch.code) + ')' : ''}${hq}</span>
+                </label>`;
+        })
+        .join('');
+}
+
+function getSelectedBranchIdsFromForm(form) {
+    if (!form) return [];
+    return Array.from(form.querySelectorAll('input[name="branch_ids"]:checked')).map((el) => el.value);
+}
+
+function normalizeRoleKey(name) {
+    const raw = String(name || '').trim();
+    if (!raw) return '';
+    const aliases = {
+        'super admin': 'super_admin',
+        'superadmin': 'super_admin',
+        'Super Admin': 'super_admin',
+        administrator: 'admin',
+        owner: 'admin',
+    };
+    if (aliases[raw]) return aliases[raw];
+    const slug = raw.toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
+    return aliases[slug] || slug;
+}
+
+function userHasRole(user, role) {
+    if (!user || !Array.isArray(user.branch_roles) || !role) return false;
+    const key = normalizeRoleKey(role.role_key || role.role_name);
+    return user.branch_roles.some((ubr) => normalizeRoleKey(ubr.role_name) === key);
+}
+
+function formatRoleSelectLabel(role) {
+    const label = role.display_label || role.role_name;
+    const desc = role.description || '';
+    return `${escapeHtml(label)}${desc ? ' — ' + escapeHtml(desc) : ''}`;
+}
+
+function formatRoleSelectOption(role) {
+    return `<option value="${escapeHtml(role.role_name)}">${formatRoleSelectLabel(role)}</option>`;
+}
+
 // Update validation state and UI
 function updateFormValidation(formId) {
     const form = document.getElementById(formId);
@@ -1627,21 +1702,16 @@ async function renderCreateUserForm(page, roles, branches, isAdminUser) {
                         <label class="form-label">Role *</label>
                         <select class="form-input" name="role_name" required>
                             <option value="">Select a role</option>
-                            ${roles.map(role => 
-                                `<option value="${escapeHtml(role.role_name)}">${escapeHtml(role.role_name)}${role.description ? ' - ' + escapeHtml(role.description) : ''}</option>`
-                            ).join('')}
+                            ${roles.map((role) => formatRoleSelectOption(role)).join('')}
                         </select>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Branch *</label>
-                        <select class="form-input" name="branch_id" required>
-                            <option value="">Select branch</option>
-                            ${branches.map(branch => 
-                                `<option value="${branch.id}">${escapeHtml(branch.name)}${branch.code ? ' (' + escapeHtml(branch.code) + ')' : ''}</option>`
-                            ).join('')}
-                        </select>
+                        <label class="form-label">Branch access *</label>
+                        <div class="user-branch-access-list" style="border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 0.75rem; max-height: 220px; overflow-y: auto;">
+                            ${renderBranchAccessCheckboxes(branches, branches.length === 1 ? [String(branches[0].id)] : [])}
+                        </div>
                         <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
-                            Users only see branches they are assigned to at login. Assign each branch separately when editing the user.
+                            Check each branch this user may use at login. The same role applies on every selected branch.
                         </small>
                     </div>
                     <div class="form-group">
@@ -1768,7 +1838,8 @@ function renderRolesList(page, roles, canCreateRole) {
                                 ${roles.map(role => `
                                     <tr>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                            <strong>${escapeHtml(role.role_name)}</strong>
+                                            <strong>${escapeHtml(role.display_label || role.role_name)}</strong>
+                                            <div style="font-size:0.8rem;color:var(--text-secondary);"><code>${escapeHtml(role.role_key || role.role_name)}</code></div>
                                         </td>
                                         <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                                             ${escapeHtml(role.description || '—')}
@@ -1815,10 +1886,43 @@ async function renderEditRoleForm(page, roleId, roles) {
         return;
     }
 
+    const roleKey = normalizeRoleKey(role.role_key || role.role_name);
+    const moduleBlocks = permissionsByModule.filter((m) => String(m.module || '').startsWith('Module ·'));
+    const operationalBlocks = permissionsByModule.filter((m) => !String(m.module || '').startsWith('Module ·'));
+
+    const moduleAccessHtml =
+        moduleBlocks.length > 0
+            ? `<div class="card" style="padding:1rem;margin-bottom:1.25rem;background:var(--bg-secondary);">
+                <h4 style="margin:0 0 0.5rem;">Module access</h4>
+                <p style="color:var(--text-secondary);font-size:0.875rem;margin:0 0 0.75rem;">
+                    Controls which areas appear in the top module switcher. The company must still have each module licensed.
+                </p>
+                <div class="module-access-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:0.5rem;">
+                ${moduleBlocks
+                    .map((mod) => {
+                        const perm = (mod.permissions || [])[0];
+                        if (!perm) return '';
+                        const checked = rolePermissionNames.has(perm.name);
+                        return `<label class="form-checkbox" style="display:flex;gap:0.5rem;align-items:center;">
+                            <input type="checkbox" class="perm-checkbox module-access-cb" data-permission="${escapeHtml(perm.name)}" ${checked ? 'checked' : ''}>
+                            <span>${escapeHtml(String(mod.module || '').replace(/^Module ·\s*/i, ''))}</span>
+                        </label>`;
+                    })
+                    .join('')}
+                </div>
+                <div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+                    <button type="button" class="btn btn-outline btn-sm" id="applyRoleTemplateBtn">Reset to default template</button>
+                    <span style="font-size:0.8rem;color:var(--text-secondary);align-self:center;">
+                        Canonical role: <code>${escapeHtml(roleKey)}</code>
+                    </span>
+                </div>
+            </div>`
+            : '';
+
     const actions = ['view', 'create', 'edit', 'delete'];
     const actionLabels = { view: 'View', create: 'Create', edit: 'Edit', delete: 'Delete' };
 
-    const matrixRows = permissionsByModule.map(mod => {
+    const matrixRows = operationalBlocks.map((mod) => {
         const cells = actions.map(action => {
             const perm = mod.permissions.find(p => p.action === action);
             if (!perm) return '<td class="perm-cell perm-na"><span class="perm-na-label">—</span></td>';
@@ -1854,7 +1958,7 @@ async function renderEditRoleForm(page, roleId, roles) {
     page.innerHTML = `
         <div class="card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <h3 class="card-title"><i class="fas fa-user-tag"></i> Edit Role: ${escapeHtml(role.role_name)}</h3>
+                <h3 class="card-title"><i class="fas fa-user-tag"></i> Edit Role: ${escapeHtml(role.display_label || role.role_name)}</h3>
                 <button class="btn btn-secondary" onclick="cancelEditRole()">
                     <i class="fas fa-times"></i> Cancel
                 </button>
@@ -1871,10 +1975,10 @@ async function renderEditRoleForm(page, roleId, roles) {
                         <textarea class="form-textarea" name="description" rows="2" 
                                   placeholder="Describe the role's responsibilities">${escapeHtml(role.description || '')}</textarea>
                     </div>
+                    ${moduleAccessHtml}
                     <h4 style="margin-top: 1.5rem; margin-bottom: 1rem;">Permissions</h4>
                     <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
-                        Toggle permissions for this role. Check = granted.
-                        Rows labeled <strong>Module · …</strong> control which areas appear in the top module switcher; the company must still have that module licensed.
+                        Toggle operational permissions for this role. Check = granted.
                     </p>
                     <div class="perm-matrix-container" style="overflow-x: auto; margin-bottom: 1.5rem;">
                         <table class="perm-matrix">
@@ -1899,9 +2003,24 @@ async function renderEditRoleForm(page, roleId, roles) {
 
     page.querySelectorAll('.perm-checkbox').forEach(cb => {
         cb.addEventListener('change', function() {
-            this.closest('label').querySelector('.perm-checkmark').classList.toggle('checked', this.checked);
+            const mark = this.closest('label')?.querySelector('.perm-checkmark');
+            if (mark) mark.classList.toggle('checked', this.checked);
         });
     });
+
+    const tplBtn = document.getElementById('applyRoleTemplateBtn');
+    if (tplBtn) {
+        tplBtn.addEventListener('click', async () => {
+            if (!confirm('Reset this role to its default permission template? This replaces current permissions.')) return;
+            try {
+                await API.users.applyRoleTemplate(roleId);
+                showToast('Default template applied', 'success');
+                await renderEditRoleForm(page, roleId, roles);
+            } catch (err) {
+                showToast(err.message || 'Could not apply template', 'error');
+            }
+        });
+    }
 }
 
 function selectAllPermissions(checked) {
@@ -1929,7 +2048,8 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
     try {
         user = await API.users.get(userId);
         // Get user's current permissions
-        const branchId = user.branch_roles && user.branch_roles.length > 0 ? user.branch_roles[0].branch_id : null;
+        const assignedBranchIds = userAssignedBranchIds(user);
+        const branchId = assignedBranchIds.length > 0 ? assignedBranchIds[0] : null;
         if (API && API.users && API.users.getUserPermissions) {
             const permResult = await API.users.getUserPermissions(userId, branchId);
             userPermissions = new Set(permResult.permissions || []);
@@ -2019,24 +2139,23 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
                         <label class="form-label">Role *</label>
                         <select class="form-input" name="role_name" required id="userRoleSelect" onchange="updateUserPermissionsDisplay('${user.id}')">
                             <option value="">Select a role</option>
-                            ${roles.map(role => {
-                                const isSelected = user.branch_roles && user.branch_roles.some(ubr => ubr.role_name === role.role_name);
-                                return `<option value="${escapeHtml(role.role_name)}" ${isSelected ? 'selected' : ''}>${escapeHtml(role.role_name)}${role.description ? ' - ' + escapeHtml(role.description) : ''}</option>`;
+                            ${roles.map((role) => {
+                                const isSelected = userHasRole(user, role);
+                                return `<option value="${escapeHtml(role.role_name)}" ${isSelected ? 'selected' : ''}>${formatRoleSelectLabel(role)}</option>`;
                             }).join('')}
                         </select>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Primary branch *</label>
-                        <select class="form-input" name="branch_id" id="userBranchSelect" required onchange="updateUserPermissionsDisplay('${user.id}')">
-                            <option value="">Select branch</option>
-                            ${branches.map(branch => {
-                                const isSelected = user.branch_roles && user.branch_roles.some(ubr => ubr.branch_id === branch.id);
-                                return `<option value="${branch.id}" ${isSelected ? 'selected' : ''}>${escapeHtml(branch.name)}${branch.code ? ' (' + escapeHtml(branch.code) + ')' : ''}</option>`;
-                            }).join('')}
-                        </select>
-                        ${user.branch_roles && user.branch_roles.length > 1 ? `<small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">Also assigned: ${user.branch_roles.map(ubr => escapeHtml(ubr.branch_name || ubr.branch_id)).join(', ')}</small>` : ''}
+                        <label class="form-label">Branch access *</label>
+                        <div class="user-branch-access-list" style="border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 0.75rem; max-height: 220px; overflow-y: auto;">
+                            ${renderBranchAccessCheckboxes(
+                                branches,
+                                userAssignedBranchIds(user),
+                                `onchange="updateUserPermissionsDisplay('${user.id}')"`
+                            )}
+                        </div>
                         <small style="color: var(--text-secondary); display: block; margin-top: 0.25rem;">
-                            Changing branch updates this user&apos;s role on that branch. To add another branch, save and assign again with a different branch selected.
+                            Check every branch this user may sign in to. Uncheck all to remove access (at least one required when saving).
                         </small>
                     </div>
                     <div class="form-group">
@@ -2104,10 +2223,11 @@ async function renderEditUserForm(page, userId, roles, branches, isAdminUser) {
 // Update permissions display when role or branch changes
 async function updateUserPermissionsDisplay(userId) {
     const roleSelect = document.getElementById('userRoleSelect');
-    const branchSelect = document.getElementById('userBranchSelect');
-    if (!roleSelect || !branchSelect) return;
-    
-    const branchId = branchSelect.value || null;
+    const form = document.getElementById('editUserForm');
+    if (!roleSelect || !form) return;
+
+    const checked = getSelectedBranchIdsFromForm(form);
+    const branchId = checked.length > 0 ? checked[0] : null;
     try {
         if (API && API.users && API.users.getUserPermissions) {
             const permResult = await API.users.getUserPermissions(userId, branchId);
@@ -2219,13 +2339,18 @@ async function handleCreateUser(event) {
         return;
     }
 
+    const branchIds = formData.getAll('branch_ids');
+    if (!branchIds.length) {
+        showToast('Select at least one branch for this user', 'error');
+        return;
+    }
     const userData = {
         email: formData.get('email'),
         full_name: formData.get('full_name') || null,
         phone: formData.get('phone'),
         username: (formData.get('username') || '').trim() || null,
         role_name: formData.get('role_name'),
-        branch_id: formData.get('branch_id') || null
+        branch_ids: branchIds
     };
 
     const submitBtn = form.querySelector('button[type="submit"]');
@@ -2383,12 +2508,16 @@ async function handleEditUser(event, userId) {
         return;
     }
     
+    const branchIds = formData.getAll('branch_ids');
+    if (!branchIds.length) {
+        showToast('Select at least one branch for this user', 'error');
+        return;
+    }
     const userData = {
-        email: formData.get('email'),
         full_name: formData.get('full_name') || null,
         phone: formData.get('phone'),
         role_name: formData.get('role_name'),
-        branch_id: formData.get('branch_id') || null,
+        branch_ids: branchIds,
         is_active: formData.get('is_active') === 'on',
         ppb_number: formData.get('ppb_number') || null,
         designation: formData.get('designation') || null

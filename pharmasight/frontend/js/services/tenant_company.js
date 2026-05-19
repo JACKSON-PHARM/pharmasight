@@ -33,12 +33,23 @@
         }
     }
 
-    async function validateCompanyId(companyId) {
-        if (!companyId || !global.API || !global.API.company || typeof global.API.company.get !== 'function') {
+    const _validatedCompanyIds = new Set();
+
+    async function validateCompanyId(companyId, options) {
+        const opts = options || {};
+        if (!companyId) return false;
+        const cid = String(companyId);
+        if (_validatedCompanyIds.has(cid)) return true;
+        if (opts.trustAuthMe && global.__authMe && String(global.__authMe.company_id) === cid) {
+            _validatedCompanyIds.add(cid);
+            return true;
+        }
+        if (!global.API || !global.API.company || typeof global.API.company.get !== 'function') {
             return false;
         }
         try {
             await global.API.company.get(companyId);
+            _validatedCompanyIds.add(cid);
             return true;
         } catch (e) {
             if (e && (e.status === 404 || e.status === 403)) return false;
@@ -50,13 +61,37 @@
      * Resolve the user's company id for navigation (auth/me, list, config, JWT, startup).
      * @returns {Promise<string|null>}
      */
+    async function resolveCompanyIdFromOrgSlug() {
+        const slug =
+            typeof global.OrgContext !== 'undefined' && global.OrgContext.getOrgSlug
+                ? global.OrgContext.getOrgSlug()
+                : null;
+        if (!slug) return null;
+        if (typeof global.OrgContext.fetchOrgBootstrap === 'function') {
+            const boot = await global.OrgContext.fetchOrgBootstrap(slug);
+            if (boot && boot.company_id && (await validateCompanyId(boot.company_id))) {
+                return String(boot.company_id);
+            }
+        }
+        return null;
+    }
+
     async function resolveUserCompanyId() {
+        const orgCompanyId = await resolveCompanyIdFromOrgSlug();
+        if (orgCompanyId) return orgCompanyId;
+
         const me = global.__authMe;
         if (me && me.company_id) {
-            if (await validateCompanyId(me.company_id)) return String(me.company_id);
+            if (await validateCompanyId(me.company_id, { trustAuthMe: true })) return String(me.company_id);
+        }
+        if (me && me.org_slug && typeof global.OrgContext !== 'undefined' && global.OrgContext.persistOrgSlug) {
+            global.OrgContext.persistOrgSlug(me.org_slug);
         }
 
         const jwtCid = readCompanyIdFromAccessToken();
+        if (jwtCid && me && me.company_id && String(jwtCid) === String(me.company_id)) {
+            return String(jwtCid);
+        }
         if (jwtCid && (await validateCompanyId(jwtCid))) return jwtCid;
 
         if (global.API && global.API.company && typeof global.API.company.list === 'function') {
@@ -72,6 +107,9 @@
             typeof global.CONFIG !== 'undefined' && global.CONFIG.COMPANY_ID
                 ? String(global.CONFIG.COMPANY_ID)
                 : '';
+        if (cfg && me && me.company_id && cfg === String(me.company_id)) {
+            return cfg;
+        }
         if (cfg && (await validateCompanyId(cfg))) return cfg;
 
         if (global.API && global.API.startup && typeof global.API.startup.status === 'function') {
@@ -146,6 +184,7 @@
         normalizeCompanies,
         normalizeBranches,
         readCompanyIdFromAccessToken,
+        resolveCompanyIdFromOrgSlug,
         resolveUserCompanyId,
         resolveUserBranches,
         shouldShowSetupWizard,

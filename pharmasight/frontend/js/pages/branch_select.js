@@ -122,17 +122,32 @@ async function loadBranches() {
             throw new Error('User not authenticated');
         }
         
-        // Resolve the user's company from the API (single shared DB; company = organization).
-        let companyId = null;
-        try {
-            const companies = normalizeCompanies(await API.company.list());
-            if (companies.length > 0) {
-                companyId = companies[0].id;
-                CONFIG.COMPANY_ID = companyId;
-                saveConfig();
+        let companyId =
+            (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) ||
+            (window.__authMe && window.__authMe.company_id) ||
+            null;
+        if (!companyId && typeof TenantCompany !== 'undefined' && TenantCompany.resolveUserCompanyId) {
+            try {
+                companyId = await TenantCompany.resolveUserCompanyId();
+                if (companyId) {
+                    CONFIG.COMPANY_ID = companyId;
+                    saveConfig();
+                }
+            } catch (error) {
+                console.warn('Could not resolve company:', error);
             }
-        } catch (error) {
-            console.warn('Could not list companies:', error);
+        }
+        if (!companyId) {
+            try {
+                const companies = normalizeCompanies(await API.company.list());
+                if (companies.length > 0) {
+                    companyId = companies[0].id;
+                    CONFIG.COMPANY_ID = companyId;
+                    saveConfig();
+                }
+            } catch (error) {
+                console.warn('Could not list companies:', error);
+            }
         }
         
         if (!companyId) {
@@ -181,7 +196,7 @@ async function loadBranches() {
                         <h2>Choose a branch</h2>
                         <div class="error-message" style="display: block; margin: 1rem 0;">
                             <i class="fas fa-exclamation-triangle"></i> 
-                            No company is linked to your account yet. Finish organization setup first, or sign out and sign in again if you switched organization or device.
+                            No company is linked to your account yet. Use your organization's login link (it includes <code>?org=</code> in the URL), or ask your administrator to assign you to a branch.
                         </div>
                     </div>
                 </div>

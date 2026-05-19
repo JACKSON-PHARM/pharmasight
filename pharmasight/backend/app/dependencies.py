@@ -45,33 +45,15 @@ from app.utils.auth_guards import (
     assert_tenant_company_link,
 )
 from app.services.tenant_registry_service import ensure_tenant_row_for_company
+from app.services.company_context import (
+    get_effective_company_id_for_user,
+    preferred_company_id_from_request,
+)
 
 logger = logging.getLogger(__name__)
 
 # RLS session variable name (PostgreSQL). Set on each request so RLS policies can filter by company.
 RLS_CLAIM_COMPANY_ID = "jwt.claims.company_id"
-
-
-def get_effective_company_id_for_user(db: Session, user: User):
-    """
-    Resolve the company_id for the authenticated user (single-DB multi-company).
-    Uses: user's branch assignments (UserBranchRole -> Branch -> company_id), or the single company in DB.
-    Returns None if no company can be resolved (caller should handle).
-    Single join query to avoid extra round-trips.
-    """
-    from app.models.user import UserBranchRole
-    from app.models.company import Branch, Company
-    row = (
-        db.query(Branch.company_id)
-        .join(UserBranchRole, UserBranchRole.branch_id == Branch.id)
-        .filter(UserBranchRole.user_id == user.id)
-        .limit(1)
-        .first()
-    )
-    if row:
-        return row[0]
-    company = db.query(Company).limit(1).first()
-    return company.id if company else None
 
 
 def require_document_belongs_to_user_company(
@@ -497,7 +479,8 @@ def get_current_user_optional(
         if not user:
             yield None
             return
-        company_id = get_effective_company_id_for_user(db, user)
+        preferred = preferred_company_id_from_request(request, master_db)
+        company_id = get_effective_company_id_for_user(db, user, preferred_company_id=preferred)
         if company_id:
             try:
                 db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
@@ -800,7 +783,17 @@ def get_current_user(
             )
 
         # Scope to effective company for this request (and RLS policies when enabled)
-        company_id = get_effective_company_id_for_user(db, user)
+        preferred = preferred_company_id_from_request(request, master_db)
+        jwt_cid = None
+        try:
+            raw = (payload.get(CLAIM_COMPANY_ID) or "").strip()
+            if raw:
+                jwt_cid = UUID(str(raw))
+        except (ValueError, TypeError):
+            jwt_cid = None
+        if preferred is None and jwt_cid is not None:
+            preferred = jwt_cid
+        company_id = get_effective_company_id_for_user(db, user, preferred_company_id=preferred)
         if company_id:
             try:
                 db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})

@@ -79,8 +79,142 @@ def _user_has_owner_or_admin_role(db: Session, user_id: UUID) -> bool:
         .filter(UserBranchRole.user_id == user_id)
         .all()
     )
-    allowed = {"owner", "admin", "super admin"}
-    return any((r[0] or "").strip().lower() in allowed for r in role_names)
+    allowed = {"owner", "admin", "super admin", "super_admin", "administrator"}
+    return any((r[0] or "").strip().lower().replace(" ", "_") in allowed for r in role_names)
+
+
+def _resolve_branch_ids_for_assignment(
+    branch_id: Optional[UUID],
+    branch_ids: Optional[List[UUID]],
+) -> Optional[List[UUID]]:
+    if branch_ids is not None:
+        return list(dict.fromkeys(branch_ids))
+    if branch_id is not None:
+        return [branch_id]
+    return None
+
+
+def _sync_user_branch_roles_in_company(
+    db: Session,
+    *,
+    user_id: UUID,
+    company_id: UUID,
+    role_name: str,
+    branch_ids: List[UUID],
+) -> None:
+    """
+    Set the user's branch access within a company to exactly ``branch_ids``,
+    applying ``role_name`` on each branch.
+    """
+    if not branch_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Select at least one branch for this user.",
+        )
+    unique_ids = list(dict.fromkeys(branch_ids))
+    branches = (
+        db.query(Branch)
+        .filter(Branch.id.in_(unique_ids), Branch.company_id == company_id)
+        .all()
+    )
+    if len(branches) != len(unique_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more branches are invalid for this company.",
+        )
+    role = get_role_by_name(role_name, db)
+    existing_rows = (
+        db.query(UserBranchRole)
+        .join(Branch, UserBranchRole.branch_id == Branch.id)
+        .filter(UserBranchRole.user_id == user_id, Branch.company_id == company_id)
+        .all()
+    )
+    keep = set(unique_ids)
+    for ubr in existing_rows:
+        if ubr.branch_id not in keep:
+            db.delete(ubr)
+    for branch_id in unique_ids:
+        row = (
+            db.query(UserBranchRole)
+            .filter(
+                UserBranchRole.user_id == user_id,
+                UserBranchRole.branch_id == branch_id,
+            )
+            .first()
+        )
+        if row:
+            row.role_id = role.id
+        else:
+            db.add(
+                UserBranchRole(
+                    user_id=user_id,
+                    branch_id=branch_id,
+                    role_id=role.id,
+                )
+            )
+
+
+def _update_role_on_all_company_branches(
+    db: Session,
+    *,
+    user_id: UUID,
+    company_id: UUID,
+    role_name: str,
+) -> None:
+    role = get_role_by_name(role_name, db)
+    rows = (
+        db.query(UserBranchRole)
+        .join(Branch, UserBranchRole.branch_id == Branch.id)
+        .filter(UserBranchRole.user_id == user_id, Branch.company_id == company_id)
+        .all()
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no branch assignments. Select at least one branch.",
+        )
+    for ubr in rows:
+        ubr.role_id = role.id
+
+
+def _branch_role_responses_for_user(
+    db: Session,
+    user_id: UUID,
+    company_id: Optional[UUID],
+) -> List:
+    from app.schemas.user import UserBranchRoleResponse
+
+    q = (
+        db.query(
+            UserBranchRole,
+            UserRole.role_name,
+            Branch.name.label("branch_name"),
+        )
+        .join(UserRole, UserBranchRole.role_id == UserRole.id)
+        .join(Branch, UserBranchRole.branch_id == Branch.id)
+        .filter(UserBranchRole.user_id == user_id)
+    )
+    if company_id:
+        q = q.filter(Branch.company_id == company_id)
+    rows = q.all()
+    out = []
+    seen: set[UUID] = set()
+    for ubr, role_name, branch_name in rows:
+        if ubr.branch_id in seen:
+            continue
+        seen.add(ubr.branch_id)
+        out.append(
+            UserBranchRoleResponse(
+                id=ubr.id,
+                user_id=ubr.user_id,
+                branch_id=ubr.branch_id,
+                role_id=ubr.role_id,
+                role_name=role_name,
+                branch_name=branch_name,
+                created_at=ubr.created_at,
+            )
+        )
+    return out
 
 
 def _user_in_company(db: Session, user_id: UUID, company_id: UUID) -> bool:
@@ -114,28 +248,84 @@ def _get_user_and_verify_company(
 
 
 def get_role_by_name(role_name: str, db: Session) -> UserRole:
-    """Get role by name, create if it doesn't exist"""
-    role = db.query(UserRole).filter(UserRole.role_name == role_name.lower()).first()
+    """Resolve canonical role by slug; creates only known assignable roles."""
+    from app.role_catalog import (
+        description_for_role,
+        display_label_for_role,
+        is_assignable_role,
+        normalize_role_key,
+    )
+
+    key = normalize_role_key(role_name)
+    if not key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role name")
+    if not is_assignable_role(key):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This role cannot be assigned to company users",
+        )
+    role = db.query(UserRole).filter(func.lower(UserRole.role_name) == key).first()
     if not role:
-        # Role doesn't exist, create it
-        role = UserRole(role_name=role_name.lower(), description=f"{role_name} role")
+        legacy = key.replace("_", " ")
+        role = (
+            db.query(UserRole)
+            .filter(func.lower(func.trim(UserRole.role_name)) == legacy)
+            .first()
+        )
+    if not role:
+        desc = description_for_role(key) or f"{display_label_for_role(key)} role"
+        role = UserRole(role_name=key, description=desc)
         db.add(role)
         db.flush()
     return role
 
 
+def _role_to_response(role: UserRole) -> UserRoleResponse:
+    from app.role_catalog import (
+        display_label_for_role,
+        is_assignable_role,
+        normalize_role_key,
+    )
+
+    key = normalize_role_key(role.role_name)
+    return UserRoleResponse(
+        id=role.id,
+        role_name=role.role_name,
+        description=role.description,
+        created_at=role.created_at,
+        role_key=key or None,
+        display_label=display_label_for_role(role.role_name),
+        is_assignable=is_assignable_role(role.role_name),
+    )
+
+
 @router.get("/users/roles", response_model=List[UserRoleResponse])
 def list_roles(
+    assignable_only: bool = Query(
+        True,
+        description="When true (default), omit platform_super_admin and other internal roles.",
+    ),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """
-    List all available roles
-    
-    Returns list of system roles (Admin, Pharmacist, Cashier, etc.)
-    """
+    """List roles for Settings (assignable company roles by default)."""
+    from app.role_catalog import is_assignable_role, normalize_role_key
+
     roles = db.query(UserRole).order_by(UserRole.role_name).all()
-    return roles
+    out: List[UserRoleResponse] = []
+    for role in roles:
+        if assignable_only and not is_assignable_role(role.role_name):
+            continue
+        out.append(_role_to_response(role))
+    # Stable order: super_admin, admin, then alphabetical by display label
+    rank = {"super_admin": 0, "admin": 1}
+
+    def _sort_key(r: UserRoleResponse):
+        k = normalize_role_key(r.role_name)
+        return (rank.get(k, 50), (r.display_label or r.role_name or "").lower())
+
+    out.sort(key=_sort_key)
+    return out
 
 
 # -----------------------------------------------------------------------------
@@ -175,7 +365,14 @@ def list_permissions(
             "action": p.action,
             "description": p.description or "",
         })
-    return [{"module": m, "permissions": arr} for m, arr in sorted(by_module.items())]
+
+    def _sort_key(item: tuple) -> tuple:
+        module_name, _arr = item
+        if str(module_name).startswith("Module ·"):
+            return (0, str(module_name).lower())
+        return (1, str(module_name).lower())
+
+    return [{"module": m, "permissions": arr} for m, arr in sorted(by_module.items(), key=_sort_key)]
 
 
 @router.get("/users/roles/{role_id}/permissions")
@@ -225,6 +422,41 @@ def update_role_permissions(
             db.add(rp)
     db.commit()
     return {"success": True, "permissions": payload.permissions}
+
+
+@router.post("/users/roles/{role_id}/apply-template")
+def apply_role_template(
+    role_id: UUID,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Re-apply built-in permission template for a canonical role (super_admin, admin, pharmacist, …)."""
+    from app.role_catalog import normalize_role_key, template_permission_names
+
+    current_user, _ = current_user_and_db
+    if not _user_has_owner_or_admin_role(db, current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    role = db.query(UserRole).filter(UserRole.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    key = normalize_role_key(role.role_name)
+    all_names = [r[0] for r in db.query(Permission.name).all()]
+    names = template_permission_names(key, all_names)
+    if names is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No built-in template for this role. Edit permissions manually.",
+        )
+    db.query(RolePermission).filter(
+        RolePermission.role_id == role_id,
+        RolePermission.branch_id.is_(None),
+    ).delete()
+    for name in names:
+        perm = db.query(Permission).filter(Permission.name == name).first()
+        if perm:
+            db.add(RolePermission(role_id=role_id, permission_id=perm.id, branch_id=None))
+    db.commit()
+    return {"success": True, "permissions": names, "role_key": key}
 
 
 class RoleUpdate(BaseModel):
@@ -286,31 +518,8 @@ def list_users(
     user_responses = []
     for user in users:
         # Get branch roles with role and branch details
-        branch_roles_query = db.query(
-            UserBranchRole,
-            UserRole.role_name,
-            Branch.name.label('branch_name')
-        ).join(
-            UserRole, UserBranchRole.role_id == UserRole.id
-        ).join(
-            Branch, UserBranchRole.branch_id == Branch.id
-        ).filter(
-            UserBranchRole.user_id == user.id
-        ).all()
-        
-        branch_roles = []
-        for ubr, role_name, branch_name in branch_roles_query:
-            from app.schemas.user import UserBranchRoleResponse
-            branch_roles.append(UserBranchRoleResponse(
-                id=ubr.id,
-                user_id=ubr.user_id,
-                branch_id=ubr.branch_id,
-                role_id=ubr.role_id,
-                role_name=role_name,
-                branch_name=branch_name,
-                created_at=ubr.created_at
-            ))
-        
+        branch_roles = _branch_role_responses_for_user(db, user.id, company_id)
+
         user_responses.append(UserResponse(
             id=user.id,
             email=user.email,
@@ -344,33 +553,9 @@ def get_user(
         raise HTTPException(status_code=404, detail="User not found")
     if company_id and not _user_in_company(db, user.id, company_id):
         raise HTTPException(status_code=404, detail="User not found")
-    
-    # Get branch roles with details
-    branch_roles_query = db.query(
-        UserBranchRole,
-        UserRole.role_name,
-        Branch.name.label('branch_name')
-    ).join(
-        UserRole, UserBranchRole.role_id == UserRole.id
-    ).join(
-        Branch, UserBranchRole.branch_id == Branch.id
-    ).filter(
-        UserBranchRole.user_id == user.id
-    ).all()
-    
-    branch_roles = []
-    for ubr, role_name, branch_name in branch_roles_query:
-        from app.schemas.user import UserBranchRoleResponse
-        branch_roles.append(UserBranchRoleResponse(
-            id=ubr.id,
-            user_id=ubr.user_id,
-            branch_id=ubr.branch_id,
-            role_id=ubr.role_id,
-            role_name=role_name,
-            branch_name=branch_name,
-            created_at=ubr.created_at
-        ))
-    
+
+    branch_roles = _branch_role_responses_for_user(db, user.id, company_id)
+
     return UserResponse(
         id=user.id,
         email=user.email,
@@ -669,28 +854,26 @@ def create_user(
     role = get_role_by_name(user_data.role_name, db)
     company_id = get_effective_company_id_for_user(db, current_user)
 
-    # Assign role to branch: use provided branch_id or first branch of company so user appears in list
-    branch_id_to_assign = user_data.branch_id
-    if not branch_id_to_assign and company_id:
-        first_branch = db.query(Branch).filter(Branch.company_id == company_id).limit(1).first()
-        if first_branch:
-            branch_id_to_assign = first_branch.id
-    if branch_id_to_assign:
-        branch = db.query(Branch).filter(Branch.id == branch_id_to_assign).first()
-        if not branch:
-            db.rollback()
-            raise HTTPException(status_code=404, detail="Branch not found")
-        if company_id and branch.company_id != company_id:
-            db.rollback()
-            raise HTTPException(status_code=403, detail="Cannot assign user to a branch in another company")
-
-        # Create user-branch-role assignment
-        user_branch_role = UserBranchRole(
-            user_id=new_user.id,
-            branch_id=branch_id_to_assign,
-            role_id=role.id
+    branch_ids_to_assign = _resolve_branch_ids_for_assignment(
+        user_data.branch_id, user_data.branch_ids
+    )
+    if not branch_ids_to_assign and company_id:
+        hq = (
+            db.query(Branch)
+            .filter(Branch.company_id == company_id)
+            .order_by(Branch.is_hq.desc(), Branch.name.asc())
+            .first()
         )
-        db.add(user_branch_role)
+        if hq:
+            branch_ids_to_assign = [hq.id]
+    if branch_ids_to_assign and company_id:
+        _sync_user_branch_roles_in_company(
+            db,
+            user_id=new_user.id,
+            company_id=company_id,
+            role_name=user_data.role_name,
+            branch_ids=branch_ids_to_assign,
+        )
 
     db.commit()
     db.refresh(new_user)
@@ -828,20 +1011,24 @@ def admin_create_user(
     role = get_role_by_name(body.role_name, db)
     company_id = get_effective_company_id_for_user(db, current_user)
     # Assign role to a branch so the user appears in the company user list (same as create_user)
-    branch_id_to_assign = body.branch_id
-    if not branch_id_to_assign and company_id:
-        first_branch = db.query(Branch).filter(Branch.company_id == company_id).limit(1).first()
-        if first_branch:
-            branch_id_to_assign = first_branch.id
-    if branch_id_to_assign:
-        branch = db.query(Branch).filter(Branch.id == branch_id_to_assign).first()
-        if not branch:
-            db.rollback()
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
-        if company_id and branch.company_id != company_id:
-            db.rollback()
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot assign user to a branch in another company")
-        db.add(UserBranchRole(user_id=new_user.id, branch_id=branch_id_to_assign, role_id=role.id))
+    branch_ids_to_assign = _resolve_branch_ids_for_assignment(body.branch_id, body.branch_ids)
+    if not branch_ids_to_assign and company_id:
+        hq = (
+            db.query(Branch)
+            .filter(Branch.company_id == company_id)
+            .order_by(Branch.is_hq.desc(), Branch.name.asc())
+            .first()
+        )
+        if hq:
+            branch_ids_to_assign = [hq.id]
+    if branch_ids_to_assign and company_id:
+        _sync_user_branch_roles_in_company(
+            db,
+            user_id=new_user.id,
+            company_id=company_id,
+            role_name=body.role_name,
+            branch_ids=branch_ids_to_assign,
+        )
     db.commit()
     db.refresh(new_user)
     # Minimal audit log (no event bus or framework); tenant_id optional for single-DB
@@ -922,36 +1109,37 @@ def update_user(
     current_user, _ = current_user_and_db
     user = _get_user_and_verify_company(db, user_id, current_user)
 
-    # Update simple fields (exclude role_name and branch_id; handle those below)
     update_data = user_update.model_dump(exclude_unset=True) if hasattr(user_update, "model_dump") else user_update.dict(exclude_unset=True)
     role_name = update_data.pop("role_name", None)
     branch_id = update_data.pop("branch_id", None)
+    branch_ids = update_data.pop("branch_ids", None)
     for field, value in update_data.items():
         if hasattr(user, field):
             setattr(user, field, value)
 
-    # Apply role/branch: if role_name or branch_id provided, set or update UserBranchRole for that branch
-    if role_name is not None or branch_id is not None:
-        company_id = get_effective_company_id_for_user(db, current_user)
-        if branch_id:
-            branch = db.query(Branch).filter(Branch.id == branch_id).first()
-            if not branch:
-                raise HTTPException(status_code=404, detail="Branch not found")
-            if company_id and branch.company_id != company_id:
-                raise HTTPException(status_code=403, detail="Cannot assign user to a branch in another company")
-        else:
-            # branch_id not provided: use first branch of company for this user
-            if company_id:
-                first_branch = db.query(Branch).filter(Branch.company_id == company_id).limit(1).first()
-                if first_branch:
-                    branch_id = first_branch.id
-        if branch_id and role_name is not None:
-            role = get_role_by_name(role_name, db)
-            existing = db.query(UserBranchRole).filter(UserBranchRole.user_id == user_id, UserBranchRole.branch_id == branch_id).first()
-            if existing:
-                existing.role_id = role.id
-            else:
-                db.add(UserBranchRole(user_id=user_id, branch_id=branch_id, role_id=role.id))
+    company_id = get_effective_company_id_for_user(db, current_user)
+    resolved_branch_ids = _resolve_branch_ids_for_assignment(branch_id, branch_ids)
+
+    if resolved_branch_ids is not None and company_id:
+        if role_name is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Role is required when updating branch access.",
+            )
+        _sync_user_branch_roles_in_company(
+            db,
+            user_id=user_id,
+            company_id=company_id,
+            role_name=role_name,
+            branch_ids=resolved_branch_ids,
+        )
+    elif role_name is not None and company_id:
+        _update_role_on_all_company_branches(
+            db,
+            user_id=user_id,
+            company_id=company_id,
+            role_name=role_name,
+        )
 
     db.commit()
     db.refresh(user)
