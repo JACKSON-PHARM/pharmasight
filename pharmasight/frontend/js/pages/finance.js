@@ -42,7 +42,7 @@ async function renderFinanceExpenses() {
     });
     document.getElementById('fccGoProfit')?.addEventListener('click', (e) => {
         e.preventDefault();
-        if (typeof loadPage === 'function') loadPage('finance', 'profitability');
+        if (typeof loadPage === 'function') loadPage('finance-profitability');
     });
 }
 

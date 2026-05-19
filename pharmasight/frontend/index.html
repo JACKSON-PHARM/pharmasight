@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="/css/style.css?v=11">
     <link rel="stylesheet" href="/css/sightops-brand.css?v=18">
     <link rel="stylesheet" href="/css/workspace-shell.css?v=1">
-    <link rel="stylesheet" href="js/finance/finance_command_center.css?v=1">
+    <link rel="stylesheet" href="js/finance/finance_command_center.css?v=2">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -245,7 +245,7 @@
             <!-- Page Content (position: relative so overlay positions correctly) -->
             <div class="page-content" id="pageContent" style="position: relative;">
                 <!-- Page load overlay: shown during navigation until target page is ready (smooth transitions) -->
-                <div id="pageLoadOverlay" class="page-load-overlay" style="display: none; position: absolute; inset: 0; background: rgba(248,250,252,0.9); align-items: center; justify-content: center; z-index: 10; pointer-events: auto;">
+                <div id="pageLoadOverlay" class="page-load-overlay" style="display: none; position: absolute; inset: 0; background: rgba(248,250,252,0.9); align-items: center; justify-content: center; z-index: 10; pointer-events: none;">
                     <div class="so-loader" role="status" aria-live="polite" aria-label="Loading">
                         <div class="so-loader-mark so-loader-spin"><img src="/assets/brand/sightops-mark.svg" width="52" height="52" alt="" decoding="async" onerror="this.onerror=null;this.src='/assets/brand/sightops-mark-mono.svg';"></div>
                         <p class="so-loader-caption">Syncing operations…</p>
@@ -570,7 +570,7 @@
     <!-- Stock Take (before app.js so loadStockTake exists when router runs) -->
     <script src="js/pages/stock_take.js?v=11"></script>
     <!-- Bump version to force browser to load latest app.js after routing fixes -->
-    <script src="js/app.js?v=38"></script>
+    <script src="js/app.js?v=39"></script>
     <script src="js/pages/login.js?v=15"></script>
     <script src="js/pages/password_reset.js?v=3"></script>
     <script src="js/pages/tenant_invite_setup.js?v=1"></script>
@@ -605,7 +605,7 @@
     <script src="js/pages/finance_reconciliation.js?v=3"></script>
     <script src="js/pages/finance_confidence.js?v=1"></script>
     <script src="js/pages/finance_recovery.js?v=1"></script>
-    <script src="js/pages/finance_overview.js?v=1"></script>
+    <script src="js/pages/finance_overview.js?v=2"></script>
     <script src="js/pages/finance_cash.js?v=1"></script>
     <script src="js/pages/finance_receivables.js?v=1"></script>
     <script src="js/pages/finance_payables.js?v=1"></script>

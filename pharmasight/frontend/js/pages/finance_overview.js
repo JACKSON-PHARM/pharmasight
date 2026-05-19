@@ -14,14 +14,14 @@ async function renderFinanceOverview() {
             </div>
             <div class="fcc-toolbar">
                 <div class="form-group">
-                    <label class="form-label">View</label>
+                    <label class="form-label" for="fccScope">View</label>
                     <select class="form-select" id="fccScope">
                         <option value="branch">This branch</option>
                         <option value="company">Whole company</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Branch</label>
+                    <label class="form-label" for="fccBranch">Branch</label>
                     <select class="form-select" id="fccBranch"></select>
                 </div>
                 <div class="form-group">

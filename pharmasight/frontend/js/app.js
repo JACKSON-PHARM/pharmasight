@@ -1960,7 +1960,10 @@ async function loadPage(pageName) {
     
     // Smooth transition: show loading overlay until target page is ready (in scope for finally)
     const pageLoadOverlay = document.getElementById('pageLoadOverlay');
-    if (pageLoadOverlay) pageLoadOverlay.style.display = 'flex';
+    if (pageLoadOverlay) {
+        pageLoadOverlay.style.display = 'flex';
+        pageLoadOverlay.style.pointerEvents = 'auto';
+    }
     
     // Load page content (use mainPage for switch)
     switch(mainPage) {
@@ -2124,7 +2127,10 @@ async function loadPage(pageName) {
             break;
         case 'finance':
             if (typeof window.loadFinance === 'function') {
-                window.loadFinance(subPage || 'overview');
+                if (typeof showSubNav === 'function' && window.subNavItems && window.subNavItems.finance) {
+                    showSubNav('finance', 'Financial command center');
+                }
+                await window.loadFinance(subPage || 'overview');
             } else {
                 console.error('loadFinance function not found');
                 const page = document.getElementById('finance');
@@ -2292,7 +2298,10 @@ async function loadPage(pageName) {
             pageEl.style.visibility = 'visible';
         }
     } finally {
-        if (pageLoadOverlay) pageLoadOverlay.style.display = 'none';
+        if (pageLoadOverlay) {
+            pageLoadOverlay.style.display = 'none';
+            pageLoadOverlay.style.pointerEvents = 'none';
+        }
         loadPageInProgress = false;
         window.__suppressToasts = false;
         // Full hash route (e.g. purchases-invoices) so refresh + hashchange dedupe match sub-views
