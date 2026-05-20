@@ -271,6 +271,7 @@ def stop_kra_outbox_worker_if_running():
 # Import and include routers
 from app.api import (
     items_router,
+    items_search_router,
     sales_router,
     purchases_router,
     inventory_router,
@@ -342,6 +343,7 @@ app.include_router(invite_router, prefix="/api", tags=["User Invitation & Setup"
 app.include_router(startup_router, prefix="/api", tags=["Startup & Initialization"])
 app.include_router(company_router, prefix="/api", tags=["Company & Branch"])
 app.include_router(users_router, prefix="/api", tags=["User Management"])
+app.include_router(items_search_router, prefix="/api/items", tags=["Items"])
 app.include_router(items_router, prefix="/api/items", tags=["Items"])
 app.include_router(sales_router, prefix="/api/sales", tags=["Sales"])
 app.include_router(purchases_router, prefix="/api/purchases", tags=["Purchases"])

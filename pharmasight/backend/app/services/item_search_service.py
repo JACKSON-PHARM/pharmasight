@@ -49,11 +49,15 @@ def _snapshot_search_text_compact(column):
 
 
 def _snapshot_match_filters(q: str):
-    """OR of phrase, compact substring, and all-token AND — improves e.g. oncal+scr vs on call strips."""
+    """Fast-first snapshot matcher; use compact regex path only when query is non-simple."""
     q_norm = (q or "").strip().lower()
     if len(q_norm) < 2:
         return None
+    # Keep the hot path index-friendly for normal terms (e.g. "myclin", "paracetamol").
     clauses = [ItemBranchSnapshot.search_text.ilike(f"%{q_norm}%")]
+    is_simple = bool(re.fullmatch(r"[a-z0-9]+", q_norm))
+    if is_simple:
+        return clauses[0]
     compact_q = _compact_alnum(q_norm)
     if len(compact_q) >= 2:
         clauses.append(_snapshot_search_text_compact(ItemBranchSnapshot.search_text).contains(compact_q))
@@ -334,7 +338,7 @@ def _canonical_item_from_master(
 
 
 def _master_item_match_filter(q: str):
-    """Match active company items by name/sku/barcode (phrase, compact, or all tokens)."""
+    """Match active company items by name/sku/barcode; avoid regex path for simple terms."""
     q_norm = (q or "").strip().lower()
     if len(q_norm) < 2:
         return None
@@ -345,11 +349,13 @@ def _master_item_match_filter(q: str):
             func.coalesce(Item.barcode, "").ilike(f"%{q_norm}%"),
         )
     ]
-    compact_q = _compact_alnum(q_norm)
-    if len(compact_q) >= 2:
-        name_c = _snapshot_search_text_compact(Item.name)
-        sku_c = _snapshot_search_text_compact(func.coalesce(Item.sku, ""))
-        clauses.append(or_(name_c.contains(compact_q), sku_c.contains(compact_q)))
+    is_simple = bool(re.fullmatch(r"[a-z0-9]+", q_norm))
+    if not is_simple:
+        compact_q = _compact_alnum(q_norm)
+        if len(compact_q) >= 2:
+            name_c = _snapshot_search_text_compact(Item.name)
+            sku_c = _snapshot_search_text_compact(func.coalesce(Item.sku, ""))
+            clauses.append(or_(name_c.contains(compact_q), sku_c.contains(compact_q)))
     tokens = _search_tokens(q_norm)
     if tokens:
         token_and = []

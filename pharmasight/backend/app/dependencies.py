@@ -47,6 +47,7 @@ from app.utils.auth_guards import (
 from app.services.tenant_registry_service import ensure_tenant_row_for_company
 from app.services.company_context import (
     get_effective_company_id_for_user,
+    org_slug_from_request,
     preferred_company_id_from_request,
 )
 
@@ -114,10 +115,14 @@ _pool_lock = threading.Lock()
 # In-process cache for default tenant (key=url, value=(tenant, expiry_ts)); TTL 10 minutes
 _default_tenant_cache: dict = {}
 
-# Auth resolution cache: (jti, str(sub)) -> (user_id, company_id, tenant_database_url, tenant_company_id, expiry_ts)
-# tenant_company_id mirrors tenants.company_id at cache fill; must match company_id or cache entry is invalid.
+# Auth resolution cache: (jti, str(sub)) -> (user_id, company_id, company_access, must_change_password, expiry_ts)
+# company_access: "ok" | "blocked" | "expired"
 _auth_resolution_cache: dict = {}
 _auth_resolution_cache_ttl_seconds = 300.0  # 5 minutes: keep item search fast for whole POS session
+
+# Branch + items.view for hot POS paths (search, sales add/batch)
+_ops_branch_access_cache: dict = {}
+_ops_branch_access_ttl_seconds = 300.0
 
 
 def invalidate_auth_cache_for_user(user_id: UUID) -> None:
@@ -126,6 +131,7 @@ def invalidate_auth_cache_for_user(user_id: UUID) -> None:
     Call after password change so the next request does a full DB resolution
     and sees must_change_password=False (avoids stale cache showing old flag).
     """
+    uid = str(user_id)
     with _pool_lock:
         keys_to_remove = [
             k for k, v in _auth_resolution_cache.items()
@@ -133,15 +139,116 @@ def invalidate_auth_cache_for_user(user_id: UUID) -> None:
         ]
         for k in keys_to_remove:
             _auth_resolution_cache.pop(k, None)
+        branch_keys = [k for k in _ops_branch_access_cache if k[0] == uid]
+        for k in branch_keys:
+            _ops_branch_access_cache.pop(k, None)
 
 
-def _stub_user_for_cache(user_id: UUID):
+def _auth_cache_key(jti: Optional[str], sub: UUID) -> Tuple[str, str]:
+    return ((jti or "").strip() or "-", str(sub))
+
+
+def _get_auth_cache_entry(jti: Optional[str], sub: UUID):
+    key = _auth_cache_key(jti, sub)
+    now = _time.monotonic()
+    with _pool_lock:
+        entry = _auth_resolution_cache.get(key)
+        if not entry:
+            return None
+        if entry[4] <= now:
+            _auth_resolution_cache.pop(key, None)
+            return None
+        return entry
+
+
+def _set_auth_cache_entry(
+    jti: Optional[str],
+    sub: UUID,
+    *,
+    user_id: UUID,
+    company_id: Optional[UUID],
+    company_access: str,
+    must_change_password: bool,
+) -> None:
+    key = _auth_cache_key(jti, sub)
+    expiry = _time.monotonic() + _auth_resolution_cache_ttl_seconds
+    with _pool_lock:
+        _auth_resolution_cache[key] = (
+            user_id,
+            company_id,
+            company_access,
+            must_change_password,
+            expiry,
+        )
+
+
+def _company_access_status(company) -> str:
+    if company is None:
+        return "ok"
+    access = get_company_access(company)
+    if access == "blocked":
+        return "blocked"
+    if access == "expired":
+        return "expired"
+    return "ok"
+
+
+def ensure_ops_permission(
+    db: Session,
+    user_id: UUID,
+    company_id: UUID,
+    permission_name: str,
+) -> None:
+    """Cached company-scoped permission (no branch), e.g. items.view without branch_id."""
+    cache_key = (str(user_id), str(company_id), "-", permission_name)
+    now = _time.monotonic()
+    with _pool_lock:
+        expiry = _ops_branch_access_cache.get(cache_key)
+        if expiry and expiry > now:
+            return
+    if not _user_has_permission(db, user_id, permission_name):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied",
+        )
+    with _pool_lock:
+        _ops_branch_access_cache[cache_key] = now + _ops_branch_access_ttl_seconds
+
+
+def ensure_ops_branch_access(
+    db: Session,
+    user_id: UUID,
+    company_id: UUID,
+    branch_id: UUID,
+    *,
+    permission_name: str = "items.view",
+) -> None:
+    """
+    Cached branch access + permission check for POS hot paths (item search, sales lines).
+    """
+    cache_key = (str(user_id), str(company_id), str(branch_id), permission_name)
+    now = _time.monotonic()
+    with _pool_lock:
+        expiry = _ops_branch_access_cache.get(cache_key)
+        if expiry and expiry > now:
+            return
+    ensure_user_has_branch_access(db, user_id, branch_id)
+    if not _user_has_permission(db, user_id, permission_name):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied",
+        )
+    with _pool_lock:
+        _ops_branch_access_cache[cache_key] = now + _ops_branch_access_ttl_seconds
+
+
+def _stub_user_for_cache(user_id: UUID, *, must_change_password: bool = False):
     """Minimal user-like object for cache-hit fast path (e.g. /api/items/search). Avoids DB round-trip."""
     return SimpleNamespace(
         id=user_id,
         is_active=True,
         deleted_at=None,
-        must_change_password=False,
+        must_change_password=must_change_password,
     )
 _default_tenant_cache_ttl_seconds = 600
 
@@ -729,14 +836,14 @@ def _resolve_user_and_db_optional(
 
 def get_current_user(
     request: Request,
-    master_db: Session = Depends(get_master_db),
 ) -> Generator[Tuple[User, Session], None, None]:
     """
     Require valid internal JWT; yield (user, shared_db_session).
 
     Single-DB mode: does not consult tenant registry tables and never routes to a tenant DB URL.
+    Hot path: in-process cache keyed by (jti, sub) skips user/company DB resolution for ~5 minutes.
+    Master DB is opened only when an org slug header/query is present (not on every request).
     """
-    _ = master_db  # legacy; not used in single-DB mode
     auth = request.headers.get("Authorization")
     token = (auth[7:].strip() if auth and auth.startswith("Bearer ") else None) or None
     path = (request.url.path or "").strip().rstrip("/") or "/"
@@ -771,10 +878,66 @@ def get_current_user(
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     method = (request.method or "GET").upper()
+    jti = payload.get(CLAIM_JTI)
     db: Optional[Session] = None
     try:
         db = SessionLocal()
-        user = _lookup_user_if_not_revoked(db, sub, payload.get(CLAIM_JTI))
+        cached = _get_auth_cache_entry(jti, sub)
+        if cached is not None:
+            user_id, company_id, company_access, must_change_pw, _exp = cached
+            user = _stub_user_for_cache(user_id, must_change_password=must_change_pw)
+            if company_id:
+                try:
+                    db.execute(text(f"SET LOCAL {RLS_CLAIM_COMPANY_ID} = :cid"), {"cid": str(company_id)})
+                except Exception as e:
+                    logger.debug("Could not set RLS GUC %s: %s", RLS_CLAIM_COMPANY_ID, e)
+            if company_access == "blocked" and not _path_allowed_for_blocked_company(path, method):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Company is inactive")
+            if company_access == "expired" and not _path_allowed_for_expired_trial(path, method):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "trial_expired",
+                        "message": "Your trial has ended. Upgrade to continue using this feature.",
+                    },
+                )
+            setattr(request.state, "effective_company_id", company_id)
+            setattr(request.state, "_auth_cache_hit", True)
+            if must_change_pw:
+                allowed = {
+                    "/api/users/change-password-first-time",
+                    "/api/auth/change-password",
+                    "/api/auth/logout",
+                    "/api/auth/me",
+                }
+                if path not in allowed:
+                    parts = path.split("/")
+                    allow_read = (
+                        path == "/api/companies"
+                        or (
+                            path.startswith("/api/companies/")
+                            and len(parts) == 4
+                            and "logo" not in path
+                            and "settings" not in path
+                            and "stamp" not in path
+                        )
+                        or (
+                            path.startswith("/api/companies/")
+                            and len(parts) == 5
+                            and path.rstrip("/").endswith("/settings")
+                        )
+                        or (path.startswith("/api/branches/company/") and len(parts) == 5)
+                        or (path.startswith("/api/branches/") and len(parts) == 4)
+                    )
+                    if not allow_read:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You must change your password before accessing other resources.",
+                        )
+            yield (user, db)
+            return
+
+        user = _lookup_user_if_not_revoked(db, sub, jti)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -783,7 +946,15 @@ def get_current_user(
             )
 
         # Scope to effective company for this request (and RLS policies when enabled)
-        preferred = preferred_company_id_from_request(request, master_db)
+        preferred = None
+        if org_slug_from_request(request):
+            from app.database_master import MasterSessionLocal
+
+            master_db = MasterSessionLocal()
+            try:
+                preferred = preferred_company_id_from_request(request, master_db)
+            finally:
+                master_db.close()
         jwt_cid = None
         try:
             raw = (payload.get(CLAIM_COMPANY_ID) or "").strip()
@@ -801,14 +972,15 @@ def get_current_user(
                 logger.debug("Could not set RLS GUC %s: %s", RLS_CLAIM_COMPANY_ID, e)
 
         # Company access enforcement (blocked/expired)
+        company_access = "ok"
         try:
             from app.models.company import Company
 
             company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
-            access = get_company_access(company)
-            if access == "blocked" and not _path_allowed_for_blocked_company(path, method):
+            company_access = _company_access_status(company)
+            if company_access == "blocked" and not _path_allowed_for_blocked_company(path, method):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Company is inactive")
-            if access == "expired" and not _path_allowed_for_expired_trial(path, method):
+            if company_access == "expired" and not _path_allowed_for_expired_trial(path, method):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail={"code": "trial_expired", "message": "Your trial has ended. Upgrade to continue using this feature."},
@@ -817,6 +989,15 @@ def get_current_user(
             raise
         except Exception:
             pass
+
+        _set_auth_cache_entry(
+            jti,
+            sub,
+            user_id=user.id,
+            company_id=company_id,
+            company_access=company_access,
+            must_change_password=bool(getattr(user, "must_change_password", False)),
+        )
 
         # Enforce must_change_password: allow only password change + minimal read-only shell
         if getattr(user, "must_change_password", False):
@@ -842,10 +1023,37 @@ def get_current_user(
                     )
 
         setattr(request.state, "effective_company_id", company_id)
+        setattr(request.state, "_auth_cache_hit", False)
         yield (user, db)
     finally:
         if db is not None:
             db.close()
+
+
+def get_authenticated_db(
+    request: Request,
+) -> Generator[Tuple[User, Session], None, None]:
+    """
+    Single shared DB session for auth + handler (POS hot paths).
+
+    Use instead of pairing get_current_user + get_tenant_db (which opens two connections).
+    """
+    yield from get_current_user(request)
+
+
+def get_effective_company_id_from_request(
+    request: Request,
+    db: Session,
+    user: User,
+) -> Optional[UUID]:
+    """
+    Resolve company for an authenticated request without extra DB when get_current_user
+    already set request.state.effective_company_id.
+    """
+    cached = getattr(request.state, "effective_company_id", None)
+    if cached is not None:
+        return cached
+    return get_effective_company_id_for_user(db, user)
 
 
 def get_current_admin(request: Request):

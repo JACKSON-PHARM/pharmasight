@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    # SQLAlchemy pool (raise under POS load; default 5 starves parallel search + batch)
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "20"))
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "30"))
     
     # Database (Supabase)
     # Prefer DATABASE_URL from the dashboard: Connect → Session pooler (IPv4-friendly).

@@ -18,7 +18,10 @@ from uuid import UUID, uuid4
 from app.dependencies import (
     get_tenant_db,
     get_current_user,
-    get_effective_company_id_for_user,
+    get_authenticated_db,
+    get_effective_company_id_from_request,
+    ensure_ops_branch_access,
+    ensure_ops_permission,
     _user_has_permission,
     ensure_user_has_branch_access,
 )
@@ -89,6 +92,8 @@ from app.utils.company_plan_limits import company_is_demo_plan, company_product_
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+# Hot path: search without pharmacy module gate (avoids extra company/module DB per keystroke).
+search_router = APIRouter()
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 # Roles allowed to perform manual stock adjustment (add/reduce)
@@ -641,7 +646,7 @@ def stock_batch(
     return {"stocks": result}
 
 
-@router.get("/search")
+@search_router.get("/search")
 def search_items(
     request: Request,
     q: str = Query(..., min_length=2, description="Search query"),
@@ -656,7 +661,7 @@ def search_items(
         False,
         description="When true with branch_id, exclude items with zero pharmacy snapshot stock",
     ),
-    current_user_and_db: tuple = Depends(get_current_user),
+    user_db: tuple = Depends(get_authenticated_db),
 ):
     """
     Item search: single service path. Snapshot (item_branch_snapshot) is primary when branch_id is set;
@@ -664,17 +669,17 @@ def search_items(
     Returns: id, name, base_unit, prices, sku, stock, VAT, margin_percent, next_expiry_date.
     Uses db from auth (get_current_user) to avoid a second tenant DB connection (get_tenant_db).
     """
-    _user, db = current_user_and_db
-    effective_company_id = get_effective_company_id_for_user(db, _user)
+    _user, db = user_db
+    effective_company_id = get_effective_company_id_from_request(request, db, _user)
     if effective_company_id is None or str(company_id) != str(effective_company_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this company's data.",
         )
     if branch_id is not None:
-        ensure_user_has_branch_access(db, _user.id, branch_id)
-    if not _user_has_permission(db, _user.id, "items.view"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        ensure_ops_branch_access(db, _user.id, company_id, branch_id)
+    else:
+        ensure_ops_permission(db, _user.id, company_id, "items.view")
 
     result, path, server_timing = ItemSearchService.search(
         db, q, company_id, branch_id, limit, include_pricing, context, in_stock_only

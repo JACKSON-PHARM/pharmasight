@@ -1843,6 +1843,89 @@ async function renderCreatePurchaseOrderPage() {
     } catch (_) {}
 }
 
+/** Action buttons for a saved DRAFT supplier invoice (update, batch, delete, PDF). */
+function supplierInvoiceDraftActionBarHtml(invoiceId, invoiceData) {
+    const id = String(invoiceId || '');
+    if (!id) return '';
+    const invNumRaw = invoiceData && invoiceData.invoice_number ? String(invoiceData.invoice_number) : '';
+    const invNumEsc = invNumRaw.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const batchBlock = supplierInvoiceBatchAllowed
+        ? `<button type="button" class="btn btn-primary" id="batchInvoiceBtn" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${id}', this)" title="Batch invoice (add stock to inventory)">
+            <i class="fas fa-check"></i> Batch &amp; Print
+        </button>`
+        : `<span style="font-size: 0.8rem; color: var(--text-secondary); align-self: center; max-width: 14rem;" title="Posting to inventory requires batch permission on your role.">Draft saved — batch permission required to add stock.</span>`;
+    return `
+        <button type="submit" class="btn btn-primary" form="purchaseInvoiceForm" title="Save invoice header and line changes">
+            <i class="fas fa-save"></i> Update document
+        </button>
+        ${batchBlock}
+        <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deleteSupplierInvoice) window.deleteSupplierInvoice('${id}')" title="Delete draft invoice">
+            <i class="fas fa-trash"></i> Delete
+        </button>
+        <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${id}', '${invNumEsc}')" title="Download PDF">
+            <i class="fas fa-file-pdf"></i> PDF
+        </button>
+    `;
+}
+
+function supplierInvoicePreDraftActionButtonsHtml() {
+    return `
+        <button type="button" class="btn btn-outline" disabled title="Add first item to create draft">
+            <i class="fas fa-file-pdf"></i> PDF
+        </button>
+        <button type="button" class="btn btn-primary" disabled title="Add first item to create draft">
+            <i class="fas fa-check"></i> Batch &amp; Print
+        </button>
+        <button type="button" class="btn btn-outline btn-danger" disabled title="Add first item to create draft">
+            <i class="fas fa-trash"></i> Delete
+        </button>
+    `;
+}
+
+function resolveSupplierInvoiceActionButtonsHost() {
+    return document.getElementById('supplierInvoiceActionButtons');
+}
+
+/**
+ * After first item creates a DRAFT, show edit-mode toolbar without full page re-render.
+ */
+async function refreshSupplierInvoiceDraftToolbar() {
+    if (typeof refreshSupplierInvoiceBatchPermission === 'function') {
+        await refreshSupplierInvoiceBatchPermission();
+    }
+    if (!currentDocument || !currentDocument.invoiceId) return;
+    const invoiceId = currentDocument.invoiceId;
+    const invoiceData = currentDocument.invoiceData || {};
+    const buttonsEl = resolveSupplierInvoiceActionButtonsHost();
+    if (buttonsEl) {
+        buttonsEl.innerHTML = supplierInvoiceDraftActionBarHtml(invoiceId, invoiceData);
+    }
+    const titleEl = document.getElementById('supplierInvoiceTitleText');
+    if (titleEl) {
+        const no = invoiceData.invoice_number ? String(invoiceData.invoice_number) : '';
+        titleEl.textContent = no ? `Edit Supplier Invoice: ${no}` : 'Create Supplier Invoice (Draft)';
+    }
+    const standaloneSave = document.getElementById('supplierInvoiceStandaloneSaveBtn');
+    if (standaloneSave) standaloneSave.style.display = 'none';
+    const supplierSearch = document.getElementById('supplierSearchInvoice');
+    if (supplierSearch && invoiceData.supplier_name) {
+        supplierSearch.value = invoiceData.supplier_name;
+        supplierSearch.disabled = true;
+    }
+    const supplierHidden = document.getElementById('supplierIdInvoice');
+    if (supplierHidden && invoiceData.supplier_id) {
+        supplierHidden.value = invoiceData.supplier_id;
+    }
+}
+
+async function ensureSupplierInvoiceDraftToolbarVisible() {
+    if (!currentDocument || !currentDocument.invoiceId) return;
+    const host = resolveSupplierInvoiceActionButtonsHost();
+    if (!host || !host.querySelector('#batchInvoiceBtn, button[form="purchaseInvoiceForm"]')) {
+        await refreshSupplierInvoiceDraftToolbar();
+    }
+}
+
 // Render Create Supplier Invoice Page (RECEIVING document - ADDS STOCK)
 async function renderCreateSupplierInvoicePage() {
     console.log('renderCreatePurchaseInvoicePage()');
@@ -1944,42 +2027,26 @@ async function renderCreateSupplierInvoicePage() {
         : (isEditMode && invoiceData && invoiceData.invoice_number
             ? `Edit Supplier Invoice: ${invoiceData.invoice_number}`
             : (isCreateWithItems ? 'Create Supplier Invoice (Draft)' : 'Create Supplier Invoice'));
-    const supplierInvoiceActionButtonsHtml = isEditMode && invoiceData ? `
-        <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${invoiceData.id}', '${String(invoiceData.invoice_number || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')" title="Download PDF">
-            <i class="fas fa-file-pdf"></i> Download PDF
-        </button>
-        ${invoiceData.status === 'DRAFT' ? `
-            ${supplierInvoiceBatchAllowed ? `
-            <button type="button" class="btn btn-primary" id="batchInvoiceBtn" onclick="if(window.batchSupplierInvoice) window.batchSupplierInvoice('${invoiceData.id}', this)" title="Batch Invoice (Add Stock)">
-                <i class="fas fa-boxes"></i> Batch Invoice
-            </button>
-            ` : `
-            <span style="font-size: 0.8rem; color: var(--text-secondary); align-self: center; max-width: 14rem;" title="Posting to inventory requires the Batch supplier invoice permission on your role.">
-                Draft only — posting stock requires batch permission.
-            </span>
-            `}
-            <button type="button" class="btn btn-outline btn-danger" onclick="if(window.deleteSupplierInvoice) window.deleteSupplierInvoice('${invoiceData.id}')" title="Delete Invoice (Only for DRAFT)">
-                <i class="fas fa-trash"></i> Delete
-            </button>
-        ` : `
-            <button type="button" class="btn btn-outline btn-danger" disabled title="Cannot delete BATCHED invoice (stock already added)">
-                <i class="fas fa-trash"></i> Delete (Disabled)
-            </button>
-            <span style="color: var(--text-secondary); font-size: 0.875rem; align-self: center; margin-left: 0.5rem;">
-                Invoice is BATCHED - cannot be deleted
-            </span>
-        `}
-    ` : (isCreateWithItems ? `
-        <button type="button" class="btn btn-outline" disabled title="Save invoice first to enable">
-            <i class="fas fa-file-pdf"></i> Download PDF
-        </button>
-        <button type="button" class="btn btn-primary" disabled title="Save invoice first to enable">
-            <i class="fas fa-boxes"></i> Batch Invoice
-        </button>
-        <button type="button" class="btn btn-outline btn-danger" disabled title="Save invoice first to enable">
-            <i class="fas fa-trash"></i> Delete
-        </button>
-    ` : '');
+    let supplierInvoiceActionButtonsHtml = '';
+    if (isEditMode && invoiceData) {
+        if (invoiceData.status === 'DRAFT') {
+            supplierInvoiceActionButtonsHtml = supplierInvoiceDraftActionBarHtml(invoiceData.id, invoiceData);
+        } else {
+            supplierInvoiceActionButtonsHtml = `
+                <button type="button" class="btn btn-outline" onclick="if(window.downloadSupplierInvoicePdf) window.downloadSupplierInvoicePdf('${invoiceData.id}', '${String(invoiceData.invoice_number || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')" title="Download PDF">
+                    <i class="fas fa-file-pdf"></i> Download PDF
+                </button>
+                <button type="button" class="btn btn-outline btn-danger" disabled title="Cannot delete BATCHED invoice (stock already added)">
+                    <i class="fas fa-trash"></i> Delete (Disabled)
+                </button>
+                <span style="color: var(--text-secondary); font-size: 0.875rem; align-self: center; margin-left: 0.5rem;">
+                    Invoice is BATCHED - cannot be deleted
+                </span>
+            `;
+        }
+    } else if (isCreateWithItems) {
+        supplierInvoiceActionButtonsHtml = supplierInvoicePreDraftActionButtonsHtml();
+    }
 
     const totalInv = invoiceData ? parseFloat(invoiceData.total_inclusive || 0) : 0;
     const paidInv = invoiceData ? parseFloat(invoiceData.amount_paid || 0) : 0;
@@ -2046,7 +2113,7 @@ async function renderCreateSupplierInvoicePage() {
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
                     <span id="supplierInvoiceActionButtons">${supplierInvoiceActionButtonsHtml}</span>
-                    ${isReadOnly ? '' : `<button type="submit" class="btn btn-primary" form="purchaseInvoiceForm">
+                    ${isReadOnly ? '' : `<button type="submit" class="btn btn-primary" id="supplierInvoiceStandaloneSaveBtn" form="purchaseInvoiceForm" style="${isEditMode && invoiceData && invoiceData.status === 'DRAFT' ? 'display:none;' : ''}">
                         <i class="fas fa-save"></i> ${isEditMode ? 'Update' : 'Save'} Invoice
                     </button>`}
                     ${isReadOnly ? '<span style="font-size: 0.875rem; color: var(--text-secondary); align-self: center;">View only. Only payment can be updated from Supplier or Payments.</span>' : ''}
@@ -2146,25 +2213,18 @@ async function renderCreateSupplierInvoicePage() {
     }
 }
 
-// Update Create Supplier Invoice header when first item is added (show Draft + disabled Batch/Delete/PDF)
+// Update header when items exist but draft not saved yet (disabled actions until first Add item)
 function updateSupplierInvoiceCreateHeader(showDraft) {
     if (currentPurchaseSubPage !== 'create-invoice') return;
-    if (currentDocument && currentDocument.invoiceId) return;
+    if (currentDocument && currentDocument.invoiceId) {
+        void ensureSupplierInvoiceDraftToolbarVisible();
+        return;
+    }
     const titleEl = document.getElementById('supplierInvoiceTitleText');
-    const buttonsEl = document.getElementById('supplierInvoiceActionButtons');
+    const buttonsEl = resolveSupplierInvoiceActionButtonsHost();
     if (titleEl) titleEl.textContent = showDraft ? 'Create Supplier Invoice (Draft)' : 'Create Supplier Invoice';
     if (buttonsEl) {
-        buttonsEl.innerHTML = showDraft ? `
-            <button type="button" class="btn btn-outline" disabled title="Save invoice first to enable">
-                <i class="fas fa-file-pdf"></i> Download PDF
-            </button>
-            <button type="button" class="btn btn-primary" disabled title="Save invoice first to enable">
-                <i class="fas fa-boxes"></i> Batch Invoice
-            </button>
-            <button type="button" class="btn btn-outline btn-danger" disabled title="Save invoice first to enable">
-                <i class="fas fa-trash"></i> Delete
-            </button>
-        ` : '';
+        buttonsEl.innerHTML = showDraft ? supplierInvoicePreDraftActionButtonsHtml() : '';
     }
 }
 
@@ -2264,6 +2324,7 @@ async function onSupplierInvoiceAddItem(item) {
             if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
                 transactionItemsTable.setItems(documentItems);
             }
+            await ensureSupplierInvoiceDraftToolbarVisible();
             showToast('Draft invoice created. Add more items or use Manage Batches, then Batch to add stock.', 'success');
             return;
         }
@@ -2274,6 +2335,9 @@ async function onSupplierInvoiceAddItem(item) {
             if (item.item_code && item.item_code !== '=') supplierInvoiceItemDisplayCache[idKey].item_code = item.item_code;
         }
         const updated = await API.purchases.addInvoiceItem(invoiceId, mapTableItemToSupplierInvoiceItem(item));
+        if (updated && updated.id) {
+            currentDocument.invoiceData = Object.assign({}, currentDocument.invoiceData || {}, updated);
+        }
         supplierInvoiceSyncedItemIds.add(item.item_id);
         documentItems = (updated.items || []).map(i => {
             const disp = getSupplierInvoiceItemDisplay(i, supplierInvoiceItemDisplayCache);
@@ -2306,6 +2370,7 @@ async function onSupplierInvoiceAddItem(item) {
         if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
             transactionItemsTable.setItems(documentItems);
         }
+        await ensureSupplierInvoiceDraftToolbarVisible();
     } catch (err) {
         const d = _structuredDetailFromApiError(err);
         if (d && d.code === 'PRICE_CONFIRMATION_REQUIRED' && (d.items || []).length && lastFirstLineSupplierInvoicePayload) {
@@ -2347,6 +2412,7 @@ async function onSupplierInvoiceAddItem(item) {
                 if (transactionItemsTable && typeof transactionItemsTable.setItems === 'function') {
                     transactionItemsTable.setItems(documentItems);
                 }
+                await ensureSupplierInvoiceDraftToolbarVisible();
                 showToast('Draft invoice created. Add more items or use Manage Batches, then Batch to add stock.', 'success');
                 if (typeof closeModal === 'function') closeModal();
             });

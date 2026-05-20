@@ -3,7 +3,7 @@ Sales API routes (KRA Compliant)
 """
 import logging
 import time
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Any, List, Optional
@@ -16,12 +16,15 @@ from pydantic import BaseModel, Field
 from app.dependencies import (
     get_tenant_db,
     get_current_user,
+    get_authenticated_db,
     get_tenant_or_default,
     get_tenant_optional,
     require_document_belongs_to_user_company,
     _user_has_permission,
     get_effective_company_id_for_user,
+    get_effective_company_id_from_request,
     ensure_user_has_branch_access,
+    ensure_ops_branch_access,
 )
 from app.finance.governance.classification import MANAGEMENT
 from app.finance.governance.context import assert_access, resolve_finance_access_context
@@ -49,6 +52,7 @@ from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
 from app.utils.reversal_audit import client_ip_from_request, pydantic_payload_hash, user_agent_from_request
 from app.services.order_book_service import OrderBookService
+from app.services.sales_batch_side_effects import run_sales_batch_side_effects
 from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
 from app.services.invoice_workflow_policy import default_sales_type_for_branch
 from app.services.invoice_payment_status import (
@@ -258,8 +262,8 @@ def _user_has_sell_below_min_margin(db: Session, user_id: UUID, branch_id: UUID)
 @router.post("/invoice", response_model=SalesInvoiceResponse, status_code=status.HTTP_201_CREATED)
 def create_sales_invoice(
     invoice: SalesInvoiceCreate,
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    request: Request,
+    user_db: tuple = Depends(get_authenticated_db),
 ):
     """
     Create a sales invoice as DRAFT
@@ -269,16 +273,16 @@ def create_sales_invoice(
     
     If payment_mode is 'credit', customer_name and customer_phone are required.
     """
-    user, _ = current_user_and_db
-    effective_company_id = get_effective_company_id_for_user(db, user)
+    user, db = user_db
+    effective_company_id = get_effective_company_id_from_request(request, db, user)
     if effective_company_id is None or str(invoice.company_id) != str(effective_company_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this company's data.",
         )
-    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
-    if not _user_has_permission(db, user.id, "sales.create"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    ensure_ops_branch_access(
+        db, user.id, invoice.company_id, invoice.branch_id, permission_name="sales.create"
+    )
 
     # Validate credit payment mode requirements
     if invoice.payment_mode == 'credit':
@@ -322,11 +326,6 @@ def create_sales_invoice(
     # Process each item
     invoice_items = []
     
-    # Check if customer_phone column exists (for backward compatibility)
-    from sqlalchemy import inspect
-    inspector = inspect(SalesInvoice)
-    has_customer_phone = 'customer_phone' in [col.name for col in inspector.columns]
-    
     for item_data in items_to_save:
         # Get item
         item = db.query(Item).filter(Item.id == item_data.item_id).first()
@@ -343,8 +342,12 @@ def create_sales_invoice(
         
         # Check availability (but don't allocate yet - that happens on batch)
         is_available, available, required = InventoryService.check_stock_availability(
-            db, item_data.item_id, invoice.branch_id,
-            float(item_data.quantity), item_data.unit_name
+            db,
+            item_data.item_id,
+            invoice.branch_id,
+            float(item_data.quantity),
+            item_data.unit_name,
+            company_id=invoice.company_id,
         )
         if not is_available:
             raise HTTPException(
@@ -368,7 +371,7 @@ def create_sales_invoice(
             getattr(item_data, "unit_cost_base", None),
         )
 
-        if not unit_price:
+        if unit_price is None:
             price_info = PricingService.calculate_recommended_price(
                 db, item_data.item_id, invoice.branch_id,
                 invoice.company_id, item_data.unit_name, tier=pricing_tier
@@ -388,32 +391,33 @@ def create_sales_invoice(
                     status_code=400,
                     detail=f"Price not available for {item.name}"
                 )
-        else:
-            # Price validation (floor + margin + promo) vs list/catalog economics
-            if margin_ref_base is not None:
-                mult = get_unit_multiplier_from_item(item, item_data.unit_name)
-                if mult is not None and mult > 0:
-                    cost_per_sale_unit = margin_ref_base * mult
-                    unit_price_val = Decimal(str(unit_price))
-                    user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
-                    is_promo = is_line_price_at_promo(
-                        db, item_data.item_id, item_data.unit_name or "", unit_price_val
+        elif not (
+            getattr(item_data, "unit_cost_base", None) is not None
+            and getattr(item_data, "margin_percent", None) is not None
+        ) and margin_ref_base is not None:
+            mult = get_unit_multiplier_from_item(item, item_data.unit_name)
+            if mult is not None and mult > 0:
+                cost_per_sale_unit = margin_ref_base * mult
+                unit_price_val = Decimal(str(unit_price))
+                user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
+                is_promo = is_line_price_at_promo(
+                    db, item_data.item_id, item_data.unit_name or "", unit_price_val
+                )
+                validation = validate_line_price(
+                    db,
+                    invoice.company_id,
+                    item_data.item_id,
+                    unit_price_val,
+                    cost_per_sale_unit,
+                    user_has_override,
+                    branch_id=invoice.branch_id,
+                    is_promo_price=is_promo,
+                )
+                if not validation.get("allowed"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=validation.get("message", "Price validation failed."),
                     )
-                    validation = validate_line_price(
-                        db,
-                        invoice.company_id,
-                        item_data.item_id,
-                        unit_price_val,
-                        cost_per_sale_unit,
-                        user_has_override,
-                        branch_id=invoice.branch_id,
-                        is_promo_price=is_promo,
-                    )
-                    if not validation.get("allowed"):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=validation.get("message", "Price validation failed.")
-                        )
         
         # Calculate line totals
         line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
@@ -498,15 +502,6 @@ def create_sales_invoice(
     for item in invoice_items:
         item.sales_invoice_id = db_invoice.id
         db.add(item)
-
-    try:
-        from app.services.commercial_transaction_lifecycle import on_sales_invoice_created
-
-        on_sales_invoice_created(db, db_invoice, actor_user_id=invoice.created_by)
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "commercial_transaction_lifecycle: create hook failed for invoice (non-fatal)"
-        )
 
     db.commit()
     db.refresh(db_invoice)
@@ -938,9 +933,7 @@ def add_sales_invoice_item(
     invoice_id: UUID,
     item_data: SalesInvoiceItemCreate,
     request: Request,
-    current_user_and_db: tuple = Depends(get_current_user),
-    tenant: Optional[Any] = Depends(get_tenant_optional),
-    db: Session = Depends(get_tenant_db),
+    user_db: tuple = Depends(get_authenticated_db),
 ):
     """
     Add one line item to an existing DRAFT invoice. Auto-save.
@@ -952,7 +945,7 @@ def add_sales_invoice_item(
 
     t0 = time.perf_counter()
     request.state.timings = {}
-    user = current_user_and_db[0]
+    user, db = user_db
     invoice = (
         db.query(SalesInvoice)
         .options(
@@ -965,9 +958,9 @@ def add_sales_invoice_item(
     request.state.timings["LoadMs"] = round((time.perf_counter() - t0) * 1000, 1)
     t1 = time.perf_counter()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
-    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
-    if not _user_has_permission(db, user.id, "sales.edit"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    ensure_ops_branch_access(
+        db, user.id, invoice.company_id, invoice.branch_id, permission_name="sales.edit"
+    )
     request.state.timings["CompanyCheckMs"] = round((time.perf_counter() - t1) * 1000, 1)
     t2 = time.perf_counter()
     if invoice.status != "DRAFT":
@@ -994,8 +987,12 @@ def add_sales_invoice_item(
 
     item_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
     is_available, available, required = InventoryService.check_stock_availability(
-        db, item_data.item_id, invoice.branch_id,
-        float(item_data.quantity), item_data.unit_name
+        db,
+        item_data.item_id,
+        invoice.branch_id,
+        float(item_data.quantity),
+        item_data.unit_name,
+        company_id=invoice.company_id,
     )
     if not is_available:
         raise HTTPException(
@@ -1010,7 +1007,12 @@ def add_sales_invoice_item(
         db, invoice.company_id, invoice.branch_id, item_data.item_id,
         getattr(item_data, "unit_cost_base", None),
     )
-    if not unit_price:
+    pos_priced_from_search = (
+        unit_price is not None
+        and getattr(item_data, "unit_cost_base", None) is not None
+        and getattr(item_data, "margin_percent", None) is not None
+    )
+    if unit_price is None:
         price_info = PricingService.calculate_recommended_price(
             db, item_data.item_id, invoice.branch_id,
             invoice.company_id, item_data.unit_name, tier=pricing_tier
@@ -1026,31 +1028,30 @@ def add_sales_invoice_item(
                 margin_ref_base = price_info["unit_cost_used"]
         else:
             raise HTTPException(status_code=400, detail=f"Price not available for {item.name}")
-    else:
-        if margin_ref_base is not None:
-            mult = get_unit_multiplier_from_item(item, item_data.unit_name)
-            if mult is not None and mult > 0:
-                cost_per_sale_unit = margin_ref_base * mult
-                unit_price_val = Decimal(str(unit_price))
-                user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
-                is_promo = is_line_price_at_promo(
-                    db, item_data.item_id, item_data.unit_name or "", unit_price_val
+    elif not pos_priced_from_search and margin_ref_base is not None:
+        mult = get_unit_multiplier_from_item(item, item_data.unit_name)
+        if mult is not None and mult > 0:
+            cost_per_sale_unit = margin_ref_base * mult
+            unit_price_val = Decimal(str(unit_price))
+            user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
+            is_promo = is_line_price_at_promo(
+                db, item_data.item_id, item_data.unit_name or "", unit_price_val
+            )
+            validation = validate_line_price(
+                db,
+                invoice.company_id,
+                item_data.item_id,
+                unit_price_val,
+                cost_per_sale_unit,
+                user_has_override,
+                branch_id=invoice.branch_id,
+                is_promo_price=is_promo,
+            )
+            if not validation.get("allowed"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=validation.get("message", "Price validation failed."),
                 )
-                validation = validate_line_price(
-                    db,
-                    invoice.company_id,
-                    item_data.item_id,
-                    unit_price_val,
-                    cost_per_sale_unit,
-                    user_has_override,
-                    branch_id=invoice.branch_id,
-                    is_promo_price=is_promo,
-                )
-                if not validation.get("allowed"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=validation.get("message", "Price validation failed.")
-                    )
 
     line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
     discount_amount = item_data.discount_amount or (line_total_exclusive * item_data.discount_percent / Decimal("100"))
@@ -1093,60 +1094,33 @@ def add_sales_invoice_item(
     t3 = time.perf_counter()
 
     try:
-        # Build response: use already-loaded inv_item.item (selectinload) for existing lines; single `item` for the new line. O(1).
+        new_line.item = item
+        new_line.item_name = item.name or ""
+        new_line.item_code = item.sku or ""
+        new_line.unit_display_short = get_unit_display_short(item, new_line.unit_name or "")
+        new_line.unit_cost_base = margin_ref_base
+        if getattr(item_data, "margin_percent", None) is not None:
+            new_line.margin_percent = Decimal(str(item_data.margin_percent))
+        new_line.batch_allocations = None
+        new_line.batch_number = None
+        new_line.expiry_date = None
         for inv_item in invoice.items:
-            it = inv_item.item if inv_item.item_id != item_data.item_id else item
-            if it:
-                inv_item.item = it
-                if not getattr(inv_item, "item_name", None):
-                    inv_item.item_name = it.name or ""
-                if not getattr(inv_item, "item_code", None):
-                    inv_item.item_code = it.sku or ""
-                inv_item.unit_display_short = get_unit_display_short(it, inv_item.unit_name or "")
-            if inv_item.item_id == item_data.item_id:
-                ref_base = getattr(inv_item, "margin_reference_unit_cost_base", None)
-                if ref_base is None:
-                    ref_base = _sales_margin_reference_unit_cost_base(
-                        db, invoice.company_id, invoice.branch_id, inv_item.item_id,
-                        getattr(item_data, "unit_cost_base", None),
-                    )
-                inv_item.unit_cost_base = ref_base
-                if getattr(item_data, "margin_percent", None) is not None:
-                    inv_item.margin_percent = Decimal(str(item_data.margin_percent))
-                elif ref_base is not None and it and float(ref_base or 0) >= 0:
-                    mult = get_unit_multiplier_from_item(it, inv_item.unit_name or "")
-                    if mult is not None and mult > 0:
-                        cost_per_sale_unit = float(ref_base) * float(mult)
-                        price = float(inv_item.unit_price_exclusive or 0)
-                        if price > 0:
-                            inv_item.margin_percent = (Decimal(str(price)) - Decimal(str(cost_per_sale_unit))) / Decimal(str(price)) * Decimal("100")
+            if inv_item.item_id != item_data.item_id:
+                continue
+            inv_item.item = item
+            inv_item.item_name = new_line.item_name
+            inv_item.item_code = new_line.item_code
+            inv_item.unit_display_short = new_line.unit_display_short
+            inv_item.unit_cost_base = new_line.unit_cost_base
+            inv_item.margin_percent = new_line.margin_percent
             inv_item.batch_allocations = None
             inv_item.batch_number = None
             inv_item.expiry_date = None
+            break
         request.state.timings["CostMs"] = round((time.perf_counter() - t3) * 1000, 1)
         t4 = time.perf_counter()
         if not getattr(invoice, "status", None):
             invoice.status = "DRAFT"
-        if not hasattr(invoice, "batched"):
-            invoice.batched = invoice.status in ["BATCHED", "PAID"]
-        if not hasattr(invoice, "cashier_approved"):
-            invoice.cashier_approved = invoice.status == "PAID"
-        # Use eagerly loaded company, branch, creator (no extra queries)
-        if invoice.company:
-            invoice.company_name = invoice.company.name
-            invoice.company_address = getattr(invoice.company, "address", None) or ""
-            logo_path = getattr(invoice.company, "logo_url", None)
-            if logo_path and str(logo_path).strip():
-                if str(logo_path).startswith("tenant-assets/") and tenant is not None:
-                    invoice.logo_url = get_signed_url(logo_path, tenant=tenant)
-                elif str(logo_path).startswith("http://") or str(logo_path).startswith("https://"):
-                    invoice.logo_url = str(logo_path).strip()
-        if invoice.branch:
-            invoice.branch_name = invoice.branch.name
-            invoice.branch_address = getattr(invoice.branch, "address", None) or ""
-            invoice.branch_phone = getattr(invoice.branch, "phone", None) or ""
-        if invoice.creator:
-            invoice.created_by_username = invoice.creator.username or getattr(invoice.creator, "full_name", None) or ""
 
         request.state.timings["BuildMs"] = round((time.perf_counter() - t4) * 1000, 1)
         request.state.timings["TotalMs"] = round((time.perf_counter() - t0) * 1000, 1)
@@ -2500,9 +2474,9 @@ def batch_sales_invoice(
     invoice_id: UUID,
     batched_by: UUID,
     request: Request,
+    background_tasks: BackgroundTasks,
     body: Optional[BatchSalesInvoiceRequest] = None,
-    current_user_and_db: tuple = Depends(get_current_user),
-    db: Session = Depends(get_tenant_db),
+    user_db: tuple = Depends(get_authenticated_db),
 ):
     """
     Batch Sales Invoice - Reduce Stock from Inventory
@@ -2514,7 +2488,7 @@ def batch_sales_invoice(
     from sqlalchemy.orm import selectinload
     from datetime import datetime
 
-    user = current_user_and_db[0]
+    user, db = user_db
     # Lock invoice row for update so concurrent batch requests for same invoice are serialized; eager-load items.item to avoid N+1
     invoice = (
         db.query(SalesInvoice)
@@ -2526,9 +2500,9 @@ def batch_sales_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
-    ensure_user_has_branch_access(db, user.id, invoice.branch_id)
-    if not _user_has_permission(db, user.id, "sales.edit"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    ensure_ops_branch_access(
+        db, user.id, invoice.company_id, invoice.branch_id, permission_name="sales.edit"
+    )
 
     from app.services.invoice_workflow_policy import note_invoice_finalization_policy
 
@@ -2639,8 +2613,12 @@ def batch_sales_invoice(
             )
 
             is_available, available, required = InventoryService.check_stock_availability(
-                db, invoice_item.item_id, invoice.branch_id,
-                float(invoice_item.quantity), invoice_item.unit_name
+                db,
+                invoice_item.item_id,
+                invoice.branch_id,
+                float(invoice_item.quantity),
+                invoice_item.unit_name,
+                company_id=invoice.company_id,
             )
             if not is_available:
                 raise HTTPException(
@@ -2649,8 +2627,12 @@ def batch_sales_invoice(
                 )
 
             allocations = InventoryService.allocate_stock_fefo(
-                db, invoice_item.item_id, invoice.branch_id,
-                quantity_base, invoice_item.unit_name
+                db,
+                invoice_item.item_id,
+                invoice.branch_id,
+                quantity_base,
+                invoice_item.unit_name,
+                company_id=invoice.company_id,
             )
 
             qty_base_dec = Decimal(str(quantity_base))
@@ -2660,6 +2642,7 @@ def batch_sales_invoice(
             if allocations and qty_base_dec > 0:
                 cost_per_base_unit = total_line_ledger_cost / qty_base_dec
                 ref_base = getattr(invoice_item, "margin_reference_unit_cost_base", None)
+                had_margin_ref_at_draft = ref_base is not None
                 if ref_base is None:
                     ref_base = PricingService.get_margin_reference_cost_per_base(
                         db, invoice_item.item_id, invoice.branch_id, invoice.company_id
@@ -2668,27 +2651,29 @@ def batch_sales_invoice(
 
                 mult = get_unit_multiplier_from_item(item, invoice_item.unit_name)
                 if mult is not None and mult > 0 and ref_base is not None:
-                    cost_per_sale_unit_ref = ref_base * mult
                     unit_price_val = invoice_item.unit_price_exclusive or Decimal("0")
-                    user_has_override = _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id)
-                    is_promo = is_line_price_at_promo(
-                        db, invoice_item.item_id, invoice_item.unit_name or "", unit_price_val
-                    )
-                    validation = validate_line_price(
-                        db,
-                        invoice.company_id,
-                        invoice_item.item_id,
-                        unit_price_val,
-                        cost_per_sale_unit_ref,
-                        user_has_override,
-                        branch_id=invoice.branch_id,
-                        is_promo_price=is_promo,
-                    )
-                    if not validation.get("allowed"):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=validation.get("message", "Price validation failed.")
+                    cost_per_sale_unit_ref = ref_base * mult
+                    # Draft lines validated on add; skip repeat DB-heavy checks at batch for POS speed.
+                    if not had_margin_ref_at_draft:
+                        user_has_override = _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id)
+                        is_promo = is_line_price_at_promo(
+                            db, invoice_item.item_id, invoice_item.unit_name or "", unit_price_val
                         )
+                        validation = validate_line_price(
+                            db,
+                            invoice.company_id,
+                            invoice_item.item_id,
+                            unit_price_val,
+                            cost_per_sale_unit_ref,
+                            user_has_override,
+                            branch_id=invoice.branch_id,
+                            is_promo_price=is_promo,
+                        )
+                        if not validation.get("allowed"):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=validation.get("message", "Price validation failed."),
+                            )
 
                     # Sustainable margin (warn-only): log lines sold below configured threshold.
                     # Uses reference/list cost, not landed COGS.
@@ -2827,91 +2812,34 @@ def batch_sales_invoice(
                 sync_customer_invoice_paid_from_settlements(db, invoice)
                 post_customer_ledger_on_batch(db, invoice, customer, invoice.company_id)
 
-        # M1 GL: revenue + COGS from operational batch (soft-fail; does not roll back stock batch)
-        try:
-            from app.accounting.posting.sales import post_gl_for_sales_invoice_batch
-
-            post_gl_for_sales_invoice_batch(
-                db, invoice, ledger_entries, posted_by=batched_by
-            )
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "accounting: GL sales batch hook failed for invoice %s (non-fatal)",
-                invoice_id,
-            )
-
-        # Immutable KRA snapshot + transactional outbox when the company has KRA execution enabled
-        # and this branch has submission enabled on stored credentials.
-        if company_kra_execution_enabled(db, invoice.company_id):
-            from app.models.company import BranchEtimsCredentials
-
-            creds = (
-                db.query(BranchEtimsCredentials)
-                .filter(BranchEtimsCredentials.branch_id == invoice.branch_id)
-                .first()
-            )
-            if creds and bool(getattr(creds, "enabled", False)):
-                apply_etims_snapshots_on_batch(invoice)
-                KraOutboxService.enqueue_sale_completed(
-                    db,
-                    invoice=invoice,
-                    source="sales.batch",
-                    max_attempts=max(int(settings.KRA_OUTBOX_MAX_ATTEMPTS or 12), 1),
-                )
-
         for entry in ledger_entries:
             db.add(entry)
 
         db.flush()
 
-        # Persist sustainable below-margin logs (non-blocking; best effort).
-        if below_margin_rows:
-            try:
-                from sqlalchemy import text
-
-                db.execute(
-                    text(
-                        """
-                        INSERT INTO below_margin_sales_lines (
-                            company_id, branch_id, sales_invoice_id, sales_invoice_item_id,
-                            invoice_no, invoice_date, payment_mode, customer_name,
-                            item_id, item_name, unit_name, quantity_sale_unit, quantity_base_unit,
-                            unit_price_exclusive, reference_unit_cost_base,
-                            sustainable_min_margin_pct, computed_margin_pct, created_by
-                        )
-                        VALUES (
-                            :company_id, :branch_id, :sales_invoice_id, :sales_invoice_item_id,
-                            :invoice_no, :invoice_date, :payment_mode, :customer_name,
-                            :item_id, :item_name, :unit_name, :quantity_sale_unit, :quantity_base_unit,
-                            :unit_price_exclusive, :reference_unit_cost_base,
-                            :sustainable_min_margin_pct, :computed_margin_pct, :created_by
-                        )
-                        """
-                    ),
-                    below_margin_rows,
-                )
-            except Exception as e:
-                logging.getLogger(__name__).warning("Below-margin log insert failed (ignored): %s", e)
+        # Hot path optimization: update inventory_balances in one bulk statement.
+        # Aggregate per (company, branch, item) to avoid duplicate PK rows in a single INSERT ... ON CONFLICT.
+        balance_delta_map: dict[tuple[UUID, UUID, UUID], Decimal] = {}
         for entry in ledger_entries:
-            SnapshotService.upsert_inventory_balance(
-                db, entry.company_id, entry.branch_id, entry.item_id, entry.quantity_delta,
-                document_number=getattr(entry, "document_number", None) or invoice.invoice_no,
-            )
+            key = (entry.company_id, entry.branch_id, entry.item_id)
+            balance_delta_map[key] = balance_delta_map.get(key, Decimal("0")) + Decimal(str(entry.quantity_delta or 0))
+        SnapshotService.upsert_inventory_balance_bulk(
+            db,
+            [
+                (company_id, branch_id, item_id, qty_delta)
+                for (company_id, branch_id, item_id), qty_delta in balance_delta_map.items()
+            ],
+        )
         for inv_item in invoice.items:
             SnapshotService.upsert_search_snapshot_last_sale(
                 db, invoice.company_id, invoice.branch_id, inv_item.item_id, invoice.invoice_date
             )
-        for entry in ledger_entries:
-            SnapshotRefreshService.schedule_snapshot_refresh(db, entry.company_id, entry.branch_id, item_id=entry.item_id)
-
-        try:
-            from app.services.commercial_transaction_lifecycle import on_sales_invoice_batched
-
-            on_sales_invoice_batched(db, invoice, batched_by=batched_by)
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "commercial_transaction_lifecycle: batch hook failed for invoice %s (non-fatal)",
-                invoice_id,
+        # Avoid synchronous per-item snapshot refresh inside batch transaction.
+        # Enqueue unique items for async refresh worker.
+        unique_item_ids = list({entry.item_id for entry in ledger_entries})
+        if unique_item_ids:
+            SnapshotRefreshService.enqueue_item_refreshes(
+                db, invoice.company_id, invoice.branch_id, unique_item_ids
             )
 
         db.commit()
@@ -2926,29 +2854,13 @@ def batch_sales_invoice(
         )
 
     db.refresh(invoice)
-    try:
-        from app.finance.events.hooks import on_sales_invoice_batched_financial_event
-
-        on_sales_invoice_batched_financial_event(db, invoice)
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "financial_events: sales invoice batch hook failed (non-fatal) invoice=%s",
-            invoice_id,
-        )
-
-    try:
-        order_book_entries = OrderBookService.process_sale_for_order_book(
-            db=db,
-            company_id=invoice.company_id,
-            branch_id=invoice.branch_id,
-            invoice_id=invoice.id,
-            user_id=batched_by
-        )
-        if order_book_entries:
-            logging.getLogger(__name__).info("Auto-added %s items to order book from invoice %s", len(order_book_entries), invoice_id)
-    except Exception as e:
-        logging.getLogger(__name__).warning("Order book auto-add failed for invoice %s: %s", invoice_id, e)
-
+    margin_rows = list(below_margin_rows) if below_margin_rows else None
+    background_tasks.add_task(
+        run_sales_batch_side_effects,
+        invoice_id,
+        batched_by,
+        below_margin_rows=margin_rows,
+    )
     return invoice
 
 

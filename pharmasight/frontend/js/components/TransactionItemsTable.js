@@ -76,7 +76,8 @@
         this.totalInputDebounce = null; // For debouncing total input (reverse calc)
         this.marginInputDebounce = null; // For debouncing margin input
         this._searchId = 0; // Incremented per search; used to ignore stale responses
-        this._searchDebounceMs = 60;  // Short debounce: request fires almost every key stroke; in-flight requests cancelled on new input
+        this._searchDebounceMs = 420; // Fewer parallel searches under pool pressure (local POS)
+        this._searchMinChars = 3;
         
         // When useAddRow: items = committed lines only (no empty row). Otherwise: ensure one empty row.
         if (!this.useAddRow) {
@@ -1135,7 +1136,8 @@
             this.searchAbortController.abort();
         }
         
-        if (queryTrimmed.length < 2) {
+        const minChars = this._searchMinChars || 2;
+        if (queryTrimmed.length < minChars) {
             this.closeSuggestions();
             return;
         }

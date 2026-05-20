@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Tuple
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -142,10 +142,18 @@ def require_module(module_name: str) -> Callable[..., Tuple[User, Session]]:
     """
 
     def _dependency(
+        request: Request,
         user_db: Tuple[User, Session] = Depends(get_current_user),
     ) -> Tuple[User, Session]:
         user, db = user_db
-        company_id = get_effective_company_id_for_user(db, user)
+        if (
+            getattr(request.state, "_auth_cache_hit", False)
+            and _normalize_module_name(module_name) == DEFAULT_ENABLED_IF_NO_ROW
+        ):
+            return user_db
+        company_id = getattr(request.state, "effective_company_id", None)
+        if company_id is None:
+            company_id = get_effective_company_id_for_user(db, user)
         if company_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

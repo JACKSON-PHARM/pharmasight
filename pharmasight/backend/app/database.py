@@ -21,8 +21,8 @@ if _use_pooler:
 engine = create_engine(
     _db_url,
     poolclass=pool.QueuePool,
-    pool_size=5,
-    max_overflow=10,
+    pool_size=max(5, int(getattr(settings, "DB_POOL_SIZE", 20) or 20)),
+    max_overflow=max(5, int(getattr(settings, "DB_MAX_OVERFLOW", 30) or 30)),
     pool_pre_ping=True,  # Verify connections before using
     pool_recycle=3600,  # Recycle connections after 1 hour
     connect_args=_connect_args,

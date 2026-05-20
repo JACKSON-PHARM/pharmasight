@@ -52,6 +52,44 @@ class InventoryService:
         return float(result) if result is not None else 0.0
 
     @staticmethod
+    def get_current_stock_fast(
+        db: Session,
+        item_id: UUID,
+        branch_id: UUID,
+        company_id: UUID,
+    ) -> float:
+        """
+        POS/draft path: read precomputed stock (snapshot or inventory_balances).
+        Falls back to ledger sum only when no snapshot row exists.
+        """
+        from app.models import ItemBranchSnapshot
+        from app.models.snapshot import InventoryBalance
+
+        snap = (
+            db.query(ItemBranchSnapshot.current_stock)
+            .filter(
+                ItemBranchSnapshot.company_id == company_id,
+                ItemBranchSnapshot.branch_id == branch_id,
+                ItemBranchSnapshot.item_id == item_id,
+            )
+            .first()
+        )
+        if snap is not None:
+            return float(snap[0] or 0)
+        bal = (
+            db.query(InventoryBalance.current_stock)
+            .filter(
+                InventoryBalance.company_id == company_id,
+                InventoryBalance.branch_id == branch_id,
+                InventoryBalance.item_id == item_id,
+            )
+            .first()
+        )
+        if bal is not None:
+            return float(bal[0] or 0)
+        return InventoryService.get_current_stock(db, item_id, branch_id)
+
+    @staticmethod
     def reconcile_batch_pools(
         pools: List[Dict],
         current_stock: float,
@@ -233,7 +271,9 @@ class InventoryService:
         item_id: UUID,
         branch_id: UUID,
         quantity_needed: float,
-        unit_name: str
+        unit_name: str,
+        *,
+        company_id: Optional[UUID] = None,
     ) -> List[Dict]:
         """
         Allocate stock using FEFO (First Expiry First Out).
@@ -280,7 +320,12 @@ class InventoryService:
             }
             for row in batch_rows
         ]
-        current_stock = InventoryService.get_current_stock(db, item_id, branch_id)
+        if company_id is not None:
+            current_stock = InventoryService.get_current_stock_fast(
+                db, item_id, branch_id, company_id
+            )
+        else:
+            current_stock = InventoryService.get_current_stock(db, item_id, branch_id)
         pools = InventoryService.reconcile_batch_pools(
             pools, current_stock, value_key=None
         )
@@ -471,14 +516,22 @@ class InventoryService:
         item_id: UUID,
         branch_id: UUID,
         quantity: float,
-        unit_name: str
+        unit_name: str,
+        *,
+        company_id: Optional[UUID] = None,
     ) -> Tuple[bool, float, float]:
         """
         Check if stock is available.
         Returns (is_available, available_stock_retail_units, required_retail_units).
+        When company_id is set, uses snapshot/balance tables (fast); ledger sum is fallback only.
         """
         required_base = InventoryService.convert_to_base_units(db, item_id, quantity, unit_name)
-        available_base = InventoryService.get_current_stock(db, item_id, branch_id)
+        if company_id is not None:
+            available_base = InventoryService.get_current_stock_fast(
+                db, item_id, branch_id, company_id
+            )
+        else:
+            available_base = InventoryService.get_current_stock(db, item_id, branch_id)
         return (available_base >= required_base, available_base, required_base)
 
     @staticmethod

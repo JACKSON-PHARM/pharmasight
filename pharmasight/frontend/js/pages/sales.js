@@ -1346,6 +1346,87 @@ function createNewSalesInvoice() {
     loadSalesSubPage('create-invoice');
 }
 
+/** Action buttons for an existing DRAFT (Update / Batch / Convert / Delete). */
+function salesInvoiceDraftActionBarHtml(invoiceId) {
+    const id = String(invoiceId || '');
+    if (!id) return '';
+    return `
+        <div style="display: flex; gap: 0.5rem;">
+            <button type="button" class="btn btn-primary" id="salesUpdateInvoiceBtn" onclick="if(window.saveSalesInvoice) { const form = document.getElementById('salesInvoiceForm'); if(form) saveSalesInvoice({preventDefault:()=>{},target:form}); }">
+                <i class="fas fa-save"></i> Update Invoice
+            </button>
+            <button type="button" class="btn btn-success" id="salesBatchInvoiceBtn" onclick="if(window.batchSalesInvoice) window.batchSalesInvoice('${id}', this)" title="Batch & Print">
+                <i class="fas fa-check"></i> Batch & Print
+            </button>
+            <button type="button" class="btn btn-info" onclick="if(window.convertSalesInvoiceToQuotation) window.convertSalesInvoiceToQuotation('${id}')" title="Convert to Quotation">
+                <i class="fas fa-exchange-alt"></i> Convert to Quotation
+            </button>
+            <button type="button" class="btn btn-danger" onclick="if(window.deleteSalesInvoice) window.deleteSalesInvoice('${id}')" title="Delete Invoice (Draft only)">
+                <i class="fas fa-trash"></i> Delete
+            </button>
+        </div>
+    `;
+}
+
+/** Resolve toolbar slot (works even if page was rendered before #salesInvoiceTopBarActions existed). */
+function resolveSalesInvoiceTopBarActionsHost() {
+    let host = document.getElementById('salesInvoiceTopBarActions');
+    if (host) return host;
+    const card = document.querySelector('.sales-invoice-transaction-page');
+    if (!card) return null;
+    const bar = card.firstElementChild;
+    if (!bar) return null;
+    if (bar.children.length >= 3) {
+        host = bar.children[2];
+        host.id = 'salesInvoiceTopBarActions';
+        if (!host.style.minWidth) host.style.cssText = 'flex: 0 0 auto; min-width: 0;';
+        return host;
+    }
+    host = document.createElement('div');
+    host.id = 'salesInvoiceTopBarActions';
+    host.style.cssText = 'flex: 0 0 auto; min-width: 0;';
+    bar.appendChild(host);
+    return host;
+}
+
+/**
+ * After first item creates a DRAFT, show edit-mode toolbar without full page re-render
+ * (keeps items table mounted; avoids slow renderCreateSalesInvoicePage).
+ */
+function refreshSalesInvoiceDraftToolbar() {
+    if (!currentInvoice || !currentInvoice.id) return;
+    const invoiceId = currentInvoice.id;
+    const invoiceData = currentInvoice.invoiceData || {};
+    const actionsHost = resolveSalesInvoiceTopBarActionsHost();
+    if (actionsHost) {
+        actionsHost.innerHTML = salesInvoiceDraftActionBarHtml(invoiceId);
+    }
+    let titleEl = document.getElementById('salesInvoicePageTitle');
+    if (!titleEl) {
+        titleEl = document.querySelector('.sales-invoice-transaction-page h3.card-title');
+        if (titleEl) titleEl.id = 'salesInvoicePageTitle';
+    }
+    if (titleEl) {
+        const no = invoiceData.invoice_no ? String(invoiceData.invoice_no) : '';
+        titleEl.innerHTML = no
+            ? `<i class="fas fa-file-invoice-dollar"></i> Sales Invoice: ${escapeHtml(no)}`
+            : '<i class="fas fa-file-invoice-dollar"></i> Sales Invoice';
+    }
+    const salesTypeSelect = document.getElementById('salesTypeSelect');
+    if (salesTypeSelect) salesTypeSelect.disabled = true;
+    if (typeof window.refreshSalesEtimsBatchBanner === 'function') {
+        void window.refreshSalesEtimsBatchBanner();
+    }
+}
+
+function ensureSalesInvoiceDraftToolbarVisible() {
+    if (!currentInvoice || !currentInvoice.id) return;
+    const host = resolveSalesInvoiceTopBarActionsHost();
+    if (!host || !host.querySelector('#salesBatchInvoiceBtn')) {
+        refreshSalesInvoiceDraftToolbar();
+    }
+}
+
 // Render Create Sales Invoice Page
 async function renderCreateSalesInvoicePage() {
     console.log('renderCreateSalesInvoicePage() called');
@@ -1373,25 +1454,10 @@ async function renderCreateSalesInvoicePage() {
     const formSalesType = effectiveSalesTypeForInvoiceForm(invoiceData);
     
     // Right-side actions (edit mode only); Back is always on the left, title in center
-    const topBarRightHtml = isEditMode ? `
-        <div style="display: flex; gap: 0.5rem;">
-            <button type="button" class="btn btn-primary" id="salesUpdateInvoiceBtn" onclick="if(window.saveSalesInvoice) { const form = document.getElementById('salesInvoiceForm'); if(form) saveSalesInvoice({preventDefault:()=>{},target:form}); }">
-                <i class="fas fa-save"></i> Update Invoice
-            </button>
-            <button type="button" class="btn btn-success" id="salesBatchInvoiceBtn" onclick="if(window.batchSalesInvoice) window.batchSalesInvoice('${invoiceId}', this)" title="Batch & Print">
-                <i class="fas fa-check"></i> Batch & Print
-            </button>
-            <button type="button" class="btn btn-info" onclick="if(window.convertSalesInvoiceToQuotation) window.convertSalesInvoiceToQuotation('${invoiceId}')" title="Convert to Quotation">
-                <i class="fas fa-exchange-alt"></i> Convert to Quotation
-            </button>
-            <button type="button" class="btn btn-danger" onclick="if(window.deleteSalesInvoice) window.deleteSalesInvoice('${invoiceId}')" title="Delete Invoice (Draft only)">
-                <i class="fas fa-trash"></i> Delete
-            </button>
-        </div>
-    ` : '';
+    const topBarRightHtml = isEditMode ? salesInvoiceDraftActionBarHtml(invoiceId) : '';
     
     const titleText = isEditMode && invoiceData?.invoice_no
-        ? `Sales Invoice: ${invoiceData.invoice_no}`
+        ? `Sales Invoice: ${escapeHtml(invoiceData.invoice_no)}`
         : 'Sales Invoice';
     
     page.innerHTML = `
@@ -1408,11 +1474,11 @@ async function renderCreateSalesInvoicePage() {
                     </button>
                 </div>
                 <div style="flex: 1; text-align: center;">
-                    <h3 class="card-title" style="margin: 0; font-size: 1rem; font-weight: 600;">
+                    <h3 id="salesInvoicePageTitle" class="card-title" style="margin: 0; font-size: 1rem; font-weight: 600;">
                         <i class="fas fa-file-invoice-dollar"></i> ${titleText}
                     </h3>
                 </div>
-                <div style="flex: 0 0 auto; min-width: 0;">
+                <div id="salesInvoiceTopBarActions" style="flex: 0 0 auto; min-width: 0;">
                     ${topBarRightHtml}
                 </div>
             </div>
@@ -1714,7 +1780,11 @@ async function onSalesInvoiceAddItem(item) {
                 ) {
                     invoice.sales_type = formBeforeCreate.sales_type || 'RETAIL';
                 }
-                currentInvoice = { id: invoice.id, mode: 'edit', invoiceData: invoice };
+                currentInvoice = {
+                    id: invoice.id,
+                    mode: 'edit',
+                    invoiceData: Object.assign({}, invoice, { id: invoice.id }),
+                };
                 salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
                 documentItems = (invoice.items || []).map(i => ({
                     item_id: i.item_id,
@@ -1738,15 +1808,17 @@ async function onSalesInvoiceAddItem(item) {
                     salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
                 }
                 updateSalesInvoiceSummary();
+                ensureSalesInvoiceDraftToolbarVisible();
                 showToast('Draft invoice created. Add more items or click Batch when ready.', 'success');
-                await renderCreateSalesInvoicePage();
-                updateSalesInvoiceSummary();
             } finally {
                 draftCreationInProgress = false;
             }
             return;
         }
         const updated = await API.sales.addInvoiceItem(draftId, mapTableItemToApiItem(item));
+        if (updated && updated.id) {
+            currentInvoice.invoiceData = Object.assign({}, currentInvoice.invoiceData || {}, updated);
+        }
         salesInvoiceSyncedItemIds.add(item.item_id);
         const apiItems = updated && updated.items ? updated.items : [];
         const prevItems = documentItems || [];
@@ -1784,6 +1856,7 @@ async function onSalesInvoiceAddItem(item) {
             salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
         }
         updateSalesInvoiceSummary();
+        ensureSalesInvoiceDraftToolbarVisible();
     } catch (err) {
         draftCreationInProgress = false;
         const msg = (err && err.message) || String(err);
@@ -3563,9 +3636,9 @@ async function batchSalesInvoice(invoiceId, buttonEl) {
         const invoice = await API.sales.batchInvoice(invoiceId, userId, body);
         showToast('Invoice batched successfully! Stock has been reduced.', 'success');
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.refreshStockForAllItems === 'function') {
-            await salesInvoiceItemsTable.refreshStockForAllItems();
+            salesInvoiceItemsTable.refreshStockForAllItems().catch(function () {});
         }
-        await fetchAndRenderSalesInvoicesData();
+        fetchAndRenderSalesInvoicesData().catch(function () {});
         if (confirm('Print receipt?')) await printSalesInvoice(invoiceId);
         return invoice;
     };
@@ -4932,6 +5005,7 @@ if (typeof window !== 'undefined') {
     window.updateSalesSubNavActiveState = updateSalesSubNavActiveState;
     window.createNewSalesInvoice = createNewSalesInvoice;
     window.renderCreateSalesInvoicePage = renderCreateSalesInvoicePage;
+    window.refreshSalesInvoiceDraftToolbar = refreshSalesInvoiceDraftToolbar;
     window.refreshSalesEtimsBatchBanner = async function refreshSalesEtimsBatchBanner() {
         const host = document.getElementById('salesEtimsBatchBanner');
         if (!host) return;
