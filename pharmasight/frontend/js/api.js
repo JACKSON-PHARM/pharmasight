@@ -988,7 +988,11 @@ const API = {
         deleteInvoice: (invoiceId) => 
             api.delete(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`),
         batchInvoice: (invoiceId, batchedBy, body = null) =>
-            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/batch?batched_by=${batchedBy}`, body),
+            api.post(
+                `${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/batch?batched_by=${batchedBy}`,
+                body,
+                { timeout: 120000 }
+            ),
         // Split payments
         addPayment: (invoiceId, payment) => 
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/payments`, payment),

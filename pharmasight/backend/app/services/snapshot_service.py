@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import List, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Any, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -51,7 +51,14 @@ class SnapshotService:
             """),
             {"item_id": str(item_id), "branch_id": str(branch_id)},
         ).first()
-        current = float(row[0]) if row and row[0] is not None else 0.0
+        if row is not None and row[0] is not None:
+            current = float(row[0])
+        else:
+            from app.services.inventory_service import InventoryService
+
+            current = InventoryService.get_current_stock_fast(
+                db, item_id, branch_id, company_id
+            )
         new_balance = current + qty
         if new_balance < 0:
             raise ValueError(
@@ -61,12 +68,17 @@ class SnapshotService:
         db.execute(
             text("""
                 INSERT INTO inventory_balances (company_id, branch_id, item_id, current_stock, updated_at)
-                VALUES (:company_id, :branch_id, :item_id, :qty, NOW())
+                VALUES (:company_id, :branch_id, :item_id, :new_balance, NOW())
                 ON CONFLICT (item_id, branch_id) DO UPDATE SET
-                    current_stock = inventory_balances.current_stock + EXCLUDED.current_stock,
+                    current_stock = EXCLUDED.current_stock,
                     updated_at = NOW()
             """),
-            {"company_id": str(company_id), "branch_id": str(branch_id), "item_id": str(item_id), "qty": qty},
+            {
+                "company_id": str(company_id),
+                "branch_id": str(branch_id),
+                "item_id": str(item_id),
+                "new_balance": new_balance,
+            },
         )
         logger.debug(
             "Snapshot update: item_id=%s branch_id=%s delta=%s new_balance=%s document_number=%s",
@@ -104,6 +116,101 @@ class SnapshotService:
                 updated_at = NOW()
         """
         db.execute(text(sql), params)
+
+    @staticmethod
+    def apply_inventory_balance_deltas_locked(
+        db: Session,
+        rows: List[Tuple[UUID, UUID, UUID, Any]],
+        *,
+        document_number: str,
+    ) -> None:
+        """
+        POS operational sale: lock balance rows, verify non-negative, apply deltas in one bulk write.
+        rows = [(company_id, branch_id, item_id, quantity_delta), ...] (deltas may be negative).
+        """
+        if not rows:
+            return
+        if not (document_number or "").strip():
+            raise ValueError("document_number required for stock movement")
+
+        merged: Dict[Tuple[UUID, UUID, UUID], float] = {}
+        for company_id, branch_id, item_id, qty in rows:
+            key = (company_id, branch_id, item_id)
+            merged[key] = merged.get(key, 0.0) + float(qty)
+
+        by_branch: Dict[UUID, List[Tuple[UUID, UUID, UUID, float]]] = {}
+        stock_by_item: Dict[str, float] = {}
+        for (company_id, branch_id, item_id), qty in merged.items():
+            by_branch.setdefault(branch_id, []).append((company_id, branch_id, item_id, qty))
+
+        for branch_id, branch_rows in by_branch.items():
+            item_ids = [str(r[2]) for r in branch_rows]
+            if not item_ids:
+                continue
+            in_clause = ", ".join(f":iid_{i}" for i in range(len(item_ids)))
+            lock_params: Dict[str, Any] = {"branch_id": str(branch_id)}
+            for i, iid in enumerate(item_ids):
+                lock_params[f"iid_{i}"] = iid
+            locked = db.execute(
+                text(f"""
+                    SELECT item_id::text, current_stock
+                    FROM inventory_balances
+                    WHERE branch_id = :branch_id AND item_id IN ({in_clause})
+                    FOR UPDATE
+                """),
+                lock_params,
+            ).fetchall()
+            for row in locked:
+                stock_by_item[row[0]] = float(row[1] or 0)
+
+            for company_id, br_id, item_id, qty in branch_rows:
+                iid = str(item_id)
+                if iid not in stock_by_item:
+                    from app.services.inventory_service import InventoryService
+
+                    stock_by_item[iid] = InventoryService.get_current_stock_fast(
+                        db, item_id, br_id, company_id
+                    )
+                current = stock_by_item[iid]
+                new_balance = current + qty
+                if new_balance < -1e-9:
+                    raise ValueError(
+                        f"Insufficient stock for movement: item_id={item_id} branch_id={br_id} "
+                        f"current_stock={current} quantity_delta={qty} would give new_stock={new_balance} "
+                        f"document_number={document_number}"
+                    )
+
+        for (company_id, branch_id, item_id), qty in merged.items():
+            iid = str(item_id)
+            current = stock_by_item.get(iid)
+            if current is None:
+                from app.services.inventory_service import InventoryService
+
+                current = InventoryService.get_current_stock_fast(
+                    db, item_id, branch_id, company_id
+                )
+            new_balance = current + float(qty)
+            if new_balance < -1e-9:
+                raise ValueError(
+                    f"Insufficient stock for movement: item_id={item_id} branch_id={branch_id} "
+                    f"current_stock={current} quantity_delta={qty} would give new_stock={new_balance} "
+                    f"document_number={document_number}"
+                )
+            db.execute(
+                text("""
+                    INSERT INTO inventory_balances (company_id, branch_id, item_id, current_stock, updated_at)
+                    VALUES (:company_id, :branch_id, :item_id, :new_balance, NOW())
+                    ON CONFLICT (item_id, branch_id) DO UPDATE SET
+                        current_stock = EXCLUDED.current_stock,
+                        updated_at = NOW()
+                """),
+                {
+                    "company_id": str(company_id),
+                    "branch_id": str(branch_id),
+                    "item_id": str(item_id),
+                    "new_balance": new_balance,
+                },
+            )
 
     @staticmethod
     def upsert_inventory_balance_delta(

@@ -52,7 +52,8 @@ from app.services.pricing_service import PricingService
 from app.services.document_service import DocumentService
 from app.utils.reversal_audit import client_ip_from_request, pydantic_payload_hash, user_agent_from_request
 from app.services.order_book_service import OrderBookService
-from app.services.sales_batch_side_effects import run_sales_batch_side_effects
+from app.services.sales_batch_post_commit import run_sales_batch_post_commit_pipeline
+from app.services.sales_operational_batch import commit_operational_sales_batch
 from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
 from app.services.invoice_workflow_policy import default_sales_type_for_branch
 from app.services.invoice_payment_status import (
@@ -2469,6 +2470,33 @@ def _apply_optional_batch_invoice_overrides(
             )
 
 
+def _format_batch_failure_detail(exc: BaseException) -> str:
+    """Surface the first real DB error, not only 'current transaction is aborted'."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    aborted_msg = None
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur).strip()
+        if "InFailedSqlTransaction" in msg or "current transaction is aborted" in msg:
+            if aborted_msg is None:
+                aborted_msg = msg
+        elif msg:
+            return f"Batch failed: {msg}"
+        orig = getattr(cur, "orig", None)
+        if orig is not None:
+            omsg = str(orig).strip()
+            if omsg and "InFailedSqlTransaction" not in omsg:
+                return f"Batch failed: {omsg}"
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    if aborted_msg:
+        return (
+            "Batch failed: database transaction aborted (an earlier step failed). "
+            "Check server logs for the first error on this invoice, then retry."
+        )
+    return f"Batch failed: {exc}"
+
+
 @router.post("/invoice/{invoice_id}/batch", response_model=SalesInvoiceResponse)
 def batch_sales_invoice(
     invoice_id: UUID,
@@ -2479,16 +2507,16 @@ def batch_sales_invoice(
     user_db: tuple = Depends(get_authenticated_db),
 ):
     """
-    Batch Sales Invoice - Reduce Stock from Inventory
+    Batch Sales Invoice — POS operational commit (fast), then async FEFO/ledger reconciliation.
 
-    Single transaction with row-level lock on the invoice to prevent double-batch and race conditions.
-    If body.items is provided, draft line items are updated to match (quantity, unit_name, unit_price, etc.)
-    so the batched invoice matches the frontend. Then validates stock, deducts stock, sets BATCHED, and commits.
+    Operational transaction: lock invoice, verify stock, decrement inventory_balances, finalize status, commit.
+    Background: FEFO allocation, SALE ledger rows, GL, KRA, lifecycle (see sales_batch_post_commit).
     """
     from sqlalchemy.orm import selectinload
-    from datetime import datetime
 
     user, db = user_db
+    t_batch_start = time.perf_counter()
+    request.state.timings = {}
     # Lock invoice row for update so concurrent batch requests for same invoice are serialized; eager-load items.item to avoid N+1
     invoice = (
         db.query(SalesInvoice)
@@ -2592,274 +2620,61 @@ def batch_sales_invoice(
             invoice.vat_rate = total_vat / total_exclusive * Decimal("100")
         else:
             invoice.vat_rate = Decimal("0")
-        db.flush()
-
-    # Process each item and reduce stock based on FEFO allocation (all in same transaction)
-    ledger_entries = []
-    below_margin_rows: list[dict] = []
-    sustainable_min_margin = _sustainable_min_margin_pct(db, invoice.company_id)
+        try:
+            db.flush()
+        except Exception as flush_err:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=_format_batch_failure_detail(flush_err),
+            ) from flush_err
 
     try:
-        for invoice_item in invoice.items:
-            item = invoice_item.item
-            if not item:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Item {invoice_item.item_id} not found. Cannot batch."
-                )
-
-            quantity_base = InventoryService.convert_to_base_units(
-                db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
-            )
-
-            is_available, available, required = InventoryService.check_stock_availability(
-                db,
-                invoice_item.item_id,
-                invoice.branch_id,
-                float(invoice_item.quantity),
-                invoice_item.unit_name,
-                company_id=invoice.company_id,
-            )
-            if not is_available:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Insufficient stock for {invoice_item.item_name or item.name}. Available: {available}, Required: {required}"
-                )
-
-            allocations = InventoryService.allocate_stock_fefo(
-                db,
-                invoice_item.item_id,
-                invoice.branch_id,
-                quantity_base,
-                invoice_item.unit_name,
-                company_id=invoice.company_id,
-            )
-
-            qty_base_dec = Decimal(str(quantity_base))
-            total_line_ledger_cost = _total_cost_from_allocations(allocations)
-
-            # Model B: landed COGS per base from allocations; margin/floor checks vs catalog list economics
-            if allocations and qty_base_dec > 0:
-                cost_per_base_unit = total_line_ledger_cost / qty_base_dec
-                ref_base = getattr(invoice_item, "margin_reference_unit_cost_base", None)
-                had_margin_ref_at_draft = ref_base is not None
-                if ref_base is None:
-                    ref_base = PricingService.get_margin_reference_cost_per_base(
-                        db, invoice_item.item_id, invoice.branch_id, invoice.company_id
-                    )
-                    invoice_item.margin_reference_unit_cost_base = ref_base
-
-                mult = get_unit_multiplier_from_item(item, invoice_item.unit_name)
-                if mult is not None and mult > 0 and ref_base is not None:
-                    unit_price_val = invoice_item.unit_price_exclusive or Decimal("0")
-                    cost_per_sale_unit_ref = ref_base * mult
-                    # Draft lines validated on add; skip repeat DB-heavy checks at batch for POS speed.
-                    if not had_margin_ref_at_draft:
-                        user_has_override = _user_has_sell_below_min_margin(db, batched_by, invoice.branch_id)
-                        is_promo = is_line_price_at_promo(
-                            db, invoice_item.item_id, invoice_item.unit_name or "", unit_price_val
-                        )
-                        validation = validate_line_price(
-                            db,
-                            invoice.company_id,
-                            invoice_item.item_id,
-                            unit_price_val,
-                            cost_per_sale_unit_ref,
-                            user_has_override,
-                            branch_id=invoice.branch_id,
-                            is_promo_price=is_promo,
-                        )
-                        if not validation.get("allowed"):
-                            raise HTTPException(
-                                status_code=400,
-                                detail=validation.get("message", "Price validation failed."),
-                            )
-
-                    # Sustainable margin (warn-only): log lines sold below configured threshold.
-                    # Uses reference/list cost, not landed COGS.
-                    if sustainable_min_margin is not None and sustainable_min_margin > 0 and cost_per_sale_unit_ref > 0:
-                        computed_margin_pct = (
-                            (unit_price_val - cost_per_sale_unit_ref) / cost_per_sale_unit_ref * Decimal("100")
-                        )
-                        if computed_margin_pct < sustainable_min_margin:
-                            below_margin_rows.append(
-                                {
-                                    "company_id": str(invoice.company_id),
-                                    "branch_id": str(invoice.branch_id),
-                                    "sales_invoice_id": str(invoice.id),
-                                    "sales_invoice_item_id": str(invoice_item.id),
-                                    "invoice_no": str(invoice.invoice_no),
-                                    "invoice_date": invoice.invoice_date,
-                                    "payment_mode": getattr(invoice, "payment_mode", None),
-                                    "customer_name": getattr(invoice, "customer_name", None),
-                                    "item_id": str(invoice_item.item_id),
-                                    "item_name": getattr(item, "name", None),
-                                    "unit_name": str(invoice_item.unit_name or ""),
-                                    "quantity_sale_unit": Decimal(str(invoice_item.quantity or 0)),
-                                    "quantity_base_unit": qty_base_dec,
-                                    "unit_price_exclusive": Decimal(str(invoice_item.unit_price_exclusive or 0)),
-                                    "reference_unit_cost_base": Decimal(str(ref_base)) if ref_base is not None else None,
-                                    "sustainable_min_margin_pct": sustainable_min_margin,
-                                    "computed_margin_pct": computed_margin_pct,
-                                    "created_by": str(batched_by) if batched_by else None,
-                                }
-                            )
-
-                # Snapshot: per retail/base unit so qty×mult×unit_cost_used == sum(SALE ledger total_cost)
-                old_uc = invoice_item.unit_cost_used
-                if old_uc is not None and float(old_uc) > 0:
-                    snap_cogs = qty_base_dec * Decimal(str(old_uc))
-                    line_rev = invoice_item.line_total_exclusive or Decimal("0")
-                    diff = abs(snap_cogs - total_line_ledger_cost)
-                    if line_rev > 0 and diff > (SNAPSHOT_VS_LEDGER_WARN_THRESHOLD * line_rev):
-                        logging.getLogger(__name__).warning(
-                            "Sales line snapshot COGS vs ledger (pre-reconcile): invoice=%s item=%s "
-                            "snap_cogs=%s ledger_cogs=%s line_total_excl=%s",
-                            invoice.invoice_no,
-                            invoice_item.item_id,
-                            snap_cogs,
-                            total_line_ledger_cost,
-                            line_rev,
-                        )
-                invoice_item.unit_cost_used = cost_per_base_unit
-                invoice_item.batch_id = allocations[0]["ledger_entry_id"]
-
-            for allocation in allocations:
-                qty = Decimal(str(allocation["quantity"]))
-                uc = Decimal(str(allocation["unit_cost"]))
-                ledger_entry = InventoryLedger(
-                    company_id=invoice.company_id,
-                    branch_id=invoice.branch_id,
-                    item_id=invoice_item.item_id,
-                    batch_number=allocation["batch_number"],
-                    expiry_date=allocation["expiry_date"],
-                    transaction_type="SALE",
-                    reference_type="sales_invoice",
-                    reference_id=invoice.id,
-                    document_number=invoice.invoice_no,
-                    quantity_delta=-qty,
-                    unit_cost=uc,
-                    total_cost=uc * qty,
-                    created_by=batched_by
-                )
-                ledger_entries.append(ledger_entry)
-
-        invoice.batched = True
-        invoice.batched_by = batched_by
-        invoice.batched_at = datetime.utcnow()
-
-        # For cash invoices, mark as PAID automatically during batching
-        if getattr(invoice, "payment_mode", "").lower() == "cash":
-            invoice.payment_status = "PAID"
-            invoice.status = "PAID"
-            invoice.cashier_approved = True
-            invoice.approved_by = batched_by
-            invoice.approved_at = datetime.now(timezone.utc)
-            # Batched cash previously had no InvoicePayment row; cashbook inflow keys off invoice_payments.
-            existing_pay = (
-                db.query(func.coalesce(func.sum(InvoicePayment.amount), 0))
-                .filter(InvoicePayment.invoice_id == invoice.id)
-                .scalar()
-            ) or Decimal("0")
-            total_inv = Decimal(str(invoice.total_inclusive or 0))
-            remainder = total_inv - existing_pay
-            if remainder > Decimal("0.01"):
-                from app.services.cashbook_service import ensure_cashbook_entry_for_invoice_payment_if_cash
-
-                mode = (invoice.payment_mode or "cash").strip().lower()
-                ip = InvoicePayment(
-                    invoice_id=invoice.id,
-                    payment_mode=mode,
-                    amount=remainder,
-                    payment_reference=None,
-                    paid_by=batched_by,
-                    paid_at=datetime.combine(invoice.invoice_date, dt_time.min, tzinfo=timezone.utc),
-                )
-                db.add(ip)
-                db.flush()
-                ensure_cashbook_entry_for_invoice_payment_if_cash(
-                    db,
-                    company_id=invoice.company_id,
-                    branch_id=invoice.branch_id,
-                    invoice_payment=ip,
-                    invoice_no=invoice.invoice_no,
-                    created_by=batched_by,
-                    entry_date=invoice.invoice_date,
-                )
-        else:
-            invoice.status = "BATCHED"
-
-        # Wholesale AR: due date, balance sync, ledger debit for credit sales
-        if invoice.customer_id:
-            from app.models import Customer
-            from app.services.customer_sales_service import (
-                assert_customer_credit_for_batch,
-                set_due_date_from_customer,
-                post_customer_ledger_on_batch,
-            )
-            from app.services.customer_invoice_payment_service import sync_customer_invoice_paid_from_settlements
-
-            customer = (
-                db.query(Customer)
-                .filter(Customer.id == invoice.customer_id, Customer.company_id == invoice.company_id)
-                .first()
-            )
-            if customer:
-                assert_customer_credit_for_batch(
-                    db, invoice, customer, invoice.company_id, invoice.branch_id
-                )
-                set_due_date_from_customer(invoice, customer)
-                sync_customer_invoice_paid_from_settlements(db, invoice)
-                post_customer_ledger_on_batch(db, invoice, customer, invoice.company_id)
-
-        for entry in ledger_entries:
-            db.add(entry)
-
-        db.flush()
-
-        # Hot path optimization: update inventory_balances in one bulk statement.
-        # Aggregate per (company, branch, item) to avoid duplicate PK rows in a single INSERT ... ON CONFLICT.
-        balance_delta_map: dict[tuple[UUID, UUID, UUID], Decimal] = {}
-        for entry in ledger_entries:
-            key = (entry.company_id, entry.branch_id, entry.item_id)
-            balance_delta_map[key] = balance_delta_map.get(key, Decimal("0")) + Decimal(str(entry.quantity_delta or 0))
-        SnapshotService.upsert_inventory_balance_bulk(
-            db,
-            [
-                (company_id, branch_id, item_id, qty_delta)
-                for (company_id, branch_id, item_id), qty_delta in balance_delta_map.items()
-            ],
+        t_op = time.perf_counter()
+        commit_operational_sales_batch(
+            db, invoice, batched_by, timings=request.state.timings
         )
-        for inv_item in invoice.items:
-            SnapshotService.upsert_search_snapshot_last_sale(
-                db, invoice.company_id, invoice.branch_id, inv_item.item_id, invoice.invoice_date
-            )
-        # Avoid synchronous per-item snapshot refresh inside batch transaction.
-        # Enqueue unique items for async refresh worker.
-        unique_item_ids = list({entry.item_id for entry in ledger_entries})
-        if unique_item_ids:
-            SnapshotRefreshService.enqueue_item_refreshes(
-                db, invoice.company_id, invoice.branch_id, unique_item_ids
-            )
-
+        request.state.timings["OperationalMs"] = round((time.perf_counter() - t_op) * 1000, 1)
+        t_commit = time.perf_counter()
         db.commit()
+        request.state.timings["CommitMs"] = round((time.perf_counter() - t_commit) * 1000, 1)
     except HTTPException:
         db.rollback()
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Batch failed: {str(e)}"
-        )
+        detail = _format_batch_failure_detail(e)
+        raise HTTPException(status_code=500, detail=detail) from e
+
+    request.state.timings["TotalMs"] = round((time.perf_counter() - t_batch_start) * 1000, 1)
+    logging.getLogger(__name__).info(
+        "batch_sales_invoice operational commit invoice=%s timings=%s",
+        invoice_id,
+        getattr(request.state, "timings", {}),
+    )
 
     db.refresh(invoice)
-    margin_rows = list(below_margin_rows) if below_margin_rows else None
+    final_status = (invoice.status or "").strip().upper()
+    if final_status not in ("BATCHED", "PAID"):
+        logging.getLogger(__name__).error(
+            "batch_sales_invoice: commit succeeded but invoice %s status=%r (expected BATCHED/PAID)",
+            invoice_id,
+            invoice.status,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Batch did not finalize invoice status (still {invoice.status or 'DRAFT'}). "
+                "Refresh the page and try again."
+            ),
+        )
+    if not getattr(invoice, "batched", False):
+        invoice.batched = True
+
     background_tasks.add_task(
-        run_sales_batch_side_effects,
+        run_sales_batch_post_commit_pipeline,
         invoice_id,
         batched_by,
-        below_margin_rows=margin_rows,
     )
     return invoice
 

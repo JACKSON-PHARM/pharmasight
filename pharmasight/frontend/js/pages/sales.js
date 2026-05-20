@@ -1447,10 +1447,15 @@ async function renderCreateSalesInvoicePage() {
     const page = document.getElementById('sales');
     if (!page) return;
     
-    // Draft exists once we have a server invoice id (do not require mode === 'edit' — avoids losing toolbar state).
-    const isEditMode = !!(currentInvoice && currentInvoice.id);
-    let invoiceData = isEditMode ? (currentInvoice.invoiceData || {}) : null;
     const invoiceId = currentInvoice?.id || null;
+    let invoiceData = currentInvoice?.id ? (currentInvoice.invoiceData || {}) : null;
+    const docStatus = String(invoiceData?.status || 'DRAFT').toUpperCase();
+    // Only DRAFT invoices use the editable create page; batched/paid must use read-only view.
+    if (currentInvoice?.id && docStatus !== 'DRAFT') {
+        await viewSalesInvoice(currentInvoice.id);
+        return;
+    }
+    const isEditMode = !!(currentInvoice && currentInvoice.id);
     if (isEditMode && currentInvoice.mode !== 'edit') {
         currentInvoice.mode = 'edit';
     }
@@ -3667,12 +3672,27 @@ async function batchSalesInvoice(invoiceId, buttonEl) {
             if (idate) body.invoice_date = idate;
         }
         const invoice = await API.sales.batchInvoice(invoiceId, userId, body);
+        const batchStatus = String(invoice.status || '').toUpperCase();
+        if (batchStatus === 'DRAFT') {
+            throw new Error(
+                'Batch did not finalize — invoice is still a draft. Refresh and try again, or check server logs.'
+            );
+        }
         showToast('Invoice batched successfully! Stock has been reduced.', 'success');
+        if (currentInvoice && String(currentInvoice.id) === String(invoiceId)) {
+            currentInvoice = { id: invoiceId, mode: 'view', invoiceData: invoice };
+        }
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.refreshStockForAllItems === 'function') {
             salesInvoiceItemsTable.refreshStockForAllItems().catch(function () {});
         }
         fetchAndRenderSalesInvoicesData().catch(function () {});
-        if (confirm('Print receipt?')) await printSalesInvoice(invoiceId);
+        // Leave draft edit UI; open read-only batched/paid view before optional print.
+        if (typeof viewSalesInvoice === 'function') {
+            await viewSalesInvoice(invoiceId);
+        }
+        if ((batchStatus === 'BATCHED' || batchStatus === 'PAID') && confirm('Print receipt?')) {
+            await printSalesInvoice(invoiceId);
+        }
         return invoice;
     };
     try {
@@ -4133,6 +4153,15 @@ async function printSalesInvoice(invoiceId, printType) {
     if (layout == null) return;
     try {
         let invoice = await API.sales.getInvoice(invoiceId);
+        const printStatus = String(invoice.status || '').toUpperCase();
+        if (printStatus === 'DRAFT') {
+            showToast('Cannot print a draft invoice. Batch it first to reduce stock.', 'error');
+            return;
+        }
+        if (printStatus !== 'BATCHED' && printStatus !== 'PAID') {
+            showToast(`Cannot print invoice with status ${invoice.status || 'unknown'}.`, 'error');
+            return;
+        }
         invoice = await ensureSalesInvoiceKraSignedForFiscalPrint(invoiceId, invoice);
         while (!salesInvoicePassesKraFiscalPrintGate(invoice)) {
             const kraErr = invoice.kra_last_error ? String(invoice.kra_last_error) : '';
