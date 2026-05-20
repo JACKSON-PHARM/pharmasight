@@ -1351,21 +1351,26 @@ function salesInvoiceDraftActionBarHtml(invoiceId) {
     const id = String(invoiceId || '');
     if (!id) return '';
     return `
-        <div style="display: flex; gap: 0.5rem;">
+        <div class="sales-invoice-draft-actions" style="display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; align-items: center;">
             <button type="button" class="btn btn-primary" id="salesUpdateInvoiceBtn" onclick="if(window.saveSalesInvoice) { const form = document.getElementById('salesInvoiceForm'); if(form) saveSalesInvoice({preventDefault:()=>{},target:form}); }">
-                <i class="fas fa-save"></i> Update Invoice
+                <i class="fas fa-save"></i> Update document
             </button>
             <button type="button" class="btn btn-success" id="salesBatchInvoiceBtn" onclick="if(window.batchSalesInvoice) window.batchSalesInvoice('${id}', this)" title="Batch & Print">
                 <i class="fas fa-check"></i> Batch & Print
             </button>
-            <button type="button" class="btn btn-info" onclick="if(window.convertSalesInvoiceToQuotation) window.convertSalesInvoiceToQuotation('${id}')" title="Convert to Quotation">
+            <button type="button" class="btn btn-info" id="salesConvertToQuotationBtn" onclick="if(window.convertSalesInvoiceToQuotation) window.convertSalesInvoiceToQuotation('${id}')" title="Convert to Quotation">
                 <i class="fas fa-exchange-alt"></i> Convert to Quotation
             </button>
-            <button type="button" class="btn btn-danger" onclick="if(window.deleteSalesInvoice) window.deleteSalesInvoice('${id}')" title="Delete Invoice (Draft only)">
+            <button type="button" class="btn btn-danger" id="salesDeleteInvoiceBtn" onclick="if(window.deleteSalesInvoice) window.deleteSalesInvoice('${id}')" title="Delete Invoice (Draft only)">
                 <i class="fas fa-trash"></i> Delete
             </button>
         </div>
     `;
+}
+
+function normalizeSalesInvoiceId(invoice) {
+    if (!invoice) return null;
+    return invoice.id || invoice.invoice_id || null;
 }
 
 /** Resolve toolbar slot (works even if page was rendered before #salesInvoiceTopBarActions existed). */
@@ -1397,9 +1402,16 @@ function refreshSalesInvoiceDraftToolbar() {
     if (!currentInvoice || !currentInvoice.id) return;
     const invoiceId = currentInvoice.id;
     const invoiceData = currentInvoice.invoiceData || {};
+    const actionsHtml = salesInvoiceDraftActionBarHtml(invoiceId);
+    const stripHost = document.getElementById('salesInvoiceDraftToolbarStrip');
+    if (stripHost) {
+        stripHost.innerHTML = actionsHtml;
+        stripHost.style.display = actionsHtml ? 'flex' : 'none';
+    }
     const actionsHost = resolveSalesInvoiceTopBarActionsHost();
     if (actionsHost) {
-        actionsHost.innerHTML = salesInvoiceDraftActionBarHtml(invoiceId);
+        actionsHost.innerHTML = '';
+        actionsHost.style.display = 'none';
     }
     let titleEl = document.getElementById('salesInvoicePageTitle');
     if (!titleEl) {
@@ -1421,9 +1433,11 @@ function refreshSalesInvoiceDraftToolbar() {
 
 function ensureSalesInvoiceDraftToolbarVisible() {
     if (!currentInvoice || !currentInvoice.id) return;
-    const host = resolveSalesInvoiceTopBarActionsHost();
-    if (!host || !host.querySelector('#salesBatchInvoiceBtn')) {
-        refreshSalesInvoiceDraftToolbar();
+    refreshSalesInvoiceDraftToolbar();
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(function () {
+            refreshSalesInvoiceDraftToolbar();
+        });
     }
 }
 
@@ -1433,10 +1447,13 @@ async function renderCreateSalesInvoicePage() {
     const page = document.getElementById('sales');
     if (!page) return;
     
-    // Check if we're in edit mode
-    const isEditMode = currentInvoice && currentInvoice.mode === 'edit' && currentInvoice.id;
-    let invoiceData = isEditMode ? currentInvoice.invoiceData : null;
+    // Draft exists once we have a server invoice id (do not require mode === 'edit' — avoids losing toolbar state).
+    const isEditMode = !!(currentInvoice && currentInvoice.id);
+    let invoiceData = isEditMode ? (currentInvoice.invoiceData || {}) : null;
     const invoiceId = currentInvoice?.id || null;
+    if (isEditMode && currentInvoice.mode !== 'edit') {
+        currentInvoice.mode = 'edit';
+    }
     
     // If not editing, reset document state and draft-sync tracking
     if (!isEditMode) {
@@ -1478,9 +1495,10 @@ async function renderCreateSalesInvoicePage() {
                         <i class="fas fa-file-invoice-dollar"></i> ${titleText}
                     </h3>
                 </div>
-                <div id="salesInvoiceTopBarActions" style="flex: 0 0 auto; min-width: 0;">
-                    ${topBarRightHtml}
-                </div>
+                <div id="salesInvoiceTopBarActions" style="display: none; flex: 0 0 auto; min-width: 0;"></div>
+            </div>
+            <div id="salesInvoiceDraftToolbarStrip" style="display: ${isEditMode ? 'flex' : 'none'}; justify-content: flex-end; padding: 0.35rem 0.75rem; border-bottom: 1px solid var(--border-color); flex-shrink: 0; background: var(--bg-color, #f8f9fa);">
+                ${topBarRightHtml}
             </div>
             
             <div style="padding: 0.5rem 0.75rem; flex: 1; display: flex; flex-direction: column; min-height: 0;">
@@ -1523,6 +1541,10 @@ async function renderCreateSalesInvoicePage() {
     
     // Initialize TransactionItemsTable component
     initializeSalesInvoiceItemsTable();
+
+    if (isEditMode) {
+        ensureSalesInvoiceDraftToolbarVisible();
+    }
 
     if (typeof window.refreshSalesEtimsBatchBanner === 'function') {
         void window.refreshSalesEtimsBatchBanner();
@@ -1771,6 +1793,11 @@ async function onSalesInvoiceAddItem(item) {
             draftCreationInProgress = true;
             try {
                 const invoice = await createSalesDraftWithFirstItem(item);
+                const invId = normalizeSalesInvoiceId(invoice);
+                if (!invId) {
+                    showToast('Draft was created but the server response had no invoice id. Refresh the page or open the invoice from the list.', 'error');
+                    return;
+                }
                 const formBeforeCreate = getSalesInvoiceFormData();
                 if (
                     invoice &&
@@ -1781,9 +1808,9 @@ async function onSalesInvoiceAddItem(item) {
                     invoice.sales_type = formBeforeCreate.sales_type || 'RETAIL';
                 }
                 currentInvoice = {
-                    id: invoice.id,
+                    id: invId,
                     mode: 'edit',
-                    invoiceData: Object.assign({}, invoice, { id: invoice.id }),
+                    invoiceData: Object.assign({}, invoice, { id: invId }),
                 };
                 salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
                 documentItems = (invoice.items || []).map(i => ({
@@ -2088,10 +2115,17 @@ function initializeSalesInvoiceItemsTable() {
     });
     applyUnitCostVisibilityPermissionToTable(salesInvoiceItemsTable);
     
+    if (currentInvoice && currentInvoice.id) {
+        ensureSalesInvoiceDraftToolbarVisible();
+    }
+
     // Auto-focus on first item field after table is initialized
     setTimeout(() => {
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.autoFocusFirstItemField === 'function') {
             salesInvoiceItemsTable.autoFocusFirstItemField();
+        }
+        if (currentInvoice && currentInvoice.id) {
+            ensureSalesInvoiceDraftToolbarVisible();
         }
     }, 150);
 }
@@ -2102,8 +2136,7 @@ async function saveSalesInvoice(event) {
     const form = event.target;
     const formData = new FormData(form);
     
-    // Check if we're in edit mode
-    const isEditMode = currentInvoice && currentInvoice.mode === 'edit' && currentInvoice.id;
+    const isEditMode = !!(currentInvoice && currentInvoice.id);
     
     // Get items from the component instance (more reliable than documentItems)
     let validItems = [];
@@ -2190,7 +2223,7 @@ async function saveSalesInvoice(event) {
             salesInvoiceSaveInProgress = false;
             if (updateBtn) {
                 updateBtn.disabled = false;
-                updateBtn.innerHTML = '<i class="fas fa-save"></i> Update Invoice';
+                updateBtn.innerHTML = '<i class="fas fa-save"></i> Update document';
             }
         }
     } else {
@@ -4990,6 +5023,7 @@ if (typeof window !== 'undefined') {
     window.addEventListener('pharmasight-open-pending-document', function (e) {
         if (!e.detail || !e.detail.type) return;
         if (e.detail.type === 'sales_invoice') {
+            if (currentSalesSubPage === 'create-invoice' && currentInvoice && currentInvoice.id) return;
             switchSalesSubPage('create-invoice');
         } else if (e.detail.type === 'quotation') {
             switchSalesSubPage('create-quotation');
@@ -5006,6 +5040,7 @@ if (typeof window !== 'undefined') {
     window.createNewSalesInvoice = createNewSalesInvoice;
     window.renderCreateSalesInvoicePage = renderCreateSalesInvoicePage;
     window.refreshSalesInvoiceDraftToolbar = refreshSalesInvoiceDraftToolbar;
+    window.ensureSalesInvoiceDraftToolbarVisible = ensureSalesInvoiceDraftToolbarVisible;
     window.refreshSalesEtimsBatchBanner = async function refreshSalesEtimsBatchBanner() {
         const host = document.getElementById('salesEtimsBatchBanner');
         if (!host) return;
