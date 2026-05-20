@@ -265,9 +265,21 @@
             if (cid && API.customers && API.customers.search) {
                 const apiRows = await API.customers.search(q, cid, 12);
                 if (seq !== _customerSearchSeq) return;
-                hits = (apiRows || []).map((r) => customerById(r.id) || { id: r.id, name: r.name, phone: '' });
+                hits = (apiRows || []).map(
+                    (r) =>
+                        customerById(r.id) || {
+                            id: r.id,
+                            name: r.name,
+                            phone: r.phone || '',
+                            contact_person: r.contact_person || '',
+                        }
+                );
             }
-        } catch (_) {}
+        } catch (err) {
+            if (seq !== _customerSearchSeq) return;
+            renderCustomerSearchDropdown(null, esc((err && err.message) || 'Search failed'));
+            return;
+        }
 
         if (seq !== _customerSearchSeq) return;
         if (!hits.length && _customerCache) {
@@ -286,7 +298,7 @@
 
         input.addEventListener('input', () => {
             if (_customerSearchDebounce) clearTimeout(_customerSearchDebounce);
-            _customerSearchDebounce = setTimeout(() => void runCustomerHubSearch(input.value), 220);
+            _customerSearchDebounce = setTimeout(() => void runCustomerHubSearch(input.value), 350);
         });
 
         input.addEventListener('focus', () => {

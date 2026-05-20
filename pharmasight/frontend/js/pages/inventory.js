@@ -446,9 +446,13 @@ var branchReceiptViewId = null;
 var currentBranchName = '';
 
 function formatDate(d) {
+    if (typeof window !== 'undefined' && typeof window.formatExpiryDate === 'function') {
+        const formatted = window.formatExpiryDate(d);
+        return formatted || '—';
+    }
     if (!d) return '—';
     const dt = typeof d === 'string' ? new Date(d) : d;
-    return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString();
+    return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 async function getBranchSettingsForCurrentBranch() {
@@ -2800,7 +2804,7 @@ async function runExpiryReport(overrideBranchId) {
             return '<tr>'
                 + '<td>' + escapeHtml(r.item_name || '—') + '</td>'
                 + '<td><code>' + escapeHtml(r.batch_number || '') + '</code></td>'
-                + '<td>' + escapeHtml(r.expiry_date || '—') + '</td>'
+                + '<td>' + escapeHtml((typeof formatExpiryDate === 'function' ? formatExpiryDate(r.expiry_date) : (r.expiry_date || '—'))) + '</td>'
                 + '<td style="text-align:right;">' + escapeHtml(r.quantity_display || formatNumber(r.quantity)) + '</td>'
                 + '<td style="text-align:right;">' + formatNumber(r.unit_cost) + '</td>'
                 + '<td style="text-align:right;">' + formatNumber(r.value) + '</td>'
@@ -2853,7 +2857,10 @@ function exportExpiryReportCsv() {
     var headers = ['Item', 'Batch', 'Expiry date', 'Quantity', 'Unit cost', 'Value'];
     var rows = lastExpiryReport.rows.map(function (r) {
         var qtyD = (r.quantity_display != null) ? r.quantity_display : (formatNumber(r.quantity));
-        return [r.item_name || '—', r.batch_number || '', r.expiry_date || '', qtyD, r.unit_cost, r.value].map(escapeCsv).join(',');
+        var expiryCsv = r.expiry_date
+            ? (typeof formatExpiryDate === 'function' ? formatExpiryDate(r.expiry_date) : r.expiry_date)
+            : '';
+        return [r.item_name || '—', r.batch_number || '', expiryCsv, qtyD, r.unit_cost, r.value].map(escapeCsv).join(',');
     });
     var csv = [headers.map(escapeCsv).join(','), rows.join('\n')].join('\n');
     var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });

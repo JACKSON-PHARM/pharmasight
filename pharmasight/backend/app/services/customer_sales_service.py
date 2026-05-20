@@ -11,6 +11,10 @@ from sqlalchemy.orm import Session
 from app.models.customer import Customer
 from app.models.sale import SalesInvoice
 from app.services.customer_ledger_service import CustomerLedgerService
+from app.services.invoice_workflow_policy import (
+    default_sales_type_for_branch,
+    is_wholesale_distribution_branch,
+)
 
 
 def apply_customer_to_invoice(db: Session, invoice: SalesInvoice, customer_id: UUID | None, company_id: UUID) -> None:
@@ -27,8 +31,15 @@ def apply_customer_to_invoice(db: Session, invoice: SalesInvoice, customer_id: U
     invoice.customer_name = customer.name
     invoice.customer_pin = customer.pin
     invoice.customer_phone = customer.phone
-    if customer.default_sales_type:
-        invoice.sales_type = customer.default_sales_type
+    if is_wholesale_distribution_branch(db, invoice.branch_id):
+        dst = (customer.default_sales_type or "").strip().upper()
+        if dst in ("RETAIL", "WHOLESALE", "SUPPLIER"):
+            invoice.sales_type = dst
+        else:
+            invoice.sales_type = "WHOLESALE"
+    else:
+        # Retail counter: customer rows may still carry legacy WHOLESALE default; invoice follows branch.
+        invoice.sales_type = default_sales_type_for_branch(db, invoice.branch_id)
 
 
 def set_due_date_from_customer(invoice: SalesInvoice, customer: Customer | None) -> None:

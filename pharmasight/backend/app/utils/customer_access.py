@@ -10,7 +10,10 @@ from typing import Callable, Literal, Optional, Tuple
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
+
+from app.models.customer import Customer
 
 from app.dependencies import ensure_user_has_branch_access, get_current_user, get_effective_company_id_for_user
 from app.models.company import Branch
@@ -39,6 +42,22 @@ def resolve_customer_hub_mode(branch: Branch | None, *, wholesale_licensed: bool
 
 def default_sales_type_for_hub_mode(mode: CustomerHubMode) -> str:
     return "WHOLESALE" if mode == "wholesale" else "RETAIL"
+
+
+def customer_hub_sales_type_clause(mode: CustomerHubMode):
+    """
+    Filter customers visible in hub list/search for the active branch mode.
+
+    Retail counter branches use RETAIL; legacy rows may still have WHOLESALE because
+    that was the table default before retail hub shipped.
+    """
+    expected = default_sales_type_for_hub_mode(mode)
+    if mode == "retail_credit":
+        return or_(
+            Customer.default_sales_type == "RETAIL",
+            Customer.default_sales_type == "WHOLESALE",
+        )
+    return Customer.default_sales_type == expected
 
 
 def get_branch_id_from_session(

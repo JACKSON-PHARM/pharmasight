@@ -781,7 +781,9 @@ async function showExpiringSoonModal() {
         const rows = list.map(function (r) {
             const name = (typeof escapeHtml === 'function' ? escapeHtml(r.item_name || '') : (r.item_name || '')).replace(/"/g, '&quot;');
             const batch = (typeof escapeHtml === 'function' ? escapeHtml(r.batch_number || '') : (r.batch_number || '')).replace(/"/g, '&quot;');
-            const expiry = r.expiry_date ? (typeof formatDate === 'function' ? formatDate(r.expiry_date) : r.expiry_date) : '—';
+            const expiry = r.expiry_date
+                ? (typeof formatExpiryDate === 'function' ? formatExpiryDate(r.expiry_date) : (typeof formatDate === 'function' ? formatDate(r.expiry_date) : r.expiry_date))
+                : '—';
             const qtyDisplay = r.quantity_display != null ? (typeof escapeHtml === 'function' ? escapeHtml(r.quantity_display) : r.quantity_display) : ((typeof formatNumber === 'function' ? formatNumber(r.quantity) : r.quantity) + ' ' + (r.retail_unit || r.base_unit || ''));
             return '<tr><td>' + name + '</td><td><code>' + batch + '</code></td><td>' + expiry + '</td><td style="text-align: right;">' + qtyDisplay + '</td></tr>';
         }).join('');
@@ -828,7 +830,10 @@ function exportExpiringToCsv() {
     const headers = ['Item Name', 'Batch', 'Expiry Date', 'Quantity'];
     const rows = cachedExpiringList.map(function (r) {
         const qty = r.quantity_display != null ? r.quantity_display : (r.quantity + ' ' + (r.retail_unit || r.base_unit || ''));
-        return [r.item_name || '', r.batch_number || '', r.expiry_date || '', qty].map(escapeCsv).join(',');
+        const expiryCsv = r.expiry_date
+            ? (typeof formatExpiryDate === 'function' ? formatExpiryDate(r.expiry_date) : r.expiry_date)
+            : '';
+        return [r.item_name || '', r.batch_number || '', expiryCsv, qty].map(escapeCsv).join(',');
     });
     const csv = [headers.map(escapeCsv).join(','), rows.join('\n')].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });

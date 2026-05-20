@@ -157,15 +157,32 @@ if (typeof window !== 'undefined') {
     window.parseMoneyInput = parseMoneyInput;
 }
 
-// Format date
-function formatDate(date) {
-    if (!date) return '';
-    const d = new Date(date);
-    return d.toLocaleDateString('en-KE', {
-        year: 'numeric',
-        month: 'short',
+// Parse YYYY-MM-DD (and ISO datetimes) without timezone shifting the calendar day.
+function parseCalendarDate(date) {
+    if (!date) return null;
+    if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(date)) {
+        const parts = date.slice(0, 10).split('-').map(Number);
+        const d = new Date(parts[0], parts[1] - 1, parts[2]);
+        return isNaN(d.getTime()) ? null : d;
+    }
+    const d = date instanceof Date ? date : new Date(date);
+    return isNaN(d.getTime()) ? null : d;
+}
+
+/** Expiry / batch dates: "30 Jun 2026" (day, short month, year). */
+function formatExpiryDate(date) {
+    const d = parseCalendarDate(date);
+    if (!d) return '';
+    return d.toLocaleDateString('en-GB', {
         day: 'numeric',
+        month: 'short',
+        year: 'numeric',
     });
+}
+
+// Format date (general UI)
+function formatDate(date) {
+    return formatExpiryDate(date);
 }
 
 // Format datetime
@@ -316,6 +333,7 @@ if (typeof window !== 'undefined') {
     window.showToast = showToast;
     window.formatCurrency = formatCurrency;
     window.formatDate = formatDate;
+    window.formatExpiryDate = formatExpiryDate;
     window.formatDateTime = formatDateTime;
     window.debounce = debounce;
 }

@@ -1794,11 +1794,11 @@
                 item._basis_unit_name = item.unit_name;
                 item._basis_unit_multiplier = mult;
                 item._basis_unit_price = item.unit_price;
-                // Keep cost basis from snapshot (per base) so margin calculations can still use it.
+                // Cost from snapshot is per base (retail) unit; scale by selected unit multiplier for margin.
                 item._basis_unit_cost = (item.purchase_price != null && !isNaN(Number(item.purchase_price)))
                     ? Number(item.purchase_price)
                     : null;
-                delete item._price_is_per_retail;
+                item._price_is_per_retail = true;
             } else {
                 // Search often returns price already per retail (tablet). Only scale when price is per a larger unit.
                 const basisUnit = (item.wholesale_unit || item.retail_unit || '').toString().trim();
@@ -2973,14 +2973,29 @@
      * Re-fetches each item so unit list and cost are correct for current tier.
      * Also refreshes the add row (search row) when useAddRow so unit/price adapt to retail vs wholesale.
      */
+    TransactionItemsTable.prototype.normalizeCostBasisForMargin = function(item) {
+        if (!item || (this.mode !== 'sale' && this.mode !== 'quotation')) return;
+        if (item.purchase_price != null && !isNaN(Number(item.purchase_price))) {
+            item._price_is_per_retail = true;
+            item._basis_unit_cost = Number(item.purchase_price);
+        }
+    };
+
     TransactionItemsTable.prototype.refreshPrices = async function() {
         for (let i = 0; i < this.items.length; i++) {
             if (this.items[i].item_id) {
+                this.normalizeCostBasisForMargin(this.items[i]);
                 await this.loadUnitsForRow(i);
+                this.updateMarginDisplay(i);
             }
         }
         if (this.useAddRow && this.addRowItem && this.addRowItem.item_id) {
+            this.normalizeCostBasisForMargin(this.addRowItem);
             await this.loadUnitsForRow('add');
+        }
+        if (this.useAddRow) {
+            this.render();
+            this.attachEventListeners();
         }
     };
     

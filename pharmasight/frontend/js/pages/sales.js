@@ -1370,6 +1370,7 @@ async function renderCreateSalesInvoicePage() {
     
     const today = new Date().toISOString().split('T')[0];
     const invoiceDate = invoiceData?.invoice_date ? new Date(invoiceData.invoice_date).toISOString().split('T')[0] : today;
+    const formSalesType = effectiveSalesTypeForInvoiceForm(invoiceData);
     
     // Right-side actions (edit mode only); Back is always on the left, title in center
     const topBarRightHtml = isEditMode ? `
@@ -1424,7 +1425,7 @@ async function renderCreateSalesInvoicePage() {
                         ${typeof salesWholesaleCustomerFieldHtml === 'function' ? salesWholesaleCustomerFieldHtml(invoiceData) : `<div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Customer</label><input type="text" class="form-input" name="customer_name" value="${invoiceData?.customer_name || ''}" placeholder="Name (optional)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>`}
                         <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">PIN</label><input type="text" class="form-input" name="customer_pin" value="${invoiceData?.customer_pin || ''}" placeholder="PIN" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
                         <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Phone</label><input type="text" class="form-input" name="customer_phone" id="customerPhoneInput" value="${invoiceData?.customer_phone || ''}" placeholder="Phone (credit)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
-                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Sales Type</label><select class="form-select" name="sales_type" id="salesTypeSelect" onchange="handleSalesTypeChange()" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;" ${currentInvoice && currentInvoice.id ? 'disabled' : ''}><option value="RETAIL" ${invoiceData?.sales_type === 'RETAIL' || !invoiceData?.sales_type ? 'selected' : ''}>Retail</option><option value="WHOLESALE" ${invoiceData?.sales_type === 'WHOLESALE' ? 'selected' : ''}>Wholesale</option><option value="SUPPLIER" ${invoiceData?.sales_type === 'SUPPLIER' ? 'selected' : ''}>Supplier</option></select></div>
+                        <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Sales Type</label><select class="form-select" name="sales_type" id="salesTypeSelect" onchange="handleSalesTypeChange()" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;" ${currentInvoice && currentInvoice.id ? 'disabled' : ''}><option value="RETAIL" ${formSalesType === 'RETAIL' ? 'selected' : ''}>Retail</option><option value="WHOLESALE" ${formSalesType === 'WHOLESALE' ? 'selected' : ''}>Wholesale</option><option value="SUPPLIER" ${formSalesType === 'SUPPLIER' ? 'selected' : ''}>Supplier</option></select></div>
                         <div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Payment</label><select class="form-select" name="payment_mode" id="paymentModeSelect" onchange="handlePaymentModeChange()" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"><option value="cash" ${invoiceData?.payment_mode === 'cash' ? 'selected' : ''}>Cash</option><option value="card" ${invoiceData?.payment_mode === 'card' ? 'selected' : ''}>Card</option><option value="mpesa" ${invoiceData?.payment_mode === 'mpesa' ? 'selected' : ''}>M-Pesa</option><option value="credit" ${invoiceData?.payment_mode === 'credit' ? 'selected' : ''}>Credit</option></select><small id="creditPaymentWarning" style="display: none; color: var(--danger-color); font-size: 0.7rem; margin-left: 0.25rem;"><i class="fas fa-exclamation-triangle"></i> Name &amp; phone required</small></div>
                         <div style="display: flex; align-items: center; gap: 0.35rem; grid-column: span 2;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Notes</label><input type="text" class="form-input" name="notes" value="${invoiceData?.notes || ''}" placeholder="Additional notes" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>
                     </div>
@@ -1465,6 +1466,7 @@ async function renderCreateSalesInvoicePage() {
     setTimeout(() => {
         handlePaymentModeChange();
         if (typeof applyCustomerPrefillFromSession === 'function') applyCustomerPrefillFromSession();
+        if (typeof wireWholesaleCustomerField === 'function') wireWholesaleCustomerField();
     }, 100);
 
     // If opened from landing quick-search: prefill search row only (do not add to table)
@@ -1703,6 +1705,15 @@ async function onSalesInvoiceAddItem(item) {
             draftCreationInProgress = true;
             try {
                 const invoice = await createSalesDraftWithFirstItem(item);
+                const formBeforeCreate = getSalesInvoiceFormData();
+                if (
+                    invoice &&
+                    formBeforeCreate &&
+                    !isWholesaleModuleEnabled() &&
+                    (invoice.sales_type === 'WHOLESALE' || invoice.sales_type === 'SUPPLIER')
+                ) {
+                    invoice.sales_type = formBeforeCreate.sales_type || 'RETAIL';
+                }
                 currentInvoice = { id: invoice.id, mode: 'edit', invoiceData: invoice };
                 salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(i => i.item_id));
                 documentItems = (invoice.items || []).map(i => ({
@@ -5032,6 +5043,15 @@ function isWholesaleModuleEnabled() {
     );
 }
 
+/** Sales type shown on invoice form — retail branches must not show legacy WHOLESALE from API. */
+function effectiveSalesTypeForInvoiceForm(invoiceData) {
+    const raw = (invoiceData && invoiceData.sales_type) || 'RETAIL';
+    if (!isWholesaleModuleEnabled() && (raw === 'WHOLESALE' || raw === 'SUPPLIER')) {
+        return 'RETAIL';
+    }
+    return raw;
+}
+
 function salesWholesaleCustomerFieldHtml(invoiceData) {
     const cid = invoiceData && invoiceData.customer_id ? String(invoiceData.customer_id) : '';
     const cname = (invoiceData && invoiceData.customer_name) || '';
@@ -5039,12 +5059,10 @@ function salesWholesaleCustomerFieldHtml(invoiceData) {
         return `<div style="display: flex; align-items: center; gap: 0.35rem;"><label style="margin: 0; font-size: 0.8rem; font-weight: 500; white-space: nowrap;">Customer</label><input type="text" class="form-input" name="customer_name" value="${cname}" placeholder="Name (optional)" style="padding: 0.3rem 0.5rem; font-size: 0.8rem; min-width: 0;"></div>`;
     }
     const label = 'Customer';
-    return `<div style="display:flex;align-items:center;gap:0.35rem;position:relative;grid-column:span 2;flex-wrap:wrap;">
+    return `<div id="wholesaleCustomerFieldWrap" style="display:flex;align-items:center;gap:0.35rem;position:relative;grid-column:span 2;flex-wrap:wrap;">
         <label style="margin:0;font-size:0.8rem;font-weight:500;white-space:nowrap;">${label}</label>
         <input type="hidden" id="wholesaleCustomerId" value="${cid}">
-        <input type="text" class="form-input" id="wholesaleCustomerSearch" value="${cname}" placeholder="Search account…" autocomplete="off"
-            onkeyup="searchWholesaleCustomersInline(event)" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:120px;">
-        <input type="text" class="form-input" name="customer_name" id="wholesaleCustomerName" value="${cname}" placeholder="Display name" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:120px;">
+        <input type="text" class="form-input" name="customer_name" id="wholesaleCustomerSearch" value="${cname}" placeholder="Search customer…" autocomplete="off" style="padding:0.3rem 0.5rem;font-size:0.8rem;flex:1;min-width:160px;">
         <a href="#customers" class="btn btn-outline btn-sm" style="white-space:nowrap;font-size:0.75rem;">+ Account</a>
         <div id="wholesaleCustomerDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ddd;z-index:50;max-height:200px;overflow:auto;"></div>
     </div>`;
@@ -5057,7 +5075,7 @@ function applyCustomerPrefillFromSession() {
         sessionStorage.removeItem('pharmasight_sale_customer_prefill');
         const data = JSON.parse(raw);
         if (data && data.customer_id && data.customer_name) {
-            selectWholesaleCustomer(String(data.customer_id), String(data.customer_name));
+            void selectWholesaleCustomer(String(data.customer_id), String(data.customer_name));
             const pm = document.getElementById('paymentModeSelect');
             if (pm) {
                 pm.value = 'credit';
@@ -5067,42 +5085,200 @@ function applyCustomerPrefillFromSession() {
     } catch (_) {}
 }
 
-async function searchWholesaleCustomersInline(event) {
-    const input = event.target;
-    const q = (input.value || '').trim();
+let _wholesaleCustomerSearchSeq = 0;
+let _wholesaleCustomerSearchDebounce = null;
+let _wholesaleCustomerLinked = { id: '', name: '', pin: '', phone: '' };
+
+function populateSalesInvoiceCustomerFields(customer) {
+    if (!customer) return;
+    const pinInput = document.querySelector('#salesInvoiceForm input[name="customer_pin"]');
+    const phoneInput = document.getElementById('customerPhoneInput');
+    const search = document.getElementById('wholesaleCustomerSearch');
+    if (search && customer.name) search.value = String(customer.name).trim();
+    if (pinInput && customer.pin != null && String(customer.pin).trim()) {
+        pinInput.value = String(customer.pin).trim();
+    }
+    if (phoneInput && customer.phone != null && String(customer.phone).trim()) {
+        phoneInput.value = String(customer.phone).trim();
+    }
+}
+
+function clearSalesInvoiceCustomerDetailFields() {
+    const pinInput = document.querySelector('#salesInvoiceForm input[name="customer_pin"]');
+    const phoneInput = document.getElementById('customerPhoneInput');
+    if (pinInput) pinInput.value = '';
+    if (phoneInput) phoneInput.value = '';
+}
+
+function hideWholesaleCustomerDropdown() {
+    const dd = document.getElementById('wholesaleCustomerDropdown');
+    if (dd) {
+        dd.style.display = 'none';
+        dd.innerHTML = '';
+    }
+}
+
+async function runWholesaleCustomerSearch(query) {
+    const input = document.getElementById('wholesaleCustomerSearch');
     const dropdown = document.getElementById('wholesaleCustomerDropdown');
-    if (!dropdown || !window.API || !API.customers) return;
+    if (!input || !dropdown || !window.API || !API.customers || !API.customers.search) return;
+
+    const seq = ++_wholesaleCustomerSearchSeq;
+    const q = (query || '').trim();
     if (q.length < 2) {
-        dropdown.style.display = 'none';
+        hideWholesaleCustomerDropdown();
         return;
     }
+
+    dropdown.innerHTML = '<div style="padding:0.45rem 0.6rem;color:#64748b;font-size:0.85rem;">Searching…</div>';
+    dropdown.style.display = 'block';
+
     const companyId = window.CONFIG && CONFIG.COMPANY_ID;
-    if (!companyId) return;
+    if (!companyId) {
+        dropdown.innerHTML = '<div style="padding:0.45rem 0.6rem;color:#b45309;">Company not loaded — refresh and try again.</div>';
+        return;
+    }
+
     try {
         const rows = await API.customers.search(q, companyId, 12);
-        dropdown.innerHTML = (rows || []).map((r) =>
-            `<div style="padding:0.4rem 0.6rem;cursor:pointer;border-bottom:1px solid #eee;" onclick="selectWholesaleCustomer('${r.id}','${String(r.name).replace(/'/g, "\\'")}')">${r.name}</div>`
-        ).join('') || '<div style="padding:0.4rem;">No matches</div>';
+        if (seq !== _wholesaleCustomerSearchSeq || (input.value || '').trim() !== q) return;
+        dropdown.innerHTML = '';
+        if (!rows || !rows.length) {
+            dropdown.innerHTML = '<div style="padding:0.45rem 0.6rem;color:#64748b;">No customers found</div>';
+            dropdown.style.display = 'block';
+            return;
+        }
+        rows.forEach((r) => {
+            const hit = document.createElement('button');
+            hit.type = 'button';
+            hit.className = 'wholesale-customer-hit';
+            hit.style.cssText =
+                'display:block;width:100%;text-align:left;padding:0.45rem 0.6rem;border:none;border-bottom:1px solid #eee;background:#fff;cursor:pointer;font:inherit;';
+            const title = document.createElement('div');
+            title.style.fontWeight = '600';
+            title.textContent = r.name || '-';
+            hit.appendChild(title);
+            const sub = [r.phone, r.contact_person].filter(Boolean).join(' · ');
+            if (sub) {
+                const meta = document.createElement('div');
+                meta.style.fontSize = '0.75rem';
+                meta.style.color = '#64748b';
+                meta.style.marginTop = '2px';
+                meta.textContent = sub;
+                hit.appendChild(meta);
+            }
+            hit.addEventListener('mousedown', (e) => e.preventDefault());
+            hit.addEventListener('click', () => void selectWholesaleCustomer(String(r.id), String(r.name || ''), r));
+            dropdown.appendChild(hit);
+        });
         dropdown.style.display = 'block';
-    } catch (_) {
-        dropdown.style.display = 'none';
+    } catch (err) {
+        if (seq !== _wholesaleCustomerSearchSeq) return;
+        const msg = (err && err.message) || 'Search failed';
+        dropdown.innerHTML = `<div style="padding:0.45rem 0.6rem;color:#b91c1c;font-size:0.85rem;">${msg}</div>`;
+        dropdown.style.display = 'block';
     }
 }
 
-function selectWholesaleCustomer(id, name) {
+function wireWholesaleCustomerField() {
+    const input = document.getElementById('wholesaleCustomerSearch');
+    const wrap = document.getElementById('wholesaleCustomerFieldWrap');
+    if (!input || input.dataset.bound === '1') return;
+    input.dataset.bound = '1';
+
     const hid = document.getElementById('wholesaleCustomerId');
-    const search = document.getElementById('wholesaleCustomerSearch');
-    const nm = document.getElementById('wholesaleCustomerName');
-    const dd = document.getElementById('wholesaleCustomerDropdown');
-    if (hid) hid.value = id;
-    if (search) search.value = name;
-    if (nm) nm.value = name;
-    if (dd) dd.style.display = 'none';
-    const st = document.getElementById('salesTypeSelect');
-    if (st && isWholesaleModuleEnabled()) st.value = 'WHOLESALE';
+    if (hid && hid.value && input.value) {
+        _wholesaleCustomerLinked = { id: String(hid.value), name: String(input.value) };
+    }
+
+    input.addEventListener('input', () => {
+        const text = (input.value || '').trim();
+        if (
+            _wholesaleCustomerLinked.id &&
+            text &&
+            text.toLowerCase() !== (_wholesaleCustomerLinked.name || '').toLowerCase()
+        ) {
+            if (hid) hid.value = '';
+            _wholesaleCustomerLinked = { id: '', name: '', pin: '', phone: '' };
+            clearSalesInvoiceCustomerDetailFields();
+        }
+        if (_wholesaleCustomerSearchDebounce) clearTimeout(_wholesaleCustomerSearchDebounce);
+        _wholesaleCustomerSearchDebounce = setTimeout(() => void runWholesaleCustomerSearch(input.value), 350);
+    });
+
+    input.addEventListener('focus', () => {
+        const q = (input.value || '').trim();
+        if (q.length >= 2) void runWholesaleCustomerSearch(q);
+    });
+
+    if (!window._wholesaleCustomerDocClickBound) {
+        window._wholesaleCustomerDocClickBound = true;
+        document.addEventListener('click', (e) => {
+            if (wrap && !wrap.contains(e.target)) hideWholesaleCustomerDropdown();
+        });
+    }
 }
 
-window.searchWholesaleCustomersInline = searchWholesaleCustomersInline;
+async function selectWholesaleCustomer(id, name, partial) {
+    const hid = document.getElementById('wholesaleCustomerId');
+    const search = document.getElementById('wholesaleCustomerSearch');
+    const dd = document.getElementById('wholesaleCustomerDropdown');
+    const safeName = String(name || (partial && partial.name) || '').trim();
+    if (hid) hid.value = id || '';
+    if (search) search.value = safeName;
+    populateSalesInvoiceCustomerFields(partial || { name: safeName });
+    _wholesaleCustomerLinked = {
+        id: String(id || ''),
+        name: safeName,
+        pin: (partial && partial.pin) || '',
+        phone: (partial && partial.phone) || '',
+    };
+    if (dd) {
+        dd.style.display = 'none';
+        dd.innerHTML = '';
+    }
+    const st = document.getElementById('salesTypeSelect');
+    const invoiceLocked = typeof currentInvoice !== 'undefined' && currentInvoice && currentInvoice.id;
+    const applySalesTypeFromCustomer = (customerRow) => {
+        if (!st || invoiceLocked) return;
+        if (isWholesaleModuleEnabled()) {
+            const dst = (customerRow && customerRow.default_sales_type) || 'WHOLESALE';
+            const allowed = dst === 'RETAIL' || dst === 'WHOLESALE' || dst === 'SUPPLIER' ? dst : 'WHOLESALE';
+            if (st.value !== allowed) {
+                st.value = allowed;
+                if (typeof handleSalesTypeChange === 'function') handleSalesTypeChange();
+            }
+        } else if (isCustomerMasterSaleEnabled() && (st.value === 'WHOLESALE' || st.value === 'SUPPLIER')) {
+            st.value = 'RETAIL';
+            if (typeof handleSalesTypeChange === 'function') handleSalesTypeChange();
+        }
+    };
+    applySalesTypeFromCustomer(partial);
+
+    const needsFetch =
+        id &&
+        window.API &&
+        API.customers &&
+        API.customers.get &&
+        (!partial || ((!partial.pin || !String(partial.pin).trim()) && (!partial.phone || !String(partial.phone).trim())));
+    if (needsFetch) {
+        try {
+            const full = await API.customers.get(id);
+            populateSalesInvoiceCustomerFields(full);
+            applySalesTypeFromCustomer(full);
+            _wholesaleCustomerLinked = {
+                id: String(id),
+                name: String(full.name || safeName).trim(),
+                pin: full.pin || '',
+                phone: full.phone || '',
+            };
+        } catch (_) {
+            /* search hit may already have filled partial fields */
+        }
+    }
+}
+
 window.applyCustomerPrefillFromSession = applyCustomerPrefillFromSession;
 window.selectWholesaleCustomer = selectWholesaleCustomer;
 window.salesWholesaleCustomerFieldHtml = salesWholesaleCustomerFieldHtml;
+window.wireWholesaleCustomerField = wireWholesaleCustomerField;

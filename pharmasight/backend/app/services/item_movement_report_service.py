@@ -490,17 +490,31 @@ def get_item_batches(
             InventoryLedger.batch_number != "",
         )
         .group_by(InventoryLedger.batch_number, InventoryLedger.expiry_date)
+        .having(func.sum(InventoryLedger.quantity_delta) > 0)
         .all()
     )
+    from app.services.inventory_service import InventoryService
+
+    pools = [
+        {
+            "batch_number": row.batch_number,
+            "expiry_date": row.expiry_date,
+            "quantity": float(row.balance or 0),
+        }
+        for row in batch_rows
+    ]
+    current_stock = InventoryService.get_current_stock(db, item_id, branch_id)
+    pools = InventoryService.reconcile_batch_pools(pools, current_stock, value_key=None)
+
     out: List[ItemBatchInfo] = []
-    for row in batch_rows:
-        bn = (row.batch_number or "").strip()
+    for p in pools:
+        bn = (p.get("batch_number") or "").strip()
         if not bn:
             continue
-        expiry = row.expiry_date
+        expiry = p.get("expiry_date")
         if expiry is not None and hasattr(expiry, "date") and callable(getattr(expiry, "date", None)):
             expiry = expiry.date()
-        bal = Decimal(str(row.balance or 0))
+        bal = Decimal(str(p.get("quantity") or 0))
         out.append(ItemBatchInfo(batch_no=bn, expiry_date=expiry, current_balance=bal))
     # Sort newest first: by expiry_date DESC nulls last, then batch_no
     out.sort(key=lambda x: ((x.expiry_date is None, -(x.expiry_date or date(1970, 1, 1)).toordinal()), x.batch_no))

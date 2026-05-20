@@ -3,7 +3,7 @@ Inventory Service - Stock calculation and FEFO allocation
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Literal
 from datetime import date
 from uuid import UUID
 from decimal import Decimal
@@ -13,6 +13,7 @@ from app.services.item_units_helper import get_unit_multiplier_from_item
 
 # Legacy/typo unit names we never show; display as "piece" (or caller's fallback) for consistency with 3-tier (box, packet, sachet).
 _LEGACY_UNIT_ALIASES = frozenset({"pair", "pairs", "—", "-", "–", ""})
+_BATCH_QTY_EPSILON = 1e-9
 
 
 def _unit_for_display(unit: Optional[str], fallback: str = "piece") -> str:
@@ -51,6 +52,55 @@ class InventoryService:
         return float(result) if result is not None else 0.0
 
     @staticmethod
+    def reconcile_batch_pools(
+        pools: List[Dict],
+        current_stock: float,
+        *,
+        quantity_key: str = "quantity",
+        value_key: Optional[str] = "total_cost",
+        trim_from: Literal["earliest_expiry", "latest_expiry"] = "earliest_expiry",
+    ) -> List[Dict]:
+        """
+        Cap per-batch quantities so their sum never exceeds item-level current stock.
+
+        Historical movements without batch/expiry metadata can leave phantom positive
+        batch layers while item stock is correct.
+
+        - earliest_expiry (default): drop exhausted/old batch layers first — used for
+          FEFO sales display and allocation so only real current batches remain.
+        - latest_expiry: drop farthest expiry first — used for expiry reports so
+          near-expiry risk stays visible when batch totals overstate stock.
+        """
+        if not pools:
+            return []
+        current_qty = max(0.0, float(current_stock))
+        total_qty = sum(float(p.get(quantity_key) or 0) for p in pools)
+        if total_qty <= current_qty + _BATCH_QTY_EPSILON:
+            return [p for p in pools if float(p.get(quantity_key) or 0) > _BATCH_QTY_EPSILON]
+
+        excess = total_qty - current_qty
+        pools_sorted = sorted(
+            pools,
+            key=lambda p: (p.get("expiry_date") is None, p.get("expiry_date")),
+            reverse=(trim_from == "latest_expiry"),
+        )
+        for p in pools_sorted:
+            if excess <= _BATCH_QTY_EPSILON:
+                break
+            q = float(p.get(quantity_key) or 0)
+            if q <= _BATCH_QTY_EPSILON:
+                continue
+            take = min(q, excess)
+            p[quantity_key] = q - take
+            if value_key and value_key in p:
+                val = float(p.get(value_key) or 0)
+                unit_cost = (val / q) if q > 0 else 0.0
+                p[value_key] = val - (unit_cost * take)
+            excess -= take
+
+        return [p for p in pools if float(p.get(quantity_key) or 0) > _BATCH_QTY_EPSILON]
+
+    @staticmethod
     def get_stock_by_batch(
         db: Session,
         item_id: UUID,
@@ -82,17 +132,23 @@ class InventoryService:
             InventoryLedger.expiry_date.asc().nulls_last(),  # FEFO: earliest expiry first
             InventoryLedger.batch_number.asc()
         ).all()
-        
-        return [
+
+        pools = [
             {
                 "batch_number": r.batch_number,
                 "expiry_date": r.expiry_date,
                 "quantity": float(r.quantity),
                 "unit_cost": float(r.unit_cost),
-                "total_cost": float(r.total_cost)
+                "total_cost": float(r.total_cost),
             }
             for r in results
         ]
+        current_stock = InventoryService.get_current_stock(db, item_id, branch_id)
+        reconciled = InventoryService.reconcile_batch_pools(pools, current_stock)
+        reconciled.sort(
+            key=lambda p: (p.get("expiry_date") is None, p.get("expiry_date") or date.max),
+        )
+        return reconciled
 
     @staticmethod
     def get_stock_availability(
@@ -194,45 +250,65 @@ class InventoryService:
         if quantity_needed <= 0:
             return []
         
-        batches = db.query(
+        batch_rows = db.query(
             InventoryLedger.batch_number,
             InventoryLedger.expiry_date,
             InventoryLedger.unit_cost,
-            InventoryLedger.id.label('ledger_entry_id'),
-            func.sum(InventoryLedger.quantity_delta).label('available')
+            func.sum(InventoryLedger.quantity_delta).label("available"),
         ).filter(
             and_(
                 InventoryLedger.item_id == item_id,
-                InventoryLedger.branch_id == branch_id
+                InventoryLedger.branch_id == branch_id,
             )
         ).group_by(
             InventoryLedger.batch_number,
             InventoryLedger.expiry_date,
             InventoryLedger.unit_cost,
-            InventoryLedger.id
         ).having(
             func.sum(InventoryLedger.quantity_delta) > 0
         ).order_by(
-            InventoryLedger.expiry_date.asc().nulls_last(),  # FEFO
-            InventoryLedger.batch_number.asc()
+            InventoryLedger.expiry_date.asc().nulls_last(),
+            InventoryLedger.batch_number.asc(),
         ).all()
-        
+
+        pools = [
+            {
+                "batch_number": row.batch_number,
+                "expiry_date": row.expiry_date,
+                "quantity": float(row.available),
+                "unit_cost": float(row.unit_cost),
+            }
+            for row in batch_rows
+        ]
+        current_stock = InventoryService.get_current_stock(db, item_id, branch_id)
+        pools = InventoryService.reconcile_batch_pools(
+            pools, current_stock, value_key=None
+        )
+
         allocations = []
         remaining = quantity_needed
-        
-        for batch in batches:
+
+        for batch in pools:
             if remaining <= 0:
                 break
-            available = float(batch.available)
+            available = float(batch["quantity"])
             if available <= 0:
                 continue
             take = min(remaining, available)
+            ledger_entry_id = InventoryService._first_ledger_id_for_batch(
+                db,
+                item_id,
+                branch_id,
+                batch["batch_number"],
+                batch["expiry_date"],
+                batch["unit_cost"],
+            )
             allocations.append({
-                "batch_number": batch.batch_number,
-                "expiry_date": batch.expiry_date,
+                "batch_number": batch["batch_number"],
+                "expiry_date": batch["expiry_date"],
                 "quantity": take,
-                "unit_cost": float(batch.unit_cost),
-                "ledger_entry_id": batch.ledger_entry_id
+                "unit_cost": float(batch["unit_cost"]),
+                "ledger_entry_id": ledger_entry_id,
             })
             remaining -= take
         
@@ -242,6 +318,29 @@ class InventoryService:
                 f"but only {quantity_needed - remaining} available."
             )
         return allocations
+
+    @staticmethod
+    def _first_ledger_id_for_batch(
+        db: Session,
+        item_id: UUID,
+        branch_id: UUID,
+        batch_number: Optional[str],
+        expiry_date,
+        unit_cost: float,
+    ) -> Optional[UUID]:
+        """Representative ledger row for a batch pool (earliest movement)."""
+        q = db.query(InventoryLedger.id).filter(
+            InventoryLedger.item_id == item_id,
+            InventoryLedger.branch_id == branch_id,
+            InventoryLedger.batch_number == batch_number,
+            InventoryLedger.unit_cost == unit_cost,
+        )
+        if expiry_date is None:
+            q = q.filter(InventoryLedger.expiry_date.is_(None))
+        else:
+            q = q.filter(InventoryLedger.expiry_date == expiry_date)
+        row = q.order_by(InventoryLedger.created_at.asc()).first()
+        return row[0] if row else None
 
     @staticmethod
     def allocate_stock_fefo_with_lock(
@@ -306,6 +405,24 @@ class InventoryService:
                 seen.add(key)
                 if batch_totals[key]["quantity"] > 0:
                     ordered_keys.append(key)
+
+        pools = [
+            {
+                "batch_number": key[0],
+                "expiry_date": key[1],
+                "quantity": batch_totals[key]["quantity"],
+                "unit_cost": batch_totals[key]["unit_cost"],
+                "_key": key,
+            }
+            for key in ordered_keys
+        ]
+        current_stock = InventoryService.get_current_stock(db, item_id, branch_id)
+        pools = InventoryService.reconcile_batch_pools(pools, current_stock, value_key=None)
+        pools.sort(key=lambda p: (p.get("expiry_date") is None, p.get("expiry_date")))
+        for p in pools:
+            batch_totals[p["_key"]]["quantity"] = p["quantity"]
+        ordered_keys = [p["_key"] for p in pools]
+
         allocations = []
         remaining = float(quantity_needed_base)
         for key in ordered_keys:

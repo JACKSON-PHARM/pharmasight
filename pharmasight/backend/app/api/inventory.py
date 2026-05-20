@@ -369,28 +369,25 @@ def _get_reconciled_expiring_pools(
     days: int,
 ) -> List[dict]:
     """
-    Build expiry pools and reconcile them against true current stock per item.
+    Batches expiring within [today, today+days] that truly hold current stock.
 
-    Why reconciliation:
-    - Some historical adjustments may have been posted without batch/expiry metadata.
-    - That can make raw batch-expiry aggregation overstate quantities versus item-level stock.
-    - We cap reported batch-expiry quantities so total in expiry pools never exceeds current stock.
+    Uses fully reconciled per-item batch balances (same as sales FEFO), then applies
+    the expiry window. Reconciling only inside the window was wrong: real stock can sit
+    on a batch outside the window (e.g. Oct 2027) while phantom near-expiry layers
+    still looked like they matched item stock.
     """
-    cutoff = date.today() + timedelta(days=days)
-    raw_rows = (
-        db.query(
-            InventoryLedger.item_id,
-            InventoryLedger.batch_number,
-            InventoryLedger.expiry_date,
-            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("quantity"),
-            func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("value"),
-        )
+    today = date.today()
+    cutoff = today + timedelta(days=days)
+
+    # Candidate items: ledger shows a positive layer in the expiry window (may be phantom).
+    candidate_rows = (
+        db.query(InventoryLedger.item_id)
         .filter(
             InventoryLedger.branch_id == branch_id,
             InventoryLedger.company_id == company_id,
             InventoryLedger.expiry_date.isnot(None),
             InventoryLedger.expiry_date <= cutoff,
-            InventoryLedger.expiry_date >= date.today(),
+            InventoryLedger.expiry_date >= today,
         )
         .group_by(
             InventoryLedger.item_id,
@@ -398,68 +395,36 @@ def _get_reconciled_expiring_pools(
             InventoryLedger.expiry_date,
         )
         .having(func.sum(InventoryLedger.quantity_delta) > 0)
-        .order_by(InventoryLedger.expiry_date.asc())
         .all()
     )
-    if not raw_rows:
+    if not candidate_rows:
         return []
 
-    item_ids = list({r.item_id for r in raw_rows})
+    item_ids = list({r.item_id for r in candidate_rows})
     items = {item.id: item for item in db.query(Item).filter(Item.id.in_(item_ids)).all()}
 
-    current_rows = (
-        db.query(
-            InventoryLedger.item_id,
-            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("current_stock"),
-        )
-        .filter(
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.company_id == company_id,
-            InventoryLedger.item_id.in_(item_ids),
-        )
-        .group_by(InventoryLedger.item_id)
-        .all()
-    )
-    current_by_item = {r.item_id: float(r.current_stock or 0) for r in current_rows}
-
-    pools_by_item: dict = {}
-    for r in raw_rows:
-        pools_by_item.setdefault(r.item_id, []).append(
-            {
-                "item_id": r.item_id,
-                "item_name": items.get(r.item_id).name if items.get(r.item_id) else "—",
-                "batch_number": r.batch_number,
-                "expiry_date": r.expiry_date,
-                "quantity": float(r.quantity or 0),
-                "value": float(r.value or 0),
-                "_item": items.get(r.item_id),
-            }
-        )
-
     reconciled: List[dict] = []
-    for iid, pools in pools_by_item.items():
-        total_qty = sum(float(p.get("quantity") or 0) for p in pools)
-        current_qty = max(0.0, float(current_by_item.get(iid, 0)))
-        if total_qty > current_qty:
-            excess = total_qty - current_qty
-            # Reduce from farthest expiry first to preserve near-expiry visibility.
-            pools_sorted = sorted(
-                pools,
-                key=lambda p: (p.get("expiry_date") is None, p.get("expiry_date")),
-                reverse=True,
+    for iid in item_ids:
+        batches = InventoryService.get_stock_by_batch(db, iid, branch_id)
+        for b in batches:
+            exp = b.get("expiry_date")
+            if exp is None:
+                continue
+            if hasattr(exp, "date") and callable(getattr(exp, "date", None)):
+                exp = exp.date()
+            if exp < today or exp > cutoff:
+                continue
+            reconciled.append(
+                {
+                    "item_id": iid,
+                    "item_name": items.get(iid).name if items.get(iid) else "—",
+                    "batch_number": b.get("batch_number"),
+                    "expiry_date": exp,
+                    "quantity": float(b.get("quantity") or 0),
+                    "value": float(b.get("total_cost") or 0),
+                    "_item": items.get(iid),
+                }
             )
-            for p in pools_sorted:
-                if excess <= 0:
-                    break
-                q = float(p.get("quantity") or 0)
-                if q <= 0:
-                    continue
-                take = min(q, excess)
-                unit_cost = (float(p.get("value") or 0) / q) if q > 0 else 0.0
-                p["quantity"] = q - take
-                p["value"] = float(p.get("value") or 0) - (unit_cost * take)
-                excess -= take
-        reconciled.extend([p for p in pools if float(p.get("quantity") or 0) > 1e-9])
 
     reconciled.sort(key=lambda p: (p.get("expiry_date") is None, p.get("expiry_date")))
     return reconciled

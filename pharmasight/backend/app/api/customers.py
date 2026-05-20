@@ -9,7 +9,7 @@ from uuid import UUID
 
 from app.dependencies import get_tenant_db, get_current_user
 from app.utils.customer_access import (
-    default_sales_type_for_hub_mode,
+    customer_hub_sales_type_clause,
     get_customer_hub_mode,
     require_customer_hub_branch,
 )
@@ -41,14 +41,20 @@ def search_customers(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    sales_type = default_sales_type_for_hub_mode(mode)
     search_term = f"%{q.lower()}%"
     rows = (
-        db.query(Customer.id, Customer.name)
+        db.query(
+            Customer.id,
+            Customer.name,
+            Customer.pin,
+            Customer.phone,
+            Customer.contact_person,
+            Customer.default_sales_type,
+        )
         .filter(
             Customer.company_id == company_id,
             Customer.is_active == True,
-            Customer.default_sales_type == sales_type,
+            customer_hub_sales_type_clause(mode),
             or_(
                 func.lower(Customer.name).like(search_term),
                 func.lower(Customer.contact_person).like(search_term),
@@ -59,7 +65,17 @@ def search_customers(
         .limit(limit)
         .all()
     )
-    return [{"id": str(r.id), "name": r.name} for r in rows]
+    return [
+        {
+            "id": str(r.id),
+            "name": r.name,
+            "pin": r.pin,
+            "phone": r.phone,
+            "contact_person": r.contact_person,
+            "default_sales_type": r.default_sales_type,
+        }
+        for r in rows
+    ]
 
 
 @router.get("/company/{company_id}", response_model=List[CustomerResponse])

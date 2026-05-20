@@ -51,7 +51,7 @@ from app.schemas.customer_management import (
 )
 
 from app.utils.customer_access import (
-    default_sales_type_for_hub_mode,
+    customer_hub_sales_type_clause,
     get_customer_hub_mode,
     require_customer_hub_branch,
 )
@@ -88,7 +88,6 @@ def list_customers_enriched(
     db: Session = Depends(get_tenant_db),
 ):
     company_id = _effective_company_id(request)
-    sales_type = default_sales_type_for_hub_mode(mode)
     today = date.today()
     month_start = today.replace(day=1)
     if today.month == 12:
@@ -101,7 +100,7 @@ def list_customers_enriched(
         .filter(
             Customer.company_id == company_id,
             Customer.is_active == True,
-            Customer.default_sales_type == sales_type,
+            customer_hub_sales_type_clause(mode),
         )
         .order_by(Customer.name.asc())
         .all()
