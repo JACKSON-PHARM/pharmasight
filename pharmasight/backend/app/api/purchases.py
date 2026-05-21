@@ -659,6 +659,12 @@ def create_supplier_invoice(
     _purchase_company_branch_perm(
         db, user, invoice.company_id, invoice.branch_id, permission="purchases.create"
     )
+    from datetime import date
+    from app.services.branch_operational_backlog import assert_module_not_blocked
+
+    assert_module_not_blocked(
+        db, invoice.company_id, invoice.branch_id, invoice.invoice_date or date.today(), "purchases"
+    )
 
     # Enforce per-supplier requirement for external supplier invoice number when configured.
     supplier = (

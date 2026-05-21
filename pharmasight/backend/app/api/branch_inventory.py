@@ -496,6 +496,10 @@ def create_branch_transfer(
     if body.supplying_branch_id == body.receiving_branch_id:
         raise HTTPException(status_code=400, detail="Supplying and receiving branch must be different (no self-transfer)")
     company_id = sup_br.company_id
+    from datetime import date
+    from app.services.branch_operational_backlog import assert_module_not_blocked
+
+    assert_module_not_blocked(db, company_id, body.supplying_branch_id, date.today(), "branch_transfer")
     transfer = BranchTransfer(
         company_id=company_id,
         supplying_branch_id=body.supplying_branch_id,

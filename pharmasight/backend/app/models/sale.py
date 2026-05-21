@@ -1,7 +1,7 @@
 """
 Sales models (KRA Compliant)
 """
-from sqlalchemy import Column, String, Numeric, Date, ForeignKey, Text, Boolean, UniqueConstraint
+from sqlalchemy import Column, String, Numeric, Date, ForeignKey, Text, Boolean, UniqueConstraint, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -284,3 +284,30 @@ class InvoicePayment(Base):
     __table_args__ = (
         {"comment": "Split payment tracking for sales invoices. Supports multiple payment modes per invoice."},
     )
+
+
+class SalesReconciliationQueue(Base):
+    """Async reconciliation job for a batched sales invoice (FEFO/ledger/GL after operational commit)."""
+
+    __tablename__ = "sales_reconciliation_queue"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
+    sales_invoice_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sales_invoices.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    state = Column(String(40), nullable=False, default="OPERATIONALLY_POSTED")
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    operational_posted_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    inventory_allocated_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    financially_posted_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    fully_reconciled_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    sales_invoice = relationship("SalesInvoice", foreign_keys=[sales_invoice_id])

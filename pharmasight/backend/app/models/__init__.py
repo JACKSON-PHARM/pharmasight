@@ -43,7 +43,17 @@ from .finance_backfill import FinanceBackfillRun
 # Backward compatibility aliases
 PurchaseInvoice = SupplierInvoice
 PurchaseInvoiceItem = SupplierInvoiceItem
-from .sale import SalesInvoice, SalesInvoiceItem, Payment, CreditNote, CreditNoteItem, Quotation, QuotationItem, InvoicePayment
+from .sale import (
+    SalesInvoice,
+    SalesInvoiceItem,
+    Payment,
+    CreditNote,
+    CreditNoteItem,
+    Quotation,
+    QuotationItem,
+    InvoicePayment,
+    SalesReconciliationQueue,
+)
 from .settings import DocumentSequence, CompanySetting, PublicSiteSettings
 from .stock_take import StockTakeSession, StockTakeCount, StockTakeCounterLock, StockTakeAdjustment
 from .order_book import DailyOrderBook, OrderBookHistory
@@ -148,6 +158,7 @@ __all__ = [
     "PurchaseOrderItem",
     "SalesInvoice",
     "SalesInvoiceItem",
+    "SalesReconciliationQueue",
     "Payment",
     "CreditNote",
     "CreditNoteItem",

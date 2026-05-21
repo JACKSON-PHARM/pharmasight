@@ -31,6 +31,10 @@ _MAX_RETRIES = 3
 
 
 from app.services.sales_batch_common import user_has_sell_below_min_margin
+from app.services.sales_reconciliation_queue_service import (
+    mark_inventory_allocated,
+    mark_reconciliation_failed,
+)
 
 
 def reconcile_sales_invoice_inventory(
@@ -228,6 +232,7 @@ def run_sales_inventory_reconciliation(
                 return None
             t0 = time.perf_counter()
             below_margin = reconcile_sales_invoice_inventory(db, invoice, batched_by)
+            mark_inventory_allocated(db, invoice_id)
             db.commit()
             ms = round((time.perf_counter() - t0) * 1000, 1)
             logger.info(
@@ -239,6 +244,11 @@ def run_sales_inventory_reconciliation(
             return below_margin
         except Exception as e:
             db.rollback()
+            try:
+                mark_reconciliation_failed(db, invoice_id, str(e))
+                db.commit()
+            except Exception:
+                db.rollback()
             last_err = e
             logger.exception(
                 "reconcile_sales_invoice_inventory failed invoice=%s attempt=%s/%s",

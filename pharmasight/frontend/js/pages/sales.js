@@ -1446,7 +1446,18 @@ async function renderCreateSalesInvoicePage() {
     console.log('renderCreateSalesInvoicePage() called');
     const page = document.getElementById('sales');
     if (!page) return;
-    
+
+    const today = new Date().toISOString().split('T')[0];
+    var salesBacklogBlocked = false;
+    if (!currentInvoice?.id && CONFIG.BRANCH_ID && window.operationalBacklogBell) {
+        try {
+            var summary = await window.operationalBacklogBell.refresh(true);
+            salesBacklogBlocked = summary && summary.may_create_new_sales_draft === false;
+        } catch (e) {
+            console.warn('operational backlog check failed', e);
+        }
+    }
+
     const invoiceId = currentInvoice?.id || null;
     let invoiceData = currentInvoice?.id ? (currentInvoice.invoiceData || {}) : null;
     const docStatus = String(invoiceData?.status || 'DRAFT').toUpperCase();
@@ -1471,7 +1482,6 @@ async function renderCreateSalesInvoicePage() {
         salesInvoiceSyncedItemIds = new Set(invoiceData.items.map(i => i.item_id));
     }
     
-    const today = new Date().toISOString().split('T')[0];
     const invoiceDate = invoiceData?.invoice_date ? new Date(invoiceData.invoice_date).toISOString().split('T')[0] : today;
     const formSalesType = effectiveSalesTypeForInvoiceForm(invoiceData);
     
@@ -1482,7 +1492,19 @@ async function renderCreateSalesInvoicePage() {
         ? `Sales Invoice: ${escapeHtml(invoiceData.invoice_no)}`
         : 'Sales Invoice';
     
+    const backlogBannerHtml = (!isEditMode && salesBacklogBlocked)
+        ? `<div class="sales-backlog-banner" role="alert">
+            <i class="fas fa-bell" style="margin-top: 0.1rem; color: var(--warning-color, #d97706);"></i>
+            <div>
+              <strong>Cannot start a new sale yet.</strong>
+              Unposted documents from earlier dates must be cleared first.
+              <button type="button" class="linkish" onclick="var b=document.getElementById('operationalBacklogBell');if(b){b.classList.add('open');if(window.operationalBacklogBell)window.operationalBacklogBell.refresh(true);}">Open notification list</button>
+            </div>
+          </div>`
+        : '';
+
     page.innerHTML = `
+        ${backlogBannerHtml}
         <div class="invoice-context-banner invoice-context-sales" role="status">
             <i class="fas fa-file-invoice-dollar"></i> Sales Invoice — You are entering a sale to a customer (outgoing).
         </div>
@@ -1689,6 +1711,71 @@ function updateSalesInvoiceSummary() {
     if (totalEl) totalEl.textContent = formatCurrency(summary.total);
 }
 
+function mapApiInvoiceLineToDocumentItem(i, prevByItemId) {
+    const unitCostBase = i.unit_cost_base != null ? parseFloat(i.unit_cost_base) : null;
+    const marginPercent = i.margin_percent != null ? parseFloat(i.margin_percent) : null;
+    const prev = prevByItemId && prevByItemId[i.item_id];
+    let purchase_price = unitCostBase;
+    let margin_percent = marginPercent;
+    if (prev) {
+        if (purchase_price == null && prev.purchase_price != null) purchase_price = prev.purchase_price;
+        if (margin_percent == null && prev.margin_percent != null) margin_percent = prev.margin_percent;
+    }
+    return {
+        item_id: i.item_id,
+        item_name: i.item_name,
+        item_sku: i.item_code,
+        item_code: i.item_code,
+        unit_name: i.unit_name,
+        quantity: i.quantity,
+        unit_price: i.unit_price_exclusive != null ? i.unit_price_exclusive : i.unit_price,
+        discount_percent: i.discount_percent || 0,
+        tax_percent: i.vat_rate != null ? i.vat_rate : (i.tax_percent || 0),
+        total: i.line_total_inclusive != null ? i.line_total_inclusive : i.total,
+        batch_allocations: i.batch_allocations || null,
+        batch_number: i.batch_number || null,
+        expiry_date: i.expiry_date || null,
+        purchase_price: purchase_price,
+        margin_percent: margin_percent,
+        unit_cost_base: i.unit_cost_base
+    };
+}
+
+/** Server is authoritative: refresh draft from API before batch or when version drifts. */
+async function reconcileSalesInvoiceWithServer(invoiceId) {
+    if (!invoiceId || !API.sales || typeof API.sales.getInvoice !== 'function') return null;
+    const fresh = await API.sales.getInvoice(invoiceId);
+    if (!fresh) return null;
+    const prevByItemId = {};
+    (documentItems || []).forEach(function (row) {
+        if (row && row.item_id) prevByItemId[row.item_id] = row;
+    });
+    const localUpdated = currentInvoice && currentInvoice.invoiceData
+        ? currentInvoice.invoiceData.updated_at
+        : null;
+    const serverUpdated = fresh.updated_at;
+    const drifted = localUpdated && serverUpdated
+        && String(localUpdated) !== String(serverUpdated);
+    if (drifted && Array.isArray(fresh.items)) {
+        if (typeof showToast === 'function') {
+            showToast('Invoice changed on server — syncing lines before continuing.', 'warning');
+        }
+        documentItems = fresh.items.map(function (i) {
+            return mapApiInvoiceLineToDocumentItem(i, prevByItemId);
+        });
+        if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
+            salesInvoiceItemsTable.setItems(documentItems);
+        }
+        updateSalesInvoiceSummary();
+    }
+    if (currentInvoice && String(currentInvoice.id) === String(invoiceId)) {
+        currentInvoice.invoiceData = Object.assign({}, currentInvoice.invoiceData || {}, fresh);
+    }
+    salesInvoiceSyncedItemIds = new Set((fresh.items || []).map(function (i) { return i.item_id; }));
+    lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(fresh.items || []);
+    return fresh;
+}
+
 function getSalesInvoiceFormData() {
     const form = document.getElementById('salesInvoiceForm');
     if (!form) return null;
@@ -1724,6 +1811,9 @@ function mapTableItemToApiItem(item) {
     };
     if (item.unit_cost_base != null) payload.unit_cost_base = parseFloat(item.unit_cost_base);
     if (item.margin_percent != null) payload.margin_percent = parseFloat(item.margin_percent);
+    if (item.current_stock != null) payload.current_stock = parseInt(item.current_stock, 10);
+    else if (item.available_stock != null) payload.current_stock = parseInt(item.available_stock, 10);
+    else if (item.base_quantity != null) payload.current_stock = parseInt(item.base_quantity, 10);
     return payload;
 }
 
@@ -1849,21 +1939,24 @@ async function onSalesInvoiceAddItem(item) {
         }
         const updated = await API.sales.addInvoiceItem(draftId, mapTableItemToApiItem(item));
         if (updated && updated.id) {
-            currentInvoice.invoiceData = Object.assign({}, currentInvoice.invoiceData || {}, updated);
+            const headerPatch = {
+                total_exclusive: updated.total_exclusive,
+                vat_amount: updated.vat_amount,
+                total_inclusive: updated.total_inclusive,
+                vat_rate: updated.vat_rate,
+                status: updated.status,
+                updated_at: updated.updated_at
+            };
+            currentInvoice.invoiceData = Object.assign({}, currentInvoice.invoiceData || {}, updated, headerPatch);
         }
         salesInvoiceSyncedItemIds.add(item.item_id);
-        const apiItems = updated && updated.items ? updated.items : [];
-        const prevItems = documentItems || [];
-        const itemsToSet = apiItems.map((i, idx) => {
+        let itemsToSet;
+        let syncSource;
+        if (updated && updated.line) {
+            const i = updated.line;
             const unitCostBase = i.unit_cost_base != null ? parseFloat(i.unit_cost_base) : null;
             const marginPercent = i.margin_percent != null ? parseFloat(i.margin_percent) : null;
-            let purchase_price = unitCostBase;
-            let margin_percent = marginPercent;
-            if ((purchase_price == null || margin_percent == null) && prevItems[idx] && prevItems[idx].item_id === i.item_id) {
-                if (purchase_price == null && prevItems[idx].purchase_price != null) purchase_price = prevItems[idx].purchase_price;
-                if (margin_percent == null && prevItems[idx].margin_percent != null) margin_percent = prevItems[idx].margin_percent;
-            }
-            return {
+            const newRow = {
                 item_id: i.item_id,
                 item_name: i.item_name,
                 item_sku: i.item_code,
@@ -1877,13 +1970,48 @@ async function onSalesInvoiceAddItem(item) {
                 batch_allocations: i.batch_allocations || null,
                 batch_number: i.batch_number || null,
                 expiry_date: i.expiry_date || null,
-                purchase_price: purchase_price,
-                margin_percent: margin_percent,
+                purchase_price: unitCostBase != null ? unitCostBase : (item.purchase_price != null ? parseFloat(item.purchase_price) : null),
+                margin_percent: marginPercent != null ? marginPercent : (item.margin_percent != null ? parseFloat(item.margin_percent) : null),
                 unit_cost_base: i.unit_cost_base
             };
-        });
-        documentItems = itemsToSet;
-        lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(apiItems);
+            documentItems = (documentItems || []).concat([newRow]);
+            itemsToSet = documentItems;
+            syncSource = [i];
+        } else {
+            const apiItems = updated && updated.items ? updated.items : [];
+            const prevItems = documentItems || [];
+            itemsToSet = apiItems.map((i, idx) => {
+                const unitCostBase = i.unit_cost_base != null ? parseFloat(i.unit_cost_base) : null;
+                const marginPercent = i.margin_percent != null ? parseFloat(i.margin_percent) : null;
+                let purchase_price = unitCostBase;
+                let margin_percent = marginPercent;
+                if ((purchase_price == null || margin_percent == null) && prevItems[idx] && prevItems[idx].item_id === i.item_id) {
+                    if (purchase_price == null && prevItems[idx].purchase_price != null) purchase_price = prevItems[idx].purchase_price;
+                    if (margin_percent == null && prevItems[idx].margin_percent != null) margin_percent = prevItems[idx].margin_percent;
+                }
+                return {
+                    item_id: i.item_id,
+                    item_name: i.item_name,
+                    item_sku: i.item_code,
+                    item_code: i.item_code,
+                    unit_name: i.unit_name,
+                    quantity: i.quantity,
+                    unit_price: i.unit_price_exclusive != null ? i.unit_price_exclusive : i.unit_price,
+                    discount_percent: i.discount_percent || 0,
+                    tax_percent: i.vat_rate != null ? i.vat_rate : (i.tax_percent || 0),
+                    total: i.line_total_inclusive != null ? i.line_total_inclusive : i.total,
+                    batch_allocations: i.batch_allocations || null,
+                    batch_number: i.batch_number || null,
+                    expiry_date: i.expiry_date || null,
+                    purchase_price: purchase_price,
+                    margin_percent: margin_percent,
+                    unit_cost_base: i.unit_cost_base
+                };
+            });
+            documentItems = itemsToSet;
+            syncSource = apiItems;
+        }
+        lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(syncSource);
         if (salesInvoiceItemsTable && typeof salesInvoiceItemsTable.setItems === 'function') {
             salesInvoiceItemsTable.setItems(documentItems, { focusNewRowQty: true });
         }
@@ -1892,7 +2020,9 @@ async function onSalesInvoiceAddItem(item) {
     } catch (err) {
         draftCreationInProgress = false;
         const msg = (err && err.message) || String(err);
-        if (msg.indexOf('already exists') !== -1) {
+        if (msg.indexOf('earlier dates') !== -1 || msg.indexOf('unposted draft') !== -1) {
+            showToast(msg, 'error', 12000);
+        } else if (msg.indexOf('already exists') !== -1) {
             showToast('Item already on this invoice. Remove the line or choose a different item.', 'warning');
         } else {
             showToast(msg || 'Server error adding item. Try again.', 'error');
@@ -2086,6 +2216,7 @@ function initializeSalesInvoiceItemsTable() {
     salesInvoiceItemsTable = new window.TransactionItemsTable({
         mountEl: container,
         mode: 'sale',
+        context: 'sales',
         items: items,
         priceType: 'sale_price',
         showCost: salesCanViewUnitCost,
@@ -3640,6 +3771,9 @@ async function batchSalesInvoice(invoiceId, buttonEl) {
         showToast('Batching invoice...', 'info');
         const userId = CONFIG.USER_ID;
         if (!userId) throw new Error('User ID not found. Please log in again.');
+        if (typeof reconcileSalesInvoiceWithServer === 'function') {
+            await reconcileSalesInvoiceWithServer(invoiceId);
+        }
         // Send current table items so backend updates draft lines before batching (print matches what you see)
         let body = null;
         const form = document.getElementById('salesInvoiceForm');

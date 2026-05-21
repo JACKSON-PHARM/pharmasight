@@ -1096,6 +1096,10 @@ window.handleBranchSelected = async function() {
 
     // Background reconciliation (permissions/branch validation/setup checks).
     void startAppFlow();
+
+    if (window.operationalBacklogBell && typeof window.operationalBacklogBell.refresh === 'function') {
+        void window.operationalBacklogBell.refresh(true);
+    }
 };
 
 /**

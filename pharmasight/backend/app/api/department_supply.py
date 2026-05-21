@@ -344,6 +344,11 @@ def create_transfer_from_department_order(
     if dup:
         raise HTTPException(status_code=409, detail="A draft transfer already exists for this order; complete or delete it first")
 
+    from datetime import date
+    from app.services.branch_operational_backlog import assert_module_not_blocked
+
+    assert_module_not_blocked(db, company_id, order.branch_id, date.today(), "department_supply")
+
     draft_lines: List[tuple] = []
     for ol in order.lines:
         rem = Decimal(str(ol.quantity)) - Decimal(str(ol.fulfilled_qty or 0))

@@ -3168,7 +3168,20 @@ function formatNumber(num) {
             window.loadBranchReceiptsData = loadBranchReceiptsData;
             window.openBranchOrderCreate = openBranchOrderCreate;
             window.openBranchOrderView = openBranchOrderView;
-            window.openBranchTransferCreate = openBranchTransferCreate;
+            window.openBranchTransferCreate = function () {
+                if (window.operationalBacklogBell && window.operationalBacklogBell.isModuleBlocked('branch_transfer')) {
+                    if (typeof showToast === 'function') {
+                        showToast('Clear prior-date branch transfers first — see the notification bell.', 'warning');
+                    }
+                    var bell = document.getElementById('operationalBacklogBell');
+                    if (bell) {
+                        bell.classList.add('open');
+                        if (window.operationalBacklogBell.refresh) window.operationalBacklogBell.refresh(true);
+                    }
+                    return;
+                }
+                openBranchTransferCreate();
+            };
             window.openBranchTransferView = openBranchTransferView;
             window.openBranchReceiptCreate = openBranchReceiptCreate;
             window.openBranchReceiptView = openBranchReceiptView;

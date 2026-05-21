@@ -236,6 +236,13 @@
                     </div>
                 </div>
                 <div class="top-bar-right">
+                    <div class="operational-backlog-bell-wrap" id="operationalBacklogBellWrap">
+                        <button type="button" class="operational-backlog-bell" id="operationalBacklogBell" aria-label="Unposted documents" title="Unposted documents from earlier dates">
+                            <i class="fas fa-bell"></i>
+                            <span class="operational-backlog-badge" id="operationalBacklogBadge" style="display: none;">0</span>
+                        </button>
+                        <div class="operational-backlog-panel" id="operationalBacklogPanel" role="dialog" aria-label="Unposted documents list"></div>
+                    </div>
                     <button class="btn btn-primary" id="newPurchaseBtn" style="display: none;">
                         <i class="fas fa-plus"></i> New Purchase
                     </button>
@@ -536,7 +543,8 @@
             } catch (_) {}
         })();
     </script>
-    <script src="js/api.js?v=32"></script>
+    <script src="js/api.js?v=33"></script>
+    <script src="js/components/operational_backlog_bell.js?v=1"></script>
     <!-- Global Supabase Client (must load before auth modules) -->
     <script src="js/services/supabase_client.js?v=1"></script>
     <!-- Legacy auth (backward compatibility) -->

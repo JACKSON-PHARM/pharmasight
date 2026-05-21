@@ -22,6 +22,8 @@ from app.utils.vat import vat_rate_to_percent
 
 logger = logging.getLogger(__name__)
 
+_POS_SEARCH_CONTEXTS = frozenset({"sales", "pos", "sales_invoice"})
+
 _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
 
 
@@ -113,8 +115,16 @@ class ItemSearchService:
         return _search_impl(db, q, company_id, branch_id, limit, include_pricing, context, in_stock_only)
 
 
-def _format_stock_display(quantity_retail: float, item_like: Optional[Any]) -> str:
+def _format_stock_display(
+    quantity_retail: float,
+    item_like: Optional[Any],
+    *,
+    lightweight: bool = False,
+) -> str:
     """Single shared place for stock_display. item_like is snapshot row or SimpleNamespace from snapshot."""
+    if lightweight:
+        v = int(quantity_retail)
+        return str(v) if v > 0 else "0"
     if item_like is not None:
         return InventoryService.format_quantity_display(quantity_retail, item_like)
     return str(int(quantity_retail))
@@ -132,6 +142,9 @@ def _search_impl(
 ) -> Tuple[List[Dict[str, Any]], str, str]:
     t_start = time.perf_counter()
     search_path = "item_branch_snapshot"
+    pos_lightweight = (context or "").strip().lower() in _POS_SEARCH_CONTEXTS
+    if pos_lightweight and limit > 25:
+        limit = 25
 
     # Single-table snapshot path (no Item join): keeps search <100ms at 1.5M rows.
     if branch_id is not None:
@@ -204,6 +217,7 @@ def _search_impl(
                 price_source=getattr(r, "price_source", None),
                 last_order_date=getattr(r, "last_order_date", None),
                 from_snapshot_only=from_snapshot_only,
+                lightweight_stock_display=pos_lightweight,
             )
             if context == "purchase_order":
                 item_data["last_supply_date"] = getattr(r, "last_purchase_date", None)
@@ -235,6 +249,7 @@ def _canonical_item_from_snapshot_row(
     price_source: Optional[str] = None,
     last_order_date: Optional[Any] = None,
     from_snapshot_only: bool = False,
+    lightweight_stock_display: bool = False,
 ) -> Dict[str, Any]:
     """Build one canonical item dict from a snapshot row. item_like is from _item_like_from_snapshot_row (no Item join)."""
     if from_snapshot_only:
@@ -257,7 +272,7 @@ def _canonical_item_from_snapshot_row(
         purchase_val = float(r.last_purchase_price or r.average_cost or 0)
         sale_val = float(r.selling_price or 0)
         margin_val = float(r.margin_percent) if r.margin_percent is not None else None
-    stock_display = _format_stock_display(stock_float, item_like)
+    stock_display = _format_stock_display(stock_float, item_like, lightweight=lightweight_stock_display)
     retail_unit = _unit_for_display(getattr(item_like, "retail_unit", None), "piece") if item_like else "piece"
     wholesale_unit = _unit_for_display(getattr(item_like, "wholesale_unit", None), _unit_for_display(r.base_unit, "piece")) if item_like else _unit_for_display(r.base_unit, "piece")
     supplier_unit = _unit_for_display(getattr(item_like, "supplier_unit", None), "") if item_like else ""

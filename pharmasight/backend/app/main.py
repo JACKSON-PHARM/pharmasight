@@ -337,6 +337,7 @@ from app.api.admin_platform_licensing import router as admin_platform_licensing_
 from app.api.platform_admin import router as platform_admin_router
 from app.api.admin_site_settings import router as admin_site_settings_router
 from app.api.org_context import router as org_context_router
+from app.api.branch_ops import router as branch_ops_router
 
 app.include_router(org_context_router, prefix="/api", tags=["Organization Context"])
 app.include_router(invite_router, prefix="/api", tags=["User Invitation & Setup"])
@@ -374,6 +375,7 @@ app.include_router(quotations_router, prefix="/api/quotations", tags=["Quotation
 app.include_router(stock_take_router, prefix="/api/stock-take", tags=["Stock Take"])
 app.include_router(order_book_router, prefix="/api/order-book", tags=["Order Book"])
 app.include_router(branch_inventory_router, prefix="/api/branch-inventory", tags=["Branch Inventory"])
+app.include_router(branch_ops_router, prefix="/api", tags=["Branch Operations"])
 app.include_router(department_supply_router, prefix="/api/department-supply", tags=["Department Supply"])
 app.include_router(modules_router, prefix="/api", tags=["Modules"])
 app.include_router(clinic_router, prefix="/api", tags=["Clinic / OPD"])

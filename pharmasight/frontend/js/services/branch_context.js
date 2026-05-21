@@ -115,6 +115,11 @@ function setBranchInternal(branch, shouldBroadcast = true) {
     
     // Notify listeners
     notifyBranchListeners(branch);
+    if (shouldBroadcast && typeof window !== 'undefined' && window.dispatchEvent) {
+        try {
+            window.dispatchEvent(new CustomEvent('pharmasight-branch-changed', { detail: branch }));
+        } catch (_) {}
+    }
 }
 
 /**

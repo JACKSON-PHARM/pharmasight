@@ -13,6 +13,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
 from app.models import InventoryLedger, SalesInvoice, SalesInvoiceItem
+from app.services.sales_reconciliation_queue_service import (
+    mark_financially_posted,
+    mark_fully_reconciled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +84,7 @@ def run_sales_batch_side_effects(
             post_gl_for_sales_invoice_batch(
                 db, invoice, ledger_entries, posted_by=batched_by
             )
+            mark_financially_posted(db, invoice_id)
         except Exception:
             logger.exception(
                 "accounting: GL sales batch hook failed for invoice %s (non-fatal)",
@@ -154,6 +159,15 @@ def run_sales_batch_side_effects(
         except Exception as e:
             db.rollback()
             logger.warning("Order book auto-add failed for invoice %s: %s", invoice_id, e)
+
+        try:
+            mark_fully_reconciled(db, invoice_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "mark_fully_reconciled failed for invoice %s", invoice_id
+            )
     except Exception:
         logger.exception("batch_side_effects failed for invoice %s", invoice_id)
     finally:

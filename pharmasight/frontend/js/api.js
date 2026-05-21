@@ -703,6 +703,14 @@ const API = {
         },
     },
 
+    branchOps: {
+        getOperationalBacklog: (branchId, businessDate) =>
+            api.get(
+                `/api/branch-ops/branch/${branchId}/operational-backlog`,
+                businessDate ? { business_date: businessDate } : {}
+            ),
+    },
+
     // Items
     items: {
         search: (
@@ -963,6 +971,11 @@ const API = {
         },
         getTodaySummary: (branchId, userId) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/today-summary`, userId != null ? { user_id: userId } : {}),
+        getDraftPolicy: (branchId, businessDate) =>
+            api.get(
+                `${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/draft-policy`,
+                businessDate ? { business_date: businessDate } : {}
+            ),
         getGrossProfit: (branchId, params = {}) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/gross-profit`, params),
         getBelowMarginSummary: (branchId, params = {}) =>

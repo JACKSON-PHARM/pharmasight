@@ -2007,6 +2007,13 @@ async function renderCreateSupplierInvoicePage() {
     }
     
     const today = invoiceData ? invoiceData.invoice_date : getLocalDateString();
+    var purchasesBacklogBlocked = false;
+    if (!isEditMode && CONFIG.BRANCH_ID && window.operationalBacklogBell) {
+        try {
+            var pSummary = await window.operationalBacklogBell.refresh(true);
+            purchasesBacklogBlocked = pSummary && pSummary.may_create_new_supplier_invoice === false;
+        } catch (_) {}
+    }
     let supplierId = invoiceData ? invoiceData.supplier_id : '';
     let supplierName = invoiceData ? invoiceData.supplier_name : '';
     // Pre-fill supplier when opened from supplier detail "Record New Invoice"
@@ -2084,7 +2091,15 @@ async function renderCreateSupplierInvoicePage() {
             </div>
         </div>` : '';
     
+    const purchasesBacklogBanner = (!isEditMode && purchasesBacklogBlocked)
+        ? `<div class="sales-backlog-banner" role="alert">
+            <i class="fas fa-bell" style="margin-top: 0.1rem; color: var(--warning-color, #d97706);"></i>
+            <div><strong>Cannot receive new stock yet.</strong> Clear prior-date supplier drafts from the
+            <button type="button" class="linkish" onclick="var b=document.getElementById('operationalBacklogBell');if(b){b.classList.add('open');if(window.operationalBacklogBell)window.operationalBacklogBell.refresh(true);}">notification bell</button>.</div></div>`
+        : '';
+
     page.innerHTML = `
+        ${purchasesBacklogBanner}
         <div class="invoice-context-banner invoice-context-supplier" role="status">
             <i class="fas fa-truck-loading"></i> Supplier Invoice — You are receiving stock from a supplier (incoming).
         </div>

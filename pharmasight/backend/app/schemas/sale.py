@@ -22,6 +22,11 @@ class SalesInvoiceItemCreate(SalesInvoiceItemBase):
     """Create sales invoice item. Optional unit_cost_base/margin_percent from client (item search + user price) to avoid cost lookup on add-item."""
     unit_cost_base: Optional[Decimal] = Field(None, ge=0, description="Cost per base unit from search; when set, used for response and margin validation is deferred to batch.")
     margin_percent: Optional[Decimal] = Field(None, description="Margin % from client (user-adjusted price vs search cost); when set, echoed in response.")
+    current_stock: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Retail/base stock from POS search snapshot; with unit_cost_base+margin_percent skips DB stock re-check (batch enforces).",
+    )
 
 
 class SalesInvoiceItemUpdate(BaseModel):
@@ -87,6 +92,18 @@ class SalesInvoiceItemResponse(SalesInvoiceItemBase):
 
     class Config:
         from_attributes = True
+
+
+class AddSalesInvoiceItemResponse(BaseModel):
+    """Fast add-item response: new line + header totals only (no full invoice.items graph)."""
+    id: UUID
+    status: Optional[str] = "DRAFT"
+    total_exclusive: Decimal
+    vat_amount: Decimal
+    total_inclusive: Decimal
+    vat_rate: Optional[Decimal] = None
+    updated_at: Optional[datetime] = None
+    line: SalesInvoiceItemResponse
 
 
 class SalesInvoiceBase(BaseModel):

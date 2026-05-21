@@ -76,8 +76,9 @@
         this.totalInputDebounce = null; // For debouncing total input (reverse calc)
         this.marginInputDebounce = null; // For debouncing margin input
         this._searchId = 0; // Incremented per search; used to ignore stale responses
-        this._searchDebounceMs = 420; // Fewer parallel searches under pool pressure (local POS)
+        this._searchDebounceMs = (this.mode === 'sale' || this.context === 'sales') ? 320 : 420;
         this._searchMinChars = 3;
+        this._searchLimit = (this.mode === 'sale' || this.context === 'sales') ? 25 : 50;
         
         // When useAddRow: items = committed lines only (no empty row). Otherwise: ensure one empty row.
         if (!this.useAddRow) {
@@ -1146,7 +1147,7 @@
         const config = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : (typeof CONFIG !== 'undefined' ? CONFIG : null);
         const cache = (typeof window !== 'undefined' && window.searchCache) ? window.searchCache : null;
         if (config && cache) {
-            const cached = cache.get(queryTrimmed, config.COMPANY_ID, config.BRANCH_ID, 50);
+            const cached = cache.get(queryTrimmed, config.COMPANY_ID, config.BRANCH_ID, this._searchLimit || 50);
             if (cached !== null && cached !== undefined) {
                 this.activeSearchRow = rowIndex;
                 if (cached.length === 0) {
@@ -1205,8 +1206,8 @@
         
         try {
             const cache = (typeof window !== 'undefined' && window.searchCache) ? window.searchCache : null;
-            // Always include pricing (last_supplier, last_order_date) - snapshot tables make it fast regardless of role
-            const includePricing = true;
+            // POS/sales: pricing already on snapshot rows; include_pricing=false avoids extra map work server-side
+            const includePricing = !(this.mode === 'sale' || this.context === 'sales');
             
             if (cache) {
                 const cached = cache.get(query, config.COMPANY_ID, config.BRANCH_ID, 50);
@@ -1233,14 +1234,15 @@
             }
             
             const requestOptions = signal ? { signal } : {};
-            const searchLimit = 50;
+            const searchLimit = this._searchLimit || 50;
+            const searchContext = this.context || (this.mode === 'sale' ? 'sales' : null);
             const items = await api.items.search(
                 query,
                 config.COMPANY_ID,
                 searchLimit,
                 config.BRANCH_ID || null,
                 includePricing,
-                this.context,
+                searchContext,
                 requestOptions,
                 false,
                 false
@@ -1715,6 +1717,9 @@
             tax_percent: this.vatRateToPercent(suggestionEl.dataset.vatRate),
             available_stock: typeof suggestionEl.dataset.stock !== 'undefined'
                 ? parseFloat(suggestionEl.dataset.stock)
+                : null,
+            current_stock: typeof suggestionEl.dataset.stock !== 'undefined'
+                ? parseInt(suggestionEl.dataset.stock, 10)
                 : null,
             stock_display: suggestionEl.dataset.stockDisplay || null, // 3-tier formatted stock display
             is_empty: false,
@@ -2453,7 +2458,11 @@
             total: this.addRowItem.total || 0,
             batches: this.addRowItem.batches || [],
             unit_cost_base: this.addRowItem.purchase_price != null ? this.addRowItem.purchase_price : undefined,
-            margin_percent: marginPct != null ? marginPct : undefined
+            margin_percent: marginPct != null ? marginPct : undefined,
+            current_stock: this.addRowItem.current_stock != null
+                ? this.addRowItem.current_stock
+                : (this.addRowItem.available_stock != null ? this.addRowItem.available_stock : undefined),
+            base_quantity: this.addRowItem.base_quantity
         };
     };
     

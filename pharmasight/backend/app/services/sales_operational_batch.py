@@ -22,6 +22,7 @@ from app.services.pricing_service import PricingService
 from app.services.snapshot_service import SnapshotService
 from app.services.item_units_helper import get_unit_multiplier_from_item
 from app.services.sales_batch_common import user_has_sell_below_min_margin
+from app.services.sales_reconciliation_queue_service import enqueue_operational_posted
 
 logger = logging.getLogger(__name__)
 
@@ -176,3 +177,11 @@ def commit_operational_sales_batch(
 
     if timings is not None:
         timings["FinalizeMs"] = round((time.perf_counter() - t2) * 1000, 1)
+
+    try:
+        enqueue_operational_posted(db, invoice)
+    except Exception:
+        logger.exception(
+            "enqueue_operational_posted failed invoice=%s (batch still committed if caller commits)",
+            invoice.id,
+        )

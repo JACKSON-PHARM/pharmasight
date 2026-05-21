@@ -43,6 +43,8 @@ from app.models.permission import Permission, RolePermission
 from app.schemas.sale import (
     SalesInvoiceCreate, SalesInvoiceResponse,
     SalesInvoiceItemCreate, SalesInvoiceItemUpdate, SalesInvoiceUpdate,
+    AddSalesInvoiceItemResponse,
+    SalesInvoiceItemResponse,
     BatchSalesInvoiceRequest,
     InvoicePaymentCreate, InvoicePaymentResponse, RevertPaidStatusRequest,
     CreditNoteCreate, CreditNoteResponse,
@@ -54,6 +56,11 @@ from app.utils.reversal_audit import client_ip_from_request, pydantic_payload_ha
 from app.services.order_book_service import OrderBookService
 from app.services.sales_batch_post_commit import run_sales_batch_post_commit_pipeline
 from app.services.sales_operational_batch import commit_operational_sales_batch
+from app.services.sales_draft_policy import (
+    assert_branch_may_create_new_sales_draft,
+    branch_draft_policy_summary,
+)
+from app.services.sales_reconciliation_queue_service import enqueue_operational_posted
 from app.services.item_units_helper import get_unit_display_short, get_unit_multiplier_from_item
 from app.services.invoice_workflow_policy import default_sales_type_for_branch
 from app.services.invoice_payment_status import (
@@ -138,6 +145,92 @@ def _sales_margin_reference_unit_cost_base(
     if client_override is not None:
         return Decimal(str(client_override))
     return PricingService.get_margin_reference_cost_per_base(db, item_id, branch_id, company_id)
+
+
+def _pos_priced_from_search_payload(item_data: SalesInvoiceItemCreate, unit_price: Optional[Decimal]) -> bool:
+    return (
+        unit_price is not None
+        and getattr(item_data, "unit_cost_base", None) is not None
+        and getattr(item_data, "margin_percent", None) is not None
+    )
+
+
+def _validate_sales_invoice_line_margin(
+    db: Session,
+    invoice: SalesInvoice,
+    item: Item,
+    item_data: SalesInvoiceItemCreate,
+    unit_price: Decimal,
+    margin_ref_base: Optional[Decimal],
+) -> None:
+    """
+    Lightweight margin check at add/create (snapshot-derived cost).
+    Authoritative economics are re-validated at batch (and after FEFO allocation).
+    """
+    if margin_ref_base is None:
+        return
+    mult = get_unit_multiplier_from_item(item, item_data.unit_name)
+    if mult is None or mult <= 0:
+        return
+    cost_per_sale_unit = margin_ref_base * mult
+    unit_price_val = Decimal(str(unit_price))
+    user_has_override = _user_has_sell_below_min_margin(
+        db, invoice.created_by, invoice.branch_id
+    )
+    is_promo = is_line_price_at_promo(
+        db, item_data.item_id, item_data.unit_name or "", unit_price_val
+    )
+    validation = validate_line_price(
+        db,
+        invoice.company_id,
+        item_data.item_id,
+        unit_price_val,
+        cost_per_sale_unit,
+        user_has_override,
+        branch_id=invoice.branch_id,
+        is_promo_price=is_promo,
+    )
+    if not validation.get("allowed"):
+        raise HTTPException(
+            status_code=400,
+            detail=validation.get("message", "Price validation failed."),
+        )
+
+
+def _sales_invoice_line_response(
+    line: SalesInvoiceItem,
+    *,
+    item_name: str,
+    item_code: str,
+    unit_cost_base: Optional[Decimal],
+    margin_percent: Optional[Decimal],
+) -> SalesInvoiceItemResponse:
+    """Build one line DTO for add-item (avoids serializing the full invoice graph)."""
+    return SalesInvoiceItemResponse(
+        id=line.id,
+        sales_invoice_id=line.sales_invoice_id,
+        item_id=line.item_id,
+        batch_id=line.batch_id,
+        unit_name=line.unit_name,
+        quantity=line.quantity,
+        unit_price_exclusive=line.unit_price_exclusive,
+        discount_percent=line.discount_percent or Decimal("0"),
+        discount_amount=line.discount_amount or Decimal("0"),
+        vat_rate=line.vat_rate,
+        vat_amount=line.vat_amount,
+        line_total_exclusive=line.line_total_exclusive,
+        line_total_inclusive=line.line_total_inclusive,
+        unit_cost_used=line.unit_cost_used,
+        unit_cost_base=unit_cost_base,
+        margin_percent=margin_percent,
+        item_name=item_name,
+        item_code=item_code,
+        unit_display_short=None,
+        batch_number=None,
+        expiry_date=None,
+        batch_allocations=None,
+        created_at=line.created_at or datetime.now(timezone.utc),
+    )
 
 
 def _total_cost_from_allocations(allocations: list) -> Decimal:
@@ -284,6 +377,9 @@ def create_sales_invoice(
     ensure_ops_branch_access(
         db, user.id, invoice.company_id, invoice.branch_id, permission_name="sales.create"
     )
+    assert_branch_may_create_new_sales_draft(
+        db, invoice.company_id, invoice.branch_id, invoice.invoice_date
+    )
 
     # Validate credit payment mode requirements
     if invoice.payment_mode == 'credit':
@@ -392,34 +488,11 @@ def create_sales_invoice(
                     status_code=400,
                     detail=f"Price not available for {item.name}"
                 )
-        elif not (
-            getattr(item_data, "unit_cost_base", None) is not None
-            and getattr(item_data, "margin_percent", None) is not None
-        ) and margin_ref_base is not None:
-            mult = get_unit_multiplier_from_item(item, item_data.unit_name)
-            if mult is not None and mult > 0:
-                cost_per_sale_unit = margin_ref_base * mult
-                unit_price_val = Decimal(str(unit_price))
-                user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
-                is_promo = is_line_price_at_promo(
-                    db, item_data.item_id, item_data.unit_name or "", unit_price_val
-                )
-                validation = validate_line_price(
-                    db,
-                    invoice.company_id,
-                    item_data.item_id,
-                    unit_price_val,
-                    cost_per_sale_unit,
-                    user_has_override,
-                    branch_id=invoice.branch_id,
-                    is_promo_price=is_promo,
-                )
-                if not validation.get("allowed"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=validation.get("message", "Price validation failed."),
-                    )
-        
+        elif unit_price is not None:
+            _validate_sales_invoice_line_margin(
+                db, invoice, item, item_data, unit_price, margin_ref_base
+            )
+
         # Calculate line totals
         line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
         discount_amount = item_data.discount_amount or (line_total_exclusive * item_data.discount_percent / Decimal("100"))
@@ -929,7 +1002,7 @@ def kra_receipt_from_submission_log(
     return _get_sales_invoice_response(invoice_id, db, user, request=request, tenant=tenant)
 
 
-@router.post("/invoice/{invoice_id}/items", response_model=SalesInvoiceResponse)
+@router.post("/invoice/{invoice_id}/items", response_model=AddSalesInvoiceItemResponse)
 def add_sales_invoice_item(
     invoice_id: UUID,
     item_data: SalesInvoiceItemCreate,
@@ -939,9 +1012,9 @@ def add_sales_invoice_item(
     """
     Add one line item to an existing DRAFT invoice. Auto-save.
     Returns 400 "Item already exists in this invoice" if that item is already on the invoice.
-    O(1) w.r.t. line count; single load with joinedload/selectinload.
+    O(1) w.r.t. line count: locks invoice header only; duplicate check via EXISTS (not loading all lines).
+    POS payloads (price + unit_cost_base + margin_percent) skip DB stock/margin re-check (enforced at batch).
     """
-    from sqlalchemy.orm import selectinload
     from sqlalchemy.exc import IntegrityError
 
     t0 = time.perf_counter()
@@ -949,9 +1022,6 @@ def add_sales_invoice_item(
     user, db = user_db
     invoice = (
         db.query(SalesInvoice)
-        .options(
-            selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item),
-        )
         .filter(SalesInvoice.id == invoice_id)
         .with_for_update()
         .first()
@@ -969,13 +1039,19 @@ def add_sales_invoice_item(
             status_code=400,
             detail=f"Cannot add items to invoice with status {invoice.status}. Only DRAFT invoices can be edited."
         )
-    # Reject if this item already exists on the invoice (one line per item per invoice)
-    for line in invoice.items:
-        if line.item_id == item_data.item_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Item already exists in this invoice. Edit the existing line or remove it first."
-            )
+    dup = (
+        db.query(SalesInvoiceItem.id)
+        .filter(
+            SalesInvoiceItem.sales_invoice_id == invoice_id,
+            SalesInvoiceItem.item_id == item_data.item_id,
+        )
+        .first()
+    )
+    if dup:
+        raise HTTPException(
+            status_code=400,
+            detail="Item already exists in this invoice. Edit the existing line or remove it first."
+        )
 
     item = db.query(Item).filter(Item.id == item_data.item_id).first()
     if not item:
@@ -986,33 +1062,36 @@ def add_sales_invoice_item(
             detail=f"Item '{item.name}' is not ready for transactions. Complete item setup (pack size, units) in Items before adding to a sale."
         )
 
-    item_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
-    is_available, available, required = InventoryService.check_stock_availability(
-        db,
-        item_data.item_id,
-        invoice.branch_id,
-        float(item_data.quantity),
-        item_data.unit_name,
-        company_id=invoice.company_id,
-    )
-    if not is_available:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient stock for {item.name}. Available: {available}, Required: {required}"
-        )
-
-    sales_type = getattr(invoice, 'sales_type', 'RETAIL') or 'RETAIL'
-    pricing_tier = 'wholesale' if sales_type == 'WHOLESALE' else ('supplier' if sales_type == 'SUPPLIER' else 'retail')
     unit_price = item_data.unit_price_exclusive
+    pos_priced_from_search = _pos_priced_from_search_payload(item_data, unit_price)
     margin_ref_base = _sales_margin_reference_unit_cost_base(
         db, invoice.company_id, invoice.branch_id, item_data.item_id,
         getattr(item_data, "unit_cost_base", None),
     )
-    pos_priced_from_search = (
-        unit_price is not None
-        and getattr(item_data, "unit_cost_base", None) is not None
-        and getattr(item_data, "margin_percent", None) is not None
+    margin_percent_out = (
+        Decimal(str(item_data.margin_percent))
+        if getattr(item_data, "margin_percent", None) is not None
+        else None
     )
+
+    item_vat_rate = Decimal(str(vat_rate_to_percent(item.vat_rate)))
+    if not pos_priced_from_search:
+        is_available, available, required = InventoryService.check_stock_availability(
+            db,
+            item_data.item_id,
+            invoice.branch_id,
+            float(item_data.quantity),
+            item_data.unit_name,
+            company_id=invoice.company_id,
+        )
+        if not is_available:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock for {item.name}. Available: {available}, Required: {required}"
+            )
+
+    sales_type = getattr(invoice, 'sales_type', 'RETAIL') or 'RETAIL'
+    pricing_tier = 'wholesale' if sales_type == 'WHOLESALE' else ('supplier' if sales_type == 'SUPPLIER' else 'retail')
     if unit_price is None:
         price_info = PricingService.calculate_recommended_price(
             db, item_data.item_id, invoice.branch_id,
@@ -1029,30 +1108,10 @@ def add_sales_invoice_item(
                 margin_ref_base = price_info["unit_cost_used"]
         else:
             raise HTTPException(status_code=400, detail=f"Price not available for {item.name}")
-    elif not pos_priced_from_search and margin_ref_base is not None:
-        mult = get_unit_multiplier_from_item(item, item_data.unit_name)
-        if mult is not None and mult > 0:
-            cost_per_sale_unit = margin_ref_base * mult
-            unit_price_val = Decimal(str(unit_price))
-            user_has_override = _user_has_sell_below_min_margin(db, invoice.created_by, invoice.branch_id)
-            is_promo = is_line_price_at_promo(
-                db, item_data.item_id, item_data.unit_name or "", unit_price_val
-            )
-            validation = validate_line_price(
-                db,
-                invoice.company_id,
-                item_data.item_id,
-                unit_price_val,
-                cost_per_sale_unit,
-                user_has_override,
-                branch_id=invoice.branch_id,
-                is_promo_price=is_promo,
-            )
-            if not validation.get("allowed"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=validation.get("message", "Price validation failed."),
-                )
+    elif unit_price is not None:
+        _validate_sales_invoice_line_margin(
+            db, invoice, item, item_data, unit_price, margin_ref_base
+        )
 
     line_total_exclusive = Decimal(str(unit_price)) * item_data.quantity
     discount_amount = item_data.discount_amount or (line_total_exclusive * item_data.discount_percent / Decimal("100"))
@@ -1079,56 +1138,48 @@ def add_sales_invoice_item(
         item_code=item.sku or "",
     )
     db.add(new_line)
-    db.flush()
 
-    # Recalculate invoice totals
-    total_exclusive = invoice.total_exclusive + line_total_exclusive
-    total_vat = invoice.vat_amount + line_vat
+    total_exclusive = (invoice.total_exclusive or Decimal("0")) + line_total_exclusive
+    total_vat = (invoice.vat_amount or Decimal("0")) + line_vat
     total_inclusive = total_exclusive + total_vat
     invoice.total_exclusive = total_exclusive
     invoice.vat_amount = total_vat
     invoice.total_inclusive = total_inclusive
     if total_exclusive > 0:
         invoice.vat_rate = (total_vat / total_exclusive * Decimal("100"))
+    if not getattr(invoice, "status", None):
+        invoice.status = "DRAFT"
 
     request.state.timings["InsertMs"] = round((time.perf_counter() - t2) * 1000, 1)
     t3 = time.perf_counter()
 
     try:
-        new_line.item = item
-        new_line.item_name = item.name or ""
-        new_line.item_code = item.sku or ""
-        new_line.unit_display_short = get_unit_display_short(item, new_line.unit_name or "")
-        new_line.unit_cost_base = margin_ref_base
-        if getattr(item_data, "margin_percent", None) is not None:
-            new_line.margin_percent = Decimal(str(item_data.margin_percent))
-        new_line.batch_allocations = None
-        new_line.batch_number = None
-        new_line.expiry_date = None
-        for inv_item in invoice.items:
-            if inv_item.item_id != item_data.item_id:
-                continue
-            inv_item.item = item
-            inv_item.item_name = new_line.item_name
-            inv_item.item_code = new_line.item_code
-            inv_item.unit_display_short = new_line.unit_display_short
-            inv_item.unit_cost_base = new_line.unit_cost_base
-            inv_item.margin_percent = new_line.margin_percent
-            inv_item.batch_allocations = None
-            inv_item.batch_number = None
-            inv_item.expiry_date = None
-            break
+        db.flush()
         request.state.timings["CostMs"] = round((time.perf_counter() - t3) * 1000, 1)
         t4 = time.perf_counter()
-        if not getattr(invoice, "status", None):
-            invoice.status = "DRAFT"
-
+        line_dto = _sales_invoice_line_response(
+            new_line,
+            item_name=item.name or "",
+            item_code=item.sku or "",
+            unit_cost_base=margin_ref_base,
+            margin_percent=margin_percent_out,
+        )
+        response = AddSalesInvoiceItemResponse(
+            id=invoice.id,
+            status=invoice.status or "DRAFT",
+            total_exclusive=invoice.total_exclusive,
+            vat_amount=invoice.vat_amount,
+            total_inclusive=invoice.total_inclusive,
+            vat_rate=invoice.vat_rate,
+            updated_at=invoice.updated_at,
+            line=line_dto,
+        )
         request.state.timings["BuildMs"] = round((time.perf_counter() - t4) * 1000, 1)
         request.state.timings["TotalMs"] = round((time.perf_counter() - t0) * 1000, 1)
         t5 = time.perf_counter()
         db.commit()
         request.state.timings["CommitMs"] = round((time.perf_counter() - t5) * 1000, 1)
-        return invoice
+        return response
     except IntegrityError:
         db.rollback()
         raise HTTPException(
@@ -1274,6 +1325,29 @@ def update_sales_invoice_item(
     db.commit()
     db.refresh(invoice)
     return _get_sales_invoice_response(invoice_id, db, user)
+
+
+@router.get("/branch/{branch_id}/draft-policy", response_model=dict)
+def get_branch_sales_draft_policy(
+    branch_id: UUID,
+    request: Request,
+    business_date: Optional[date] = Query(
+        None,
+        description="Business date for new sale (defaults to today). Blocks new drafts when older DRAFTs exist.",
+    ),
+    user_db: tuple = Depends(get_authenticated_db),
+):
+    """Whether the branch may open a new sales draft (no prior-date unposted drafts)."""
+    user, db = user_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_from_request(request, db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_ops_branch_access(db, user.id, branch.company_id, branch_id, permission_name="sales.create")
+    biz = business_date or date.today()
+    return branch_draft_policy_summary(db, branch.company_id, branch_id, biz)
 
 
 @router.get("/branch/{branch_id}/today-summary", response_model=dict)
@@ -2517,6 +2591,7 @@ def batch_sales_invoice(
     user, db = user_db
     t_batch_start = time.perf_counter()
     request.state.timings = {}
+    t_load = time.perf_counter()
     # Lock invoice row for update so concurrent batch requests for same invoice are serialized; eager-load items.item to avoid N+1
     invoice = (
         db.query(SalesInvoice)
@@ -2525,16 +2600,21 @@ def batch_sales_invoice(
         .with_for_update()
         .first()
     )
+    request.state.timings["LoadMs"] = round((time.perf_counter() - t_load) * 1000, 1)
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    t_access = time.perf_counter()
     require_document_belongs_to_user_company(db, user, invoice, "Invoice", request)
     ensure_ops_branch_access(
         db, user.id, invoice.company_id, invoice.branch_id, permission_name="sales.edit"
     )
+    request.state.timings["AccessMs"] = round((time.perf_counter() - t_access) * 1000, 1)
 
     from app.services.invoice_workflow_policy import note_invoice_finalization_policy
 
+    t_policy = time.perf_counter()
     note_invoice_finalization_policy(db, invoice, context="batch_sales_invoice")
+    request.state.timings["PolicyMs"] = round((time.perf_counter() - t_policy) * 1000, 1)
 
     if invoice.status == "BATCHED":
         raise HTTPException(
@@ -2581,6 +2661,7 @@ def batch_sales_invoice(
             )
 
     # If frontend sent current items, update each draft line to match (quantity, unit, price, discount)
+    t_overrides = time.perf_counter()
     if body and body.items and len(body.items) > 0:
         payload_by_item = {str(it.item_id): it for it in body.items}
         total_exclusive = Decimal("0")
@@ -2628,6 +2709,8 @@ def batch_sales_invoice(
                 status_code=500,
                 detail=_format_batch_failure_detail(flush_err),
             ) from flush_err
+    if body and body.items:
+        request.state.timings["OverridesMs"] = round((time.perf_counter() - t_overrides) * 1000, 1)
 
     try:
         t_op = time.perf_counter()

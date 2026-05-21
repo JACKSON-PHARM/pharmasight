@@ -961,7 +961,164 @@ body.subscription-trial-expired .subscription-banner-strip {
 
 .top-bar-right {
     display: flex;
+    align-items: center;
     gap: 1rem;
+}
+
+/* Operational backlog notification bell */
+.operational-backlog-bell-wrap {
+    position: relative;
+}
+.operational-backlog-bell {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--card-bg, #fff);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.operational-backlog-bell:hover,
+.operational-backlog-bell.open {
+    border-color: var(--warning-color, #d97706);
+    color: var(--warning-color, #d97706);
+}
+.operational-backlog-bell.has-blocking {
+    border-color: var(--danger-color, #dc2626);
+    color: var(--danger-color, #dc2626);
+    animation: op-backlog-pulse 2s ease-in-out infinite;
+}
+@keyframes op-backlog-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+    50% { box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.15); }
+}
+.operational-backlog-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 1.1rem;
+    height: 1.1rem;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--danger-color, #dc2626);
+    color: #fff;
+    font-size: 0.65rem;
+    font-weight: 700;
+    align-items: center;
+    justify-content: center;
+}
+.operational-backlog-panel {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: min(22rem, 92vw);
+    max-height: min(24rem, 70vh);
+    overflow: auto;
+    z-index: 1200;
+    background: var(--card-bg, #fff);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.operational-backlog-bell.open ~ .operational-backlog-panel {
+    display: block;
+}
+.operational-backlog-panel-inner {
+    padding: 0.75rem;
+}
+.operational-backlog-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+.op-backlog-hint {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.65rem;
+    line-height: 1.35;
+}
+.op-backlog-section-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-secondary);
+    margin: 0.5rem 0 0.35rem;
+}
+.op-backlog-section-title i {
+    margin-right: 0.25rem;
+}
+.op-backlog-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: 100%;
+    text-align: left;
+    padding: 0.45rem 0.5rem;
+    margin-bottom: 0.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+}
+.op-backlog-item:hover {
+    background: var(--bg-color);
+    border-color: var(--primary-color);
+}
+.op-backlog-item-blocking {
+    border-left: 3px solid var(--danger-color, #dc2626);
+}
+.op-backlog-item-info {
+    opacity: 0.85;
+    border-left: 3px solid var(--text-secondary);
+}
+.op-backlog-item-title {
+    font-size: 0.82rem;
+}
+.op-backlog-item-meta {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+.op-backlog-empty {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    padding: 0.25rem 0;
+}
+.op-backlog-refresh {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0.25rem;
+}
+.sales-backlog-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.65rem 0.85rem;
+    margin-bottom: 0.75rem;
+    border-radius: 8px;
+    border: 1px solid var(--warning-color, #f59e0b);
+    background: rgba(245, 158, 11, 0.08);
+    font-size: 0.85rem;
+}
+.sales-backlog-banner button.linkish {
+    border: none;
+    background: none;
+    color: var(--primary-color);
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+    font: inherit;
 }
 
 /* Module switcher (top navigation) */
