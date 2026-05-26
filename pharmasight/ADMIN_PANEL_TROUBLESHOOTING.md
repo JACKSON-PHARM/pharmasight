@@ -139,7 +139,7 @@ python start.py
 - [ ] Frontend is running on port 3000
 - [ ] Master database schema created (`python setup_master_database.py`)
 - [ ] First tenant created (`python create_first_client.py`)
-- [ ] Admin logged in (username: `admin`, password: `33742377.jack`)
+- [ ] Admin logged in (username: `admin`, password: `<set via secure admin recovery>`)
 - [ ] Browser console shows no errors
 - [ ] API endpoint `/api/admin/tenants` returns JSON
 
@@ -155,7 +155,7 @@ http://localhost:3000/admin.html
 ### Method 2: After Admin Login (Future)
 1. Go to: `http://localhost:3000/#login`
 2. Username: `admin`
-3. Password: `33742377.jack`
+3. Password: `<set via secure admin recovery>`
 4. Automatically redirected to admin panel
 
 ---

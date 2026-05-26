@@ -6,11 +6,10 @@ Non-blocking types are listed for visibility only (orders, quotations).
 """
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, datetime, time
+from typing import Any, Dict, List, Optional, Set
 from uuid import UUID
 
-from sqlalchemy import cast, Date as SaDate, func
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -106,8 +105,18 @@ def _row(
     return out
 
 
-def _created_date_column(model):
-    return cast(func.date(model.created_at), SaDate)
+_MODULE_DOCUMENT_TYPES: Dict[str, Set[str]] = {
+    "sales": {"sales_invoice"},
+    "purchases": {"supplier_invoice"},
+    "branch_transfer": {"branch_transfer"},
+    "department_supply": {"department_supply_transfer"},
+    "sales_returns": {"credit_note"},
+    "purchases_returns": {"supplier_return"},
+}
+
+
+def _before_business_day(dt_column, business_date: date):
+    return dt_column < datetime.combine(business_date, time.min)
 
 
 def fetch_branch_operational_backlog(
@@ -117,10 +126,20 @@ def fetch_branch_operational_backlog(
     business_date: date,
     *,
     per_type_limit: int = 30,
+    include_informational: bool = False,
+    only_modules: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """All prior-date open operational documents for a branch."""
     blocking: List[Dict[str, Any]] = []
     informational: List[Dict[str, Any]] = []
+    only_document_types: Optional[Set[str]] = None
+    if only_modules:
+        only_document_types = set()
+        for module in only_modules:
+            only_document_types.update(_MODULE_DOCUMENT_TYPES.get(module, set()))
+
+    def should_check(document_type: str) -> bool:
+        return only_document_types is None or document_type in only_document_types
 
     def add_rows(rows: List[Dict[str, Any]]) -> None:
         for r in rows:
@@ -131,153 +150,214 @@ def fetch_branch_operational_backlog(
 
     # --- Blocking: stock-affecting drafts / unposted ---
 
-    sales = (
-        db.query(SalesInvoice)
-        .filter(
-            SalesInvoice.company_id == company_id,
-            SalesInvoice.branch_id == branch_id,
-            SalesInvoice.status == "DRAFT",
-            SalesInvoice.invoice_date < business_date,
+    if should_check("sales_invoice"):
+        sales = (
+            db.query(SalesInvoice)
+            .filter(
+                SalesInvoice.company_id == company_id,
+                SalesInvoice.branch_id == branch_id,
+                SalesInvoice.status == "DRAFT",
+                SalesInvoice.invoice_date < business_date,
+                SalesInvoice.items.any(),
+            )
+            .order_by(SalesInvoice.invoice_date.asc(), SalesInvoice.invoice_no.asc())
+            .limit(per_type_limit)
+            .all()
         )
-        .order_by(SalesInvoice.invoice_date.asc(), SalesInvoice.invoice_no.asc())
-        .limit(per_type_limit)
-        .all()
-    )
-    add_rows([
-        _row("sales_invoice", inv.id, inv.invoice_no, inv.invoice_date, inv.status or "DRAFT")
-        for inv in sales
-    ])
+        add_rows([
+            _row("sales_invoice", inv.id, inv.invoice_no, inv.invoice_date, inv.status or "DRAFT")
+            for inv in sales
+        ])
 
-    supplier_inv = (
-        db.query(SupplierInvoice)
-        .filter(
-            SupplierInvoice.company_id == company_id,
-            SupplierInvoice.branch_id == branch_id,
-            SupplierInvoice.status == "DRAFT",
-            SupplierInvoice.invoice_date < business_date,
+    if should_check("supplier_invoice"):
+        supplier_inv = (
+            db.query(SupplierInvoice)
+            .filter(
+                SupplierInvoice.company_id == company_id,
+                SupplierInvoice.branch_id == branch_id,
+                SupplierInvoice.status == "DRAFT",
+                SupplierInvoice.invoice_date < business_date,
+                SupplierInvoice.items.any(),
+            )
+            .order_by(SupplierInvoice.invoice_date.asc(), SupplierInvoice.invoice_number.asc())
+            .limit(per_type_limit)
+            .all()
         )
-        .order_by(SupplierInvoice.invoice_date.asc(), SupplierInvoice.invoice_number.asc())
-        .limit(per_type_limit)
-        .all()
-    )
-    add_rows([
-        _row(
-            "supplier_invoice",
-            inv.id,
-            inv.invoice_number,
-            inv.invoice_date,
-            inv.status or "DRAFT",
-        )
-        for inv in supplier_inv
-    ])
+        add_rows([
+            _row(
+                "supplier_invoice",
+                inv.id,
+                inv.invoice_number,
+                inv.invoice_date,
+                inv.status or "DRAFT",
+            )
+            for inv in supplier_inv
+        ])
 
-    branch_xfer = (
-        db.query(BranchTransfer)
-        .filter(
-            BranchTransfer.company_id == company_id,
-            BranchTransfer.status == "DRAFT",
-            BranchTransfer.supplying_branch_id == branch_id,
-            _created_date_column(BranchTransfer) < business_date,
+    if should_check("branch_transfer"):
+        branch_xfer = (
+            db.query(BranchTransfer)
+            .filter(
+                BranchTransfer.company_id == company_id,
+                BranchTransfer.status == "DRAFT",
+                BranchTransfer.supplying_branch_id == branch_id,
+                _before_business_day(BranchTransfer.created_at, business_date),
+                BranchTransfer.lines.any(),
+            )
+            .order_by(BranchTransfer.created_at.asc())
+            .limit(per_type_limit)
+            .all()
         )
-        .order_by(BranchTransfer.created_at.asc())
-        .limit(per_type_limit)
-        .all()
-    )
-    add_rows([
-        _row(
-            "branch_transfer",
-            t.id,
-            t.transfer_number or "",
-            (t.created_at.date() if t.created_at else business_date),
-            t.status,
-            extra={"supplying_branch_id": str(t.supplying_branch_id), "receiving_branch_id": str(t.receiving_branch_id)},
-        )
-        for t in branch_xfer
-    ])
+        add_rows([
+            _row(
+                "branch_transfer",
+                t.id,
+                t.transfer_number or "",
+                (t.created_at.date() if t.created_at else business_date),
+                t.status,
+                extra={"supplying_branch_id": str(t.supplying_branch_id), "receiving_branch_id": str(t.receiving_branch_id)},
+            )
+            for t in branch_xfer
+        ])
 
-    dept_xfer = (
-        db.query(DepartmentSupplyTransfer)
-        .filter(
-            DepartmentSupplyTransfer.company_id == company_id,
-            DepartmentSupplyTransfer.branch_id == branch_id,
-            DepartmentSupplyTransfer.status == "DRAFT",
-            _created_date_column(DepartmentSupplyTransfer) < business_date,
+    if should_check("department_supply_transfer"):
+        dept_xfer = (
+            db.query(DepartmentSupplyTransfer)
+            .filter(
+                DepartmentSupplyTransfer.company_id == company_id,
+                DepartmentSupplyTransfer.branch_id == branch_id,
+                DepartmentSupplyTransfer.status == "DRAFT",
+                _before_business_day(DepartmentSupplyTransfer.created_at, business_date),
+                DepartmentSupplyTransfer.lines.any(),
+            )
+            .order_by(DepartmentSupplyTransfer.created_at.asc())
+            .limit(per_type_limit)
+            .all()
         )
-        .order_by(DepartmentSupplyTransfer.created_at.asc())
-        .limit(per_type_limit)
-        .all()
-    )
-    add_rows([
-        _row(
-            "department_supply_transfer",
-            t.id,
-            t.transfer_number or "",
-            (t.created_at.date() if t.created_at else business_date),
-            t.status,
-        )
-        for t in dept_xfer
-    ])
+        add_rows([
+            _row(
+                "department_supply_transfer",
+                t.id,
+                t.transfer_number or "",
+                (t.created_at.date() if t.created_at else business_date),
+                t.status,
+            )
+            for t in dept_xfer
+        ])
 
-    credit_notes = (
-        db.query(CreditNote)
-        .filter(
-            CreditNote.company_id == company_id,
-            CreditNote.branch_id == branch_id,
-            CreditNote.posting_status != "posted",
-            CreditNote.credit_note_date < business_date,
+    if should_check("credit_note"):
+        credit_notes = (
+            db.query(CreditNote)
+            .filter(
+                CreditNote.company_id == company_id,
+                CreditNote.branch_id == branch_id,
+                CreditNote.posting_status != "posted",
+                CreditNote.credit_note_date < business_date,
+                CreditNote.items.any(),
+            )
+            .order_by(CreditNote.credit_note_date.asc(), CreditNote.credit_note_no.asc())
+            .limit(per_type_limit)
+            .all()
         )
-        .order_by(CreditNote.credit_note_date.asc(), CreditNote.credit_note_no.asc())
-        .limit(per_type_limit)
-        .all()
-    )
-    add_rows([
-        _row(
-            "credit_note",
-            cn.id,
-            cn.credit_note_no,
-            cn.credit_note_date,
-            cn.posting_status or "pending",
-        )
-        for cn in credit_notes
-    ])
+        add_rows([
+            _row(
+                "credit_note",
+                cn.id,
+                cn.credit_note_no,
+                cn.credit_note_date,
+                cn.posting_status or "pending",
+            )
+            for cn in credit_notes
+        ])
 
-    supplier_returns = (
-        db.query(SupplierReturn)
-        .filter(
-            SupplierReturn.company_id == company_id,
-            SupplierReturn.branch_id == branch_id,
-            SupplierReturn.posting_status != "posted",
-            SupplierReturn.return_date < business_date,
+    if should_check("supplier_return"):
+        supplier_returns = (
+            db.query(SupplierReturn)
+            .filter(
+                SupplierReturn.company_id == company_id,
+                SupplierReturn.branch_id == branch_id,
+                SupplierReturn.posting_status != "posted",
+                SupplierReturn.return_date < business_date,
+                SupplierReturn.lines.any(),
+            )
+            .order_by(SupplierReturn.return_date.asc(), SupplierReturn.return_document_no.asc())
+            .limit(per_type_limit)
+            .all()
         )
-        .order_by(SupplierReturn.return_date.asc(), SupplierReturn.return_document_no.asc())
-        .limit(per_type_limit)
-        .all()
-    )
-    add_rows([
-        _row(
-            "supplier_return",
-            r.id,
-            r.return_document_no or "",
-            r.return_date,
-            r.posting_status or r.status or "pending",
-        )
-        for r in supplier_returns
-    ])
+        add_rows([
+            _row(
+                "supplier_return",
+                r.id,
+                r.return_document_no or "",
+                r.return_date,
+                r.posting_status or r.status or "pending",
+            )
+            for r in supplier_returns
+        ])
 
     # --- Informational: no stock block ---
-
-    branch_orders = (
-        db.query(BranchOrder)
-        .filter(
-            BranchOrder.company_id == company_id,
-            BranchOrder.ordering_branch_id == branch_id,
-            BranchOrder.status == "DRAFT",
-            _created_date_column(BranchOrder) < business_date,
+    if not include_informational:
+        branch_orders = []
+        dept_orders = []
+        purchase_orders = []
+        quotations = []
+    else:
+        branch_orders = (
+            db.query(BranchOrder)
+            .filter(
+                BranchOrder.company_id == company_id,
+                BranchOrder.ordering_branch_id == branch_id,
+                BranchOrder.status == "DRAFT",
+                _before_business_day(BranchOrder.created_at, business_date),
+                BranchOrder.lines.any(),
+            )
+            .order_by(BranchOrder.created_at.asc())
+            .limit(per_type_limit)
+            .all()
         )
-        .order_by(BranchOrder.created_at.asc())
-        .limit(per_type_limit)
-        .all()
-    )
+
+        dept_orders = (
+            db.query(DepartmentSupplyOrder)
+            .filter(
+                DepartmentSupplyOrder.company_id == company_id,
+                DepartmentSupplyOrder.branch_id == branch_id,
+                DepartmentSupplyOrder.status == "DRAFT",
+                _before_business_day(DepartmentSupplyOrder.created_at, business_date),
+                DepartmentSupplyOrder.lines.any(),
+            )
+            .order_by(DepartmentSupplyOrder.created_at.asc())
+            .limit(per_type_limit)
+            .all()
+        )
+
+        purchase_orders = (
+            db.query(PurchaseOrder)
+            .filter(
+                PurchaseOrder.company_id == company_id,
+                PurchaseOrder.branch_id == branch_id,
+                PurchaseOrder.status.in_(("PENDING", "APPROVED")),
+                PurchaseOrder.order_date < business_date,
+                PurchaseOrder.items.any(),
+            )
+            .order_by(PurchaseOrder.order_date.asc(), PurchaseOrder.order_number.asc())
+            .limit(per_type_limit)
+            .all()
+        )
+
+        quotations = (
+            db.query(Quotation)
+            .filter(
+                Quotation.company_id == company_id,
+                Quotation.branch_id == branch_id,
+                Quotation.status == "draft",
+                Quotation.quotation_date < business_date,
+                Quotation.items.any(),
+            )
+            .order_by(Quotation.quotation_date.asc(), Quotation.quotation_no.asc())
+            .limit(per_type_limit)
+            .all()
+        )
+
     add_rows([
         _row(
             "branch_order",
@@ -289,18 +369,6 @@ def fetch_branch_operational_backlog(
         for o in branch_orders
     ])
 
-    dept_orders = (
-        db.query(DepartmentSupplyOrder)
-        .filter(
-            DepartmentSupplyOrder.company_id == company_id,
-            DepartmentSupplyOrder.branch_id == branch_id,
-            DepartmentSupplyOrder.status == "DRAFT",
-            _created_date_column(DepartmentSupplyOrder) < business_date,
-        )
-        .order_by(DepartmentSupplyOrder.created_at.asc())
-        .limit(per_type_limit)
-        .all()
-    )
     add_rows([
         _row(
             "department_supply_order",
@@ -312,35 +380,11 @@ def fetch_branch_operational_backlog(
         for o in dept_orders
     ])
 
-    purchase_orders = (
-        db.query(PurchaseOrder)
-        .filter(
-            PurchaseOrder.company_id == company_id,
-            PurchaseOrder.branch_id == branch_id,
-            PurchaseOrder.status.in_(("PENDING", "APPROVED")),
-            PurchaseOrder.order_date < business_date,
-        )
-        .order_by(PurchaseOrder.order_date.asc(), PurchaseOrder.order_number.asc())
-        .limit(per_type_limit)
-        .all()
-    )
     add_rows([
         _row("purchase_order", po.id, po.order_number, po.order_date, po.status or "PENDING")
         for po in purchase_orders
     ])
 
-    quotations = (
-        db.query(Quotation)
-        .filter(
-            Quotation.company_id == company_id,
-            Quotation.branch_id == branch_id,
-            Quotation.status == "draft",
-            Quotation.quotation_date < business_date,
-        )
-        .order_by(Quotation.quotation_date.asc(), Quotation.quotation_no.asc())
-        .limit(per_type_limit)
-        .all()
-    )
     add_rows([
         _row("quotation", q.id, q.quotation_no, q.quotation_date, q.status or "draft")
         for q in quotations
@@ -373,7 +417,14 @@ def assert_module_not_blocked(
     """Raise HTTP 409 if module is blocked by prior-date unposted documents."""
     from fastapi import HTTPException
 
-    summary = fetch_branch_operational_backlog(db, company_id, branch_id, business_date)
+    summary = fetch_branch_operational_backlog(
+        db,
+        company_id,
+        branch_id,
+        business_date,
+        only_modules={module},
+        include_informational=False,
+    )
     if module not in summary.get("blocked_modules", []):
         return
     docs = [
@@ -384,12 +435,12 @@ def assert_module_not_blocked(
     extra = len(docs) - 5
     suffix = f" (+{extra} more)" if extra > 0 else ""
     module_labels = {
-        "sales": "new sales",
-        "purchases": "new supplier invoices",
-        "branch_transfer": "new branch transfers",
-        "department_supply": "new department transfers",
-        "sales_returns": "new returns / credit notes",
-        "purchases_returns": "new supplier returns",
+        "sales": "create new sales",
+        "purchases": "create new supplier invoices",
+        "branch_transfer": "create new branch transfers",
+        "department_supply": "create new department transfers",
+        "sales_returns": "create new returns / credit notes",
+        "purchases_returns": "create new supplier returns",
     }
     action = module_labels.get(module, f"new {module} documents")
     raise HTTPException(

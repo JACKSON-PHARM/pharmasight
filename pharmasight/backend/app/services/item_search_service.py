@@ -198,11 +198,23 @@ def _search_impl(
 
         # Build response from snapshot only (item_like from snapshot row for stock_display; no Item join)
         from_snapshot_only = bool(include_pricing and branch_id and item_ids)
+        reserved_map: Dict[UUID, Decimal] = {}
+        if branch_id and item_ids:
+            from app.services.supplier_return_reservation_service import SupplierReturnReservationService
+
+            reserved_map = SupplierReturnReservationService.reserved_qty_by_item(
+                db,
+                company_id=company_id,
+                branch_id=branch_id,
+                item_ids=item_ids,
+            )
         result = []
         for r in rows:
             item_like = _item_like_from_snapshot_row(r)
             stock_float = float(r.current_stock or 0)
             stock_val = int(stock_float)
+            reserved_float = float(reserved_map.get(r.item_id, Decimal("0")) or 0)
+            available_float = max(0.0, stock_float - reserved_float)
             purchase_price_override = cost_map.get(r.item_id) if from_snapshot_only else None
             sale_price_override = sale_price_map.get(r.item_id) if from_snapshot_only else None
             margin_percent_override = margin_map.get(r.item_id) if from_snapshot_only else None
@@ -218,6 +230,14 @@ def _search_impl(
                 last_order_date=getattr(r, "last_order_date", None),
                 from_snapshot_only=from_snapshot_only,
                 lightweight_stock_display=pos_lightweight,
+            )
+            item_data["reserved_stock"] = reserved_float
+            item_data["available_stock"] = available_float
+            item_data["is_fully_reserved"] = stock_float > 0 and available_float <= 0
+            item_data["reservation_status"] = (
+                "fully_reserved"
+                if item_data["is_fully_reserved"]
+                else ("partially_reserved" if reserved_float > 0 else None)
             )
             if context == "purchase_order":
                 item_data["last_supply_date"] = getattr(r, "last_purchase_date", None)

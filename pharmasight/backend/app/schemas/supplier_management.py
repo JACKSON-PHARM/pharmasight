@@ -95,6 +95,12 @@ class SupplierReturnCreate(BaseModel):
     lines: List[SupplierReturnLineCreate] = Field(..., min_length=1)
 
 
+class SupplierReturnUpdate(BaseModel):
+    return_date: Optional[date] = None
+    reason: Optional[str] = None
+    lines: Optional[List[SupplierReturnLineCreate]] = Field(None, min_length=1)
+
+
 class SupplierReturnLineResponse(BaseModel):
     id: UUID
     supplier_return_id: UUID

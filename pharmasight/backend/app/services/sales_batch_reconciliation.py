@@ -19,6 +19,7 @@ from app.services.inventory_service import InventoryService
 from app.services.item_units_helper import get_unit_multiplier_from_item
 from app.services.pricing_config_service import is_line_price_at_promo, validate_line_price
 from app.services.pricing_service import PricingService
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.sales_batch_common import (
     SNAPSHOT_VS_LEDGER_WARN_THRESHOLD,
     sustainable_min_margin_pct,
@@ -204,6 +205,14 @@ def reconcile_sales_invoice_inventory(
     for entry in ledger_entries:
         db.add(entry)
     db.flush()
+
+    for item_id in {entry.item_id for entry in ledger_entries}:
+        SnapshotRefreshService.refresh_item_sync(
+            db,
+            invoice.company_id,
+            invoice.branch_id,
+            item_id,
+        )
     return below_margin_rows or None
 
 

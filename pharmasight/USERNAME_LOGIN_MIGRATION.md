@@ -120,7 +120,7 @@ WHERE username IS NULL;
 ### Admin Login:
 
 - **Username:** `admin`
-- **Password:** `33742377.jack`
+- **Password:** `<set via secure admin recovery>`
 
 ### Regular User Login:
 
@@ -170,7 +170,7 @@ WHERE username IS NULL;
 1. **Login:**
    - Go to: `http://localhost:3000/#login`
    - Username: `admin`
-   - Password: `33742377.jack`
+   - Password: `<set via secure admin recovery>`
    - Should redirect to admin panel
 
 ### Test Password Reset:

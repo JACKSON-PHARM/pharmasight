@@ -132,6 +132,15 @@
         .gov-tag { font-size: 0.72rem; background: #e0e7ff; color: #3730a3; padding: 1px 6px; border-radius: 4px; }
         .gov-advanced { margin-top: 16px; border: 1px solid #e2e8f0; border-radius: 10px; padding: 0 14px 14px; }
         .gov-advanced > summary { cursor: pointer; font-weight: 600; padding: 12px 0; }
+        .admin-settings-panel { max-width: 640px; }
+        .admin-settings-form { display: grid; gap: 14px; margin-top: 16px; }
+        .admin-settings-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+        .admin-settings-row .form-group { flex: 1 1 260px; margin-bottom: 0; }
+        .admin-settings-meta { margin: 6px 0 0; color: #666; font-size: 0.9rem; }
+        .admin-settings-status { margin-top: 12px; font-size: 0.9rem; }
+        .admin-settings-status--success { color: #047857; }
+        .admin-settings-status--error { color: #b91c1c; }
+        .admin-settings-otp { display: none; }
     </style>
 </head>
 <body>
@@ -150,6 +159,7 @@
             <button type="button" class="admin-tab active" data-tab="licensing">Governance</button>
             <button type="button" class="admin-tab" data-tab="platform-dashboard">Platform Dashboard</button>
             <button type="button" class="admin-tab" data-tab="marketing-settings">Marketing Settings</button>
+            <button type="button" class="admin-tab" data-tab="admin-settings">Admin Settings</button>
         </div>
 
         <div id="licensing-content-wrap" class="admin-tab-content active">
@@ -162,6 +172,33 @@
 
         <div id="marketing-settings-content-wrap" class="admin-tab-content">
             <div id="marketing-settings-mount"></div>
+        </div>
+
+        <div id="admin-settings-content-wrap" class="admin-tab-content">
+            <section class="admin-settings-panel">
+                <h2>Admin Email</h2>
+                <p class="admin-settings-meta" id="adminCurrentEmail">Loading admin email...</p>
+                <form id="adminEmailChangeForm" class="admin-settings-form">
+                    <div class="admin-settings-row">
+                        <div class="form-group">
+                            <label for="adminNewEmail">New admin email</label>
+                            <input type="email" id="adminNewEmail" required autocomplete="email" placeholder="admin@example.com">
+                        </div>
+                        <button type="submit" class="btn btn-primary" id="adminSendEmailOtpBtn">Send OTP</button>
+                    </div>
+                </form>
+                <form id="adminEmailOtpForm" class="admin-settings-form admin-settings-otp">
+                    <div class="admin-settings-row">
+                        <div class="form-group">
+                            <label for="adminEmailOtp">Verification code</label>
+                            <input type="text" id="adminEmailOtp" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+                        </div>
+                        <button type="submit" class="btn btn-primary" id="adminVerifyEmailOtpBtn">Verify & update</button>
+                    </div>
+                    <p class="admin-settings-meta" id="adminEmailOtpHint"></p>
+                </form>
+                <div id="adminEmailStatus" class="admin-settings-status" role="status"></div>
+            </section>
         </div>
     </div>
 
@@ -179,7 +216,11 @@
             document.querySelectorAll('.admin-tab-content').forEach(el => {
                 const id = el.id === 'platform-dashboard-content-wrap'
                     ? 'platform-dashboard'
-                    : (el.id === 'licensing-content-wrap' ? 'licensing' : (el.id === 'marketing-settings-content-wrap' ? 'marketing-settings' : null));
+                    : (el.id === 'licensing-content-wrap'
+                        ? 'licensing'
+                        : (el.id === 'marketing-settings-content-wrap'
+                            ? 'marketing-settings'
+                            : (el.id === 'admin-settings-content-wrap' ? 'admin-settings' : null)));
                 el.classList.toggle('active', id === tabId);
             });
             if (tabId === 'platform-dashboard') {
@@ -191,13 +232,105 @@
             if (tabId === 'marketing-settings') {
                 window.initMarketingSettings?.();
             }
+            if (tabId === 'admin-settings') {
+                window.initAdminSettings?.();
+            }
+        }
+
+        function setAdminEmailStatus(message, type) {
+            const status = document.getElementById('adminEmailStatus');
+            if (!status) return;
+            status.textContent = message || '';
+            status.className = 'admin-settings-status' + (type ? ` admin-settings-status--${type}` : '');
+        }
+
+        async function initAdminSettings() {
+            const currentEmail = document.getElementById('adminCurrentEmail');
+            const changeForm = document.getElementById('adminEmailChangeForm');
+            const otpForm = document.getElementById('adminEmailOtpForm');
+            const newEmailInput = document.getElementById('adminNewEmail');
+            const otpInput = document.getElementById('adminEmailOtp');
+            const otpHint = document.getElementById('adminEmailOtpHint');
+            const sendBtn = document.getElementById('adminSendEmailOtpBtn');
+            const verifyBtn = document.getElementById('adminVerifyEmailOtpBtn');
+            if (!changeForm || changeForm.dataset.bound === '1') return;
+            changeForm.dataset.bound = '1';
+            let pendingRequestId = null;
+
+            async function refreshProfile() {
+                try {
+                    const profile = await API.adminAuth.profile();
+                    if (currentEmail) {
+                        currentEmail.textContent = profile.email
+                            ? `Current recovery and OTP email: ${profile.email}`
+                            : 'Current recovery and OTP email is not available.';
+                    }
+                } catch (error) {
+                    if (currentEmail) currentEmail.textContent = 'Could not load current admin email.';
+                }
+            }
+
+            changeForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                setAdminEmailStatus('', '');
+                pendingRequestId = null;
+                if (sendBtn) sendBtn.disabled = true;
+                try {
+                    const data = await API.adminAuth.requestEmailChange({
+                        new_email: newEmailInput.value.trim(),
+                    });
+                    pendingRequestId = data.request_id;
+                    if (otpForm) otpForm.style.display = 'grid';
+                    if (otpHint) otpHint.textContent = `Code sent to ${data.email_masked || 'the new email'}.`;
+                    if (otpInput) otpInput.focus();
+                    setAdminEmailStatus('Verification code sent.', 'success');
+                } catch (error) {
+                    setAdminEmailStatus(error.message || 'Could not send verification code.', 'error');
+                } finally {
+                    if (sendBtn) sendBtn.disabled = false;
+                }
+            });
+
+            if (otpForm) {
+                otpForm.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    if (!pendingRequestId) {
+                        setAdminEmailStatus('Request a verification code first.', 'error');
+                        return;
+                    }
+                    if (verifyBtn) verifyBtn.disabled = true;
+                    try {
+                        const data = await API.adminAuth.verifyEmailChange({
+                            request_id: pendingRequestId,
+                            otp: otpInput.value.trim(),
+                        });
+                        pendingRequestId = null;
+                        otpForm.style.display = 'none';
+                        otpInput.value = '';
+                        newEmailInput.value = '';
+                        setAdminEmailStatus('Admin email updated.', 'success');
+                        if (currentEmail) currentEmail.textContent = `Current recovery and OTP email: ${data.email}`;
+                    } catch (error) {
+                        setAdminEmailStatus(error.message || 'Could not verify code.', 'error');
+                    } finally {
+                        if (verifyBtn) verifyBtn.disabled = false;
+                    }
+                });
+            }
+
+            await refreshProfile();
         }
 
         async function initAdminPanel() {
             try {
                 const logoutBtn = document.getElementById('logout-btn');
                 if (logoutBtn) {
-                    logoutBtn.addEventListener('click', () => {
+                    logoutBtn.addEventListener('click', async () => {
+                        try {
+                            if (window.API && API.adminAuth && typeof API.adminAuth.logout === 'function') {
+                                await API.adminAuth.logout();
+                            }
+                        } catch (_) {}
                         localStorage.removeItem('admin_token');
                         localStorage.removeItem('is_admin');
                         if (window.AuthBootstrap) {
@@ -233,6 +366,8 @@
                 window.initMarketingSettings = async () => {
                     await initMarketingSettings();
                 };
+
+                window.initAdminSettings = initAdminSettings;
             } catch (error) {
                 console.error('Error loading admin panel:', error);
                 const mount = document.getElementById('platform-licensing-mount');
@@ -262,20 +397,21 @@
             const isAdmin = localStorage.getItem('is_admin');
 
             if (!adminToken || isAdmin !== 'true') {
-                try {
-                    const { default: AuthBootstrap } = await import('/js/services/auth_bootstrap.js');
-                    await AuthBootstrap.init();
-                    const user = AuthBootstrap.getCurrentUser();
-                    const userEmail = user?.email?.toLowerCase();
-                    const adminEmails = ['pharmasightsolutions@gmail.com', 'admin@pharmasight.com'];
-                    if (user && adminEmails.includes(userEmail)) {
-                        localStorage.setItem('is_admin', 'true');
-                        await initAdminPanel();
-                        return;
-                    }
-                } catch (e) {
-                    console.log('AuthBootstrap not available');
+                window.location.href = '/#login';
+                return;
+            }
+
+            try {
+                if (!window.API) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
                 }
+                const verified = await API.adminAuth.verify();
+                if (!verified || verified.valid !== true) {
+                    throw new Error('Admin session expired');
+                }
+            } catch (e) {
+                localStorage.removeItem('admin_token');
+                localStorage.removeItem('is_admin');
                 window.location.href = '/#login';
                 return;
             }

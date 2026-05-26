@@ -141,7 +141,11 @@
                 kraSignature: inv.kra_signature || null,
                 companyPin: inv.company_pin || null,
                 kraSubmittedAt: inv.kra_submitted_at || null,
-                cuDeviceSerial: inv.etims_device_serial || null
+                cuDeviceSerial: inv.etims_device_serial || null,
+                tisName: inv.etims_trader_invoicing_system_name || null,
+                kraInvoiceNumber: inv.kra_invoice_number || inv.kra_receipt_number || null,
+                documentTitle: (inv.kra_fiscal_receipt_required || inv.kra_receipt_number || inv.kra_qr_code || inv.kra_signature) ? 'TAX INVOICE' : 'CASH RECEIPT',
+                nonFiscalWarning: (inv.kra_fiscal_receipt_required || inv.kra_receipt_number || inv.kra_qr_code || inv.kra_signature) ? '' : 'THIS IS NOT A TAX INVOICE'
             };
         }
         if (type === 'QUOTATION') {
@@ -157,7 +161,8 @@
                 total: q.total_inclusive != null ? q.total_inclusive : (q.total_amount || 0),
                 servedBy: q.created_by_username || q.created_by_name || '',
                 generatedTime: formatTime(),
-                transactionMessage: (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : ''
+                transactionMessage: (typeof CONFIG !== 'undefined' && CONFIG.TRANSACTION_MESSAGE) ? CONFIG.TRANSACTION_MESSAGE : '',
+                documentTitle: 'QUOTATION'
             };
         }
         if (type === 'PURCHASE_ORDER') {
@@ -181,7 +186,8 @@
                 total: o.total_amount || 0,
                 servedBy: o.created_by_name || '',
                 generatedTime: formatTime(),
-                transactionMessage: ''
+                transactionMessage: '',
+                documentTitle: 'PURCHASE ORDER'
             };
         }
         return doc;

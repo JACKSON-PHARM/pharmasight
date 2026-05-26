@@ -19,6 +19,7 @@ from app.dependencies import (
     get_tenant_db,
     get_current_user,
     get_authenticated_db,
+    get_effective_company_id_for_user,
     get_effective_company_id_from_request,
     ensure_ops_branch_access,
     ensure_ops_permission,
@@ -3065,4 +3066,3 @@ def post_batch_metadata_correction(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-

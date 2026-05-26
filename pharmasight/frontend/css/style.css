@@ -911,6 +911,7 @@ body.subscription-trial-expired .subscription-banner-strip {
     top: 0;
     z-index: var(--z-sticky-topbar, 120);
     min-height: 3.5rem;
+    overflow: visible;
 }
 
 .menu-toggle {
@@ -963,6 +964,10 @@ body.subscription-trial-expired .subscription-banner-strip {
     display: flex;
     align-items: center;
     gap: 1rem;
+    flex: 0 0 auto;
+    margin-left: auto;
+    position: relative;
+    z-index: 70;
 }
 
 /* Operational backlog notification bell */
@@ -1069,6 +1074,28 @@ body.subscription-trial-expired .subscription-banner-strip {
     cursor: pointer;
     font: inherit;
     color: inherit;
+}
+.op-backlog-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.35rem;
+    align-items: stretch;
+    margin-bottom: 0.25rem;
+}
+.op-backlog-row .op-backlog-item {
+    margin-bottom: 0;
+}
+.op-backlog-delete {
+    width: 2.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--danger-color, #dc2626);
+    cursor: pointer;
+}
+.op-backlog-delete:hover {
+    background: rgba(220, 38, 38, 0.08);
+    border-color: var(--danger-color, #dc2626);
 }
 .op-backlog-item:hover {
     background: var(--bg-color);
@@ -1258,8 +1285,8 @@ body.subscription-trial-expired .subscription-banner-strip {
     gap: 0.5rem;
 }
 .global-item-search-bar.top-bar-search {
-    flex: 1;
-    min-width: 200px;
+    flex: 1 1 auto;
+    min-width: 0;
     max-width: 520px;
     position: relative;
     z-index: 50;
@@ -1277,7 +1304,7 @@ body.subscription-trial-expired .subscription-banner-strip {
 .global-item-search-wrap {
     position: relative;
     flex: 1;
-    min-width: 140px;
+    min-width: 0;
     max-width: 240px;
 }
 .global-item-search-bar .form-input {
@@ -1298,6 +1325,30 @@ body.subscription-trial-expired .subscription-banner-strip {
     max-height: 220px;
     overflow-y: auto;
     z-index: 200;
+}
+@media (max-width: 1120px) {
+    .global-item-search-bar.top-bar-search {
+        max-width: 430px;
+    }
+    .top-bar-quick-actions .btn {
+        width: 2.75rem;
+        min-width: 2.75rem;
+        padding-left: 0;
+        padding-right: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        font-size: 0;
+    }
+    .top-bar-quick-actions .btn i {
+        font-size: 0.85rem;
+        margin: 0;
+    }
+    .btn-quick-sale i {
+        color: #fff;
+    }
+    .btn-quick-purchase i {
+        color: var(--text-primary);
+    }
 }
 .global-item-search-hit {
     padding: 8px 12px;

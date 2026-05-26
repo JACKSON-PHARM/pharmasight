@@ -44,6 +44,7 @@ from app.schemas.supplier_management import (
     SupplierPaymentResponse,
     SupplierPaymentAllocationResponse,
     SupplierReturnCreate,
+    SupplierReturnUpdate,
     SupplierReturnResponse,
     SupplierLedgerEntryResponse,
     SupplierAgingRow,
@@ -76,6 +77,44 @@ def _effective_company_id(request: Request) -> UUID:
     if not cid:
         raise HTTPException(status_code=403, detail="Company context required")
     return cid
+
+
+def _assert_supplier_return_stock_reservable(
+    db: Session,
+    *,
+    company_id: UUID,
+    branch_id: UUID,
+    lines,
+    exclude_return_id: Optional[UUID] = None,
+) -> None:
+    """Ensure pending supplier return lines can reserve currently unreserved stock."""
+    from app.services.supplier_return_reservation_service import SupplierReturnReservationService
+
+    requested_by_item: Dict[UUID, Decimal] = {}
+    for line in lines or []:
+        requested_by_item[line.item_id] = requested_by_item.get(line.item_id, Decimal("0")) + Decimal(str(line.quantity))
+
+    reserved_map = SupplierReturnReservationService.reserved_qty_by_item(
+        db,
+        company_id=company_id,
+        branch_id=branch_id,
+        item_ids=requested_by_item.keys(),
+        exclude_return_id=exclude_return_id,
+    )
+    for item_id, requested in requested_by_item.items():
+        current = Decimal(str(InventoryService.get_current_stock(db, item_id, branch_id)))
+        reserved = reserved_map.get(item_id, Decimal("0"))
+        available = current - reserved
+        if requested > available:
+            item = db.query(Item).filter(Item.id == item_id).first()
+            name = item.name if item else str(item_id)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot reserve supplier return stock for {name}. "
+                    f"Unreserved stock: {available}, requested: {requested}."
+                ),
+            )
 
 
 # --- Enriched supplier list (for UI with balances) ---
@@ -417,7 +456,7 @@ def create_supplier_return(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Create a supplier return (pending). Stock is reduced when status is set to approved."""
+    """Create a supplier return (pending). Stock is reserved now and reduced on approval."""
     company_id = _effective_company_id(request)
     user = current_user_and_db[0]
 
@@ -429,6 +468,12 @@ def create_supplier_return(
         raise HTTPException(status_code=404, detail="Branch not found")
 
     total_value = sum(line.line_total for line in body.lines)
+    _assert_supplier_return_stock_reservable(
+        db,
+        company_id=company_id,
+        branch_id=body.branch_id,
+        lines=body.lines,
+    )
     now = datetime.now(timezone.utc)
     ret = SupplierReturn(
         company_id=company_id,
@@ -497,13 +542,24 @@ def approve_supplier_return(
     if ret.status != "pending":
         raise HTTPException(status_code=400, detail=f"Return status is {ret.status}. Only pending can be approved.")
 
-    # Check stock availability (quantity in return line = base units)
+    # Check stock availability (quantity in return line = base units). This return
+    # owns its reservation, so approval excludes this return from reserved stock.
+    from app.services.supplier_return_reservation_service import SupplierReturnReservationService
+
     for line in ret.lines:
         current = InventoryService.get_current_stock(db, line.item_id, ret.branch_id)
-        if current < float(line.quantity):
+        other_reserved = SupplierReturnReservationService.reserved_qty_for_item(
+            db,
+            company_id=company_id,
+            branch_id=ret.branch_id,
+            item_id=line.item_id,
+            exclude_return_id=ret.id,
+        )
+        available = max(0.0, current - float(other_reserved))
+        if available < float(line.quantity):
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient stock for item {line.item.name or line.item_id}. Available: {current}, return: {line.quantity}",
+                detail=f"Insufficient unreserved stock for item {line.item.name or line.item_id}. Available: {available}, return: {line.quantity}",
             )
 
     try:
@@ -564,6 +620,68 @@ def approve_supplier_return(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+    return SupplierReturnResponse.model_validate(ret)
+
+
+@router.put("/returns/{return_id}", response_model=SupplierReturnResponse)
+def update_supplier_return(
+    return_id: UUID,
+    body: SupplierReturnUpdate,
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Edit a pending supplier return before it is approved/posting stock."""
+    company_id = _effective_company_id(request)
+    ret = db.query(SupplierReturn).options(
+        selectinload(SupplierReturn.lines),
+        selectinload(SupplierReturn.supplier),
+        selectinload(SupplierReturn.branch),
+    ).filter(
+        SupplierReturn.id == return_id,
+        SupplierReturn.company_id == company_id,
+    ).with_for_update().first()
+    if not ret:
+        raise HTTPException(status_code=404, detail="Return not found")
+    if ret.status != "pending" or ret.posting_status == "posted":
+        raise HTTPException(status_code=400, detail="Only pending, unposted supplier returns can be edited.")
+
+    if body.return_date is not None:
+        ret.return_date = body.return_date
+    if body.reason is not None:
+        ret.reason = body.reason
+    if body.lines is not None:
+        total_value = sum(line.line_total for line in body.lines)
+        _assert_supplier_return_stock_reservable(
+            db,
+            company_id=company_id,
+            branch_id=ret.branch_id,
+            lines=body.lines,
+            exclude_return_id=ret.id,
+        )
+        db.query(SupplierReturnLine).filter(SupplierReturnLine.supplier_return_id == ret.id).delete()
+        db.flush()
+        for line in body.lines:
+            db.add(SupplierReturnLine(
+                supplier_return_id=ret.id,
+                item_id=line.item_id,
+                batch_number=line.batch_number,
+                expiry_date=line.expiry_date,
+                quantity=line.quantity,
+                unit_cost=line.unit_cost,
+                line_total=line.line_total,
+                source_purchase_invoice_item_id=line.source_purchase_invoice_item_id,
+                source_grn_item_id=line.source_grn_item_id,
+                source_inventory_ledger_id=line.source_inventory_ledger_id,
+            ))
+        ret.total_value = total_value
+    ret.payload_hash = pydantic_payload_hash(body)
+    db.commit()
+    ret = db.query(SupplierReturn).options(
+        selectinload(SupplierReturn.lines).selectinload(SupplierReturnLine.item),
+        selectinload(SupplierReturn.supplier),
+        selectinload(SupplierReturn.branch),
+    ).filter(SupplierReturn.id == ret.id).first()
     return SupplierReturnResponse.model_validate(ret)
 
 

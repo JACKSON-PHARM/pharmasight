@@ -21,7 +21,7 @@ from app.models import (
 from app.schemas.sale import (
     QuotationCreate, QuotationResponse, QuotationUpdate,
     QuotationItemCreate, QuotationItemResponse,
-    SalesInvoiceCreate, SalesInvoiceResponse,
+    SalesInvoiceCreate, SalesInvoiceItemCreate, SalesInvoiceResponse,
     QuotationConvertRequest
 )
 from app.services.pricing_service import PricingService
@@ -650,6 +650,65 @@ def convert_quotation_to_invoice(
             status_code=400,
             detail="Quotation has already been converted to an invoice"
         )
+
+    # Convert to an editable sales invoice draft through the normal sales path.
+    # That keeps stock and pricing validation aligned with manually-created invoices;
+    # stock is only reduced when the draft invoice is batched.
+    customer_phone = None
+    if getattr(quotation, "customer_id", None):
+        from app.models import Customer
+
+        customer = db.query(Customer).filter(Customer.id == quotation.customer_id).first()
+        if customer:
+            customer_phone = getattr(customer, "phone", None)
+
+    from app.api.sales import create_sales_invoice
+
+    payload = SalesInvoiceCreate(
+        company_id=quotation.company_id,
+        branch_id=quotation.branch_id,
+        invoice_date=convert_request.invoice_date or date.today(),
+        customer_id=quotation.customer_id,
+        customer_name=convert_request.customer_name or quotation.customer_name,
+        customer_pin=convert_request.customer_pin or quotation.customer_pin,
+        customer_phone=customer_phone,
+        payment_mode=convert_request.payment_mode,
+        payment_status="UNPAID",
+        status="DRAFT",
+        discount_amount=quotation.discount_amount or Decimal("0"),
+        items=[
+            SalesInvoiceItemCreate(
+                item_id=q_item.item_id,
+                unit_name=(
+                    q_item.unit_name
+                    or getattr(q_item.item, "retail_unit", None)
+                    or getattr(q_item.item, "base_unit", None)
+                    or "piece"
+                ),
+                quantity=q_item.quantity,
+                unit_price_exclusive=q_item.unit_price_exclusive,
+                discount_percent=q_item.discount_percent or Decimal("0"),
+                discount_amount=q_item.discount_amount or Decimal("0"),
+            )
+            for q_item in quotation.items
+            if q_item.item_id and q_item.quantity
+        ],
+        created_by=user.id,
+    )
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Quotation has no invoiceable lines")
+
+    db_invoice = create_sales_invoice(payload, request, (user, db))
+    quotation.status = "converted"
+    quotation.converted_to_invoice_id = db_invoice.id
+    db.commit()
+    converted_invoice = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+        .filter(SalesInvoice.id == db_invoice.id)
+        .first()
+    )
+    return converted_invoice or db_invoice
     
     # Check stock availability for all items
     stock_errors = []

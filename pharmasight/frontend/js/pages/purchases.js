@@ -933,14 +933,20 @@ function renderCreditNotesTableBody() {
     }
     
     tbody.innerHTML = list.map(doc => {
+        const normalizedStatus = String(doc.status || '').toLowerCase();
+        const canApprove = normalizedStatus === 'pending' || String(doc.posting_status || '').toLowerCase() !== 'posted';
+        const statusClass = normalizedStatus === 'credited' ? 'badge-success' : normalizedStatus === 'pending' ? 'badge-warning' : 'badge-info';
         return `
             <tr style="cursor: pointer;" onclick="if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'credit-note')">
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong style="color: var(--primary-color);">${doc.credit_note_number || '—'}</strong></td>
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${formatDate(doc.date || doc.created_at)}</td>
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><strong>${formatCurrency(doc.total_amount || 0)}</strong></td>
                 <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">${doc.supplier_name || '—'}</td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><span class="badge badge-warning">${doc.status || 'PENDING'}</span></td>
-                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);"><span class="badge ${statusClass}">${doc.status || 'PENDING'}</span></td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color); display:flex; gap:0.35rem; flex-wrap:wrap;">
+                    ${canApprove ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); if(window.approveSupplierReturn) window.approveSupplierReturn('${doc.id}')" title="Approve and post">
+                        <i class="fas fa-check"></i> Approve
+                    </button>` : ''}
                     <button class="btn btn-outline" onclick="event.stopPropagation(); if(window.viewPurchaseDocument) window.viewPurchaseDocument('${doc.id}', 'credit-note')" title="View">
                         <i class="fas fa-eye"></i>
                     </button>
@@ -1020,13 +1026,16 @@ async function loadPurchaseDocuments(documentType = 'order') {
                 var idStr = (r.id || '').toString().replace(/-/g, '').substring(0, 8).toUpperCase();
                 return {
                     id: r.id,
-                    credit_note_number: 'PR-' + idStr,
+                    credit_note_number: r.return_document_no || ('PR-' + idStr),
                     date: r.return_date,
                     created_at: r.created_at,
                     total_amount: r.total_value,
                     supplier_name: r.supplier_name,
                     status: r.status || 'PENDING',
-                    linked_invoice_id: r.linked_invoice_id
+                    posting_status: r.posting_status || 'not_posted',
+                    linked_invoice_id: r.linked_invoice_id,
+                    reason: r.reason,
+                    lines: r.lines || []
                 };
             });
         }
@@ -1596,7 +1605,7 @@ function submitPurchaseReturn(invoice) {
     if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating…'; }
     API.suppliers.createReturn(payload).then(function () {
         if (typeof closeModal === 'function') closeModal();
-        showToast('Credit note (supplier return) created. Approve it to reduce stock.', 'success');
+        showToast('Credit note created. Stock is now reserved until approval reduces it.', 'success');
         if (currentPurchaseSubPage === 'credit-notes' && typeof fetchAndRenderCreditNotesData === 'function') fetchAndRenderCreditNotesData();
         if (window.currentSupplierDetailId && invoice.supplier_id && String(window.currentSupplierDetailId) === String(invoice.supplier_id)) {
             if (typeof refreshSupplierDetailAfterAction === 'function') refreshSupplierDetailAfterAction(invoice.supplier_id);
@@ -1980,22 +1989,11 @@ async function renderCreateSupplierInvoicePage() {
                 item_sku: disp.item_code,
                 item_code: disp.item_code,
                 quantity: parseFloat(item.quantity) || 0,
+                bonus_quantity: supplierInvoiceLineBonusQuantity(item),
                 unit_name: item.unit_name,
                 unit_price: parseFloat(item.unit_cost_exclusive) || 0,
                 tax_percent: parseFloat(item.vat_rate) || 0,
-                    discount_percent: (() => {
-                        // Backend stores gross unit_cost_exclusive, but line totals are net after discount.
-                        // Infer effective discount so auto-save doesn't revert totals back to gross.
-                        const grossUnit = parseFloat(item.unit_cost_exclusive) || 0;
-                        const qty = parseFloat(item.quantity) || 0;
-                        const netExclusive = parseFloat(item.line_total_exclusive) || 0;
-                        if (!(grossUnit > 0) || !(qty > 0)) return 0;
-                        const base = grossUnit * qty;
-                        if (!(base > 0)) return 0;
-                        const disc = 100 * (1 - (netExclusive / base));
-                        if (!isFinite(disc)) return 0;
-                        return Math.max(0, Math.min(100, disc));
-                    })(),
+                discount_percent: supplierInvoiceLineDiscountPercent(item),
                 total: parseFloat(item.line_total_inclusive) || 0,
                 batches
             };
@@ -2243,11 +2241,29 @@ function updateSupplierInvoiceCreateHeader(showDraft) {
     }
 }
 
+function supplierInvoiceLineDiscountPercent(line) {
+    const stored = parseFloat(line && line.discount_percent);
+    if (Number.isFinite(stored) && stored >= 0) return Math.min(100, stored);
+    const grossUnit = parseFloat(line && line.unit_cost_exclusive) || 0;
+    const qty = parseFloat(line && line.quantity) || 0;
+    const netExclusive = parseFloat(line && line.line_total_exclusive) || 0;
+    if (!(grossUnit > 0) || !(qty > 0)) return 0;
+    const disc = 100 * (1 - (netExclusive / (grossUnit * qty)));
+    return Number.isFinite(disc) ? Math.max(0, Math.min(100, disc)) : 0;
+}
+
+function supplierInvoiceLineBonusQuantity(line) {
+    const stored = parseFloat(line && line.bonus_quantity);
+    if (Number.isFinite(stored) && stored >= 0) return stored;
+    return 0;
+}
+
 function mapTableItemToSupplierInvoiceItem(item) {
     const itemData = {
         item_id: item.item_id,
         unit_name: item.unit_name || 'unit',
         quantity: parseFloat(item.quantity) || 1,
+        bonus_quantity: Math.max(0, parseFloat(item.bonus_quantity) || 0),
         // Accounting model:
         // - Keep original/gross unit cost in `unit_cost_exclusive` (used for last_unit_cost & margins).
         // - Send `discount_percent` so the backend calculates *payable* totals using net cost.
@@ -2319,19 +2335,10 @@ async function onSupplierInvoiceAddItem(item) {
                     item_code: disp.item_code,
                     unit_name: i.unit_name,
                     quantity: i.quantity,
+                    bonus_quantity: supplierInvoiceLineBonusQuantity(i),
                     unit_price: i.unit_cost_exclusive,
                     tax_percent: i.vat_rate,
-                    discount_percent: (() => {
-                        const grossUnit = parseFloat(i.unit_cost_exclusive) || 0;
-                        const qty = parseFloat(i.quantity) || 0;
-                        const netExclusive = parseFloat(i.line_total_exclusive) || 0;
-                        if (!(grossUnit > 0) || !(qty > 0)) return 0;
-                        const base = grossUnit * qty;
-                        if (!(base > 0)) return 0;
-                        const disc = 100 * (1 - (netExclusive / base));
-                        if (!isFinite(disc)) return 0;
-                        return Math.max(0, Math.min(100, disc));
-                    })(),
+                    discount_percent: supplierInvoiceLineDiscountPercent(i),
                     total: i.line_total_inclusive,
                     batches: batches
                 };
@@ -2365,19 +2372,10 @@ async function onSupplierInvoiceAddItem(item) {
                 item_code: disp.item_code,
                 unit_name: i.unit_name,
                 quantity: i.quantity,
+                bonus_quantity: supplierInvoiceLineBonusQuantity(i),
                 unit_price: i.unit_cost_exclusive,
                 tax_percent: i.vat_rate,
-                discount_percent: (() => {
-                    const grossUnit = parseFloat(i.unit_cost_exclusive) || 0;
-                    const qty = parseFloat(i.quantity) || 0;
-                    const netExclusive = parseFloat(i.line_total_exclusive) || 0;
-                    if (!(grossUnit > 0) || !(qty > 0)) return 0;
-                    const base = grossUnit * qty;
-                    if (!(base > 0)) return 0;
-                    const disc = 100 * (1 - (netExclusive / base));
-                    if (!isFinite(disc)) return 0;
-                    return Math.max(0, Math.min(100, disc));
-                })(),
+                discount_percent: supplierInvoiceLineDiscountPercent(i),
                 total: i.line_total_inclusive,
                 batches: batches
             };
@@ -2407,19 +2405,10 @@ async function onSupplierInvoiceAddItem(item) {
                         item_code: disp.item_code,
                         unit_name: i.unit_name,
                         quantity: i.quantity,
+                        bonus_quantity: supplierInvoiceLineBonusQuantity(i),
                         unit_price: i.unit_cost_exclusive,
                         tax_percent: i.vat_rate,
-                        discount_percent: (() => {
-                            const grossUnit = parseFloat(i.unit_cost_exclusive) || 0;
-                            const qty = parseFloat(i.quantity) || 0;
-                            const netExclusive = parseFloat(i.line_total_exclusive) || 0;
-                            if (!(grossUnit > 0) || !(qty > 0)) return 0;
-                            const base = grossUnit * qty;
-                            if (!(base > 0)) return 0;
-                            const disc = 100 * (1 - (netExclusive / base));
-                            if (!isFinite(disc)) return 0;
-                            return Math.max(0, Math.min(100, disc));
-                        })(),
+                        discount_percent: supplierInvoiceLineDiscountPercent(i),
                         total: i.line_total_inclusive,
                         batches: batches
                     };
@@ -2460,8 +2449,10 @@ function initializeTransactionItemsTableForInvoice() {
             item_sku: item.item_sku,
             unit_name: item.unit_name,
             quantity: item.quantity,
+            bonus_quantity: item.bonus_quantity || 0,
             unit_price: item.unit_price,
             tax_percent: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0,
+            discount_percent: item.discount_percent || 0,
             total: item.total,
             batches: item.batches || [],
             is_empty: false
@@ -2498,8 +2489,10 @@ function initializeTransactionItemsTableForInvoice() {
                     item_code: disp.item_code,
                     unit_name: i.unit_name,
                     quantity: parseFloat(i.quantity) || 0,
+                    bonus_quantity: supplierInvoiceLineBonusQuantity(i),
                     unit_price,
                     tax_percent: parseFloat(i.vat_rate) || 0,
+                    discount_percent: supplierInvoiceLineDiscountPercent(i),
                     total: parseFloat(i.line_total_inclusive) || 0,
                     batches
                 };
@@ -2516,6 +2509,7 @@ function initializeTransactionItemsTableForInvoice() {
                 item_code: item.item_code || item.item_sku,
                 unit_name: item.unit_name,
                 quantity: item.quantity,
+                bonus_quantity: item.bonus_quantity || 0,
                 unit_price: item.unit_price,
                 discount_percent: item.discount_percent || 0,
                 total: item.total,
@@ -2556,8 +2550,10 @@ function initializeTransactionItemsTableForInvoice() {
                         item_code: disp.item_code,
                         unit_name: i.unit_name,
                         quantity: parseFloat(i.quantity) || 0,
+                        bonus_quantity: supplierInvoiceLineBonusQuantity(i),
                         unit_price,
                         tax_percent: parseFloat(i.vat_rate) || 0,
+                        discount_percent: supplierInvoiceLineDiscountPercent(i),
                         total: parseFloat(i.line_total_inclusive) || 0,
                         batches
                     };
@@ -3164,6 +3160,7 @@ async function savePurchaseDocument(event, documentType) {
                         item_id: item.item_id,
                         unit_name: item.unit_name,
                         quantity: item.quantity,
+                        bonus_quantity: Math.max(0, parseFloat(item.bonus_quantity) || 0),
                         unit_cost_exclusive: item.unit_price, // Supplier invoice uses exclusive cost
                         discount_percent: item.discount_percent || 0,
                         vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
@@ -3353,8 +3350,114 @@ async function savePurchaseDocument(event, documentType) {
     }
 }
 
+function recalcSupplierReturnModalTotal() {
+    let total = 0;
+    document.querySelectorAll('.supplier-return-edit-qty').forEach(function (input) {
+        const qty = Math.max(0, parseFloat(input.value) || 0);
+        const unitCost = parseFloat(input.dataset.unitCost || '0') || 0;
+        const lineTotal = qty * unitCost;
+        total += lineTotal;
+        const row = input.closest('tr');
+        const cell = row ? row.querySelector('.supplier-return-line-total') : null;
+        if (cell) cell.textContent = formatCurrency(lineTotal);
+    });
+    const totalEl = document.getElementById('supplierReturnModalTotal');
+    if (totalEl) totalEl.textContent = formatCurrency(total);
+}
+
+async function saveSupplierReturnFromModal(returnId) {
+    if (!returnId || !API.suppliers || typeof API.suppliers.updateReturn !== 'function') return;
+    const lines = [];
+    document.querySelectorAll('.supplier-return-edit-qty').forEach(function (input) {
+        const qty = Math.max(0, parseFloat(input.value) || 0);
+        if (qty <= 0) return;
+        const unitCost = parseFloat(input.dataset.unitCost || '0') || 0;
+        lines.push({
+            item_id: input.dataset.itemId,
+            batch_number: input.dataset.batch || null,
+            expiry_date: input.dataset.expiry ? String(input.dataset.expiry).substring(0, 10) : null,
+            quantity: qty,
+            unit_cost: unitCost,
+            line_total: qty * unitCost,
+            source_purchase_invoice_item_id: input.dataset.sourcePurchaseInvoiceItemId || null
+        });
+    });
+    if (!lines.length) {
+        showToast('Keep at least one return line, or close and recreate the credit note.', 'warning');
+        return;
+    }
+    try {
+        await API.suppliers.updateReturn(returnId, {
+            return_date: document.getElementById('supplierReturnModalDate')?.value || null,
+            reason: document.getElementById('supplierReturnModalReason')?.value || null,
+            lines
+        });
+        showToast('Credit note updated', 'success');
+        if (typeof closeModal === 'function') closeModal();
+        if (typeof fetchAndRenderCreditNotesData === 'function') await fetchAndRenderCreditNotesData();
+    } catch (e) {
+        showToast(e.message || 'Failed to update credit note', 'error');
+    }
+}
+
 // View document
 async function viewPurchaseDocument(docId, docType) {
+    if (docType === 'credit-note') {
+        const doc = (purchaseDocuments || []).find(function (d) { return String(d.id) === String(docId); });
+        if (!doc) {
+            showToast('Credit note not found in the current list. Refresh and try again.', 'warning');
+            return;
+        }
+        const escLocal = function (s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        };
+        const pending = String(doc.status || '').toLowerCase() === 'pending' || String(doc.posting_status || '').toLowerCase() !== 'posted';
+        const linesHtml = (doc.lines || []).map(function (line) {
+            const name = line.item_name || line.item_id || 'Item';
+            const unitCost = Number(line.unit_cost || 0);
+            const quantity = Number(line.quantity || 0);
+            const lineTotal = Number(line.line_total || (quantity * unitCost));
+            return `<tr>
+                <td style="padding:0.5rem;border-bottom:1px solid var(--border-color);">
+                    <div style="font-weight:600;">${escLocal(name)}</div>
+                    ${line.item_id ? `<div style="font-size:0.78rem;color:var(--text-secondary);">${escLocal(line.item_id)}</div>` : ''}
+                </td>
+                <td style="padding:0.5rem;border-bottom:1px solid var(--border-color);text-align:right;">
+                    ${pending ? `<input class="form-input supplier-return-edit-qty" type="number" min="0" step="0.0001" value="${quantity}" style="width:90px;text-align:right;" data-item-id="${escLocal(line.item_id)}" data-unit-cost="${unitCost}" data-batch="${escLocal(line.batch_number || '')}" data-expiry="${escLocal(line.expiry_date || '')}" data-source-purchase-invoice-item-id="${escLocal(line.source_purchase_invoice_item_id || '')}" oninput="if(window.recalcSupplierReturnModalTotal) window.recalcSupplierReturnModalTotal()">` : quantity.toFixed(4)}
+                </td>
+                <td style="padding:0.5rem;border-bottom:1px solid var(--border-color);">${escLocal(line.batch_number || '')}</td>
+                <td class="supplier-return-line-total" style="padding:0.5rem;border-bottom:1px solid var(--border-color);text-align:right;">${formatCurrency(lineTotal)}</td>
+                ${pending ? '<td style="padding:0.5rem;border-bottom:1px solid var(--border-color);text-align:right;"><button class="btn btn-outline btn-sm" onclick="var r=this.parentNode.parentNode; r.parentNode.removeChild(r); if(window.recalcSupplierReturnModalTotal) window.recalcSupplierReturnModalTotal();"><i class="fas fa-trash"></i></button></td>' : ''}
+            </tr>`;
+        }).join('');
+        const content = `
+            <div style="max-width:720px;max-height:70vh;overflow:auto;">
+                <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.75rem;margin-bottom:1rem;">
+                    <div><strong>Credit Note #:</strong> ${escLocal(doc.credit_note_number || '')}</div>
+                    <div><strong>Date:</strong> ${pending ? `<input class="form-input" type="date" id="supplierReturnModalDate" value="${escLocal(doc.date || '')}">` : formatDate(doc.date || doc.created_at)}</div>
+                    <div><strong>Supplier:</strong> ${escLocal(doc.supplier_name || '')}</div>
+                    <div><strong>Status:</strong> ${escLocal(doc.status || '')}</div>
+                    <div><strong>Total:</strong> <span id="supplierReturnModalTotal">${formatCurrency(doc.total_amount || 0)}</span></div>
+                    <div><strong>Posting:</strong> ${escLocal(doc.posting_status || '')}</div>
+                </div>
+                <div style="margin-bottom:1rem;"><strong>Reason:</strong><br>${pending ? `<textarea class="form-input" id="supplierReturnModalReason" rows="2">${escLocal(doc.reason || '')}</textarea>` : escLocal(doc.reason || '')}</div>
+                <table style="width:100%;border-collapse:collapse;">
+                    <thead><tr style="background:#f8f9fa;"><th style="padding:0.5rem;text-align:left;">Item</th><th style="padding:0.5rem;text-align:right;">Qty</th><th style="padding:0.5rem;text-align:left;">Batch</th><th style="padding:0.5rem;text-align:right;">Total</th>${pending ? '<th style="padding:0.5rem;text-align:right;"></th>' : ''}</tr></thead>
+                    <tbody id="supplierReturnModalLines">${linesHtml || '<tr><td colspan="5" style="padding:1rem;text-align:center;">No lines</td></tr>'}</tbody>
+                </table>
+                <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1rem;">
+                    ${pending ? `<button class="btn btn-secondary" onclick="if(window.saveSupplierReturnFromModal) window.saveSupplierReturnFromModal('${doc.id}')"><i class="fas fa-save"></i> Save changes</button>` : ''}
+                    ${pending ? `<button class="btn btn-primary" onclick="if(window.approveSupplierReturn) window.approveSupplierReturn('${doc.id}')"><i class="fas fa-check"></i> Approve and post</button>` : ''}
+                    <button class="btn btn-secondary" onclick="if(typeof closeModal==='function') closeModal()">Close</button>
+                </div>
+            </div>`;
+        if (typeof showModal === 'function') showModal('Supplier Credit Note', content);
+        return;
+    }
     if (docType === 'invoice') {
         await viewSupplierInvoice(docId);
         return;
@@ -4195,6 +4298,7 @@ async function autoSaveInvoice() {
                     item_id: item.item_id,
                     unit_name: item.unit_name,
                     quantity: item.quantity,
+                    bonus_quantity: Math.max(0, parseFloat(item.bonus_quantity) || 0),
                     unit_cost_exclusive: item.unit_price,
                     discount_percent: item.discount_percent || 0,
                     vat_rate: item.tax_percent != null && item.tax_percent !== '' ? Number(item.tax_percent) : 0
@@ -4925,6 +5029,8 @@ if (typeof window !== 'undefined') {
     window.showNewPaymentModalWithSupplierSelect = showNewPaymentModalWithSupplierSelect;
     window.navigateToRecordPaymentPage = navigateToRecordPaymentPage;
     window.showInvoiceDetailsModal = showInvoiceDetailsModal;
+    window.recalcSupplierReturnModalTotal = recalcSupplierReturnModalTotal;
+    window.saveSupplierReturnFromModal = saveSupplierReturnFromModal;
     window.renderRecordPaymentPage = renderRecordPaymentPage;
     window.fetchSupplierDashboardData = fetchSupplierDashboardData;
     window.fetchSupplierPaymentsData = fetchSupplierPaymentsData;
@@ -5882,6 +5988,13 @@ async function approveSupplierReturn(returnId) {
     try {
         await API.suppliers.approveReturn(returnId);
         showToast('Return approved', 'success');
+        if (typeof closeModal === 'function') closeModal();
+        if (currentPurchaseSubPage === 'credit-notes' && typeof fetchAndRenderCreditNotesData === 'function') {
+            await fetchAndRenderCreditNotesData();
+        }
+        if (window.operationalBacklogBell && typeof window.operationalBacklogBell.refresh === 'function') {
+            window.operationalBacklogBell.refresh(true);
+        }
         if (supplierId) refreshSupplierDetailAfterAction(supplierId);
         else if (document.getElementById('supplierTabContent')) renderSupplierTabContent(supplierId, 'returns');
     } catch (e) {

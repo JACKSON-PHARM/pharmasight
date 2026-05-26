@@ -542,6 +542,8 @@ def create_demo_tenant(
             "refresh_token": refresh_token,
             "tenant_id": str(tenant.id),
             "tenant_subdomain": tenant.subdomain,
+            "company_id": company_id_str,
+            "company_name": org_norm,
             "username": admin_username,
             "user_id": str(admin_user_id),
             "email": email,
@@ -555,4 +557,3 @@ def create_demo_tenant(
 
 
 __all__ = ["create_demo_tenant"]
-

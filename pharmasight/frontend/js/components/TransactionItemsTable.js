@@ -237,6 +237,7 @@
                 item_code: code,
                 unit_name: item.unit_name || item.unit || '',
                 quantity: this.normalizeQuantity(item.quantity),
+                bonus_quantity: parseFloat(item.bonus_quantity) || 0,
                 unit_price: item.unit_price != null && !isNaN(Number(item.unit_price)) ? Number(item.unit_price) : (item.price || (item.unit_price_exclusive != null ? Number(item.unit_price_exclusive) : 0)),
                 purchase_price: costBase, // Cost per base (wholesale) unit (from API unit_cost_base or purchase_price)
                 unit_cost_used: item.unit_cost_used != null ? parseFloat(item.unit_cost_used) : null, // Cost per sale unit when from API (reload)
@@ -362,6 +363,7 @@
         const formatNumber = this.getFormatNumber();
         const escapeHtml = this.getEscapeHtml();
         const isAddRowMode = this.useAddRow;
+        const showBonusColumn = this.mode === 'purchase' && !this.isBranchMode();
         const addItem = this.addRowItem;
         
         const thStyle = 'padding: 0.3rem 0.4rem; text-align: left; font-weight: 600; font-size: 0.75rem;';
@@ -388,9 +390,10 @@
                         <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
                            <th style="${thStyle} width: 38%; min-width: 220px;">ITEM</th>
                            <th style="${thStyle} width: 10%; min-width: 80px;">ITEM CODE</th>
-                            <th style="${thStyleCenter} width: 8%; min-width: 72px;">QTY</th>
+                            <th style="${thStyleCenter} width: 7%; min-width: 62px;">QTY</th>
+                            ${showBonusColumn ? `<th style="${thStyleCenter} width: 6%; min-width: 58px;" title="Free units. Excluded from totals; added to inventory on batch.">BONUS</th>` : ''}
                             <th style="${thStyle} width: 8%; min-width: 64px;">UNIT</th>
-                            <th style="${thStyleRight} width: 10%; min-width: 95px;" title="Price per unit excluding VAT.">PRICE/UNIT (excl. VAT)</th>
+                            <th style="${thStyleRight} width: 9%; min-width: 92px;" title="Price per unit excluding VAT.">PRICE/UNIT (excl. VAT)</th>
                             ${(this.mode === 'sale' || this.mode === 'quotation') ? `<th style="${thStyleRight} width: 7%; min-width: 68px;">MARGIN%</th>` : ''}
                             <th style="${thStyleRight} width: 7%; min-width: 68px;">DISCOUNT%</th>
                             <th style="${thStyleRight} width: 8%; min-width: 88px;">VAT</th>
@@ -437,6 +440,7 @@
                     </td>
                     <td style="padding: 0.2rem 0.35rem;"><input type="text" class="form-input add-row-code" value="${escapeHtml(ar.item_code || ar.item_sku || '')}" readonly style="width: 100%; padding: 0.35rem 0.5rem; font-size: 0.8rem; background: #f8f9fa; border: 1px solid var(--border-color, #dee2e6);" data-row="add"></td>
                     <td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-qty qty-input" value="${ar.quantity || 1}" step="1" min="1" data-row="add" data-field="quantity" style="width: 100%; text-align: center; padding: 0.35rem 0.5rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>
+                    ${showBonusColumn ? `<td style="padding: 0.2rem 0.35rem;"><input type="number" class="form-input add-row-bonus bonus-input" value="${ar.bonus_quantity ? ar.bonus_quantity : ''}" step="1" min="0" data-row="add" data-field="bonus_quantity" placeholder="0" style="width: 100%; text-align: center; padding: 0.35rem 0.45rem; font-size: 0.8rem;" ${!this.canEdit ? 'disabled' : ''}></td>` : ''}
                     <td style="padding: 0.2rem 0.35rem;">${ar.item_id && (ar.available_units && ar.available_units.length) ? (() => {
                         const units = ar.available_units;
                         const opts = units.map(u => `<option value="${escapeHtml(u.unit_name)}" data-multiplier="${u.multiplier_to_base || 1}" ${(ar.unit_name || '') === (u.unit_name || '') ? 'selected' : ''}>${escapeHtml(u.unit_name || '')}</option>`).join('');
@@ -482,6 +486,7 @@
         const formatNumber = this.getFormatNumber();
         const escapeHtml = this.getEscapeHtml();
         const isAddRowMode = this.useAddRow;
+        const showBonusColumn = this.mode === 'purchase' && !this.isBranchMode();
         const thStyle = 'padding: 0.3rem 0.4rem; text-align: left; font-weight: 600; font-size: 0.75rem;';
         const thStyleRight = 'padding: 0.3rem 0.4rem; text-align: right; font-weight: 600; font-size: 0.75rem;';
         const thStyleCenter = 'padding: 0.3rem 0.4rem; text-align: center; font-weight: 600; font-size: 0.75rem;';
@@ -506,9 +511,10 @@
                         <tr style="background: #f8f9fa; border-bottom: 2px solid var(--border-color, #dee2e6);">
                            <th style="${thStyle} width: 38%; min-width: 220px;">ITEM</th>
                            <th style="${thStyle} width: 10%; min-width: 80px;">ITEM CODE</th>
-                            <th style="${thStyleCenter} width: 8%; min-width: 72px;">QTY</th>
+                            <th style="${thStyleCenter} width: 7%; min-width: 62px;">QTY</th>
+                            ${showBonusColumn ? `<th style="${thStyleCenter} width: 6%; min-width: 58px;" title="Free units. Excluded from totals; added to inventory on batch.">BONUS</th>` : ''}
                             <th style="${thStyle} width: 8%; min-width: 64px;">UNIT</th>
-                            <th style="${thStyleRight} width: 10%; min-width: 95px;" title="Price per unit excluding VAT.">PRICE/UNIT (excl. VAT)</th>
+                            <th style="${thStyleRight} width: 9%; min-width: 92px;" title="Price per unit excluding VAT.">PRICE/UNIT (excl. VAT)</th>
                             ${(this.mode === 'sale' || this.mode === 'quotation') ? `<th style="${thStyleRight} width: 7%; min-width: 68px;">MARGIN%</th>` : ''}
                             <th style="${thStyleRight} width: 7%; min-width: 68px;">DISCOUNT%</th>
                             <th style="${thStyleRight} width: 8%; min-width: 88px;">VAT</th>
@@ -550,6 +556,7 @@
                                ${!this.canEdit ? 'disabled' : ''}>
                     </td>`;
             const qtyVal = (item.quantity != null && !isNaN(Number(item.quantity)) ? Number(item.quantity) : 1);
+            const bonusVal = Math.max(0, item.bonus_quantity != null && !isNaN(Number(item.bonus_quantity)) ? Number(item.bonus_quantity) : 0);
             const priceVal = (item.unit_price != null && !isNaN(Number(item.unit_price)) ? this.roundMoney(Number(item.unit_price)) : 0).toFixed(2);
             const totalVal = (item.total != null && !isNaN(Number(item.total)) ? this.roundMoney(Number(item.total)) : 0).toFixed(2);
             const marginNum = (item.margin_percent != null ? Number(item.margin_percent) : (this.calculateMargin(item) || 0));
@@ -598,6 +605,7 @@
                             return `<span class="stock-indicator" data-row="${index}" style="font-size: 0.75rem; color: ${color}; display: block;">Available: ${this.getFormatNumber()(stock)}</span>`;
                         })() : ''}
                     </td>
+                    ${showBonusColumn ? `<td style="padding: 0.25rem; text-align: center;"><span class="bonus-display" data-row="${index}">${bonusVal || ''}</span></td>` : ''}
                     <td style="padding: 0.25rem;"><span class="unit-display" data-row="${index}">${escapeHtml(item.unit_name || '')}</span></td>
                     <td style="padding: 0.25rem; text-align: right;"><span class="price-display" data-row="${index}">${priceVal}</span></td>
                     ${(this.mode === 'sale' || this.mode === 'quotation') ? `<td style="padding: 0.25rem; text-align: right;"><span class="margin-display" data-row="${index}" style="font-weight: 500; color: ${marginColor};">${marginVal}</span></td>` : ''}
@@ -630,6 +638,7 @@
                             })() : ''}
                         </div>
                     </td>
+                    ${showBonusColumn ? `<td style="padding: 0.25rem;"><input type="number" class="form-input input-direct bonus-input" value="${bonusVal || ''}" step="1" min="0" placeholder="0" style="width: 100%; text-align: center; padding: 0.5rem; border: 1px solid var(--border-color, #dee2e6);" data-row="${index}" data-field="bonus_quantity" ${!this.canEdit ? 'disabled' : ''}></td>` : ''}
                     <td style="padding: 0.25rem;">
                         ${item.item_id && (item.available_units && item.available_units.length) ? (() => {
                             const units = item.available_units;
@@ -704,7 +713,7 @@
                     <tfoot>
                         ${this.isBranchMode() ? branchFooter : `
                         <tr style="background: #f8f9fa; border-top: 2px solid var(--border-color, #dee2e6); font-weight: 600;">
-                            <td colspan="${(this.mode === 'sale' || this.mode === 'quotation') ? '7' : '6'}" style="padding: 0.75rem; text-align: right;">Net:</td>
+                            <td colspan="${(this.mode === 'sale' || this.mode === 'quotation' || showBonusColumn) ? '7' : '6'}" style="padding: 0.75rem; text-align: right;">Net:</td>
                             <td style="padding: 0.75rem; text-align: right;" id="${this.instanceId}_vat_total">${formatCurrency(summary.vat)}</td>
                             <td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_nett_total">${formatCurrency(summary.nett)}</td>
                             <td style="padding: 0.75rem; text-align: right; font-size: 1.1rem;" id="${this.instanceId}_total">${formatCurrency(summary.total)}</td>
@@ -789,6 +798,7 @@
                     item_code: item.item_code || item.item_sku,
                     unit_name: item.unit_name,
                     quantity: item.quantity,
+                    bonus_quantity: item.bonus_quantity || 0,
                     unit_price: item.unit_price,
                     discount_percent: item.discount_percent,
                     tax_percent: item.tax_percent,
@@ -920,7 +930,7 @@
                 }
                 this.updateAddRowFromDom();
                 // POS: Enter on qty/price/discount → focus search for fast next-item entry
-                if (e.target.classList.contains('add-row-qty') || e.target.classList.contains('add-row-price') || e.target.classList.contains('add-row-discount')) {
+                if (e.target.classList.contains('add-row-qty') || e.target.classList.contains('add-row-bonus') || e.target.classList.contains('add-row-price') || e.target.classList.contains('add-row-discount')) {
                     const searchInput = document.getElementById(this.instanceId + '_item_add');
                     if (searchInput) {
                         searchInput.focus();
@@ -938,14 +948,14 @@
                 }
                 const row = e.target.dataset.row;
                 this.handleItemSearchKeydown(e, row === 'add' ? 'add' : parseInt(row, 10));
-            } else if (!inAddRow && (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || e.target.classList.contains('discount-input') ||
+            } else if (!inAddRow && (e.target.classList.contains('qty-input') || e.target.classList.contains('bonus-input') || e.target.classList.contains('price-input') || e.target.classList.contains('discount-input') ||
                        e.target.classList.contains('margin-input') || e.target.classList.contains('nett-input'))) {
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     const row = e.target.dataset.row;
                     this.handleFieldChange(parseInt(row, 10), e.target.dataset.field, e.target.value);
                     // POS: Enter on qty/price/discount → focus search for fast next-item entry
-                    if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || e.target.classList.contains('discount-input')) {
+                    if (e.target.classList.contains('qty-input') || e.target.classList.contains('bonus-input') || e.target.classList.contains('price-input') || e.target.classList.contains('discount-input')) {
                         const searchInput = document.getElementById(this.instanceId + '_item_add');
                         if (searchInput) {
                             searchInput.focus();
@@ -980,6 +990,7 @@
             }
             const rowNum = parseInt(row, 10);
             if (e.target.classList.contains('qty-input') || 
+                e.target.classList.contains('bonus-input') ||
                 e.target.classList.contains('price-input') || 
                 e.target.classList.contains('discount-input')) {
                 const field = e.target.dataset.field;
@@ -1003,7 +1014,7 @@
         el.addEventListener('input', (e) => {
             const row = e.target.dataset.row;
             if (row === 'add') {
-                if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') ||
+                if (e.target.classList.contains('qty-input') || e.target.classList.contains('bonus-input') || e.target.classList.contains('price-input') ||
                     e.target.classList.contains('discount-input') || e.target.classList.contains('margin-input') ||
                     e.target.classList.contains('total-input') || e.target.classList.contains('nett-input')) {
                     if (this.addRowItem && e.target.classList.contains('price-input')) {
@@ -1016,6 +1027,7 @@
             }
             const rowNum = parseInt(row, 10);
             if (e.target.classList.contains('qty-input') || 
+                e.target.classList.contains('bonus-input') ||
                 e.target.classList.contains('price-input') || 
                 e.target.classList.contains('discount-input')) {
                 const field = e.target.dataset.field;
@@ -1036,7 +1048,7 @@
         
         // Prevent mouse wheel from changing price/total/margin/discount (direct type-in only)
         el.addEventListener('wheel', (e) => {
-            if (e.target.classList.contains('qty-input') || e.target.classList.contains('price-input') || e.target.classList.contains('total-input') ||
+            if (e.target.classList.contains('qty-input') || e.target.classList.contains('bonus-input') || e.target.classList.contains('price-input') || e.target.classList.contains('total-input') ||
                 e.target.classList.contains('margin-input') || e.target.classList.contains('discount-input')) {
                 e.preventDefault();
             }
@@ -1099,6 +1111,7 @@
                     item_code: item.item_code || item.item_sku,
                     unit_name: item.unit_name,
                     quantity: item.quantity,
+                    bonus_quantity: item.bonus_quantity || 0,
                     unit_price: item.unit_price,
                     discount_percent: item.discount_percent,
                     tax_percent: item.tax_percent,
@@ -2086,7 +2099,9 @@
                 this.items[rowIndex][field] = qtyValue;
             }
         } else {
-            this.items[rowIndex][field] = field === 'quantity' ? this.normalizeQuantity(numValue) : numValue;
+            this.items[rowIndex][field] = field === 'quantity'
+                ? this.normalizeQuantity(numValue)
+                : (field === 'bonus_quantity' ? Math.max(0, Math.round(numValue)) : numValue);
         }
         if (field === 'unit_price') {
             this.items[rowIndex][field] = this.roundMoney(this.items[rowIndex][field]);
@@ -2360,6 +2375,7 @@
     TransactionItemsTable.prototype.updateAddRowFromDom = function() {
         if (!this.addRowItem || !this.addRowItem.item_id) return;
         const qtyEl = this.mountEl.querySelector('.add-row-qty');
+        const bonusEl = this.mountEl.querySelector('.add-row-bonus');
         const priceEl = this.mountEl.querySelector('.add-row-price');
         const discountEl = this.mountEl.querySelector('.add-row-discount');
         const marginEl = this.mountEl.querySelector('.add-row-margin');
@@ -2370,6 +2386,10 @@
         let oldMultForDebug = null;
         let newMultForDebug = null;
         if (qtyEl) this.addRowItem.quantity = this.normalizeQuantity(qtyEl.value);
+        if (bonusEl) {
+            const b = parseFloat(bonusEl.value);
+            this.addRowItem.bonus_quantity = isFinite(b) && b > 0 ? Math.round(b) : 0;
+        }
         if (discountEl) this.addRowItem.discount_percent = this.roundMoney(parseFloat(discountEl.value) || 0);
         if (unitSelect && unitSelect.tagName === 'SELECT') {
             const opt = unitSelect.options[unitSelect.selectedIndex];
@@ -2452,6 +2472,7 @@
             item_code: this.addRowItem.item_code || this.addRowItem.item_sku,
             unit_name: this.addRowItem.unit_name || '',
             quantity: this.normalizeQuantity(this.addRowItem.quantity),
+            bonus_quantity: parseFloat(this.addRowItem.bonus_quantity) || 0,
             unit_price: this.addRowItem.unit_price || 0,
             discount_percent: this.addRowItem.discount_percent || 0,
             tax_percent: this.addRowItem.tax_percent || 0,
@@ -2485,6 +2506,7 @@
                 item_code: data.item_code,
                 unit_name: data.unit_name,
                 quantity: data.quantity,
+                bonus_quantity: data.bonus_quantity || 0,
                 unit_price: data.unit_price,
                 discount_percent: data.discount_percent,
                 tax_percent: data.tax_percent,
@@ -2771,6 +2793,7 @@
                             item_code: src.item_code || src.item_sku,
                             unit_name: src.unit_name,
                             quantity: src.quantity,
+                            bonus_quantity: src.bonus_quantity || 0,
                             unit_price: src.unit_price,
                             discount_percent: src.discount_percent,
                             tax_percent: src.tax_percent,
@@ -3107,7 +3130,8 @@
         const field = currentInput.dataset.field;
         
         let nextField = null;
-        if (field === 'quantity') nextField = 'unit_price';
+        if (field === 'quantity') nextField = (this.mode === 'purchase' ? 'bonus_quantity' : 'unit_price');
+        else if (field === 'bonus_quantity') nextField = 'unit_price';
         else if (field === 'unit_price') nextField = 'discount_percent';
         
         if (nextField) {
@@ -3128,6 +3152,7 @@
         if (!section) return false;
         const selectors = [
             '.add-row-qty',
+            (this.mode === 'purchase') ? '.add-row-bonus' : null,
             '.add-row-unit',
             '.add-row-price',
             (this.mode === 'sale' || this.mode === 'quotation') ? '.add-row-margin' : null,

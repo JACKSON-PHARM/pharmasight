@@ -13,7 +13,7 @@ A complete admin authentication system that:
 ## 🔐 Admin Credentials
 
 **Username:** `admin`  
-**Password:** `33742377.jack`
+**Password:** `<set via secure admin recovery>`
 
 **Also works with:**
 - `admin@pharmasight.com`
@@ -28,7 +28,7 @@ A complete admin authentication system that:
 1. **User goes to login page:** `http://localhost:3000/#login`
 
 2. **Enters credentials:**
-   - Admin: `admin` / `33742377.jack`
+   - Admin: `admin` / `<set via secure admin recovery>`
    - Regular: `user@example.com` / `password`
 
 3. **System automatically:**
@@ -59,7 +59,7 @@ A complete admin authentication system that:
 ### Admin User:
 ```
 1. Opens login page
-2. Types "admin" / "33742377.jack"
+2. Types "admin" / "<set via secure admin recovery>"
 3. Clicks "Sign In"
 4. Automatically redirected to Admin Panel
 5. Sees Tenant Management dashboard
@@ -96,7 +96,7 @@ A complete admin authentication system that:
 1. Start server: python start.py
 2. Open: http://localhost:3000/#login
 3. Email: admin
-4. Password: 33742377.jack
+4. Password: <set via secure admin recovery>
 5. Should redirect to: http://localhost:3000/admin.html
 ```
 
@@ -117,7 +117,7 @@ A complete admin authentication system that:
 
 Add to Render dashboard:
 ```
-ADMIN_PASSWORD=33742377.jack
+ADMIN_PASSWORD=<set via secure admin recovery>
 ```
 
 **That's it!** Same code works everywhere.
@@ -132,4 +132,4 @@ ADMIN_PASSWORD=33742377.jack
 - No manual URL typing needed
 - Works on Render with environment variables
 
-**Ready to use!** Just login with `admin` / `33742377.jack` and you'll see the tenant management dashboard automatically! 🚀
+**Ready to use!** Just login with `admin` / `<set via secure admin recovery>` and you'll see the tenant management dashboard automatically! 🚀

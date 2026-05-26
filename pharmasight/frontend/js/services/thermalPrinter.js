@@ -163,6 +163,8 @@
         add(CMD_LEFT);
 
         const maxChars = getMaxLineChars();
+        const documentTitle = data.documentTitle || 'TAX INVOICE';
+        const nonFiscalWarning = data.nonFiscalWarning || '';
 
         // Header — TAX INVOICE letterhead (center each line; some printers need alignment per line)
         add(CMD_CENTER);
@@ -186,8 +188,13 @@
         add(CMD_CENTER);
         add('-'.repeat(Math.min(maxChars, 32)));
         add(CMD_BOLD_ON);
-        addCenter('TAX INVOICE');
+        addCenter(documentTitle);
         add(CMD_BOLD_OFF);
+        if (nonFiscalWarning) {
+            add(CMD_BOLD_ON);
+            addCenter(nonFiscalWarning);
+            add(CMD_BOLD_OFF);
+        }
         add('');
         add(CMD_LEFT);
         add(truncate(`Invoice No: ${fmt(data.invoiceNo)}`, maxChars));
@@ -249,7 +256,7 @@
         if (data.servedBy) add(truncate(`Served by: ${fmt(data.servedBy)}`, maxChars));
         add(truncate(`Generated: ${fmt(data.generatedTime)}`, maxChars));
 
-        const hasKra = !!(data.companyPin || data.kraReceiptNumber || data.kraSignature || data.kraQrCode);
+        const hasKra = !!(data.kraReceiptNumber || data.kraSignature || data.kraQrCode);
         if (hasKra) {
             add('');
             add(CMD_CENTER);
@@ -257,8 +264,10 @@
             add(centerLine('KRA eTIMS', maxChars));
             add(CMD_BOLD_OFF);
             if (data.companyPin) addCenter(`PIN: ${fmt(data.companyPin)}`);
-            if (data.kraReceiptNumber) addCenter(`CU Invoice No: ${fmt(data.kraReceiptNumber)}`);
+            if (data.kraInvoiceNumber) addCenter(`KRA Invoice No: ${fmt(data.kraInvoiceNumber)}`);
+            if (data.kraReceiptNumber) addCenter(`KRA Receipt No: ${fmt(data.kraReceiptNumber)}`);
             if (data.cuDeviceSerial) addCenter(`Control Unit Serial No: ${fmt(data.cuDeviceSerial)}`);
+            if (data.tisName) addCenter(`TIS: ${fmt(data.tisName)}`);
             add(CMD_LEFT);
         }
         add('');
@@ -286,7 +295,7 @@
         const rawData = buildEscPosReceipt(data);
         const payload = rawData.slice();
         const maxChars = getMaxLineChars();
-        const hasKraFiscal = !!(data.companyPin || data.kraReceiptNumber || data.kraSignature || data.kraQrCode);
+        const hasKraFiscal = !!(data.kraReceiptNumber || data.kraSignature || data.kraQrCode);
 
         if (data.kraSignature) {
             let preQr = CMD_CENTER + LF;
@@ -301,12 +310,12 @@
         }
 
         if (data.kraQrCode) {
-            const qrDataUrl = await buildQrImageData(data.kraQrCode, 240).catch(() => null);
+            const qrDataUrl = await buildQrImageData(data.kraQrCode, 112).catch(() => null);
             if (qrDataUrl) {
                 payload.push({
                     type: 'image',
                     data: qrDataUrl,
-                    options: { language: 'escp', dotDensity: 'double' },
+                    options: { language: 'escp', dotDensity: 'single' },
                 });
             }
         }

@@ -12,7 +12,7 @@ When you log in, the system automatically detects if you're an admin and redirec
 ## 🔐 Admin Credentials
 
 **Username/Email:** `admin`  
-**Password:** `33742377.jack`
+**Password:** `<set via secure admin recovery>`
 
 **Alternative:** You can also use:
 - Email: `admin@pharmasight.com`
@@ -29,7 +29,7 @@ Open: `http://localhost:3000/#login`
 ### Step 2: Enter Admin Credentials
 
 - **Email:** `admin`
-- **Password:** `33742377.jack`
+- **Password:** `<set via secure admin recovery>`
 
 ### Step 3: Click "Sign In"
 
@@ -68,7 +68,7 @@ Open: `http://localhost:3000/#login`
 ### Admin Login Flow:
 
 ```
-User enters "admin" / "33742377.jack"
+User enters "admin" / "<set via secure admin recovery>"
     ↓
 Login.js detects admin email
     ↓
@@ -106,10 +106,10 @@ Main app loads
 ## 🛡️ Security
 
 ### Development:
-- Admin password: `33742377.jack` (hardcoded for now)
+- Admin password: `<set via secure admin recovery>` (hardcoded for now)
 
 ### Production (Render):
-- Set environment variable: `ADMIN_PASSWORD=33742377.jack`
+- Set environment variable: `ADMIN_PASSWORD=<set via secure admin recovery>`
 - Password stored securely, not in code
 - Can be changed without code changes
 
@@ -140,7 +140,7 @@ Main app loads
 ### Test Admin Login:
 1. Go to: `http://localhost:3000/#login`
 2. Email: `admin`
-3. Password: `33742377.jack`
+3. Password: `<set via secure admin recovery>`
 4. Should see: Tenant Management dashboard
 
 ### Test Regular Login:
@@ -157,7 +157,7 @@ Main app loads
 
 In Render dashboard, add:
 ```
-ADMIN_PASSWORD=33742377.jack
+ADMIN_PASSWORD=<set via secure admin recovery>
 ```
 
 **Why:**
@@ -171,7 +171,7 @@ ADMIN_PASSWORD=33742377.jack
 
 **Admin Login:**
 - Email: `admin`
-- Password: `33742377.jack`
+- Password: `<set via secure admin recovery>`
 - → Auto-redirects to Admin Panel
 
 **Regular Login:**
@@ -185,4 +185,4 @@ ADMIN_PASSWORD=33742377.jack
 
 ---
 
-**Ready to test?** Login with `admin` / `33742377.jack` and you'll automatically see the admin panel! 🚀
+**Ready to test?** Login with `admin` / `<set via secure admin recovery>` and you'll automatically see the admin panel! 🚀

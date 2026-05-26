@@ -26,6 +26,7 @@ class BatchDistribution(BaseModel):
     expiry_date: Optional[date] = Field(None, description="Expiry date (required if item requires expiry tracking)")
     quantity: Decimal = Field(..., gt=0, description="Quantity in purchase unit for this batch")
     unit_cost: Decimal = Field(..., ge=0, description="Cost per purchase unit for this batch")
+    bonus_quantity: Decimal = Field(default=0, ge=0, description="Free/bonus quantity in the same purchase unit for this batch")
 
 
 class GRNItemBase(BaseModel):
@@ -89,20 +90,23 @@ class SupplierInvoiceItemBase(BaseModel):
     item_id: UUID
     unit_name: str = Field(default="", description="Purchase unit (e.g. packet). Defaults to item wholesale unit when empty.")
     quantity: Decimal = Field(..., gt=0)
+    bonus_quantity: Decimal = Field(default=0, ge=0, description="Free/bonus quantity in the same purchase unit. Does not affect payable totals.")
     unit_cost_exclusive: Decimal = Field(..., ge=0)
     vat_rate: Decimal = Field(default=16.00, ge=0, le=100)
+    discount_percent: Decimal = Field(default=0, ge=0, le=100)
     # Batch distribution support (same as GRN)
     batches: Optional[List[BatchDistribution]] = Field(None, description="Batch distribution (multiple batches per item)")
 
 
 class SupplierInvoiceItemCreate(SupplierInvoiceItemBase):
     """Create supplier invoice item"""
-    discount_percent: Decimal = Field(default=0, ge=0, le=100)
+    pass
 
 
 class SupplierInvoiceItemUpdate(BaseModel):
     """Update one supplier invoice line (qty, unit, cost, batch_data)."""
     quantity: Optional[Decimal] = Field(None, gt=0)
+    bonus_quantity: Optional[Decimal] = Field(None, ge=0)
     unit_name: Optional[str] = None
     unit_cost_exclusive: Optional[Decimal] = Field(None, ge=0)
     discount_percent: Optional[Decimal] = Field(None, ge=0, le=100)

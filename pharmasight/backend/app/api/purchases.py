@@ -84,14 +84,29 @@ router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
 def _supplier_invoice_net_unit_cost_base(inv_item: SupplierInvoiceItem, mult: Decimal) -> Decimal:
     """True landed cost per base unit after supplier line discount (matches payable totals)."""
-    qty = inv_item.quantity
-    if qty is None:
-        return Decimal("0")
-    q = Decimal(str(qty))
+    q = _decimal_qty(getattr(inv_item, "quantity", 0)) + _decimal_qty(getattr(inv_item, "bonus_quantity", 0))
     if q <= 0:
         return Decimal("0")
     net_per_purchase_unit = Decimal(str(inv_item.line_total_exclusive or 0)) / q
     return net_per_purchase_unit / mult
+
+
+def _decimal_qty(value: Any) -> Decimal:
+    try:
+        return Decimal(str(value or 0))
+    except Exception:
+        return Decimal("0")
+
+
+def _batch_data_json(batches: Optional[list]) -> Optional[str]:
+    if not batches:
+        return None
+    return json.dumps([{
+        "batch_number": batch.batch_number or "",
+        "expiry_date": batch.expiry_date.isoformat() if batch.expiry_date else None,
+        "quantity": float(batch.quantity),
+        "unit_cost": float(batch.unit_cost),
+    } for batch in batches])
 
 
 def _supplier_invoice_gross_unit_cost_base(inv_item: SupplierInvoiceItem, mult: Decimal) -> Decimal:
@@ -815,6 +830,8 @@ def create_supplier_invoice(
         net_unit_cost_exclusive = unit_cost_exclusive * (Decimal("100") - disc_pct) / Decimal("100")
 
         # Calculate line totals (VAT) — normalize vat_rate (e.g. 0.16 -> 16%); use item master VAT if request sent 0
+        batch_data_json = _batch_data_json(item_data.batches)
+        effective_bonus_qty = _decimal_qty(item_data.bonus_quantity)
         line_total_exclusive = net_unit_cost_exclusive * item_data.quantity
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
         if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
@@ -822,23 +839,14 @@ def create_supplier_invoice(
         line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
         line_total_inclusive = line_total_exclusive + line_vat
         
-        # Store batch data as JSON for later batching
-        batch_data_json = None
-        if item_data.batches and len(item_data.batches) > 0:
-            import json
-            batch_data_json = json.dumps([{
-                "batch_number": batch.batch_number or "",
-                "expiry_date": batch.expiry_date.isoformat() if batch.expiry_date else None,
-                "quantity": float(batch.quantity),
-                "unit_cost": float(batch.unit_cost)
-            } for batch in item_data.batches])
-        
         invoice_item = SupplierInvoiceItem(
             purchase_invoice_id=None,  # Will be set after invoice creation (keep column name for backward compatibility)
             item_id=item_data.item_id,
             unit_name=item_data.unit_name,
             quantity=item_data.quantity,
+            bonus_quantity=effective_bonus_qty,
             unit_cost_exclusive=unit_cost_exclusive,
+            discount_percent=disc_pct,
             vat_rate=vat_rate_pct,
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
@@ -1176,26 +1184,22 @@ def _supplier_invoice_item_to_totals(db, invoice_id: UUID, item_data: SupplierIn
     disc_pct = max(Decimal("0"), min(Decimal("100"), disc_pct))
     net_unit_cost_exclusive = item_data.unit_cost_exclusive * (Decimal("100") - disc_pct) / Decimal("100")
 
+    batch_data_json = _batch_data_json(item_data.batches)
+    effective_bonus_qty = _decimal_qty(item_data.bonus_quantity)
     line_total_exclusive = net_unit_cost_exclusive * item_data.quantity
     vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
     if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item.vat_rate)))
     line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
     line_total_inclusive = line_total_exclusive + line_vat
-    batch_data_json = None
-    if item_data.batches and len(item_data.batches) > 0:
-        batch_data_json = json.dumps([{
-            "batch_number": b.batch_number or "",
-            "expiry_date": b.expiry_date.isoformat() if b.expiry_date else None,
-            "quantity": float(b.quantity),
-            "unit_cost": float(b.unit_cost)
-        } for b in item_data.batches])
     invoice_item = SupplierInvoiceItem(
         purchase_invoice_id=invoice_id,
         item_id=item_data.item_id,
         unit_name=effective_unit_name,
         quantity=item_data.quantity,
+        bonus_quantity=effective_bonus_qty,
         unit_cost_exclusive=item_data.unit_cost_exclusive,
+        discount_percent=disc_pct,
         vat_rate=vat_rate_pct,
         vat_amount=line_vat,
         line_total_exclusive=line_total_exclusive,
@@ -1367,6 +1371,8 @@ def update_supplier_invoice_item(
 
     if payload.quantity is not None:
         line.quantity = payload.quantity
+    if payload.bonus_quantity is not None:
+        line.bonus_quantity = payload.bonus_quantity
     if payload.unit_name is not None:
         line.unit_name = payload.unit_name
     if payload.unit_cost_exclusive is not None:
@@ -1409,6 +1415,7 @@ def update_supplier_invoice_item(
         line.batch_data = payload.batch_data if str(payload.batch_data).strip() else None
     elif payload.batches is not None and len(payload.batches) > 0:
         if getattr(item, "track_expiry", False):
+            stock_validation_config = get_stock_validation_config(db, invoice.company_id)
             _require_batch_and_expiry_for_track_expiry_item(
                 item.name or str(item_id),
                 payload.batches,
@@ -1416,22 +1423,17 @@ def update_supplier_invoice_item(
                 require_batch=bool(getattr(stock_validation_config, "require_batch_tracking", True)),
                 require_expiry=bool(getattr(stock_validation_config, "require_expiry_tracking", True)),
             )
-            stock_validation_config = get_stock_validation_config(db, invoice.company_id)
             _validate_batches_central(
                 item.name or str(item_id), item, payload.batches,
                 stock_validation_config, override=False, from_dict=False,
             )
-        line.batch_data = json.dumps([{
-            "batch_number": b.batch_number or "",
-            "expiry_date": b.expiry_date.isoformat() if getattr(b, "expiry_date", None) else None,
-            "quantity": float(b.quantity),
-            "unit_cost": float(b.unit_cost)
-        } for b in payload.batches])
+        line.batch_data = _batch_data_json(payload.batches)
 
     net_unit_cost_exclusive = (line.unit_cost_exclusive or Decimal("0")) * (Decimal("100") - disc_pct) / Decimal("100")
     line_total_exclusive = net_unit_cost_exclusive * (line.quantity or Decimal("0"))
     line_vat = line_total_exclusive * (line.vat_rate or Decimal("0")) / Decimal("100")
     line.line_total_exclusive = line_total_exclusive
+    line.discount_percent = disc_pct
     line.vat_amount = line_vat
     line.line_total_inclusive = line_total_exclusive + line_vat
 
@@ -1638,6 +1640,8 @@ def update_supplier_invoice(
         net_unit_cost_exclusive = unit_cost_exclusive * (Decimal("100") - disc_pct) / Decimal("100")
 
         # Calculate line totals (VAT) — normalize vat_rate; use item master VAT if request sent 0
+        batch_data_json = _batch_data_json(item_data.batches)
+        effective_bonus_qty = _decimal_qty(item_data.bonus_quantity)
         line_total_exclusive = net_unit_cost_exclusive * item_data.quantity
         vat_rate_pct = Decimal(str(vat_rate_to_percent(item_data.vat_rate)))
         if vat_rate_pct == 0 and getattr(item, "vat_rate", None) is not None:
@@ -1645,23 +1649,14 @@ def update_supplier_invoice(
         line_vat = line_total_exclusive * vat_rate_pct / Decimal("100")
         line_total_inclusive = line_total_exclusive + line_vat
         
-        # Store batch data as JSON for later batching
-        batch_data_json = None
-        if item_data.batches and len(item_data.batches) > 0:
-            import json
-            batch_data_json = json.dumps([{
-                "batch_number": batch.batch_number or "",
-                "expiry_date": batch.expiry_date.isoformat() if batch.expiry_date else None,
-                "quantity": float(batch.quantity),
-                "unit_cost": float(batch.unit_cost)
-            } for batch in item_data.batches])
-        
         invoice_item = SupplierInvoiceItem(
             purchase_invoice_id=invoice_id,
             item_id=item_data.item_id,
             unit_name=item_data.unit_name,
             quantity=item_data.quantity,
+            bonus_quantity=effective_bonus_qty,
             unit_cost_exclusive=unit_cost_exclusive,
+            discount_percent=disc_pct,
             vat_rate=vat_rate_pct,
             vat_amount=line_vat,
             line_total_exclusive=line_total_exclusive,
@@ -1975,17 +1970,23 @@ def batch_supplier_invoice(
                 from_dict=True,
             )
 
-        mult_dec = Decimal(str(multiplier))
-        qty_base_line = Decimal(
+        received_purchase_qty_line = (
+            _decimal_qty(invoice_item.quantity)
+            + _decimal_qty(getattr(invoice_item, "bonus_quantity", 0))
+        )
+        total_received_base_line = Decimal(
             str(
                 InventoryService.convert_to_base_units(
-                    db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
+                    db,
+                    invoice_item.item_id,
+                    float(received_purchase_qty_line),
+                    invoice_item.unit_name,
                 )
             )
         )
         net_per_base = (
-            (Decimal(str(invoice_item.line_total_exclusive or 0)) / qty_base_line)
-            if qty_base_line > 0
+            (Decimal(str(invoice_item.line_total_exclusive or 0)) / total_received_base_line)
+            if total_received_base_line > 0
             else Decimal("0")
         )
 
@@ -1996,7 +1997,10 @@ def batch_supplier_invoice(
                 # Empty batch list = no distribution; add full quantity as single entry so stock is still added
                 if not batches:
                     quantity_base = InventoryService.convert_to_base_units(
-                        db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
+                        db,
+                        invoice_item.item_id,
+                        float(invoice_item.quantity or 0) + float(getattr(invoice_item, "bonus_quantity", 0) or 0),
+                        invoice_item.unit_name,
                     )
                     qb_dec = Decimal(str(quantity_base))
                     ledger_entry = InventoryLedger(
@@ -2015,6 +2019,7 @@ def batch_supplier_invoice(
                         batch_cost=net_per_base,
                         remaining_quantity=quantity_base,
                         is_batch_tracked=False,
+                        notes="Includes supplier bonus quantity" if (getattr(invoice_item, "bonus_quantity", 0) or 0) else None,
                         created_by=invoice.created_by
                     )
                     ledger_entries.append(ledger_entry)
@@ -2026,6 +2031,7 @@ def batch_supplier_invoice(
                         status_code=400,
                         detail=f"Sum of batch quantities ({total_batch_quantity}) must equal item quantity ({invoice_item.quantity}) for item {item.name}"
                     )
+                bonus_base_remaining = int(float(getattr(invoice_item, "bonus_quantity", 0) or 0) * float(multiplier))
 
                 # Create ledger entries for each batch (uniform landed net cost per base unit for the line)
                 for batch_idx, batch in enumerate(batches):
@@ -2033,7 +2039,11 @@ def batch_supplier_invoice(
                     if batch.get("expiry_date"):
                         expiry_date = datetime.fromisoformat(batch["expiry_date"]).date()
 
-                    quantity_base = int(float(batch["quantity"]) * float(multiplier))
+                    paid_qty = float(batch.get("quantity") or 0)
+                    bonus_base_for_batch = bonus_base_remaining if batch_idx == 0 else 0
+                    if batch_idx == 0:
+                        bonus_base_remaining = 0
+                    quantity_base = int(paid_qty * float(multiplier)) + bonus_base_for_batch
                     qb_dec = Decimal(str(quantity_base))
 
                     ledger_entry = InventoryLedger(
@@ -2053,13 +2063,17 @@ def batch_supplier_invoice(
                         remaining_quantity=quantity_base,
                         is_batch_tracked=bool(batch.get("batch_number")),
                         split_sequence=batch_idx,
+                        notes=f"Includes supplier bonus quantity {float(getattr(invoice_item, 'bonus_quantity', 0) or 0):g} {invoice_item.unit_name}" if bonus_base_for_batch > 0 else None,
                         created_by=invoice.created_by
                     )
                     ledger_entries.append(ledger_entry)
             except json.JSONDecodeError:
                 # If batch_data is invalid JSON, create single entry without batch
                 quantity_base = InventoryService.convert_to_base_units(
-                    db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
+                    db,
+                    invoice_item.item_id,
+                    float(invoice_item.quantity or 0) + float(getattr(invoice_item, "bonus_quantity", 0) or 0),
+                    invoice_item.unit_name,
                 )
                 qb_dec = Decimal(str(quantity_base))
 
@@ -2079,13 +2093,17 @@ def batch_supplier_invoice(
                     batch_cost=net_per_base,
                     remaining_quantity=quantity_base,
                     is_batch_tracked=False,
+                    notes="Includes supplier bonus quantity" if (getattr(invoice_item, "bonus_quantity", 0) or 0) else None,
                     created_by=invoice.created_by
                 )
                 ledger_entries.append(ledger_entry)
         else:
             # No batch data - create single entry
             quantity_base = InventoryService.convert_to_base_units(
-                db, invoice_item.item_id, float(invoice_item.quantity), invoice_item.unit_name
+                db,
+                invoice_item.item_id,
+                float(invoice_item.quantity or 0) + float(getattr(invoice_item, "bonus_quantity", 0) or 0),
+                invoice_item.unit_name,
             )
             qb_dec = Decimal(str(quantity_base))
 
@@ -2105,6 +2123,7 @@ def batch_supplier_invoice(
                 batch_cost=net_per_base,
                 remaining_quantity=quantity_base,
                 is_batch_tracked=False,
+                notes="Includes supplier bonus quantity" if (getattr(invoice_item, "bonus_quantity", 0) or 0) else None,
                 created_by=invoice.created_by
             )
             ledger_entries.append(ledger_entry)
@@ -3168,4 +3187,3 @@ def delete_purchase_order(
     db.commit()
     
     return {"message": "Purchase order deleted successfully", "deleted": True}
-

@@ -197,3 +197,112 @@ class EmailService:
             logger.exception("Failed to send password reset email to %s: %s", to_email, e)
             # Re-raise so caller can log a short message (e.g. for Render logs)
             raise RuntimeError(err_msg) from e
+
+    @staticmethod
+    def send_admin_login_otp(to_email: str, otp: str, expire_minutes: int = 10) -> bool:
+        """Send the platform-admin login OTP."""
+        if not EmailService.is_configured():
+            logger.warning("SMTP not configured; skipping admin login OTP email")
+            return False
+        safe_otp = _escape(otp)
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <body style="font-family:sans-serif;line-height:1.5;color:#333;">
+            <h2>{settings.APP_NAME} admin verification code</h2>
+            <p>Use this code to complete your platform admin sign-in:</p>
+            <p style="font-size:28px;letter-spacing:6px;font-weight:700;background:#f8fafc;border:1px solid #e2e8f0;padding:12px 16px;display:inline-block;">{safe_otp}</p>
+            <p style="color:#666;font-size:14px;">This code expires in {expire_minutes} minutes. If you did not request it, change your admin password immediately.</p>
+        </body>
+        </html>
+        """
+        plain = f"{settings.APP_NAME} admin verification code: {otp}\n\nThis code expires in {expire_minutes} minutes.\n"
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"{settings.APP_NAME} admin verification code"
+        msg["From"] = settings.EMAIL_FROM
+        msg["To"] = to_email
+        msg.attach(MIMEText(plain, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+        try:
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+                server.starttls()
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.sendmail(_envelope_sender(), [to_email], msg.as_string())
+            logger.info("Admin login OTP sent to %s", to_email)
+            return True
+        except Exception as e:
+            logger.exception("Failed to send admin login OTP to %s: %s", to_email, e)
+            return False
+
+    @staticmethod
+    def send_admin_email_change_otp(to_email: str, otp: str, expire_minutes: int = 10) -> bool:
+        """Send the OTP used to verify a new platform-admin email address."""
+        if not EmailService.is_configured():
+            logger.warning("SMTP not configured; skipping admin email-change OTP")
+            return False
+        safe_otp = _escape(otp)
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <body style="font-family:sans-serif;line-height:1.5;color:#333;">
+            <h2>Verify your {settings.APP_NAME} platform admin email</h2>
+            <p>Use this code to confirm this email address for platform admin sign-in and recovery:</p>
+            <p style="font-size:28px;letter-spacing:6px;font-weight:700;background:#f8fafc;border:1px solid #e2e8f0;padding:12px 16px;display:inline-block;">{safe_otp}</p>
+            <p style="color:#666;font-size:14px;">This code expires in {expire_minutes} minutes. If you did not request it, ignore this email.</p>
+        </body>
+        </html>
+        """
+        plain = f"{settings.APP_NAME} platform admin email verification code: {otp}\n\nThis code expires in {expire_minutes} minutes.\n"
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Verify your {settings.APP_NAME} admin email"
+        msg["From"] = settings.EMAIL_FROM
+        msg["To"] = to_email
+        msg.attach(MIMEText(plain, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+        try:
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+                server.starttls()
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.sendmail(_envelope_sender(), [to_email], msg.as_string())
+            logger.info("Admin email-change OTP sent to %s", to_email)
+            return True
+        except Exception as e:
+            logger.exception("Failed to send admin email-change OTP to %s: %s", to_email, e)
+            return False
+
+    @staticmethod
+    def send_admin_password_reset(to_email: str, reset_url: str, expire_minutes: int = 30) -> bool:
+        """Send platform-admin password reset email."""
+        if not EmailService.is_configured():
+            logger.warning("SMTP not configured; skipping admin password reset email")
+            return False
+        safe_url = _escape(reset_url)
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <body style="font-family:sans-serif;line-height:1.5;color:#333;">
+            <h2>Reset your {settings.APP_NAME} platform admin password</h2>
+            <p>Click the secure link below to set a new admin password:</p>
+            <p><a href="{safe_url}" style="background:#14b8a6;color:#0f172a;padding:10px 20px;text-decoration:none;border-radius:8px;display:inline-block;font-weight:600;">Reset admin password</a></p>
+            <p style="word-break:break-all;font-size:12px;color:#666;">Or copy: {safe_url}</p>
+            <p style="color:#666;font-size:14px;">This link expires in {expire_minutes} minutes. If you did not request this, ignore this email.</p>
+        </body>
+        </html>
+        """
+        plain = f"Reset your {settings.APP_NAME} platform admin password: {reset_url}\n\nThis link expires in {expire_minutes} minutes.\n"
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Reset your {settings.APP_NAME} platform admin password"
+        msg["From"] = settings.EMAIL_FROM
+        msg["To"] = to_email
+        msg.attach(MIMEText(plain, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+        try:
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+                server.starttls()
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.sendmail(_envelope_sender(), [to_email], msg.as_string())
+            logger.info("Admin password reset email sent to %s", to_email)
+            return True
+        except Exception as e:
+            logger.exception("Failed to send admin password reset email to %s: %s", to_email, e)
+            return False

@@ -2,7 +2,7 @@
 Wholesale customers API (B2B master data)
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func, or_
 from typing import List
 from uuid import UUID
@@ -16,6 +16,7 @@ from app.utils.customer_access import (
 from app.models import (
     Customer,
     SalesInvoice,
+    SalesInvoiceItem,
     CustomerPayment,
     CustomerLedgerEntry,
     Quotation,
@@ -179,6 +180,73 @@ def list_customer_portal_users(
             "auth_user_id": str(u.auth_user_id) if u.auth_user_id else None,
         }
         for u in rows
+    ]
+
+
+@router.get("/{customer_id}/invoices")
+def list_customer_sales_invoices(
+    customer_id: UUID,
+    request: Request,
+    branch_id: UUID | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Recent posted invoices for refill/repeat-sale selection."""
+    effective = getattr(request.state, "effective_company_id", None)
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if effective is not None and customer.company_id != effective:
+        raise HTTPException(status_code=403, detail="Not allowed for this company")
+    match_filters = [SalesInvoice.customer_id == customer_id]
+    if customer.pin:
+        match_filters.append(SalesInvoice.customer_pin == customer.pin)
+    if customer.phone:
+        match_filters.append(SalesInvoice.customer_phone == customer.phone)
+    if customer.name:
+        match_filters.append(func.lower(SalesInvoice.customer_name) == customer.name.strip().lower())
+
+    q = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+        .filter(
+            or_(*match_filters),
+            SalesInvoice.company_id == customer.company_id,
+            SalesInvoice.status.in_(["BATCHED", "PAID"]),
+        )
+    )
+    if branch_id:
+        q = q.filter(SalesInvoice.branch_id == branch_id)
+    invoices = (
+        q.order_by(SalesInvoice.invoice_date.desc(), SalesInvoice.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": str(inv.id),
+            "invoice_no": inv.invoice_no,
+            "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None,
+            "status": inv.status,
+            "payment_status": inv.payment_status,
+            "payment_mode": inv.payment_mode,
+            "total_inclusive": float(inv.total_inclusive or 0),
+            "balance": float(inv.balance or 0),
+            "item_count": len(inv.items or []),
+            "items": [
+                {
+                    "item_id": str(line.item_id),
+                    "item_name": line.item_name or (line.item.name if line.item else ""),
+                    "unit_name": line.unit_name,
+                    "quantity": float(line.quantity or 0),
+                    "unit_price_exclusive": float(line.unit_price_exclusive or 0),
+                    "line_total_inclusive": float(line.line_total_inclusive or 0),
+                }
+                for line in (inv.items or [])[:8]
+            ],
+        }
+        for inv in invoices
     ]
 
 

@@ -29,7 +29,7 @@
   </header>
   <main>
     <h1>Create your SightOps workspace</h1>
-    <p style="color:var(--muted); max-width:36rem;">Creates your organization and admin user. After you submit, we send an invitation email with a link to finish setup—check your inbox and spam folder.</p>
+    <p style="color:var(--muted); max-width:36rem;">Start your full trial now. Create your organization, check your email for the setup link, and continue onboarding without paying anything upfront.</p>
 
     <form id="signupForm" class="card" style="max-width:420px; margin-top:1.5rem;">
       <div class="form-group">
@@ -75,13 +75,13 @@
         <label for="password">Password (min 8 characters)</label>
         <input id="password" name="password" type="password" required minlength="8" autocomplete="new-password">
       </div>
-      <button type="submit" class="btn btn-primary" id="submitBtn">Create account</button>
+      <button type="submit" class="btn btn-primary" id="submitBtn">Create trial account</button>
       <div id="err" class="error" style="display:none;"></div>
     </form>
 
     <div id="successPanel" class="card" style="display:none; max-width:420px; margin-top:1.5rem;">
-      <h2 style="margin-top:0;">Check your email</h2>
-      <p id="successBody">We sent a setup link to <strong id="successEmail"></strong>. Open it to finish onboarding (branch selection and related steps).</p>
+      <h2 style="margin-top:0;">Account created</h2>
+      <p id="successBody">Your trial workspace is ready. We sent a setup link to <strong id="successEmail"></strong>; open it to finish onboarding and branch setup.</p>
       <p id="successMailWarning" style="display:none; color:var(--muted);">Our mail server is not configured on this environment—the link was still created. Sign in from the app using your username and password, or contact support.</p>
       <p style="margin-bottom:0;"><a class="btn btn-primary" id="openAppBtn" href="#">Open operations app</a></p>
       <p style="margin-top:1rem; margin-bottom:0;"><a href="index.html">Back to home</a></p>

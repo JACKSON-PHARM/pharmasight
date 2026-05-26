@@ -6,7 +6,7 @@ When a user logs in, the system checks if they're an admin:
 
 1. **Admin Login:**
    - Email: `admin` or `admin@pharmasight.com`
-   - Password: `33742377.jack`
+   - Password: `<set via secure admin recovery>`
    - → Redirects to **Admin Panel** (`/admin.html`)
 
 2. **Regular User Login:**
@@ -18,7 +18,7 @@ When a user logs in, the system checks if they're an admin:
 ## 🔐 Admin Credentials
 
 **Username/Email:** `admin` (or `admin@pharmasight.com`)  
-**Password:** `33742377.jack`
+**Password:** `<set via secure admin recovery>`
 
 **Alternative Admin Email:** `pharmasightsolutions@gmail.com` (also works as admin)
 
@@ -31,7 +31,7 @@ When a user logs in, the system checks if they're an admin:
 1. Go to login page: `http://localhost:3000/#login`
 2. Enter:
    - **Email:** `admin`
-   - **Password:** `33742377.jack`
+   - **Password:** `<set via secure admin recovery>`
 3. Click "Sign In"
 4. **Automatically redirected to:** `http://localhost:3000/admin.html`
 
@@ -52,14 +52,14 @@ When a user logs in, the system checks if they're an admin:
 
 ```bash
 ADMIN_EMAIL=admin@pharmasight.com
-ADMIN_PASSWORD=33742377.jack
+ADMIN_PASSWORD=<set via secure admin recovery>
 ```
 
 **In Render Dashboard:**
 1. Go to your service settings
 2. Add environment variables:
    - `ADMIN_EMAIL` = `admin@pharmasight.com`
-   - `ADMIN_PASSWORD` = `33742377.jack`
+   - `ADMIN_PASSWORD` = `<set via secure admin recovery>`
 
 **Why this is secure:**
 - Password stored in environment variable (not in code)
@@ -95,7 +95,7 @@ ADMIN_PASSWORD=33742377.jack
 
 ### Admin Login Flow:
 ```
-1. User enters "admin" / "33742377.jack"
+1. User enters "admin" / "<set via secure admin recovery>"
    ↓
 2. System detects admin login
    ↓
@@ -128,7 +128,7 @@ ADMIN_PASSWORD=33742377.jack
 ### Test Admin Login:
 1. Go to: `http://localhost:3000/#login`
 2. Email: `admin`
-3. Password: `33742377.jack`
+3. Password: `<set via secure admin recovery>`
 4. Should redirect to: `http://localhost:3000/admin.html`
 
 ### Test Regular Login:
@@ -190,7 +190,7 @@ admin_emails = [
 
 **Admin Login:**
 - Email: `admin`
-- Password: `33742377.jack`
+- Password: `<set via secure admin recovery>`
 - → Redirects to Admin Panel
 
 **Regular Login:**
@@ -203,4 +203,4 @@ admin_emails = [
 
 ---
 
-**Ready to test?** Login with `admin` / `33742377.jack` and you'll be redirected to the admin panel! 🚀
+**Ready to test?** Login with `admin` / `<set via secure admin recovery>` and you'll be redirected to the admin panel! 🚀

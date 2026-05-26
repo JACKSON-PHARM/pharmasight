@@ -596,6 +596,15 @@
                 </div>
                 <div id="customerDetailTabProfile">
                 <div class="card" style="padding:1rem;margin-bottom:1rem;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+                        <h3 style="margin:0;">Previous invoices &amp; refills</h3>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="loadCustomerInvoices('${customerId}')">
+                            <i class="fas fa-sync"></i> Refresh
+                        </button>
+                    </div>
+                    <div id="customerInvoicesList">Loading invoices...</div>
+                </div>
+                <div class="card" style="padding:1rem;margin-bottom:1rem;">
                     <h3 style="margin:0 0 0.75rem;">${esc(copy.profileHeading)}</h3>
                     <form id="customerProfileForm" onsubmit="return saveCustomerProfile(event, '${customerId}')">
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
@@ -639,6 +648,7 @@
                 <div id="customerDetailTabStatement" style="display:none;"></div>`;
             window._customerDetailName = c.name;
             loadCustomerActivities(customerId);
+            loadCustomerInvoices(customerId);
             switchCustomerDetailTab(customerId, customerDetailTab[customerId] || 'profile');
             try {
                 const focusId = sessionStorage.getItem('customer_hub_focus_followup');
@@ -684,6 +694,82 @@
             el.innerHTML = '<p class="text-muted">Could not load activities.</p>';
         }
     }
+
+    async function loadCustomerInvoices(customerId) {
+        const el = document.getElementById('customerInvoicesList');
+        if (!el) return;
+        if (!window.API || !API.customers || typeof API.customers.listInvoices !== 'function') {
+            el.innerHTML = '<p class="text-muted">Invoice history is not available.</p>';
+            return;
+        }
+        try {
+            const invoices = await API.customers.listInvoices(customerId, { branch_id: branchId(), limit: 12 });
+            if (!invoices || !invoices.length) {
+                el.innerHTML = '<p class="text-muted">No previous invoices for this customer yet.</p>';
+                return;
+            }
+            el.innerHTML = `
+                <table class="data-table" style="width:100%;font-size:0.86rem;">
+                    <thead><tr><th>Date</th><th>Invoice</th><th>Items</th><th class="text-right">Total</th><th></th></tr></thead>
+                    <tbody>${invoices.map(function (inv) {
+                        const itemNames = (inv.items || []).map(function (i) {
+                            const qty = Number(i.quantity || 0);
+                            return esc((i.item_name || 'Item') + (qty ? ' x' + qty : ''));
+                        }).join(', ');
+                        return `<tr>
+                            <td>${esc(inv.invoice_date || '')}</td>
+                            <td>${esc(inv.invoice_no || '')}</td>
+                            <td title="${esc(itemNames)}">${esc(itemNames || (inv.item_count || 0) + ' item(s)')}</td>
+                            <td class="text-right">${fmtMoney(inv.total_inclusive)}</td>
+                            <td class="text-right">
+                                <button type="button" class="btn btn-primary btn-sm" onclick="cloneCustomerInvoiceToDraft('${esc(inv.id)}')">
+                                    <i class="fas fa-copy"></i> Refill
+                                </button>
+                            </td>
+                        </tr>`;
+                    }).join('')}</tbody>
+                </table>`;
+        } catch (err) {
+            el.innerHTML = '<p style="color:var(--danger-color);">Failed to load invoices: ' + esc(err.message || err) + '</p>';
+        }
+    }
+    window.loadCustomerInvoices = loadCustomerInvoices;
+
+    window.cloneCustomerInvoiceToDraft = async function (invoiceId) {
+        if (!invoiceId || !window.API || !API.sales || typeof API.sales.cloneInvoiceToDraft !== 'function') return;
+        try {
+            if (typeof showToast === 'function') showToast('Creating refill draft...', 'info');
+            const draft = await API.sales.cloneInvoiceToDraft(invoiceId, { branch_id: branchId() });
+            if (draft && draft.document_type === 'quotation') {
+                const msg = draft.message || 'Refill needs review, so a draft quotation was created.';
+                if (typeof showToast === 'function') showToast(msg, 'warning');
+                const openQuotation = function () {
+                    if (window.viewQuotation && draft.quotation_id) {
+                        window.viewQuotation(draft.quotation_id);
+                    } else if (window.switchSalesSubPage) {
+                        window.switchSalesSubPage('quotations');
+                    }
+                };
+                if (typeof loadPage === 'function') {
+                    loadPage('sales');
+                    setTimeout(openQuotation, 250);
+                } else {
+                    openQuotation();
+                }
+                return;
+            }
+            if (window.openSalesInvoiceDraftFromData) {
+                window.openSalesInvoiceDraftFromData(draft, 'Refill draft created. Review stock and batch when ready.');
+            } else if (typeof loadPage === 'function') {
+                try {
+                    sessionStorage.setItem('pendingSalesDraftId', String(draft.id));
+                } catch (_) {}
+                loadPage('sales-create-invoice');
+            }
+        } catch (err) {
+            if (typeof showToast === 'function') showToast(err.message || 'Could not create refill draft', 'error');
+        }
+    };
 
     window.showCreateCustomerModal = function () {
         const cid = companyId();

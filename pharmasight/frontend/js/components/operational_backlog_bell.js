@@ -7,6 +7,7 @@
     var _cache = null;
     var _cacheKey = '';
     var _pollTimer = null;
+    var _inFlight = null;
 
     function businessDateToday() {
         return new Date().toISOString().split('T')[0];
@@ -40,13 +41,17 @@
         if (!cfg.BRANCH_ID || !window.API || !window.API.branchOps) return null;
         var key = cacheKey();
         if (!force && _cache && _cacheKey === key) return _cache;
+        if (_inFlight) return _inFlight;
         try {
-            _cache = await window.API.branchOps.getOperationalBacklog(cfg.BRANCH_ID, businessDateToday());
+            _inFlight = window.API.branchOps.getOperationalBacklog(cfg.BRANCH_ID, businessDateToday());
+            _cache = await _inFlight;
             _cacheKey = key;
             return _cache;
         } catch (e) {
             console.warn('operational backlog fetch failed', e);
             return _cache;
+        } finally {
+            _inFlight = null;
         }
     }
 
@@ -63,8 +68,12 @@
         if (bell) bell.classList.remove('open');
 
         if (type === 'sales_invoice') {
-            window.currentInvoice = { id: id, mode: 'edit', invoiceData: { id: id, status: 'DRAFT' } };
-            if (window.loadPage) window.loadPage('sales-create-invoice');
+            if (window.viewSalesInvoice) {
+                window.viewSalesInvoice(id);
+            } else {
+                window.currentInvoice = { id: id, mode: 'edit', invoiceData: { id: id, status: 'DRAFT' } };
+                if (window.loadPage) window.loadPage('sales-create-invoice');
+            }
             return;
         }
         if (type === 'supplier_invoice') {
@@ -127,6 +136,48 @@
         }
     }
 
+    async function deleteDocument(doc) {
+        if (!doc || !doc.id || !window.API) return;
+        var type = doc.document_type;
+        var id = doc.id;
+        var apiGroup = null;
+        var label = 'document';
+        if (type === 'sales_invoice' && window.API.sales) {
+            apiGroup = window.API.sales;
+            label = 'sales invoice';
+        } else if (type === 'supplier_invoice' && window.API.purchases) {
+            apiGroup = window.API.purchases;
+            label = 'supplier invoice';
+        }
+        if (!apiGroup || typeof apiGroup.deleteInvoice !== 'function') {
+            navigateToDocument(doc);
+            return;
+        }
+        if (!confirm('Delete this draft ' + label + '? This cannot be undone.')) return;
+        try {
+            var full = typeof apiGroup.getInvoice === 'function' ? await apiGroup.getInvoice(id) : null;
+            if (full && String(full.status || '').toUpperCase() !== 'DRAFT') {
+                if (typeof window.showToast === 'function') window.showToast('Only DRAFT documents can be deleted.', 'error');
+                return;
+            }
+            await apiGroup.deleteInvoice(id);
+            if (typeof window.showToast === 'function') window.showToast('Draft ' + label + ' deleted.', 'success');
+            _cache = null;
+            await refresh(true);
+        } catch (e) {
+            console.error('operational backlog delete failed', e);
+            if (typeof window.showToast === 'function') {
+                window.showToast((e && e.message) || 'Failed to delete draft document.', 'error');
+            }
+        }
+    }
+
+    function canDeleteFromBell(doc) {
+        if (!doc) return false;
+        var status = String(doc.status || '').toUpperCase();
+        return status === 'DRAFT' && (doc.document_type === 'sales_invoice' || doc.document_type === 'supplier_invoice');
+    }
+
     function renderListItems(docs, blocking) {
         if (!docs || !docs.length) {
             return '<div class="op-backlog-empty">None</div>';
@@ -135,6 +186,7 @@
             .map(function (doc) {
                 var cls = blocking ? 'op-backlog-item op-backlog-item-blocking' : 'op-backlog-item op-backlog-item-info';
                 return (
+                    '<div class="op-backlog-row">' +
                     '<button type="button" class="' +
                     cls +
                     '" data-doc-type="' +
@@ -152,7 +204,15 @@
                     ' · ' +
                     escapeHtml(doc.status) +
                     '</span>' +
-                    '</button>'
+                    '</button>' +
+                    (canDeleteFromBell(doc)
+                        ? '<button type="button" class="op-backlog-delete" data-doc-type="' +
+                          escapeHtml(doc.document_type) +
+                          '" data-doc-id="' +
+                          escapeHtml(doc.id) +
+                          '" title="Delete draft"><i class="fas fa-trash"></i></button>'
+                        : '') +
+                    '</div>'
                 );
             })
             .join('');
@@ -199,6 +259,17 @@
                     id: btn.getAttribute('data-doc-id'),
                 };
                 navigateToDocument(doc);
+            });
+        });
+        panel.querySelectorAll('.op-backlog-delete').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var doc = {
+                    document_type: btn.getAttribute('data-doc-type'),
+                    id: btn.getAttribute('data-doc-id'),
+                    status: 'DRAFT',
+                };
+                void deleteDocument(doc);
             });
         });
         var refreshBtn = document.getElementById('operationalBacklogRefresh');

@@ -711,6 +711,7 @@ def get_user_permissions(
 
 @router.post("/users", response_model=InvitationResponse, status_code=status.HTTP_201_CREATED)
 def create_user(
+    request: Request,
     user_data: UserCreate,
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
@@ -877,6 +878,28 @@ def create_user(
 
     db.commit()
     db.refresh(new_user)
+    try:
+        from app.services.platform_usage_service import USER_CREATED_EVENT, record_platform_event
+
+        company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
+        record_platform_event(
+            db,
+            event_type=USER_CREATED_EVENT,
+            company_id=company_id,
+            user_id=new_user.id,
+            actor_email=new_user.email,
+            actor_name=new_user.full_name,
+            company_name=company.name if company else None,
+            metadata={
+                "created_by_user_id": str(current_user.id),
+                "role_name": user_data.role_name,
+                "source": "invite_user",
+            },
+            request=request,
+            send_email=True,
+        )
+    except Exception:
+        logger.debug("Platform user-created telemetry skipped", exc_info=True)
     
     # Send invitation email via Supabase Auth
     email_sent = False
@@ -1031,6 +1054,28 @@ def admin_create_user(
         )
     db.commit()
     db.refresh(new_user)
+    try:
+        from app.services.platform_usage_service import USER_CREATED_EVENT, record_platform_event
+
+        company = db.query(Company).filter(Company.id == company_id).first() if company_id else None
+        record_platform_event(
+            db,
+            event_type=USER_CREATED_EVENT,
+            company_id=company_id,
+            user_id=new_user.id,
+            actor_email=new_user.email,
+            actor_name=new_user.full_name,
+            company_name=company.name if company else None,
+            metadata={
+                "created_by_user_id": str(current_user.id),
+                "role_name": body.role_name,
+                "source": "admin_create_user",
+            },
+            request=request,
+            send_email=True,
+        )
+    except Exception:
+        logger.debug("Platform user-created telemetry skipped", exc_info=True)
     # Minimal audit log (no event bus or framework); tenant_id optional for single-DB
     try:
         request_ip = request.client.host if request.client else None

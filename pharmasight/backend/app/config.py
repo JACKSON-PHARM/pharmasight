@@ -219,6 +219,11 @@ class Settings(BaseSettings):
     # Refresh token lifetime
     REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "14"))
     RESET_TOKEN_EXPIRE_MINUTES: int = 60
+    PLATFORM_ADMIN_EMAIL: str = os.getenv("PLATFORM_ADMIN_EMAIL", "sightopserp@gmail.com").strip().lower()
+    PLATFORM_ADMIN_INITIAL_PASSWORD: str = os.getenv("PLATFORM_ADMIN_INITIAL_PASSWORD", "").strip()
+    ADMIN_OTP_EXPIRE_MINUTES: int = int(os.getenv("ADMIN_OTP_EXPIRE_MINUTES", "10"))
+    ADMIN_RESET_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ADMIN_RESET_TOKEN_EXPIRE_MINUTES", "30"))
+    ADMIN_SESSION_TTL_SECONDS: int = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", "7200"))
 
     # KRA eTIMS OSCU (OAuth: prefer ETIMS_APP_* from developer.go.ke; never store these in DB or expose to frontend)
     # Sandbox OSCU API root (Postman: https://sbx.kra.go.ke/etims-oscu/api/v1)
@@ -300,4 +305,3 @@ def is_supabase_owner_email(email: str) -> bool:
     if not owner:
         return False
     return (email or "").strip().lower() == owner
-

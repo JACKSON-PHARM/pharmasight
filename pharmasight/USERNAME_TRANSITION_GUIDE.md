@@ -47,7 +47,7 @@ python run_migration.py ../database/generate_usernames_for_existing_users.sql
 
 Admin login works with:
 - **Username:** `admin`
-- **Password:** `33742377.jack` (or from `ADMIN_PASSWORD` env var)
+- **Password:** `<set via secure admin recovery>` (or from `ADMIN_PASSWORD` env var)
 
 When admin logs in, they are redirected to `/admin.html` (tenant management panel).
 
@@ -86,7 +86,7 @@ python generate_usernames_for_existing_users.py
 ### Step 2: Test Login
 1. Try logging in with **username** (e.g., "D-JACKSON")
 2. If username not generated yet, try **email** (should work as fallback)
-3. Admin login: username "admin", password "33742377.jack"
+3. Admin login: username "admin", password "<set via secure admin recovery>"
 
 ### Step 3: Verify
 - Check that users can log in with their new usernames
@@ -110,7 +110,7 @@ python generate_usernames_for_existing_users.py
 
 ### Issue: Admin login not working
 **Solution:**
-- Verify admin credentials: username="admin", password="33742377.jack"
+- Verify admin credentials: username="admin", password="<set via secure admin recovery>"
 - Check that `ADMIN_PASSWORD` env var matches (if set)
 - Ensure admin_auth_router is included in main.py
 

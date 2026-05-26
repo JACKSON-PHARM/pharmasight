@@ -98,6 +98,7 @@
                 '        <button type="button" class="ps-chat-chip" data-q="What is Retail Solo vs Retail Pro?">Solo vs Pro</button>',
                 '        <button type="button" class="ps-chat-chip" data-q="What does SightOps do?">What does it do?</button>',
                 '        <button type="button" class="ps-chat-chip" data-q="How do I get started?">Get started</button>',
+                '        <button type="button" class="ps-chat-chip" data-q="How do you protect my data privacy?">Data privacy</button>',
                 '      </div>',
                 '    </div>',
                 '    <form class="ps-chat-input" id="psChatForm">',
@@ -286,6 +287,25 @@
         ) {
             return (
                 '<p>Yes — track batches and see items nearing expiry so you can act before losses.</p>' +
+                ctaLinksHtml()
+            );
+        }
+
+        if (
+            q.indexOf('privacy') >= 0 ||
+            q.indexOf('confidential') >= 0 ||
+            q.indexOf('spy') >= 0 ||
+            q.indexOf('spying') >= 0 ||
+            q.indexOf('supabase') >= 0 ||
+            q.indexOf('leak') >= 0 ||
+            q.indexOf('secure') >= 0 ||
+            q.indexOf('security') >= 0
+        ) {
+            return (
+                '<p>Great question. We uphold confidentiality at all times — SightOps is not built to spy on client data.</p>' +
+                '<p>Your data is handled in a multi-tenant setup with company-level isolation and internal authentication/authorization controls, so one client cannot browse another client's records.</p>' +
+                '<p>We host data on Supabase-backed infrastructure and apply controlled application access paths rather than open direct access.</p>' +
+                '<p>During onboarding, we can also review user roles and permissions with your team so access is limited to authorized staff only.</p>' +
                 ctaLinksHtml()
             );
         }

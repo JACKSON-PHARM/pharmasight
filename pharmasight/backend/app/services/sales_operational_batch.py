@@ -19,6 +19,7 @@ from app.models import SalesInvoice, SalesInvoiceItem
 from app.services.inventory_service import InventoryService
 from app.services.pricing_config_service import is_line_price_at_promo, validate_line_price
 from app.services.pricing_service import PricingService
+from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.snapshot_service import SnapshotService
 from app.services.item_units_helper import get_unit_multiplier_from_item
 from app.services.sales_batch_common import user_has_sell_below_min_margin
@@ -125,6 +126,21 @@ def commit_operational_sales_batch(
             balance_rows,
             document_number=str(invoice.invoice_no or invoice.id),
         )
+        item_ids = {row[2] for row in balance_rows}
+        for item_id in item_ids:
+            SnapshotService.upsert_search_snapshot_last_sale(
+                db,
+                invoice.company_id,
+                invoice.branch_id,
+                item_id,
+                invoice.invoice_date,
+            )
+            SnapshotRefreshService.refresh_item_sync(
+                db,
+                invoice.company_id,
+                invoice.branch_id,
+                item_id,
+            )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

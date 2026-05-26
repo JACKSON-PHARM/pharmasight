@@ -736,15 +736,17 @@ async function convertQuotationToInvoice(quotationId) {
         showToast('Converting quotation to invoice...', 'info');
         const invoice = await API.quotations.convertToInvoice(quotationId, {
             payment_mode: 'cash',
-            payment_status: 'PAID'
+            payment_status: 'UNPAID'
         });
         showToast(
-            'Quotation converted to invoice successfully. The invoice uses this branch for stock and eTIMS when submission is enabled.',
+            'Quotation converted to an invoice draft. Review it, then batch when ready.',
             'success'
         );
-        // Switch to invoices page and show the new invoice
-        loadSalesSubPage('invoices');
-        // TODO: Optionally highlight the new invoice
+        if (typeof openSalesInvoiceDraftFromData === 'function') {
+            openSalesInvoiceDraftFromData(invoice);
+        } else {
+            loadSalesSubPage('create-invoice');
+        }
     } catch (error) {
         console.error('Error converting quotation:', error);
         const errorMsg = error.response?.data?.detail?.message || error.message || 'Failed to convert quotation';
@@ -1741,6 +1743,30 @@ function mapApiInvoiceLineToDocumentItem(i, prevByItemId) {
     };
 }
 
+function openSalesInvoiceDraftFromData(invoice, message) {
+    if (!invoice || !invoice.id) return;
+    const prevByItemId = {};
+    currentInvoice = {
+        id: invoice.id,
+        mode: 'edit',
+        invoiceData: invoice,
+    };
+    documentItems = (invoice.items || []).map(function (line) {
+        return mapApiInvoiceLineToDocumentItem(line, prevByItemId);
+    });
+    salesInvoiceSyncedItemIds = new Set((invoice.items || []).map(function (line) { return line.item_id; }));
+    lastSalesInvoiceItemsSync = mapInvoiceItemsToSync(invoice.items || []);
+    currentSalesSubPage = 'create-invoice';
+    if (typeof loadPage === 'function') {
+        loadPage('sales-create-invoice');
+    } else {
+        loadSalesSubPage('create-invoice');
+    }
+    if (message && typeof showToast === 'function') {
+        setTimeout(function () { showToast(message, 'success'); }, 150);
+    }
+}
+
 /** Server is authoritative: refresh draft from API before batch or when version drifts. */
 async function reconcileSalesInvoiceWithServer(invoiceId) {
     if (!invoiceId || !API.sales || typeof API.sales.getInvoice !== 'function') return null;
@@ -2190,6 +2216,11 @@ async function onSalesInvoiceItemsChange(validItems) {
 function initializeSalesInvoiceItemsTable() {
     const container = document.getElementById('salesInvoiceItemsContainer');
     if (!container) {
+        setTimeout(initializeSalesInvoiceItemsTable, 100);
+        return;
+    }
+    if (typeof window.TransactionItemsTable !== 'function') {
+        container.innerHTML = '<div class="alert alert-info" style="margin: 0;">Loading item entry table...</div>';
         setTimeout(initializeSalesInvoiceItemsTable, 100);
         return;
     }
@@ -3421,22 +3452,13 @@ async function searchItems(event) {
                 return;
             }
             
-            // Check cache first
-            const cache = window.searchCache || null;
-            let items = null;
-            
-            if (cache) {
-                items = cache.get(query, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 50);
-            }
-            
-            if (!items) {
-                // OPTIMIZED: Don't include pricing for faster search
-                items = await API.items.search(query, CONFIG.COMPANY_ID, 50, CONFIG.BRANCH_ID || null, false);
-                
-                // Cache the results
-                if (cache && items) {
-                    cache.set(query, CONFIG.COMPANY_ID, CONFIG.BRANCH_ID, 50, items);
-                }
+            // Stock reservations are dynamic, so fetch fresh search rows.
+            items = await API.items.search(query, CONFIG.COMPANY_ID, 50, CONFIG.BRANCH_ID || null, false, 'sales');
+            if (Array.isArray(items)) {
+                const byId = {};
+                (allItems || []).forEach(i => { if (i && i.id) byId[String(i.id)] = i; });
+                items.forEach(i => { if (i && i.id) byId[String(i.id)] = i; });
+                allItems = Object.values(byId);
             }
             
             renderItemsList(items);
@@ -3457,21 +3479,27 @@ function renderItemsList(items) {
         return;
     }
     
-    container.innerHTML = items.map(item => `
-        <div class="card" style="margin-bottom: 0.5rem; cursor: pointer;" onclick="addToCart('${item.id}')">
+    container.innerHTML = items.map(item => {
+        const fullyReserved = !!item.is_fully_reserved || item.reservation_status === 'fully_reserved';
+        const physical = Number(item.current_stock || item.base_quantity || 0);
+        const reserveNote = fullyReserved
+            ? `<span style="color:#1d4ed8;font-weight:600;margin-left:0.35rem;">Reserved for supplier return</span>`
+            : '';
+        return `
+        <div class="card" style="margin-bottom: 0.5rem; cursor: ${fullyReserved ? 'not-allowed' : 'pointer'}; ${fullyReserved ? 'border-color:#60a5fa;background:#eff6ff;' : ''}" ${fullyReserved ? '' : `onclick="addToCart('${item.id}')"`}>
             <div class="flex-between">
                 <div>
                     <strong>${item.name}</strong>
                     <p style="margin: 0.25rem 0; color: var(--text-secondary); font-size: 0.875rem;">
-                        ${item.sku || ''} | ${item.retail_unit || item.base_unit || ''} | ${item.category || 'Uncategorized'}
+                        ${item.sku || ''} | ${item.retail_unit || item.base_unit || ''} | Stock: ${physical}${reserveNote}
                     </p>
                 </div>
-                <button class="btn btn-primary">
-                    <i class="fas fa-plus"></i> Add
+                <button class="btn ${fullyReserved ? 'btn-secondary' : 'btn-primary'}" ${fullyReserved ? 'disabled' : ''}>
+                    <i class="fas ${fullyReserved ? 'fa-lock' : 'fa-plus'}"></i> ${fullyReserved ? 'Reserved' : 'Add'}
                 </button>
             </div>
         </div>
-    `).join('');
+    `; }).join('');
 }
 
 async function addToCart(itemId) {
@@ -3493,7 +3521,14 @@ async function addToCart(itemId) {
     try {
         const availability = await API.inventory.getAvailability(itemId, CONFIG.BRANCH_ID);
         
-        if (availability.total_base_units <= 0) {
+        const availableBaseUnits = Number(
+            availability.available_base_units != null ? availability.available_base_units : availability.total_base_units
+        );
+        if (availableBaseUnits <= 0) {
+            if (availability.reservation_status === 'fully_reserved') {
+                showToast('Item is reserved for a pending supplier return', 'warning');
+                return;
+            }
             showToast('Item out of stock', 'warning');
             return;
         }
@@ -4228,6 +4263,18 @@ function salesInvoicePassesKraFiscalPrintGate(invoice) {
     return (invoice.submission_status || '').toLowerCase() === 'submitted';
 }
 
+function salesInvoiceHasKraFiscalData(invoice) {
+    return !!(invoice && (invoice.kra_receipt_number || invoice.kra_qr_code || invoice.kra_signature));
+}
+
+function salesInvoicePrintTitle(invoice) {
+    return (kraFiscalReceiptRequired(invoice) || salesInvoiceHasKraFiscalData(invoice)) ? 'TAX INVOICE' : 'CASH RECEIPT';
+}
+
+function salesInvoiceNonFiscalWarning(invoice) {
+    return salesInvoicePrintTitle(invoice) === 'TAX INVOICE' ? '' : 'THIS IS NOT A TAX INVOICE';
+}
+
 function formatApiErrorForDisplay(err) {
     if (!err) return 'Unknown error';
     if (err.message) return String(err.message);
@@ -4266,7 +4313,7 @@ async function ensureSalesInvoiceKraSignedForFiscalPrint(invoiceId, invoice) {
         }
     }
 
-    if (invoice.kra_receipt_number) return invoice;
+    if (subOk || invoice.kra_receipt_number) return invoice;
     if (typeof API === 'undefined' || !API.sales || typeof API.sales.submitKraNow !== 'function') return invoice;
     try {
         await API.sales.submitKraNow(invoiceId);
@@ -4559,8 +4606,17 @@ function generateInvoicePrintHTML(invoice, printType) {
            .kra-fiscal { text-align: center !important; width: 100%; box-sizing: border-box; }
            .kra-fiscal .kra-fiscal-verify { text-align: center !important; width: 100%; max-width: 72mm; margin-left: auto; margin-right: auto; box-sizing: border-box; }
            .kra-fiscal .kra-sig { text-align: center !important; word-break: break-all; overflow-wrap: anywhere; max-width: 72mm; width: 100%; margin: 1mm auto 0 auto; display: block; box-sizing: border-box; padding: 0 1mm; }
-           .kra-fiscal .kra-qr-wrap { text-align: center !important; width: 100%; margin-top: 2mm; }
-           .kra-fiscal .kra-qr-wrap img { display: block !important; margin-left: auto !important; margin-right: auto !important; }
+           .kra-fiscal .kra-qr-wrap { text-align: center !important; width: 100%; margin-top: 1mm; }
+           .kra-fiscal .kra-qr-wrap img,
+           .kra-fiscal .kra-qr-img {
+               display: block !important;
+               margin-left: auto !important;
+               margin-right: auto !important;
+               width: 16mm !important;
+               max-width: 16mm !important;
+               height: 16mm !important;
+               max-height: 16mm !important;
+           }
            .kra-fiscal .kra-internal-label { font-weight: bold; margin-top: 2mm; text-align: center !important; display: block; width: 100%; }
            .kra-fiscal .kra-epilogue { margin-top: 2mm; font-weight: bold; font-size: 7pt; letter-spacing: 0.02em; text-align: center !important; display: block; width: 100%; }
            .kra-fiscal .kra-thanks { margin-top: 1.5mm; text-align: center !important; display: block; width: 100%; font-weight: 600; }
@@ -4645,9 +4701,14 @@ function generateInvoicePrintHTML(invoice, printType) {
     const logoImg = logoUrlForPrint ? `<img src="${logoUrlForPrint.replace(/"/g, '&quot;')}" alt="Logo" class="print-header-logo" style="width: ${logoW}px; height: ${logoH}px; max-width: ${logoW}px; max-height: ${logoH}px; object-fit: contain; vertical-align: middle;" onerror="this.style.display='none'" />` : '';
     const logoWrapStyle = !isThermal && logoImg ? `flex-shrink: 0; position: relative; right: ${logoOx}px; top: ${logoOy}px;` : '';
     const companyBlockStyle = isThermal ? '' : `flex: 1; min-width: 0; text-align: ${headerAlign}; ${headerAlign === 'right' ? 'margin-left: auto;' : ''}`;
+    const documentTitle = salesInvoicePrintTitle(invoice);
+    const nonFiscalWarning = salesInvoiceNonFiscalWarning(invoice);
+    const warningBlock = nonFiscalWarning
+        ? `<div class="non-fiscal-warning" style="margin-top:${isThermal ? '1.5mm' : '6px'}; font-weight:bold; color:#7a3f00; text-align:center;">${escapeHtml(nonFiscalWarning)}</div>`
+        : '';
     const headerBlock = isThermal
-        ? `<div class="header" style="text-align:center;">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${letterheadPin ? `<div class="company-details">PIN: ${escapeHtml(letterheadPin)}</div>` : ''}${letterheadTel ? `<div class="company-details">TEL: ${escapeHtml(letterheadTel)}</div>` : ''}${letterheadAddr ? `<div class="company-details">ADDRESS: ${escapeHtml(letterheadAddr)}</div>` : ''}${(!letterheadAddr && !letterheadPin && !letterheadTel) && showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}<div style="border-top:1px dashed #000;margin:2mm 0 0 0;padding-top:2mm;"></div><p style="margin:0;font-weight:bold;font-size:${thermalHeaderFontPt}pt;">TAX INVOICE</p></div>`
-        : `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">${logoImg ? `<div class="print-header-logo-wrap" style="${logoWrapStyle}">${logoImg}</div>` : ''}<div style="${companyBlockStyle}">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${letterheadPin ? `<div class="company-details">PIN: ${escapeHtml(letterheadPin)}</div>` : ''}${letterheadTel ? `<div class="company-details">TEL: ${escapeHtml(letterheadTel)}</div>` : ''}${letterheadAddr ? `<div class="company-details">ADDRESS: ${escapeHtml(letterheadAddr)}</div>` : ''}${(!letterheadAddr && !letterheadPin && !letterheadTel) && showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLinePrint}<div style="border-top:1px dashed #000;margin:8px 0 4px 0;padding-top:6px;"></div><p style="margin:0;font-weight:bold;font-size:1.1em;">TAX INVOICE</p></div></div>`;
+        ? `<div class="header" style="text-align:center;">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${letterheadPin ? `<div class="company-details">PIN: ${escapeHtml(letterheadPin)}</div>` : ''}${letterheadTel ? `<div class="company-details">TEL: ${escapeHtml(letterheadTel)}</div>` : ''}${letterheadAddr ? `<div class="company-details">ADDRESS: ${escapeHtml(letterheadAddr)}</div>` : ''}${(!letterheadAddr && !letterheadPin && !letterheadTel) && showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}<div style="border-top:1px dashed #000;margin:2mm 0 0 0;padding-top:2mm;"></div><p style="margin:0;font-weight:bold;font-size:${thermalHeaderFontPt}pt;">${escapeHtml(documentTitle)}</p>${warningBlock}</div>`
+        : `<div class="header" style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">${logoImg ? `<div class="print-header-logo-wrap" style="${logoWrapStyle}">${logoImg}</div>` : ''}<div style="${companyBlockStyle}">${showCompany ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''}${letterheadPin ? `<div class="company-details">PIN: ${escapeHtml(letterheadPin)}</div>` : ''}${letterheadTel ? `<div class="company-details">TEL: ${escapeHtml(letterheadTel)}</div>` : ''}${letterheadAddr ? `<div class="company-details">ADDRESS: ${escapeHtml(letterheadAddr)}</div>` : ''}${(!letterheadAddr && !letterheadPin && !letterheadTel) && showAddress && companyAddress ? `<div class="company-details">${escapeHtml(companyAddress)}</div>` : ''}${branchLinePrint}<div style="border-top:1px dashed #000;margin:8px 0 4px 0;padding-top:6px;"></div><p style="margin:0;font-weight:bold;font-size:1.1em;">${escapeHtml(documentTitle)}</p>${warningBlock}</div></div>`;
 
     return `
 <!DOCTYPE html>
@@ -4668,8 +4729,17 @@ function generateInvoicePrintHTML(invoice, printType) {
         .kra-fiscal { text-align: center !important; width: 100%; box-sizing: border-box; }
         .kra-fiscal .kra-fiscal-verify { text-align: center !important; width: 100%; max-width: 56mm; margin-left: auto; margin-right: auto; box-sizing: border-box; }
         .kra-fiscal .kra-sig { text-align: center !important; word-break: break-all; overflow-wrap: anywhere; max-width: 56mm; width: 100%; margin: 6px auto 0 auto; display: block; box-sizing: border-box; }
-        .kra-fiscal .kra-qr-wrap { text-align: center !important; width: 100%; margin-top: 6px; }
-        .kra-fiscal .kra-qr-wrap img { display: block !important; margin-left: auto !important; margin-right: auto !important; }
+        .kra-fiscal .kra-qr-wrap { text-align: center !important; width: 100%; margin-top: 4px; }
+        .kra-fiscal .kra-qr-wrap img,
+        .kra-fiscal .kra-qr-img {
+            display: block !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            width: 16mm !important;
+            max-width: 16mm !important;
+            height: 16mm !important;
+            max-height: 16mm !important;
+        }
         .kra-fiscal .kra-internal-label { font-weight: bold; margin-top: 6px; text-align: center !important; display: block; width: 100%; }
         .kra-fiscal .kra-epilogue { margin-top: 6px; font-weight: bold; font-size: 7pt; letter-spacing: 0.02em; text-align: center !important; display: block; width: 100%; }
         .kra-fiscal .kra-thanks { margin-top: 6px; text-align: center !important; display: block; width: 100%; font-weight: 600; }
@@ -4720,14 +4790,18 @@ function generateInvoicePrintHTML(invoice, printType) {
         const qr = invoice.kra_qr_code;
         const pin = (invoice.company_pin != null && String(invoice.company_pin).trim()) ? String(invoice.company_pin).trim() : '';
         const cu = (invoice.etims_device_serial != null && String(invoice.etims_device_serial).trim()) ? String(invoice.etims_device_serial).trim() : '';
+        const kraInvNo = (invoice.kra_invoice_number || invoice.kra_receipt_number || '');
+        const tis = (invoice.etims_trader_invoicing_system_name != null && String(invoice.etims_trader_invoicing_system_name).trim()) ? String(invoice.etims_trader_invoicing_system_name).trim() : '';
         const verified = formatKraSubmittedForPrint(invoice.kra_submitted_at);
         if (!r && !sig && !qr) return '';
         const fs = isThermal ? '7pt' : '11px';
         let html = `<div class="kra-fiscal" style="margin-top: 3mm; padding: 2mm 0; border-top: 1px dashed #000; font-size: ${fs}; line-height: 1.35; text-align: center;">`;
         html += '<div style="font-weight: bold;">KRA eTIMS</div>';
         if (pin) html += `<div>PIN: ${escapeHtml(pin)}</div>`;
-        if (r) html += `<div>CU Invoice No: ${escapeHtml(String(r))}</div>`;
+        if (kraInvNo) html += `<div>KRA Invoice No: ${escapeHtml(String(kraInvNo))}</div>`;
+        if (r) html += `<div>KRA Receipt No: ${escapeHtml(String(r))}</div>`;
         if (cu) html += `<div>Control Unit Serial No: ${escapeHtml(cu)}</div>`;
+        if (tis) html += `<div>TIS: ${escapeHtml(tis)}</div>`;
         if (sig || qr || verified) {
             html += '<div class="kra-fiscal-verify">';
             if (sig) {
@@ -4738,9 +4812,9 @@ function generateInvoicePrintHTML(invoice, printType) {
             }
             if (qr) {
                 const enc = encodeURIComponent(String(qr));
-                const src = `https://quickchart.io/qr?size=240x240&margin=2&text=${enc}`;
+                const src = `https://quickchart.io/qr?size=96x96&margin=1&text=${enc}`;
                 html += '<div class="kra-qr-wrap">';
-                html += `<img src="${src}" alt="KRA fiscal QR" width="220" height="220" style="display: inline-block; max-width: 56mm; height: auto;" />`;
+                html += `<img class="kra-qr-img" src="${src}" alt="KRA fiscal QR" width="60" height="60" style="display: block !important; width: 16mm !important; max-width: 16mm !important; height: 16mm !important; max-height: 16mm !important; margin-left: auto !important; margin-right: auto !important;" />`;
                 html += '</div>';
             }
             if (verified) {
@@ -5280,6 +5354,7 @@ if (typeof window !== 'undefined') {
     window.revertInvoicePaidStatus = revertInvoicePaidStatus;
     window.printSalesInvoice = printSalesInvoice;
     window.downloadSalesInvoicePdf = downloadSalesInvoicePdf;
+    window.openSalesInvoiceDraftFromData = openSalesInvoiceDraftFromData;
     window.submitSplitPayment = submitSplitPayment;
     window.convertSalesInvoiceToQuotation = convertSalesInvoiceToQuotation;
     window.handlePaymentModeChange = handlePaymentModeChange;

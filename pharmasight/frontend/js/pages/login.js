@@ -53,6 +53,129 @@ function isLocalDevLoginHost(hostname) {
     return hostname === 'localhost' || hostname === '127.0.0.1';
 }
 
+function loginHashParams() {
+    const hash = window.location.hash || '';
+    const qIndex = hash.indexOf('?');
+    return new URLSearchParams(qIndex >= 0 ? hash.slice(qIndex + 1) : '');
+}
+
+async function adminAuthFetch(path, payload) {
+    const base = loginApiBaseUrl();
+    const res = await loginFetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const msg = typeof data.detail === 'string'
+            ? data.detail
+            : (data.detail && data.detail.message) || data.message || 'Admin request failed';
+        throw new Error(msg);
+    }
+    return data;
+}
+
+function renderAdminResetPasswordForm(page, token) {
+    page.innerHTML = `
+        <div class="login-container">
+            <div class="login-card">
+                <div class="login-card-intro">
+                    <h2 class="login-welcome">Reset Admin Password</h2>
+                    <p class="login-lead">Set a new platform admin password.</p>
+                </div>
+                <form id="adminResetPasswordForm">
+                    <div class="form-group">
+                        <label for="adminNewPassword">New password</label>
+                        <input type="password" id="adminNewPassword" required minlength="8" autocomplete="new-password">
+                    </div>
+                    <div class="form-group">
+                        <label for="adminConfirmPassword">Confirm password</label>
+                        <input type="password" id="adminConfirmPassword" required minlength="8" autocomplete="new-password">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block">
+                        <i class="fas fa-key" aria-hidden="true"></i> Update password
+                    </button>
+                </form>
+                <div id="adminResetError" class="error-message" style="display:none;"></div>
+                <div class="login-links"><a href="#login">Back to sign in</a></div>
+            </div>
+        </div>
+    `;
+    page.classList.add('active');
+    page.style.display = 'flex';
+    const form = page.querySelector('#adminResetPasswordForm');
+    const err = page.querySelector('#adminResetError');
+    form.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const p1 = page.querySelector('#adminNewPassword').value;
+        const p2 = page.querySelector('#adminConfirmPassword').value;
+        if (p1 !== p2) {
+            err.textContent = 'Passwords do not match.';
+            err.style.display = 'block';
+            return;
+        }
+        try {
+            await adminAuthFetch('/api/admin/auth/reset-password', { token, new_password: p1 });
+            if (typeof showToast === 'function') showToast('Admin password updated. Sign in again.', 'success');
+            window.location.hash = '#login';
+            loadLogin();
+        } catch (ex) {
+            err.textContent = ex.message || 'Could not reset admin password.';
+            err.style.display = 'block';
+        }
+    });
+}
+
+function renderAdminOtpStep(page, challengeId, emailMasked, username) {
+    page.innerHTML = `
+        <div class="login-container">
+            <div class="login-card">
+                <div class="login-card-intro">
+                    <h2 class="login-welcome">Verify Admin Login</h2>
+                    <p class="login-lead">Enter the code sent to ${String(emailMasked || 'your admin email').replace(/</g, '&lt;')}.</p>
+                </div>
+                <form id="adminOtpForm">
+                    <div class="form-group">
+                        <label for="adminOtp">Verification code</label>
+                        <input type="text" id="adminOtp" required inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block">
+                        <i class="fas fa-shield-halved" aria-hidden="true"></i> Verify & continue
+                    </button>
+                </form>
+                <div id="adminOtpError" class="error-message" style="display:none;"></div>
+                <div class="login-links"><a href="#login" id="adminOtpBack">Back to sign in</a></div>
+            </div>
+        </div>
+    `;
+    page.classList.add('active');
+    page.style.display = 'flex';
+    const form = page.querySelector('#adminOtpForm');
+    const err = page.querySelector('#adminOtpError');
+    const input = page.querySelector('#adminOtp');
+    if (input) input.focus();
+    form.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        try {
+            const data = await adminAuthFetch('/api/admin/auth/verify-otp', {
+                challenge_id: challengeId,
+                otp: input.value
+            });
+            if (data && data.token) {
+                localStorage.setItem('admin_token', data.token);
+                localStorage.setItem('is_admin', 'true');
+                localStorage.setItem('admin_username', username || 'admin');
+                if (typeof showToast === 'function') showToast('Admin verified.', 'success');
+                window.location.href = '/admin.html';
+            }
+        } catch (ex) {
+            err.textContent = ex.message || 'Invalid verification code.';
+            err.style.display = 'block';
+        }
+    });
+}
+
 async function loadLogin() {
     try {
         const params = new URLSearchParams(window.location.search || '');
@@ -69,6 +192,7 @@ async function loadLogin() {
             else if (typeof showNotification === 'function') showNotification('Password set. Sign in with your username.', 'success');
         }
     } catch (_) {}
+    const requestedAdminResetToken = loginHashParams().get('admin_reset_token');
     // Check if already logged in (using AuthBootstrap for consistency)
     const user = AuthBootstrap.getCurrentUser();
     const hasAppApiSession =
@@ -81,7 +205,7 @@ async function loadLogin() {
         window.__pharmasightLoggingOut ||
         window.__pharmasightSessionExpiryInFlight ||
         window.__pharmasightAuthRedirecting;
-    if (user && isAuthenticated() && hasAppApiSession && !sessionTeardownInProgress) {
+    if (user && isAuthenticated() && hasAppApiSession && !sessionTeardownInProgress && !requestedAdminResetToken) {
         // Already logged in, switch to app layout and continue app flow
         renderAppLayout();
         if (window.startAppFlow) {
@@ -116,6 +240,11 @@ async function loadLogin() {
     
     if (!page) {
         console.error('[LOGIN] Failed to get or create login page element');
+        return;
+    }
+
+    if (requestedAdminResetToken) {
+        renderAdminResetPasswordForm(page, requestedAdminResetToken);
         return;
     }
     
@@ -370,7 +499,6 @@ async function loadLogin() {
             }
         });
     }
-    
     function formatSignupApiError(data) {
         if (!data || typeof data !== 'object') return 'Something went wrong. Please try again.';
         const d = data.detail;
@@ -768,7 +896,7 @@ async function loadLogin() {
                 }
                 
                 // Check if this is an admin login
-                const isAdminLogin = username.toLowerCase() === 'admin';
+                const isAdminLogin = username.toLowerCase() === 'admin' || username.toLowerCase() === 'sightopserp@gmail.com';
                 
                 if (isAdminLogin) {
                     // Admin panel login: username "admin" + admin password → tenant management
@@ -781,6 +909,11 @@ async function loadLogin() {
                             body: JSON.stringify({ username, password })
                         });
                         const adminData = await adminResponse.json().catch(() => ({}));
+                        if (adminResponse.ok && adminData.success && adminData.otp_required && adminData.challenge_id) {
+                            renderAdminOtpStep(page, adminData.challenge_id, adminData.email_masked, username);
+                            didComplete = true;
+                            return;
+                        }
                         if (adminResponse.ok && adminData.success && adminData.is_admin) {
                             localStorage.setItem('admin_token', adminData.token);
                             localStorage.setItem('is_admin', 'true');

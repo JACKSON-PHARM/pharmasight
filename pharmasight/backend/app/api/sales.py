@@ -4,7 +4,8 @@ Sales API routes (KRA Compliant)
 import logging
 import time
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from sqlalchemy.orm import Session
+from fastapi.encoders import jsonable_encoder
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func
 from typing import Any, List, Optional
 from uuid import UUID, uuid4
@@ -38,6 +39,7 @@ from app.models import (
     InsuranceProvider, InsuranceClaim, InsuranceLedgerEntry,
 )
 from app.models.company import Branch, BranchEtimsCredentials, Company
+from app.models.company_kra_profile import CompanyKraProfile
 from app.models.user import User
 from app.models.permission import Permission, RolePermission
 from app.schemas.sale import (
@@ -104,6 +106,12 @@ class DevInvoiceMovementRepairRequest(BaseModel):
     If items is omitted/empty, missing invoice lines are inferred from SALE ledger rows.
     """
     items: Optional[List[DevInvoiceMovementRepairItem]] = None
+
+
+class CloneSalesInvoiceRequest(BaseModel):
+    branch_id: Optional[UUID] = None
+    invoice_date: Optional[date] = None
+    payment_mode: Optional[str] = None
 
 
 def _get_company_setting_decimal(db: Session, company_id: UUID, key: str) -> Decimal | None:
@@ -378,7 +386,7 @@ def create_sales_invoice(
         db, user.id, invoice.company_id, invoice.branch_id, permission_name="sales.create"
     )
     assert_branch_may_create_new_sales_draft(
-        db, invoice.company_id, invoice.branch_id, invoice.invoice_date
+        db, invoice.company_id, invoice.branch_id, date.today()
     )
 
     # Validate credit payment mode requirements
@@ -605,13 +613,26 @@ def get_sales_invoice_pdf(
 
     note_fiscal_pdf_and_print_policy(db, invoice, context="get_sales_invoice_pdf")
     # Best-effort fiscal sign before PDF bytes so downloads include KRA data when possible.
+    # Reprints/downloads of already-submitted invoices must not POST another sale to KRA.
     if company_kra_execution_enabled(db, invoice.company_id):
-        from app.services.etims.etims_invoice_submitter import EtimsSubmissionSkipped, submit_sales_invoice
+        from app.services.etims.etims_invoice_submitter import (
+            EtimsSubmissionSkipped,
+            apply_kra_receipt_from_latest_submitted_log,
+            submit_sales_invoice,
+        )
 
-        try:
-            submit_sales_invoice(db, invoice_id)
-        except (EtimsSubmissionSkipped, ValueError):
-            pass
+        sub = (invoice.submission_status or "").strip().lower()
+        if sub == "submitted":
+            try:
+                apply_kra_receipt_from_latest_submitted_log(db, invoice)
+                db.commit()
+            except Exception:
+                db.rollback()
+        else:
+            try:
+                submit_sales_invoice(db, invoice_id)
+            except (EtimsSubmissionSkipped, ValueError):
+                pass
         invoice = (
             db.query(SalesInvoice)
             .options(
@@ -675,6 +696,19 @@ def get_sales_invoice_pdf(
         if creds_pdf and getattr(creds_pdf, "device_serial", None)
         else ""
     ) or None
+    fiscal_pdf_required = bool(
+        company and getattr(company, "kra_enabled", False) and creds_pdf and getattr(creds_pdf, "enabled", False)
+    )
+    kra_profile_pdf = (
+        db.query(CompanyKraProfile)
+        .filter(CompanyKraProfile.company_id == invoice.company_id)
+        .first()
+    )
+    tis_name_pdf = (
+        str(getattr(kra_profile_pdf, "kra_trader_invoicing_system_name", "") or "").strip()
+        if kra_profile_pdf
+        else ""
+    ) or None
     try:
         pdf_bytes = build_sales_invoice_pdf(
             company_name=company.name if company else "—",
@@ -704,6 +738,9 @@ def get_sales_invoice_pdf(
             kra_qr_code=getattr(invoice, "kra_qr_code", None),
             kra_submitted_at=getattr(invoice, "kra_submitted_at", None),
             kra_cu_device_serial=cu_serial_pdf,
+            kra_invoice_number=getattr(invoice, "kra_receipt_number", None),
+            etims_trader_invoicing_system_name=tis_name_pdf,
+            fiscal_receipt=fiscal_pdf_required,
             show_batch_expiry=wholesale_print,
         )
     except Exception as e:
@@ -849,6 +886,8 @@ def _get_sales_invoice_response(
     # Align with batch gate: snapshot/outbox only when company KRA + branch eTIMS enabled.
     invoice.kra_fiscal_receipt_required = False
     invoice.etims_device_serial = None
+    invoice.etims_trader_invoicing_system_name = None
+    invoice.kra_invoice_number = getattr(invoice, "kra_receipt_number", None)
     _ec = (
         db.query(BranchEtimsCredentials)
         .filter(BranchEtimsCredentials.branch_id == invoice.branch_id)
@@ -859,6 +898,13 @@ def _get_sales_invoice_response(
         invoice.etims_device_serial = _ds or None
     if company and bool(getattr(company, "kra_enabled", False)):
         invoice.kra_fiscal_receipt_required = bool(_ec and getattr(_ec, "enabled", False))
+        _kp = (
+            db.query(CompanyKraProfile)
+            .filter(CompanyKraProfile.company_id == invoice.company_id)
+            .first()
+        )
+        if _kp and getattr(_kp, "kra_trader_invoicing_system_name", None):
+            invoice.etims_trader_invoicing_system_name = str(_kp.kra_trader_invoicing_system_name).strip() or None
     branch = db.query(Branch).filter(Branch.id == invoice.branch_id).first()
     if branch:
         invoice.branch_name = branch.name
@@ -1000,6 +1046,136 @@ def kra_receipt_from_submission_log(
             )
     db.commit()
     return _get_sales_invoice_response(invoice_id, db, user, request=request, tenant=tenant)
+
+
+@router.post("/invoice/{invoice_id}/clone-to-draft", status_code=status.HTTP_201_CREATED)
+def clone_sales_invoice_to_draft(
+    invoice_id: UUID,
+    body: CloneSalesInvoiceRequest,
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    tenant: Optional[Any] = Depends(get_tenant_optional),
+    db: Session = Depends(get_tenant_db),
+):
+    """Create an editable draft from a posted customer invoice, falling back to a quotation if draft validation fails."""
+    user = current_user_and_db[0]
+    source = (
+        db.query(SalesInvoice)
+        .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+        .filter(SalesInvoice.id == invoice_id)
+        .first()
+    )
+    require_document_belongs_to_user_company(db, user, source, "Invoice", request)
+    ensure_user_has_branch_access(db, user.id, source.branch_id)
+    if not _user_has_permission(db, user.id, "sales.create"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if (source.status or "").upper() not in ("BATCHED", "PAID"):
+        raise HTTPException(status_code=400, detail="Only posted invoices can be cloned for refill")
+    if not source.items:
+        raise HTTPException(status_code=400, detail="Source invoice has no lines to clone")
+
+    target_branch_id = body.branch_id or source.branch_id
+    ensure_ops_branch_access(
+        db, user.id, source.company_id, target_branch_id, permission_name="sales.create"
+    )
+
+    clone_items = [
+        SalesInvoiceItemCreate(
+            item_id=line.item_id,
+            unit_name=line.unit_name,
+            quantity=line.quantity,
+            unit_price_exclusive=line.unit_price_exclusive,
+            discount_percent=line.discount_percent or Decimal("0"),
+            discount_amount=line.discount_amount or Decimal("0"),
+        )
+        for line in source.items
+        if line.item_id and line.unit_name and line.quantity
+    ]
+    if not clone_items:
+        raise HTTPException(status_code=400, detail="Source invoice has no cloneable lines")
+
+    payload = SalesInvoiceCreate(
+        company_id=source.company_id,
+        branch_id=target_branch_id,
+        invoice_date=body.invoice_date or date.today(),
+        customer_id=source.customer_id,
+        customer_name=source.customer_name,
+        customer_pin=source.customer_pin,
+        customer_phone=getattr(source, "customer_phone", None),
+        payment_mode=body.payment_mode or source.payment_mode or "cash",
+        payment_status="UNPAID",
+        sales_type=source.sales_type or default_sales_type_for_branch(db, target_branch_id),
+        status="DRAFT",
+        discount_amount=Decimal("0"),
+        items=clone_items,
+        created_by=user.id,
+    )
+    try:
+        created = create_sales_invoice(payload, request, (user, db))
+        draft = _get_sales_invoice_response(created.id, db, user, request=request, tenant=tenant)
+        data = jsonable_encoder(draft)
+        data["document_type"] = "invoice"
+        return data
+    except HTTPException as exc:
+        db.rollback()
+        if exc.status_code != 400:
+            raise
+        from app.models import Quotation, QuotationItem
+
+        quotation_no = DocumentService.get_quotation_number(
+            db, source.company_id, target_branch_id
+        )
+        quotation = Quotation(
+            company_id=source.company_id,
+            branch_id=target_branch_id,
+            quotation_no=quotation_no,
+            quotation_date=body.invoice_date or date.today(),
+            customer_id=source.customer_id,
+            customer_name=source.customer_name,
+            customer_pin=source.customer_pin,
+            reference=f"Refill from {source.invoice_no or source.id}",
+            notes=(
+                "Created as a quotation because the refill draft could not pass current "
+                f"stock or pricing checks: {exc.detail}"
+            ),
+            status="draft",
+            total_exclusive=source.total_exclusive or Decimal("0"),
+            vat_rate=source.vat_rate or Decimal("0"),
+            vat_amount=source.vat_amount or Decimal("0"),
+            discount_amount=Decimal("0"),
+            total_inclusive=source.total_inclusive or Decimal("0"),
+            valid_until=None,
+            created_by=user.id,
+        )
+        db.add(quotation)
+        db.flush()
+        for line in source.items:
+            if not line.item_id or not line.unit_name or not line.quantity:
+                continue
+            db.add(
+                QuotationItem(
+                    quotation_id=quotation.id,
+                    item_id=line.item_id,
+                    unit_name=line.unit_name,
+                    quantity=line.quantity,
+                    unit_price_exclusive=line.unit_price_exclusive,
+                    discount_percent=line.discount_percent or Decimal("0"),
+                    discount_amount=line.discount_amount or Decimal("0"),
+                    vat_rate=line.vat_rate,
+                    vat_amount=line.vat_amount,
+                    line_total_exclusive=line.line_total_exclusive,
+                    line_total_inclusive=line.line_total_inclusive,
+                )
+            )
+        db.commit()
+        db.refresh(quotation)
+        return {
+            "document_type": "quotation",
+            "quotation_id": str(quotation.id),
+            "quotation_no": quotation.quotation_no,
+            "message": "Refill could not be created as a draft invoice, so a draft quotation was created for editing.",
+            "reason": exc.detail,
+        }
 
 
 @router.post("/invoice/{invoice_id}/items", response_model=AddSalesInvoiceItemResponse)
@@ -3221,6 +3397,14 @@ def add_invoice_payment(
         effective_total_after,
         approved_by=payment.paid_by,
     )
+    if getattr(invoice, "customer_id", None) and payment.payment_mode != "insurance":
+        from app.services.customer_invoice_payment_service import (
+            post_customer_ledger_for_invoice_payment,
+            sync_customer_invoice_paid_from_settlements,
+        )
+
+        post_customer_ledger_for_invoice_payment(db, invoice, db_payment)
+        sync_customer_invoice_paid_from_settlements(db, invoice)
 
     try:
         from app.services.commercial_transaction_lifecycle import on_invoice_payment_recorded
@@ -3405,11 +3589,24 @@ def delete_invoice_payment(
             status_code=400,
             detail="Cannot delete payment from PAID invoice. Invoice must be BATCHED."
         )
-    
+
     db.delete(payment)
+    if getattr(invoice, "customer_id", None):
+        from app.models.customer_financial import CustomerLedgerEntry
+        from app.services.customer_invoice_payment_service import sync_customer_invoice_paid_from_settlements
+
+        db.query(CustomerLedgerEntry).filter(
+            CustomerLedgerEntry.company_id == invoice.company_id,
+            CustomerLedgerEntry.customer_id == invoice.customer_id,
+            CustomerLedgerEntry.entry_type == "payment",
+            CustomerLedgerEntry.reference_id == payment.id,
+        ).delete(synchronize_session=False)
+    db.flush()
 
     remaining = sum_settled_payments(db, invoice.id)
     apply_payment_status_from_settled(invoice, remaining)
+    if getattr(invoice, "customer_id", None):
+        sync_customer_invoice_paid_from_settlements(db, invoice)
 
     db.commit()
     return None
@@ -3518,4 +3715,3 @@ def convert_sales_invoice_to_quotation(
         "quotation_id": str(quotation.id),
         "quotation_no": quotation.quotation_no
     }
-

@@ -71,6 +71,9 @@ class StockAvailability(BaseModel):
     item_name: str
     base_unit: str
     total_base_units: int
+    reserved_base_units: Decimal = Decimal("0")
+    available_base_units: Decimal = Decimal("0")
+    reservation_status: Optional[str] = None
     unit_breakdown: List["UnitBreakdown"] = Field(default_factory=list)
     batch_breakdown: List[BatchStock] = Field(default_factory=list)
 
@@ -87,4 +90,3 @@ class UnitBreakdown(BaseModel):
 # Update forward references
 StockBalance.model_rebuild()
 StockAvailability.model_rebuild()
-

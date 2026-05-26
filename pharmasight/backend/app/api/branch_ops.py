@@ -26,6 +26,10 @@ def get_branch_operational_backlog(
         None,
         description="Business date for today’s session (defaults to calendar today).",
     ),
+    include_info: bool = Query(
+        False,
+        description="Include non-blocking open documents. Defaults off to keep the bell lightweight.",
+    ),
     user_db: tuple = Depends(get_authenticated_db),
 ):
     """
@@ -41,4 +45,10 @@ def get_branch_operational_backlog(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this branch.")
     ensure_ops_branch_access(db, user.id, branch.company_id, branch_id, permission_name="items.view")
     biz = business_date or date.today()
-    return fetch_branch_operational_backlog(db, branch.company_id, branch_id, biz)
+    return fetch_branch_operational_backlog(
+        db,
+        branch.company_id,
+        branch_id,
+        biz,
+        include_informational=include_info,
+    )

@@ -219,6 +219,18 @@ class InventoryService:
         units_list.sort(key=lambda x: x[1], reverse=True)
         
         total_base_units = InventoryService.get_current_stock(db, item_id, branch_id)  # in retail
+        from app.services.supplier_return_reservation_service import SupplierReturnReservationService
+
+        reserved_base_units = SupplierReturnReservationService.reserved_qty_for_item(
+            db,
+            company_id=item.company_id,
+            branch_id=branch_id,
+            item_id=item_id,
+        )
+        available_base_units = max(
+            Decimal("0"),
+            Decimal(str(total_base_units)) - Decimal(str(reserved_base_units)),
+        )
         unit_breakdown = []
         remaining = total_base_units
         
@@ -261,6 +273,11 @@ class InventoryService:
             item_name=item.name,
             base_unit=item.retail_unit or item.base_unit,
             total_base_units=total_base_units,
+            reserved_base_units=reserved_base_units,
+            available_base_units=available_base_units,
+            reservation_status="fully_reserved" if total_base_units > 0 and available_base_units <= 0 else (
+                "partially_reserved" if reserved_base_units > 0 else None
+            ),
             unit_breakdown=unit_breakdown,
             batch_breakdown=batch_breakdown
         )
@@ -530,6 +547,15 @@ class InventoryService:
             available_base = InventoryService.get_current_stock_fast(
                 db, item_id, branch_id, company_id
             )
+            from app.services.supplier_return_reservation_service import SupplierReturnReservationService
+
+            reserved = SupplierReturnReservationService.reserved_qty_for_item(
+                db,
+                company_id=company_id,
+                branch_id=branch_id,
+                item_id=item_id,
+            )
+            available_base = max(0.0, available_base - float(reserved))
         else:
             available_base = InventoryService.get_current_stock(db, item_id, branch_id)
         return (available_base >= required_base, available_base, required_base)

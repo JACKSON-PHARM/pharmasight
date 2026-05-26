@@ -22,6 +22,9 @@ from app.services.platform_metrics_service import (
     get_active_users_metrics,
     get_active_users_timeseries,
     get_usage_by_company,
+    get_recent_platform_events,
+    get_signup_metrics,
+    get_request_volume,
     get_health,
 )
 
@@ -136,6 +139,35 @@ def metrics_usage_by_company(
     return {"companies": data, "generated_at": datetime.now(timezone.utc).isoformat()}
 
 
+@router.get("/metrics/recent-events")
+@limiter.limit("30/minute")
+def metrics_recent_events(
+    request: Request,
+    db: Session = Depends(get_db),
+    limit: int = Query(25, ge=1, le=100),
+    _admin: None = Depends(get_current_admin),
+):
+    """
+    Recent client signup, login, and user-created events. Metadata only.
+    PLATFORM_ADMIN only.
+    """
+    return get_recent_platform_events(db, limit=limit)
+
+
+@router.get("/metrics/signups")
+@limiter.limit("30/minute")
+def metrics_signups(
+    request: Request,
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=365),
+    _admin: None = Depends(get_current_admin),
+):
+    """
+    Signup and company-user creation counts. PLATFORM_ADMIN only.
+    """
+    return get_signup_metrics(db, days=days)
+
+
 @router.get("/metrics/health")
 @limiter.limit("60/minute")
 def metrics_health(
@@ -174,18 +206,12 @@ def metrics_errors(
 @limiter.limit("30/minute")
 def metrics_request_volume(
     request: Request,
+    db: Session = Depends(get_db),
+    hours: int = Query(24, ge=1, le=720),
     _admin: None = Depends(get_current_admin),
 ):
     """
-    Placeholder: API request volume per company/branch per hour, peak concurrent users.
-    Add middleware + metrics table to record requests; then aggregate here.
-    Returns empty structure for dashboard compatibility.
+    API request volume per company and hour from platform_usage_counters.
+    Aggregated metadata only; no client business records.
     """
-    return {
-        "by_hour": [],
-        "by_company": [],
-        "peak_concurrent_users": 0,
-        "avg_response_time_ms": None,
-        "message": "Add request logging middleware to populate.",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    return get_request_volume(db, hours=hours)

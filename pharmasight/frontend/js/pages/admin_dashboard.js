@@ -89,6 +89,31 @@ function renderActiveUsers(data) {
     `;
 }
 
+function renderSignupMetrics(data) {
+    const el = document.getElementById('platform-dashboard-signups');
+    if (!el) return;
+    if (!data) {
+        el.innerHTML = '<p class="text-muted">Loading...</p>';
+        return;
+    }
+    el.innerHTML = `
+        <div class="platform-metrics-cards platform-metrics-cards--small">
+            <div class="platform-metric-card platform-metric-card--highlight">
+                <span class="platform-metric-value">${escapeHtml(String(data.client_signups ?? 0))}</span>
+                <span class="platform-metric-label">Client signups (${escapeHtml(String(data.days || 30))}d)</span>
+            </div>
+            <div class="platform-metric-card">
+                <span class="platform-metric-value">${escapeHtml(String(data.users_created ?? 0))}</span>
+                <span class="platform-metric-label">Users added</span>
+            </div>
+            <div class="platform-metric-card">
+                <span class="platform-metric-value">${escapeHtml(String(data.companies_active ?? 0))}</span>
+                <span class="platform-metric-label">Companies with logins</span>
+            </div>
+        </div>
+    `;
+}
+
 /**
  * Render DAU time series chart (Chart.js).
  */
@@ -210,24 +235,53 @@ function renderUsageByCompany(companies) {
     const el = document.getElementById('platform-dashboard-usage-body');
     if (!el) return;
     if (!Array.isArray(companies)) {
-        el.innerHTML = '<tr><td colspan="3" class="text-center text-muted">Loading…</td></tr>';
+        el.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>';
         return;
     }
     if (companies.length === 0) {
-        el.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No data</td></tr>';
+        el.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No data</td></tr>';
         return;
     }
     el.innerHTML = companies
         .map(
             (c) => `
         <tr>
-            <td>${escapeHtml(c.company_name || '—')}</td>
-            <td>${escapeHtml(String(c.active_sessions ?? 0))}</td>
-            <td>${escapeHtml(String(c.total_token_count ?? 0))}</td>
+            <td>${escapeHtml(c.company_name || '-')}</td>
+            <td>${escapeHtml(String(c.active_users_now ?? c.active_sessions ?? 0))}</td>
+            <td>${escapeHtml(String(c.active_users_7d ?? 0))}</td>
+            <td>${escapeHtml(String(c.login_events_7d ?? 0))}</td>
+            <td>${escapeHtml(String(c.request_count_24h ?? 0))}</td>
+            <td>${c.last_seen_at ? escapeHtml(new Date(c.last_seen_at).toLocaleString()) : '-'}</td>
         </tr>
     `
         )
         .join('');
+}
+function renderRecentEvents(events) {
+    const el = document.getElementById('platform-dashboard-events-body');
+    if (!el) return;
+    if (!Array.isArray(events)) {
+        el.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>';
+        return;
+    }
+    if (events.length === 0) {
+        el.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No platform events yet</td></tr>';
+        return;
+    }
+    const labels = {
+        client_signup: 'Client signup',
+        user_login: 'Login',
+        company_user_created: 'User added',
+    };
+    el.innerHTML = events.map((ev) => `
+        <tr>
+            <td>${escapeHtml(labels[ev.event_type] || ev.event_type || '-')}</td>
+            <td>${escapeHtml(ev.company_name || '-')}</td>
+            <td>${escapeHtml(ev.actor_name || '-')}</td>
+            <td>${escapeHtml(ev.actor_email || '-')}</td>
+            <td>${ev.created_at ? escapeHtml(new Date(ev.created_at).toLocaleString()) : '-'}</td>
+        </tr>
+    `).join('');
 }
 
 /**
@@ -285,6 +339,38 @@ function renderRequestVolume(data) {
     `;
 }
 
+function renderRequestVolumeDetailed(data) {
+    const el = document.getElementById('platform-dashboard-request-volume');
+    if (!el) return;
+    if (!data) {
+        el.innerHTML = '<p class="text-muted">Loading...</p>';
+        return;
+    }
+    const companies = Array.isArray(data.by_company) ? data.by_company.slice(0, 8) : [];
+    const endpoints = Array.isArray(data.by_endpoint) ? data.by_endpoint.slice(0, 8) : [];
+    el.innerHTML = `
+        <p><strong>Total API requests (${escapeHtml(String(data.hours || 24))}h):</strong> ${escapeHtml(String(data.total_requests ?? 0))}</p>
+        <p><strong>Avg response time:</strong> ${data.avg_response_time_ms != null ? escapeHtml(String(data.avg_response_time_ms) + ' ms') : '-'}</p>
+        <div class="table-container" style="margin-top:0.75rem;">
+            <table>
+                <thead><tr><th>Company</th><th>Requests</th><th>Last seen</th></tr></thead>
+                <tbody>
+                    ${companies.length ? companies.map((c) => `
+                        <tr>
+                            <td>${escapeHtml(c.company_name || '-')}</td>
+                            <td>${escapeHtml(String(c.requests || 0))}</td>
+                            <td>${c.last_seen_at ? escapeHtml(new Date(c.last_seen_at).toLocaleString()) : '-'}</td>
+                        </tr>
+                    `).join('') : '<tr><td colspan="3" class="text-center text-muted">No request data yet</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+        <p class="platform-metrics-meta" style="margin-top:0.75rem;">
+            Top endpoints: ${endpoints.length ? endpoints.map((e) => `${escapeHtml(e.endpoint_group)} (${escapeHtml(String(e.requests))})`).join(', ') : '-'}
+        </p>
+    `;
+}
+
 function escapeHtml(s) {
     if (s == null) return '';
     const div = document.createElement('div');
@@ -307,13 +393,15 @@ export async function loadDashboard() {
 
     setLoading(true);
     try {
-        const [summary, companiesRes, branchesRes, activeUsers, activeUsersTs, usageRes, health, errors, requestVolume] = await Promise.allSettled([
+        const [summary, companiesRes, branchesRes, activeUsers, activeUsersTs, usageRes, signupMetrics, recentEvents, health, errors, requestVolume] = await Promise.allSettled([
             fetchMetrics('summary'),
             fetchMetrics('companies').then((r) => r),
             fetchMetrics('branches').then((r) => r),
             fetchMetrics('activeUsers'),
             fetchMetrics('activeUsersTimeseries').then((r) => r).catch(() => ({ series: [] })),
             fetchMetrics('usageByCompany'),
+            fetchMetrics('signups'),
+            fetchMetrics('recentEvents'),
             fetchMetrics('health'),
             fetchMetrics('errors'),
             fetchMetrics('requestVolume'),
@@ -325,6 +413,7 @@ export async function loadDashboard() {
         }
         renderSummary(summary.value);
         renderActiveUsers(activeUsers.status === 'fulfilled' ? activeUsers.value : null);
+        renderSignupMetrics(signupMetrics.status === 'fulfilled' ? signupMetrics.value : null);
         renderActiveUsersChart(activeUsersTs.status === 'fulfilled' && activeUsersTs.value?.series ? activeUsersTs.value.series : []);
 
         if (companiesRes.status === 'fulfilled' && companiesRes.value) {
@@ -334,9 +423,10 @@ export async function loadDashboard() {
             renderBranchesTable(branchesRes.value.branches || [], branchesRes.value.total);
         }
         renderUsageByCompany(usageRes.status === 'fulfilled' && usageRes.value ? (usageRes.value.companies || usageRes.value) : null);
+        renderRecentEvents(recentEvents.status === 'fulfilled' && recentEvents.value ? (recentEvents.value.events || []) : null);
         renderHealth(health.status === 'fulfilled' ? health.value : null);
         renderErrors(errors.status === 'fulfilled' ? errors.value : null);
-        renderRequestVolume(requestVolume.status === 'fulfilled' ? requestVolume.value : null);
+        renderRequestVolumeDetailed(requestVolume.status === 'fulfilled' ? requestVolume.value : null);
     } catch (e) {
         showError(e?.message || 'Failed to load dashboard');
     } finally {
@@ -383,6 +473,11 @@ export function renderDashboardSkeleton() {
             </section>
 
             <section class="platform-dashboard-section">
+                <h3>Client growth</h3>
+                <div id="platform-dashboard-signups">Loading...</div>
+            </section>
+
+            <section class="platform-dashboard-section">
                 <h3>Branches</h3>
                 <p class="platform-metrics-meta">Total: <span id="platform-dashboard-branches-total">0</span></p>
                 <div class="table-container">
@@ -394,11 +489,21 @@ export function renderDashboardSkeleton() {
             </section>
 
             <section class="platform-dashboard-section">
-                <h3>Usage by company (sessions)</h3>
+                <h3>Usage by company</h3>
                 <div class="table-container">
                     <table>
-                        <thead><tr><th>Company</th><th>Active sessions</th><th>Token count</th></tr></thead>
+                        <thead><tr><th>Company</th><th>Active now</th><th>Active users 7d</th><th>Logins 7d</th><th>Requests 24h</th><th>Last seen</th></tr></thead>
                         <tbody id="platform-dashboard-usage-body"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="platform-dashboard-section">
+                <h3>Recent platform events</h3>
+                <div class="table-container">
+                    <table>
+                        <thead><tr><th>Event</th><th>Company</th><th>User</th><th>Email</th><th>When</th></tr></thead>
+                        <tbody id="platform-dashboard-events-body"></tbody>
                     </table>
                 </div>
             </section>
@@ -413,7 +518,7 @@ export function renderDashboardSkeleton() {
                     <div id="platform-dashboard-errors">Loading…</div>
                 </section>
                 <section class="platform-dashboard-section">
-                    <h3>Request volume (placeholder)</h3>
+                    <h3>Request volume</h3>
                     <div id="platform-dashboard-request-volume">Loading…</div>
                 </section>
             </div>

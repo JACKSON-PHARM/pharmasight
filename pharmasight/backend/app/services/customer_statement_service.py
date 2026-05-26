@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.models.company import Branch, Company
 from app.models.customer import Customer
 from app.models.customer_financial import CustomerLedgerEntry, CustomerPayment
-from app.models.sale import CreditNote, SalesInvoice
+from app.models.sale import CreditNote, InvoicePayment, SalesInvoice
 from app.models.user import User
 from app.services.customer_ledger_service import CustomerLedgerService
 
@@ -103,6 +103,18 @@ def _resolve_references(
                 "description": "Payment",
                 "payment_method": row[2],
             }
+        unresolved_pay_ids = [pid for pid in pay_ids if ("payment", pid) not in out]
+        if unresolved_pay_ids:
+            for row in (
+                db.query(InvoicePayment.id, InvoicePayment.payment_reference, InvoicePayment.payment_mode)
+                .filter(InvoicePayment.id.in_(unresolved_pay_ids))
+                .all()
+            ):
+                out[("payment", row[0])] = {
+                    "reference": row[1] or row[2],
+                    "description": "Invoice payment",
+                    "payment_method": row[2],
+                }
     if cn_ids:
         for row in db.query(CreditNote.id, CreditNote.credit_note_no).filter(CreditNote.id.in_(cn_ids)).all():
             out[("credit_note", row[0])] = {"reference": row[1], "description": "Credit note"}

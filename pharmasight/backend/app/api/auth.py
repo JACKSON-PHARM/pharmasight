@@ -51,6 +51,7 @@ from app.utils.auth_internal import (
 )
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.admin_auth_service import AdminAuthService
 from app.services.email_service import EmailService
 from app.utils.public_url import get_public_base_url
 from app.utils.auth_internal import (
@@ -727,6 +728,22 @@ def username_login(
                 )
                 if resp.refresh_token:
                     _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
+                try:
+                    from app.services.platform_usage_service import LOGIN_EVENT, record_platform_event
+
+                    record_platform_event(
+                        db,
+                        event_type=LOGIN_EVENT,
+                        company_id=tenant.company_id,
+                        user_id=user.id,
+                        actor_email=user.email,
+                        actor_name=user.full_name,
+                        company_name=company.name if company else None,
+                        metadata={"org": org_slug},
+                        request=request,
+                    )
+                except Exception:
+                    logger.debug("Platform login telemetry skipped", exc_info=True)
                 return resp
 
             user = _find_user_in_db(db, normalized_username, check_email)
@@ -773,6 +790,23 @@ def username_login(
             )
             if resp.refresh_token:
                 _persist_refresh_token_on_login(tenant, str(user.id), resp.refresh_token)
+            try:
+                from app.services.platform_usage_service import LOGIN_EVENT, record_platform_event
+
+                company = db.query(Company).filter(Company.id == company_id).first()
+                record_platform_event(
+                    db,
+                    event_type=LOGIN_EVENT,
+                    company_id=company_id,
+                    user_id=user.id,
+                    actor_email=user.email,
+                    actor_name=user.full_name,
+                    company_name=company.name if company else None,
+                    metadata={"org": tenant.subdomain if tenant else None},
+                    request=request,
+                )
+            except Exception:
+                logger.debug("Platform login telemetry skipped", exc_info=True)
             return resp
         finally:
             db.close()
@@ -822,6 +856,29 @@ def auth_start_demo(request: Request, body: StartDemoRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not create your account right now. Please try again later.",
         )
+
+    try:
+        from app.services.platform_usage_service import SIGNUP_EVENT, record_platform_event
+
+        with SessionLocal() as db:
+            record_platform_event(
+                db,
+                event_type=SIGNUP_EVENT,
+                company_id=result.get("company_id"),
+                user_id=result.get("user_id"),
+                actor_email=result.get("email"),
+                actor_name=body.full_name,
+                company_name=result.get("company_name") or body.organization_name,
+                metadata={
+                    "source": "app_start_demo",
+                    "username": result.get("username"),
+                    "tenant_subdomain": result.get("tenant_subdomain"),
+                },
+                request=request,
+                send_email=True,
+            )
+    except Exception:
+        logger.debug("Platform signup telemetry skipped", exc_info=True)
 
     return start_demo_api_response(result, str(body.email))
 
@@ -1112,6 +1169,16 @@ def auth_request_reset(
     email_or_username = (body.email or body.username or "").strip().lower()
     if not email_or_username:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email or username required")
+    try:
+        admin_result = AdminAuthService.request_password_reset(
+            email_or_username,
+            base_url=get_public_base_url(request),
+        )
+        if admin_result.get("email_sent"):
+            logger.info("[request-reset] Platform admin reset email queued")
+            return {"message": "If an account exists, you will receive a reset link.", "email_sent": True}
+    except Exception:
+        logger.debug("[request-reset] platform admin reset check skipped", exc_info=True)
     check_email = "@" in email_or_username
     user = _find_user_in_shared_db(email_or_username, check_email)
     found_list = [(None, user)] if user else []

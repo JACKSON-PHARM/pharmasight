@@ -83,6 +83,10 @@ function _pharmasightEndpointAuthFlags(endpoint) {
         ep.indexOf('/api/auth/request-reset') !== -1 ||
         ep.indexOf('/api/auth/reset-password') !== -1 ||
         ep.indexOf('/api/auth/exchange-signup-handoff') !== -1 ||
+        ep.indexOf('/api/admin/auth/login') !== -1 ||
+        ep.indexOf('/api/admin/auth/verify-otp') !== -1 ||
+        ep.indexOf('/api/admin/auth/request-reset') !== -1 ||
+        ep.indexOf('/api/admin/auth/reset-password') !== -1 ||
         ep.indexOf('/api/public/signup') !== -1;
     const isAdminRoute = ep.indexOf('/api/admin/') === 0;
     const isAdminLogin = ep.indexOf('/api/admin/auth/login') !== -1;
@@ -951,6 +955,8 @@ const API = {
     sales: {
         createInvoice: (data) => api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice`, data),
         getInvoice: (invoiceId) => api.get(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}`),
+        cloneInvoiceToDraft: (invoiceId, data = {}) =>
+            api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/clone-to-draft`, data),
         /** Best-effort synchronous KRA submit (same path as outbox worker); use before print/PDF for fiscal data. */
         submitKraNow: (invoiceId) =>
             api.post(`${CONFIG.API_ENDPOINTS.sales}/invoice/${invoiceId}/kra-submit-now`, {}),
@@ -1326,6 +1332,7 @@ const API = {
             return api.get(`${CONFIG.API_ENDPOINTS.suppliers}/returns?${qs.toString()}`);
         },
         createReturn: (data) => api.post(`${CONFIG.API_ENDPOINTS.suppliers}/returns`, data),
+        updateReturn: (returnId, data) => api.put(`${CONFIG.API_ENDPOINTS.suppliers}/returns/${returnId}`, data),
         approveReturn: (returnId) => api.patch(`${CONFIG.API_ENDPOINTS.suppliers}/returns/${returnId}/approve`),
         listLedger: (params) => {
             const qs = new URLSearchParams();
@@ -1369,6 +1376,13 @@ const API = {
             return api.get(`${CONFIG.API_ENDPOINTS.customers}/enriched-list?${qs.toString()}`);
         },
         get: (customerId) => api.get(`${CONFIG.API_ENDPOINTS.customers}/${customerId}`),
+        listInvoices: (customerId, params = {}) => {
+            const qs = new URLSearchParams();
+            if (params.branch_id) qs.append('branch_id', params.branch_id);
+            if (params.limit != null) qs.append('limit', params.limit);
+            const q = qs.toString();
+            return api.get(`${CONFIG.API_ENDPOINTS.customers}/${customerId}/invoices${q ? '?' + q : ''}`);
+        },
         create: (data) => api.post(`${CONFIG.API_ENDPOINTS.customers}/`, data),
         update: (customerId, data) => api.put(`${CONFIG.API_ENDPOINTS.customers}/${customerId}`, data),
         delete: (customerId) => api.delete(`${CONFIG.API_ENDPOINTS.customers}/${customerId}`),
@@ -1861,7 +1875,14 @@ const API = {
     // Admin Authentication
     adminAuth: {
         login: (data) => api.post('/api/admin/auth/login', data),
+        verifyOtp: (data) => api.post('/api/admin/auth/verify-otp', data),
+        requestReset: (data) => api.post('/api/admin/auth/request-reset', data),
+        resetPassword: (data) => api.post('/api/admin/auth/reset-password', data),
         verify: (token) => api.get('/api/admin/auth/verify', { token }),
+        profile: () => api.get('/api/admin/auth/profile'),
+        requestEmailChange: (data) => api.post('/api/admin/auth/email-change/request', data),
+        verifyEmailChange: (data) => api.post('/api/admin/auth/email-change/verify', data),
+        logout: () => api.post('/api/admin/auth/logout', {}),
     },
     // Admin - Tenant Management
     admin: {
@@ -1932,9 +1953,11 @@ const API = {
             activeUsers: () => api.get('/api/admin/metrics/active-users'),
             activeUsersTimeseries: (params = {}) => api.get('/api/admin/metrics/active-users/timeseries', params),
             usageByCompany: () => api.get('/api/admin/metrics/usage-by-company'),
+            recentEvents: (params = {}) => api.get('/api/admin/metrics/recent-events', params),
+            signups: (params = {}) => api.get('/api/admin/metrics/signups', params),
             health: () => api.get('/api/admin/metrics/health'),
             errors: () => api.get('/api/admin/metrics/errors'),
-            requestVolume: () => api.get('/api/admin/metrics/request-volume'),
+            requestVolume: (params = {}) => api.get('/api/admin/metrics/request-volume', params),
         },
     },
 

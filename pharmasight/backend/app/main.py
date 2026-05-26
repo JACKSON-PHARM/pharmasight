@@ -39,6 +39,7 @@ class RequestTimingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request.state._req_start_time = time.perf_counter()
         response = await call_next(request)
+        duration_ms = int((time.perf_counter() - request.state._req_start_time) * 1000)
         timings = getattr(request.state, "timings", None)
         if timings and isinstance(timings, dict):
             parts = []
@@ -54,6 +55,25 @@ class RequestTimingMiddleware(BaseHTTPMiddleware):
                     response.headers["Server-Timing"] = ", ".join(parts)
                 except Exception:
                     pass
+        try:
+            path = request.url.path or ""
+            if path.startswith("/api/") and not path.startswith("/api/admin/metrics"):
+                from app.services.platform_usage_service import (
+                    company_id_from_authorization,
+                    record_request_counter,
+                )
+
+                company_id = company_id_from_authorization(request.headers.get("authorization") or "")
+                if company_id:
+                    record_request_counter(
+                        company_id=company_id,
+                        path=path,
+                        method=request.method,
+                        status_code=getattr(response, "status_code", 0) or 0,
+                        duration_ms=duration_ms,
+                    )
+        except Exception:
+            logger.debug("Platform usage middleware skipped request metric", exc_info=True)
         return response
 
 # Frontend + marketing (walk up from backend/ so Render/repo layouts still resolve)
@@ -468,4 +488,3 @@ if _FRONTEND_DIR.is_dir():
         if fp in ("", ".") and _marketing_index_path and _marketing_index_path.is_file():
             return FileResponse(_marketing_index_path, media_type="text/html")
         return FileResponse(_index_path, media_type="text/html")
-

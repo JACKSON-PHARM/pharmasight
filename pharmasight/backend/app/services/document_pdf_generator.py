@@ -230,6 +230,17 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
     # ----- 2. Document title only (number goes in metadata block on the right) -----
     title = payload.get("document_title") or ""
     flow.append(Paragraph(title, st["heading"]))
+    warning = (payload.get("non_fiscal_warning") or "").strip()
+    if warning:
+        warn_style = ParagraphStyle(
+            name="non_fiscal_warning",
+            parent=st["detail"],
+            alignment=TA_CENTER,
+            fontSize=9,
+            leading=11,
+            textColor=colors.HexColor("#8A4B00"),
+        )
+        flow.append(Paragraph(f"<b>{xml_escape(warning)}</b>", warn_style))
     flow.append(Spacer(1, 4 * mm))
 
     # ----- 3. Metadata + client block: client left (one line: Customer | Payment | Till for sales), Document right -----
@@ -271,6 +282,8 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
         flow.append(Paragraph(f"<b>VAT: {vat_amount:,.2f}</b>", st["detail"]))
         flow.append(Paragraph(f"<b>Total: {total_inclusive:,.2f}</b>", st["detail"]))
         kra_rn = payload.get("kra_receipt_number")
+        kra_invoice_number = payload.get("kra_invoice_number")
+        tis_name = payload.get("etims_trader_invoicing_system_name")
         kra_sig = payload.get("kra_signature")
         kra_qr_png = payload.get("kra_qr_png_bytes")
         kra_pin = (payload.get("company_pin") or "").strip() if doc_type == DOC_TYPE_SALES_INVOICE else ""
@@ -289,10 +302,14 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
             flow.append(Paragraph("<b>KRA eTIMS</b>", kra_center))
             if doc_type == DOC_TYPE_SALES_INVOICE and kra_pin:
                 flow.append(Paragraph(f"PIN: {xml_escape(kra_pin)}", kra_center))
+            if doc_type == DOC_TYPE_SALES_INVOICE and kra_invoice_number:
+                flow.append(Paragraph(f"KRA Invoice No: {xml_escape(str(kra_invoice_number))}", kra_center))
             if kra_rn:
-                flow.append(Paragraph(f"CU Invoice No: {xml_escape(str(kra_rn))}", kra_center))
+                flow.append(Paragraph(f"KRA Receipt No: {xml_escape(str(kra_rn))}", kra_center))
             if doc_type == DOC_TYPE_SALES_INVOICE and kra_cu:
                 flow.append(Paragraph(f"Control Unit Serial No: {xml_escape(kra_cu)}", kra_center))
+            if doc_type == DOC_TYPE_SALES_INVOICE and tis_name:
+                flow.append(Paragraph(f"TIS: {xml_escape(str(tis_name))}", kra_center))
             if kra_sig:
                 flow.append(Spacer(1, 2 * mm))
                 flow.append(Paragraph("<b>Internal Data:</b>", kra_center))
@@ -302,7 +319,7 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
                 flow.append(Paragraph(sig_html, kra_center))
             if kra_qr_png:
                 flow.append(Spacer(1, 3 * mm))
-                qr_w = 46 * mm
+                qr_w = 16 * mm
                 qr_img = RLImage(BytesIO(kra_qr_png), width=qr_w, height=qr_w)
                 qr_tbl = Table([[qr_img]], colWidths=[175 * mm])
                 qr_tbl.setStyle(
@@ -573,6 +590,9 @@ def build_sales_invoice_pdf(
     kra_qr_code: Optional[str] = None,
     kra_submitted_at: Optional[datetime] = None,
     kra_cu_device_serial: Optional[str] = None,
+    kra_invoice_number: Optional[str] = None,
+    etims_trader_invoicing_system_name: Optional[str] = None,
+    fiscal_receipt: bool = False,
     show_batch_expiry: bool = False,
 ) -> bytes:
     """Build A4 PDF for a sales invoice. Logo right, company left; footer: prepared/printed/served, till; no status."""
@@ -596,7 +616,8 @@ def build_sales_invoice_pdf(
         "company_logo_bytes": company_logo_bytes,
         "branch_name": branch_name,
         "branch_address": branch_address,
-        "document_title": "SALES INVOICE",
+        "document_title": "TAX INVOICE" if fiscal_receipt else "CASH RECEIPT",
+        "non_fiscal_warning": None if fiscal_receipt else "THIS IS NOT A TAX INVOICE",
         "document_number": invoice_no or "",
         "metadata_rows": metadata,
         "client_label": "Customer",
@@ -614,10 +635,12 @@ def build_sales_invoice_pdf(
         "total_inclusive": total_inclusive,
         "notes": notes,
         "kra_receipt_number": (kra_receipt_number or "").strip() or None,
+        "kra_invoice_number": (kra_invoice_number or kra_receipt_number or "").strip() or None,
         "kra_signature": (kra_signature or "").strip() or None,
         "kra_qr_png_bytes": kra_qr_png_bytes(kra_qr_code),
         "kra_submitted_at": kra_submitted_at,
         "kra_cu_device_serial": (kra_cu_device_serial or "").strip() or None,
+        "etims_trader_invoicing_system_name": (etims_trader_invoicing_system_name or "").strip() or None,
         "show_batch_expiry": show_batch_expiry,
     }
     return build_document_pdf(DOC_TYPE_SALES_INVOICE, payload)

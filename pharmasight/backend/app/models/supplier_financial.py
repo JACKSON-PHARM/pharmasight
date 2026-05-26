@@ -91,6 +91,14 @@ class SupplierReturn(Base):
         cascade="all, delete-orphan",
     )
 
+    @property
+    def supplier_name(self):
+        return self.supplier.name if self.supplier else None
+
+    @property
+    def branch_name(self):
+        return self.branch.name if self.branch else None
+
 
 class SupplierReturnLine(Base):
     """Line item for a supplier return; used for stock reduction."""
@@ -111,6 +119,10 @@ class SupplierReturnLine(Base):
 
     supplier_return = relationship("SupplierReturn", back_populates="lines")
     item = relationship("Item")
+
+    @property
+    def item_name(self):
+        return self.item.name if self.item else None
 
 
 class SupplierLedgerEntry(Base):

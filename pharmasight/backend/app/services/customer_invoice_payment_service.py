@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.models.customer_financial import CustomerLedgerEntry
 from app.models.customer_financial import CustomerPaymentAllocation
 from app.models.sale import SalesInvoice, InvoicePayment
 from app.services.invoice_payment_status import sum_settled_payments
@@ -57,6 +58,55 @@ def sync_customer_invoice_paid_from_settlements(db: Session, invoice: SalesInvoi
         invoice.payment_status = "PARTIAL"
         if invoice.status == "PAID":
             invoice.status = "BATCHED"
+
+
+def post_customer_ledger_for_invoice_payment(
+    db: Session,
+    invoice: SalesInvoice,
+    payment: InvoicePayment,
+) -> None:
+    """Credit customer AR for direct POS invoice payments, idempotently."""
+    if not getattr(invoice, "customer_id", None):
+        return
+    mode = (getattr(payment, "payment_mode", None) or "").strip().lower()
+    if mode in ("", "credit", "insurance"):
+        return
+    amount = Decimal(str(getattr(payment, "amount", 0) or 0))
+    if amount <= 0:
+        return
+
+    existing = (
+        db.query(CustomerLedgerEntry.id)
+        .filter(
+            CustomerLedgerEntry.company_id == invoice.company_id,
+            CustomerLedgerEntry.customer_id == invoice.customer_id,
+            CustomerLedgerEntry.entry_type == "payment",
+            CustomerLedgerEntry.reference_id == payment.id,
+        )
+        .first()
+    )
+    if existing:
+        return
+
+    paid_at = getattr(payment, "paid_at", None)
+    entry_date = paid_at.date() if paid_at is not None else None
+    if entry_date is None:
+        from datetime import date
+
+        entry_date = date.today()
+
+    db.add(
+        CustomerLedgerEntry(
+            company_id=invoice.company_id,
+            branch_id=invoice.branch_id,
+            customer_id=invoice.customer_id,
+            date=entry_date,
+            entry_type="payment",
+            reference_id=payment.id,
+            debit=Decimal("0"),
+            credit=amount,
+        )
+    )
 
 
 def outstanding_after_settlements(db: Session, invoice: SalesInvoice) -> Decimal:

@@ -83,7 +83,7 @@ python create_first_client.py
 - Redirect to login page
 
 **Fix:**
-- Login as admin: username `admin`, password `33742377.jack`
+- Login as admin: username `admin`, password `<set via secure admin recovery>`
 - Check admin_token in localStorage
 
 ## Debug Steps
