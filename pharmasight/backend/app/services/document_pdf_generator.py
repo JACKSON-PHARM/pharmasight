@@ -113,6 +113,33 @@ _ITEM_DESC_STYLE = ParagraphStyle(
     leading=11,
     spaceAfter=0,
 )
+
+_STMT_DESC_STYLE = ParagraphStyle(
+    "StmtDesc",
+    fontName="Helvetica",
+    fontSize=7.5,
+    leading=9,
+    spaceAfter=0,
+    wordWrap="CJK",
+)
+_STMT_DESC_DETAIL_STYLE = ParagraphStyle(
+    "StmtDescDetail",
+    fontName="Helvetica",
+    fontSize=6.5,
+    leading=8,
+    spaceAfter=0,
+    leftIndent=2,
+    textColor=colors.HexColor("#444444"),
+    wordWrap="CJK",
+)
+_STMT_REF_STYLE = ParagraphStyle(
+    "StmtRef",
+    fontName="Helvetica",
+    fontSize=7,
+    leading=8,
+    spaceAfter=0,
+    wordWrap="CJK",
+)
 def _description_cell_flowable(row: Dict[str, Any], *, show_batch_expiry: bool) -> Any:
     name = (row.get("item_name") or row.get("description") or "").strip() or "—"
     sub = row.get("batch_expiry_subline")
@@ -768,13 +795,16 @@ def build_customer_statement_pdf(
     integrity_status: str = "PASS",
     doctrine: str = "operational_ar_v1",
     integrity_warnings: Optional[List[str]] = None,
+    statement_type: str = "summary",
 ) -> bytes:
     """
     Operational AR customer statement PDF.
     On integrity FAIL, adds a prominent DRAFT watermark (not for external use).
     """
     integrity_fail = (integrity_status or "").upper() == "FAIL"
+    st_type = (statement_type or "summary").strip().lower()
     styles = get_document_styles()
+    detail_style = styles.get("detail_small") or styles["detail"]
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=20 * mm, bottomMargin=20 * mm)
 
@@ -801,7 +831,10 @@ def build_customer_statement_pdf(
     )
     story.append(header)
     story.append(Spacer(1, 7 * mm))
-    story.append(Paragraph("CUSTOMER ACCOUNT STATEMENT", styles["heading"]))
+    title = "CUSTOMER ACCOUNT STATEMENT"
+    if st_type == "detailed":
+        title += " (DETAILED)"
+    story.append(Paragraph(title, styles["heading"]))
     story.append(Spacer(1, 6))
     gen_at = generated_at_utc or datetime.now(timezone.utc).isoformat()
     meta = [
@@ -818,27 +851,74 @@ def build_customer_statement_pdf(
     story.append(meta_table)
     story.append(Spacer(1, 8))
     story.append(Paragraph(f"Opening balance: {_money(opening_balance)}", styles["detail"]))
-    table_data = [["Date", "Description", "Reference", "Debit", "Credit", "Balance"]]
+    # A4 content width ≈ 174mm after margins — narrow numeric cols, wide description.
+    col_date = 16 * mm
+    col_desc = 78 * mm
+    col_ref = 24 * mm
+    col_debit = 16 * mm
+    col_credit = 16 * mm
+    col_balance = 18 * mm
+    col_widths = [col_date, col_desc, col_ref, col_debit, col_credit, col_balance]
+
+    header_style = ParagraphStyle(
+        "StmtHeader",
+        fontName="Helvetica-Bold",
+        fontSize=7,
+        leading=8,
+        spaceAfter=0,
+    )
+
+    def _stmt_desc_cell(text: str, *, is_detail: bool) -> Paragraph:
+        safe = xml_escape(str(text or ""))
+        style = _STMT_DESC_DETAIL_STYLE if is_detail else _STMT_DESC_STYLE
+        return Paragraph(safe, style)
+
+    def _stmt_ref_cell(text: str) -> Paragraph:
+        safe = xml_escape(str(text or "—"))
+        return Paragraph(safe, _STMT_REF_STYLE)
+
+    table_data: List[List[Any]] = [
+        [
+            Paragraph("Date", header_style),
+            Paragraph("Description", header_style),
+            Paragraph("Reference", header_style),
+            Paragraph("Debit", header_style),
+            Paragraph("Credit", header_style),
+            Paragraph("Balance", header_style),
+        ]
+    ]
     for line in lines:
+        is_detail = bool(line.get("is_detail"))
+        desc = str(line.get("description") or line.get("entry_type") or "")
+        if is_detail and line.get("line_amount") is not None:
+            desc = f"{desc} — {_money(line.get('line_amount'))}"
+        ref = str(line.get("reference") or ("—" if not is_detail else ""))
         table_data.append(
             [
-                _format_date(line.get("date")),
-                xml_escape(str(line.get("description") or line.get("entry_type") or "")),
-                xml_escape(str(line.get("reference") or "—")),
-                _money(line.get("debit")),
-                _money(line.get("credit")),
-                _money(line.get("balance")),
+                _format_date(line.get("date")) if not is_detail else "",
+                _stmt_desc_cell(desc, is_detail=is_detail),
+                _stmt_ref_cell(ref) if not is_detail else Paragraph("", _STMT_REF_STYLE),
+                _money(line.get("debit")) if not is_detail else "",
+                _money(line.get("credit")) if not is_detail else "",
+                _money(line.get("balance")) if not is_detail else "",
             ]
         )
-    t = Table(table_data, colWidths=[55, 120, 85, 55, 55, 55], repeatRows=1)
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
     t.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("FONTSIZE", (3, 1), (-1, -1), 6.5),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+                ("ALIGN", (0, 0), (2, -1), "LEFT"),
+                ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )
@@ -849,7 +929,7 @@ def build_customer_statement_pdf(
         story.append(Spacer(1, 6))
         story.append(Paragraph("<b>Integrity notes:</b>", styles["detail"]))
         for w in integrity_warnings[:8]:
-            story.append(Paragraph(f"• {xml_escape(w)}", styles.get("detail_small", styles["normal"])))
+            story.append(Paragraph(f"• {xml_escape(w)}", detail_style))
     if integrity_fail:
         story.append(Spacer(1, 8))
         story.append(

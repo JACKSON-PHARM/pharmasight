@@ -81,6 +81,24 @@ async function loadSales() {
 
     console.log('Loading sales sub-page:', currentSalesSubPage);
     await loadSalesSubPage(currentSalesSubPage);
+
+    // If navigated here with a pending "open this invoice" intent (e.g., from Customer profile),
+    // open it after the Sales page has mounted.
+    try {
+        const raw = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pendingLandingDocument');
+        if (raw) {
+            const pending = JSON.parse(raw);
+            if (pending && pending.type === 'sales_invoice' && pending.invoice_id) {
+                sessionStorage.removeItem('pendingLandingDocument');
+                // Load invoice in view mode; if it is DRAFT, the create page will switch to edit.
+                if (typeof viewSalesInvoice === 'function') {
+                    setTimeout(() => {
+                        viewSalesInvoice(pending.invoice_id);
+                    }, 50);
+                }
+            }
+        }
+    } catch (_) {}
 }
 
 // Load specific sales sub-page
@@ -3153,6 +3171,9 @@ async function applySalesDateFilter() {
         if (rawSearch && looksLikeInvoiceNo) {
             params.invoice_no = normalized;
             params.limit = 1;
+        } else if (rawSearch) {
+            // Server-side search so older invoices are retrievable without loading full history.
+            params.q = rawSearch;
         }
 
         salesInvoices = await API.sales.getBranchInvoices(CONFIG.BRANCH_ID, params);
@@ -3899,6 +3920,10 @@ async function deleteSalesInvoice(invoiceId) {
         await API.sales.deleteInvoice(invoiceId);
         showToast('Invoice deleted successfully', 'success');
         
+        if (window.operationalBacklogBell && window.operationalBacklogBell.refresh) {
+            await window.operationalBacklogBell.refresh(true);
+        }
+        
         // Clear current invoice if we're editing it
         if (currentInvoice && currentInvoice.id === invoiceId) {
             currentInvoice = null;
@@ -3918,7 +3943,10 @@ const PAYMENT_SETTLEMENT_TOLERANCE = 0.01;
 
 function sumSettledPayments(payments) {
     return (payments || [])
-        .filter((p) => String(p.payment_mode || '').toLowerCase() !== 'insurance')
+        .filter((p) => {
+            const mode = String(p.payment_mode || '').toLowerCase();
+            return mode !== 'insurance' && mode !== 'credit';
+        })
         .reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
 }
 
@@ -4054,9 +4082,10 @@ function showSplitPaymentModal(invoice, paymentsPreloaded) {
                             <option value="cash">Cash</option>
                             <option value="mpesa">M-Pesa</option>
                             <option value="card">Card</option>
-                            <option value="credit">Credit</option>
+                            ${isCreditInvoice ? '' : '<option value="credit">Credit</option>'}
                             <option value="insurance">Insurance</option>
                         </select>
+                        ${isCreditInvoice ? '<small style="color: var(--text-secondary); display:block; margin-top:0.35rem;">Collect with cash, M-Pesa, or card to clear this customer account.</small>' : ''}
                     </div>
                     <div style="margin-bottom: 1rem; display:none;" id="insuranceProviderWrap">
                         <label class="form-label">Insurance Provider *</label>
@@ -4128,6 +4157,15 @@ function showSplitPaymentModal(invoice, paymentsPreloaded) {
 async function submitSplitPayment(event, invoiceId) {
     event.preventDefault();
     
+    // Prevent double-submit (fast clicks / lag).
+    const submitBtn = document.querySelector('#splitPaymentForm button[type="submit"]');
+    if (submitBtn && submitBtn.disabled) return;
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.dataset.originalHtml = submitBtn.innerHTML;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Adding...';
+    }
+
     const paymentMode = document.getElementById('paymentMode').value;
     const insuranceProviderId = document.getElementById('insuranceProviderId')?.value || null;
     const amount = parseFloat(document.getElementById('paymentAmount').value);
@@ -4136,6 +4174,10 @@ async function submitSplitPayment(event, invoiceId) {
     
     if (!userId) {
         showToast('User ID not found. Please log in again.', 'error');
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = submitBtn.dataset.originalHtml || submitBtn.innerHTML;
+        }
         return;
     }
     
@@ -4182,18 +4224,26 @@ async function submitSplitPayment(event, invoiceId) {
         // Reload invoice to check if fully paid
         const updatedInvoice = await API.sales.getInvoice(invoiceId);
         
+        // Always close the modal after a successful post; user can re-open if needed.
+        try { closeModal(); } catch (_) {}
+
         if (updatedInvoice.status === 'PAID') {
             showToast('Invoice fully paid!', 'success');
-            closeModal();
-            await fetchAndRenderSalesInvoicesData();
-        } else {
-            const refreshedPayments = await API.sales.getPayments(invoiceId);
-            showSplitPaymentModal(updatedInvoice, refreshedPayments);
+        }
+        await fetchAndRenderSalesInvoicesData();
+        // Refresh the opened invoice view if we're on it.
+        if (typeof viewSalesInvoice === 'function') {
+            try { await viewSalesInvoice(invoiceId); } catch (_) {}
         }
     } catch (error) {
         console.error('Error adding payment:', error);
         const errorMsg = error.message || 'Failed to add payment';
         showToast(errorMsg, 'error');
+        // Re-enable only on failure.
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = submitBtn.dataset.originalHtml || submitBtn.innerHTML;
+        }
     }
 }
 
@@ -4855,6 +4905,10 @@ async function convertSalesInvoiceToQuotation(invoiceId) {
         showToast('Converting invoice to quotation...', 'info');
         const result = await API.sales.convertToQuotation(invoiceId);
         showToast(`Invoice converted to quotation: ${result.quotation_no}`, 'success');
+        
+        if (window.operationalBacklogBell && window.operationalBacklogBell.refresh) {
+            await window.operationalBacklogBell.refresh(true);
+        }
         
         // Clear current invoice if we're editing it
         if (currentInvoice && currentInvoice.id === invoiceId) {

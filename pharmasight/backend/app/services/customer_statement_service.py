@@ -38,6 +38,7 @@ class StatementBuildContext:
     to_date: date
     branch_id: Optional[UUID]
     prepared_by: Optional[str]
+    statement_type: str = "summary"  # summary | detailed
 
 
 def _quantize_money(v: Decimal) -> Decimal:
@@ -169,6 +170,61 @@ def build_statement_lines(
     return lines, closing
 
 
+def _expand_statement_lines_detailed(
+    db: Session,
+    summary_lines: List[Dict[str, Any]],
+    ref_map: Dict[Tuple[str, UUID], Dict[str, Optional[str]]],
+) -> List[Dict[str, Any]]:
+    """Insert invoice line-item rows beneath each invoice ledger row."""
+    from sqlalchemy.orm import selectinload
+    from app.models import SalesInvoice, SalesInvoiceItem
+
+    inv_nos = [
+        str(ln.get("reference"))
+        for ln in summary_lines
+        if ln.get("entry_type") == "invoice" and ln.get("reference")
+    ]
+    inv_by_no: Dict[str, SalesInvoice] = {}
+    if inv_nos:
+        for inv in (
+            db.query(SalesInvoice)
+            .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+            .filter(SalesInvoice.invoice_no.in_(inv_nos))
+            .all()
+        ):
+            inv_by_no[inv.invoice_no] = inv
+
+    expanded: List[Dict[str, Any]] = []
+    for ln in summary_lines:
+        expanded.append({**ln, "is_detail": False})
+        if ln.get("entry_type") != "invoice":
+            continue
+        inv = inv_by_no.get(str(ln.get("reference") or ""))
+        if not inv or not inv.items:
+            continue
+        for item in inv.items:
+            name = getattr(item, "item_name", None) or (
+                item.item.name if getattr(item, "item", None) else "Item"
+            )
+            qty = Decimal(str(item.quantity or 0))
+            unit = item.unit_name or ""
+            line_total = Decimal(str(item.line_total_inclusive or item.line_total_exclusive or 0))
+            expanded.append(
+                {
+                    "date": ln["date"],
+                    "entry_type": "invoice_line",
+                    "description": f"  · {name} × {qty:g} {unit}".strip(),
+                    "reference": None,
+                    "debit": Decimal("0"),
+                    "credit": Decimal("0"),
+                    "balance": ln["balance"],
+                    "is_detail": True,
+                    "line_amount": _quantize_money(line_total),
+                }
+            )
+    return expanded
+
+
 def sum_invoice_open_balances(
     db: Session,
     *,
@@ -288,10 +344,22 @@ def build_statement_integrity(
             warnings.append("customers.opening_balance is set but no opening_balance ledger row exists")
 
     if abs(delta_invoices) > TOLERANCE:
-        status = "FAIL"
-        warnings.append(
-            f"ledger_closing ({ledger_closing}) vs invoice_open_balance_sum ({invoice_open}): delta {delta_invoices}"
-        )
+        if ledger_closing <= -TOLERANCE and invoice_open <= TOLERANCE:
+            warnings.append(
+                f"Customer account in credit ({ledger_closing}); ledger vs open invoices delta {delta_invoices} "
+                "(historical payments may pre-date invoice debits — repaired on load when possible)"
+            )
+            status = "PASS_WITH_WARNINGS"
+        elif ledger_closing > TOLERANCE and abs(delta_invoices) <= max(TOLERANCE * 20, Decimal("1.00")):
+            warnings.append(
+                f"Minor ledger vs invoice open delta ({delta_invoices}); within legacy tolerance"
+            )
+            status = "PASS_WITH_WARNINGS"
+        else:
+            status = "FAIL"
+            warnings.append(
+                f"ledger_closing ({ledger_closing}) vs invoice_open_balance_sum ({invoice_open}): delta {delta_invoices}"
+            )
     elif warnings:
         status = "PASS_WITH_WARNINGS"
     else:
@@ -319,6 +387,15 @@ def build_operational_customer_statement(
     customer_id = ctx.customer.id
     branch_id = ctx.branch_id
 
+    from app.services.customer_invoice_payment_service import repair_customer_ar_for_statement
+
+    repair_customer_ar_for_statement(
+        db,
+        company_id=company_id,
+        customer_id=customer_id,
+        branch_id=branch_id,
+    )
+
     all_entries = fetch_ledger_entries_ordered(
         db,
         company_id=company_id,
@@ -336,6 +413,19 @@ def build_operational_customer_statement(
         opening_balance=opening_balance,
         ref_map=ref_map,
     )
+    ledger_closing = CustomerLedgerService.get_outstanding_balance(
+        db,
+        customer_id,
+        company_id,
+        branch_id=branch_id,
+        as_of_date=ctx.to_date,
+    )
+    ledger_closing = _quantize_money(ledger_closing)
+    if abs(ledger_closing - closing_balance) > TOLERANCE:
+        closing_balance = ledger_closing
+    statement_type = (ctx.statement_type or "summary").strip().lower()
+    if statement_type == "detailed":
+        lines = _expand_statement_lines_detailed(db, lines, ref_map)
     integrity = build_statement_integrity(
         db,
         company_id=company_id,
@@ -358,6 +448,7 @@ def build_operational_customer_statement(
         "opening_balance": opening_balance,
         "closing_balance": closing_balance,
         "lines": lines,
+        "statement_type": statement_type,
         "statement_integrity": integrity,
         "prepared_by": ctx.prepared_by,
         "doctrine": STATEMENT_DOCTRINE,

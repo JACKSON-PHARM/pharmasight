@@ -3,8 +3,10 @@ Wholesale customers API (B2B master data)
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 from typing import List
+from datetime import date
+from decimal import Decimal
 from uuid import UUID
 
 from app.dependencies import get_tenant_db, get_current_user
@@ -183,16 +185,40 @@ def list_customer_portal_users(
     ]
 
 
+def _sales_invoice_balance_sort_key(inv: SalesInvoice) -> Decimal:
+    b = getattr(inv, "balance", None)
+    if b is None:
+        return Decimal("0")
+    return Decimal(str(b))
+
+
+def _invoice_is_effectively_open(inv: SalesInvoice, tol: Decimal = Decimal("0.01")) -> bool:
+    """True if customer still owes on this invoice (after reconciliation)."""
+    ps = (getattr(inv, "payment_status", None) or "").strip().upper()
+    if ps in ("UNPAID", "PARTIAL"):
+        return True
+    bal = getattr(inv, "balance", None)
+    if bal is None:
+        return False
+    return Decimal(str(bal)) > tol
+
+
 @router.get("/{customer_id}/invoices")
 def list_customer_sales_invoices(
     customer_id: UUID,
     request: Request,
     branch_id: UUID | None = Query(None),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(25, ge=1, le=100),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Recent posted invoices for refill/repeat-sale selection."""
+    """
+    Posted invoices for customer profile / refills.
+
+    Prioritizes open (unpaid / partial / positive balance) rows first:
+    sorted by outstanding balance descending, then invoice_date descending,
+    then merges recent settled invoices up to ``limit``.
+    """
     effective = getattr(request.state, "effective_company_id", None)
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
@@ -218,11 +244,87 @@ def list_customer_sales_invoices(
     )
     if branch_id:
         q = q.filter(SalesInvoice.branch_id == branch_id)
-    invoices = (
-        q.order_by(SalesInvoice.invoice_date.desc(), SalesInvoice.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+
+    ps_upper = func.upper(func.coalesce(SalesInvoice.payment_status, ""))
+    bal_expr = func.coalesce(SalesInvoice.balance, 0)
+
+    # Candidates likely to have arrears (not “fully settled” on row alone).
+    open_q = q.filter(
+        or_(
+            ps_upper.in_(["UNPAID", "PARTIAL"]),
+            bal_expr > Decimal("0.01"),
+            and_(SalesInvoice.balance.is_(None), ps_upper != "PAID"),
+        )
+    ).order_by(SalesInvoice.invoice_date.desc(), SalesInvoice.created_at.desc())
+
+    open_candidates = open_q.limit(400).all()
+
+    open_ids = [i.id for i in open_candidates]
+    settled_q = q.order_by(SalesInvoice.invoice_date.desc(), SalesInvoice.created_at.desc())
+    if open_ids:
+        settled_q = settled_q.filter(~SalesInvoice.id.in_(open_ids))
+
+    from app.services.customer_invoice_payment_service import reconcile_customer_ar_for_invoice
+
+    invoices_merged: list[SalesInvoice] = []
+    seen: set[str] = set()
+
+    if open_candidates:
+        for inv in open_candidates:
+            if inv.customer_id:
+                reconcile_customer_ar_for_invoice(db, inv)
+        if open_candidates:
+            db.commit()
+        for inv in open_candidates:
+            db.refresh(inv)
+        open_rows = [i for i in open_candidates if _invoice_is_effectively_open(i)]
+        open_rows.sort(
+            key=lambda i: (-_sales_invoice_balance_sort_key(i), -(i.invoice_date or date.min).toordinal()),
+        )
+        seen = {str(i.id) for i in open_rows}
+        invoices_merged.extend(open_rows[:limit])
+        seen.update(str(i.id) for i in open_rows[:limit])
+
+    need = limit - len(invoices_merged)
+    settled_rows: list[SalesInvoice] = []
+    if need > 0:
+        settled_rows = settled_q.limit(need + 50).all()  # small buffer after reconcile trimming
+        for inv in settled_rows:
+            if inv.customer_id:
+                reconcile_customer_ar_for_invoice(db, inv)
+        if settled_rows:
+            db.commit()
+        for inv in settled_rows:
+            db.refresh(inv)
+        # Prefer still-recent invoices that ended up settled; skip any that are actually open now.
+        for inv in settled_rows:
+            if str(inv.id) in seen:
+                continue
+            if _invoice_is_effectively_open(inv):
+                continue
+            invoices_merged.append(inv)
+            seen.add(str(inv.id))
+            if len(invoices_merged) >= limit:
+                break
+
+    # Fallback: fewer than ``limit`` invoices total for customer.
+    if len(invoices_merged) == 0 and not open_candidates:
+        fallback = (
+            q.order_by(SalesInvoice.invoice_date.desc(), SalesInvoice.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        for inv in fallback:
+            if inv.customer_id:
+                reconcile_customer_ar_for_invoice(db, inv)
+        if fallback:
+            db.commit()
+        for inv in fallback:
+            db.refresh(inv)
+        invoices_merged = fallback
+
+    invoices = invoices_merged[:limit]
+
     return [
         {
             "id": str(inv.id),

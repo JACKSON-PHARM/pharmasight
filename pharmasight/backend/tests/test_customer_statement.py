@@ -173,6 +173,87 @@ def test_integrity_fail_material_divergence(monkeypatch):
     assert out["status"] == "FAIL"
 
 
+def test_integrity_pass_with_warnings_credit_account(monkeypatch):
+    class FakeQuery:
+        def filter(self, *a, **k):
+            return self
+
+        def join(self, *a, **k):
+            return self
+
+        def count(self):
+            return 0
+
+        def all(self):
+            return []
+
+        def first(self):
+            return None
+
+    class FakeDb:
+        def query(self, model):
+            return FakeQuery()
+
+    monkeypatch.setattr(
+        "app.services.customer_statement_service.sum_invoice_open_balances",
+        lambda *a, **k: Decimal("0.00"),
+    )
+    monkeypatch.setattr(
+        "app.services.customer_statement_service.CustomerLedgerService.get_outstanding_balance",
+        lambda *a, **k: Decimal("-4229.95"),
+    )
+    out = build_statement_integrity(
+        FakeDb(),
+        company_id=uuid4(),
+        customer_id=uuid4(),
+        branch_id=None,
+        to_date=date(2026, 5, 27),
+        ledger_closing_balance=Decimal("-4229.95"),
+    )
+    assert out["status"] == "PASS_WITH_WARNINGS"
+    assert any("credit" in w.lower() for w in out["warnings"])
+
+
+def test_pdf_detailed_statement_with_detail_lines():
+    from app.services.document_pdf_generator import build_customer_statement_pdf
+
+    pdf = build_customer_statement_pdf(
+        company_name="Test Co",
+        customer_name="Acme",
+        from_date=date(2025, 1, 1),
+        to_date=date(2025, 1, 31),
+        opening_balance=Decimal("0"),
+        closing_balance=Decimal("100"),
+        lines=[
+            {
+                "date": date(2025, 1, 10),
+                "entry_type": "invoice",
+                "description": "Invoice",
+                "reference": "INV-001",
+                "debit": Decimal("100"),
+                "credit": Decimal("0"),
+                "balance": Decimal("100"),
+                "is_detail": False,
+            },
+            {
+                "date": date(2025, 1, 10),
+                "entry_type": "invoice_line",
+                "description": "  · Paracetamol × 2 tab",
+                "reference": None,
+                "debit": Decimal("0"),
+                "credit": Decimal("0"),
+                "balance": Decimal("100"),
+                "is_detail": True,
+                "line_amount": Decimal("100"),
+            },
+        ],
+        integrity_status="PASS_WITH_WARNINGS",
+        integrity_warnings=["Legacy payments pre-date invoice debits"],
+        statement_type="detailed",
+    )
+    assert pdf[:4] == b"%PDF"
+
+
 def test_pdf_integrity_fail_watermark_flag():
     from app.services.document_pdf_generator import build_customer_statement_pdf
 

@@ -112,6 +112,8 @@ class CustomerStatementLine(BaseModel):
     debit: Decimal
     credit: Decimal
     balance: Decimal
+    is_detail: bool = False
+    line_amount: Optional[Decimal] = None
 
 
 class CustomerStatementIntegrity(BaseModel):
@@ -140,6 +142,7 @@ class CustomerStatementResponse(BaseModel):
     opening_balance: Decimal
     closing_balance: Decimal
     lines: List[CustomerStatementLine] = []
+    statement_type: str = "summary"
     statement_integrity: Optional[CustomerStatementIntegrity] = None
     prepared_by: Optional[str] = None
     doctrine: str = "operational_ar_v1"

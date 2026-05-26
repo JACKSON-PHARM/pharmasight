@@ -972,6 +972,7 @@ const API = {
             if (params.date_from) qs.append('date_from', params.date_from);
             if (params.date_to) qs.append('date_to', params.date_to);
             if (params.invoice_no) qs.append('invoice_no', params.invoice_no);
+            if (params.q) qs.append('q', params.q);
             if (params.limit != null) qs.append('limit', params.limit);
             return api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/invoices${qs.toString() ? '?' + qs : ''}`);
         },
@@ -1410,6 +1411,7 @@ const API = {
             if (params.branch_id) qs.append('branch_id', params.branch_id);
             qs.append('from_date', params.from_date);
             qs.append('to_date', params.to_date);
+            if (params.statement_type) qs.append('statement_type', params.statement_type);
             return api.get(`${CONFIG.API_ENDPOINTS.customers}/statement?${qs.toString()}`);
         },
         downloadStatementPdf: async (params) => {
@@ -1418,6 +1420,7 @@ const API = {
             if (params.branch_id) qs.append('branch_id', params.branch_id);
             qs.append('from_date', params.from_date);
             qs.append('to_date', params.to_date);
+            if (params.statement_type) qs.append('statement_type', params.statement_type);
             if (params.block_on_fail) qs.append('block_on_fail', 'true');
             const base = CONFIG.API_ENDPOINTS.customers || '/api/customers';
             const url = `${api.baseURL}${base}/statement/pdf?${qs.toString()}`;
@@ -1447,9 +1450,10 @@ const API = {
             const blobUrl = URL.createObjectURL(blob);
             const safe = (params.customer_name || 'customer').toString().replace(/\s+/g, '-').slice(0, 40);
             const prefix = integrity === 'FAIL' ? 'DRAFT-' : '';
+            const typeSuffix = (params.statement_type || 'summary') === 'detailed' ? 'detailed-' : 'summary-';
             const a = document.createElement('a');
             a.href = blobUrl;
-            a.download = `${prefix}customer-statement-${safe}-${params.from_date}-${params.to_date}.pdf`;
+            a.download = `${prefix}customer-statement-${typeSuffix}${safe}-${params.from_date}-${params.to_date}.pdf`;
             a.click();
             URL.revokeObjectURL(blobUrl);
             return { integrity };

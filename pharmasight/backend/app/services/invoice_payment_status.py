@@ -16,6 +16,9 @@ from app.models.sale import InvoicePayment, SalesInvoice
 # KES: treat within 1 cent as fully settled (rounding / legacy rows).
 PAYMENT_SETTLEMENT_TOLERANCE = Decimal("0.01")
 
+# POS rows that reduce invoice / customer AR (not sale-on-account or insurer receivable).
+NON_SETTLING_POS_PAYMENT_MODES = frozenset({"insurance", "credit", ""})
+
 
 def _d(value) -> Decimal:
     if value is None:
@@ -24,16 +27,18 @@ def _d(value) -> Decimal:
 
 
 def sum_settled_payments(db: Session, invoice_id: UUID) -> Decimal:
-    """Non-insurance payments count toward customer settlement."""
-    total = (
-        db.query(func.coalesce(func.sum(InvoicePayment.amount), 0))
-        .filter(
-            InvoicePayment.invoice_id == invoice_id,
-            InvoicePayment.payment_mode != "insurance",
-        )
-        .scalar()
+    """Real money POS payments count toward settlement (excludes insurance + credit modes)."""
+    rows = (
+        db.query(InvoicePayment.payment_mode, InvoicePayment.amount)
+        .filter(InvoicePayment.invoice_id == invoice_id)
+        .all()
     )
-    return _d(total)
+    total = Decimal("0")
+    for mode, amount in rows:
+        if (mode or "").strip().lower() in NON_SETTLING_POS_PAYMENT_MODES:
+            continue
+        total += _d(amount)
+    return total
 
 
 def outstanding_balance(invoice: SalesInvoice, settled: Optional[Decimal] = None) -> Decimal:

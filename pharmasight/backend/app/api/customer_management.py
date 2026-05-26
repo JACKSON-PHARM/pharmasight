@@ -55,6 +55,7 @@ from app.utils.customer_access import (
     get_customer_hub_mode,
     require_customer_hub_branch,
 )
+from app.utils.user_display import resolve_user_display_name
 from app.services.customer_statement_service import (
     StatementBuildContext,
     build_operational_customer_statement,
@@ -141,10 +142,22 @@ def list_customers_enriched(
     inv_q = inv_q.group_by(SalesInvoice.customer_id)
     inv_rows = {str(r.customer_id): r for r in inv_q.all() if r.customer_id}
 
+    ledger_q = db.query(
+        CustomerLedgerEntry.customer_id,
+        (
+            func.coalesce(func.sum(CustomerLedgerEntry.debit), 0)
+            - func.coalesce(func.sum(CustomerLedgerEntry.credit), 0)
+        ).label("net"),
+    ).filter(CustomerLedgerEntry.company_id == company_id)
+    if branch_id:
+        ledger_q = ledger_q.filter(CustomerLedgerEntry.branch_id == branch_id)
+    ledger_q = ledger_q.group_by(CustomerLedgerEntry.customer_id)
+    ledger_rows = {str(r.customer_id): Decimal(str(r.net or 0)) for r in ledger_q.all() if r.customer_id}
+
     result = []
     for c in customers:
         r = inv_rows.get(str(c.id))
-        outstanding = Decimal(str(r.outstanding)) if r else Decimal("0")
+        outstanding = ledger_rows.get(str(c.id), Decimal("0"))
         overdue = Decimal(str(r.overdue)) if r and r.overdue else Decimal("0")
         this_month = Decimal(str(r.this_month)) if r and r.this_month else Decimal("0")
         result.append({
@@ -571,9 +584,12 @@ def _statement_response_from_build(data: dict) -> CustomerStatementResponse:
                 debit=ln["debit"],
                 credit=ln["credit"],
                 balance=ln["balance"],
+                is_detail=bool(ln.get("is_detail")),
+                line_amount=ln.get("line_amount"),
             )
             for ln in data.get("lines") or []
         ],
+        statement_type=data.get("statement_type") or "summary",
         statement_integrity=CustomerStatementIntegrity(**integrity_raw) if integrity_raw else None,
         prepared_by=data.get("prepared_by"),
         doctrine=data.get("doctrine", "operational_ar_v1"),
@@ -587,6 +603,7 @@ def get_customer_statement(
     from_date: date = Query(...),
     to_date: date = Query(...),
     branch_id: Optional[UUID] = Query(None),
+    statement_type: str = Query("summary", description="summary | detailed"),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
@@ -612,7 +629,10 @@ def get_customer_statement(
     if branch_id and not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
 
-    prepared_by = getattr(user, "full_name", None) or getattr(user, "username", None) or str(user.id)
+    prepared_by = resolve_user_display_name(db, user)
+    st_type = (statement_type or "summary").strip().lower()
+    if st_type not in ("summary", "detailed"):
+        raise HTTPException(status_code=400, detail="statement_type must be summary or detailed")
     built = build_operational_customer_statement(
         db,
         StatementBuildContext(
@@ -623,6 +643,7 @@ def get_customer_statement(
             to_date=to_date,
             branch_id=branch_id,
             prepared_by=prepared_by,
+            statement_type=st_type,
         ),
     )
     return _statement_response_from_build(built)
@@ -635,6 +656,7 @@ def get_customer_statement_pdf(
     from_date: date = Query(...),
     to_date: date = Query(...),
     branch_id: Optional[UUID] = Query(None),
+    statement_type: str = Query("summary", description="summary | detailed"),
     block_on_fail: bool = Query(False, description="If true, return 409 when integrity status is FAIL"),
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
@@ -662,7 +684,10 @@ def get_customer_statement_pdf(
     if branch_id and not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
 
-    prepared_by = getattr(user, "full_name", None) or getattr(user, "username", None) or str(user.id)
+    prepared_by = resolve_user_display_name(db, user)
+    st_type = (statement_type or "summary").strip().lower()
+    if st_type not in ("summary", "detailed"):
+        raise HTTPException(status_code=400, detail="statement_type must be summary or detailed")
     built = build_operational_customer_statement(
         db,
         StatementBuildContext(
@@ -673,6 +698,7 @@ def get_customer_statement_pdf(
             to_date=to_date,
             branch_id=branch_id,
             prepared_by=prepared_by,
+            statement_type=st_type,
         ),
     )
     integrity = built.get("statement_integrity") or {}
@@ -708,13 +734,15 @@ def get_customer_statement_pdf(
             integrity_status=integrity_status,
             doctrine=built.get("doctrine", "operational_ar_v1"),
             integrity_warnings=integrity.get("warnings") or [],
+            statement_type=st_type,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate statement PDF: {e}") from e
 
     prefix = "DRAFT-" if integrity_status == "FAIL" else ""
     safe_name = (customer.name or "customer").replace(" ", "-")[:40]
-    filename = f"{prefix}customer-statement-{safe_name}-{from_date}-{to_date}.pdf"
+    type_suffix = "detailed" if st_type == "detailed" else "summary"
+    filename = f"{prefix}customer-statement-{type_suffix}-{safe_name}-{from_date}-{to_date}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -926,6 +954,15 @@ def get_customer_analytics(
         if branch_id:
             q = q.filter(SalesInvoice.branch_id == branch_id)
         return Decimal(str(q.scalar() or 0))
+
+    from app.services.customer_invoice_payment_service import repair_customer_ar_for_statement
+
+    repair_customer_ar_for_statement(
+        db,
+        company_id=company_id,
+        customer_id=customer_id,
+        branch_id=branch_id,
+    )
 
     outstanding = CustomerLedgerService.get_outstanding_balance(
         db, customer_id, company_id, branch_id=branch_id

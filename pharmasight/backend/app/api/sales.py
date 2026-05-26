@@ -921,6 +921,20 @@ def _get_sales_invoice_response(
     except Exception:
         invoice.constitutional_state = None
 
+    if getattr(invoice, "customer_id", None) and (invoice.status or "") in ("BATCHED", "PAID"):
+        from app.services.customer_invoice_payment_service import reconcile_customer_ar_for_invoice
+
+        before_balance = invoice.balance
+        before_status = invoice.payment_status
+        ar_result = reconcile_customer_ar_for_invoice(db, invoice)
+        if (
+            int(ar_result.get("ledger_credits_ensured") or 0) > 0
+            or before_balance != invoice.balance
+            or before_status != invoice.payment_status
+        ):
+            db.commit()
+            db.refresh(invoice)
+
     if request is not None:
         request.state.timings["BuildMs"] = round((time.perf_counter() - t4) * 1000, 1)
         request.state.timings["TotalMs"] = round((time.perf_counter() - t0) * 1000, 1)
@@ -2184,6 +2198,7 @@ def get_branch_invoices(
     date_from: Optional[date] = Query(None, description="Filter from this date (for returns: use with date_to)"),
     date_to: Optional[date] = Query(None, description="Filter to this date"),
     invoice_no: Optional[str] = Query(None, description="Exact invoice number lookup (targeted search)"),
+    q: Optional[str] = Query(None, description="Search invoice number / customer (case-insensitive contains)"),
     limit: int = Query(50, ge=1, le=100, description="Max results (default 50 for return flow)"),
 ):
     """
@@ -2210,13 +2225,35 @@ def get_branch_invoices(
     ).filter(SalesInvoice.branch_id == branch_id)
 
     if invoice_no is not None and str(invoice_no).strip():
-        # Targeted search by document number
-        query = query.filter(SalesInvoice.invoice_no == str(invoice_no).strip())
+        # Targeted search by document number (case-insensitive exact)
+        normalized = str(invoice_no).strip()
+        query = query.filter(func.upper(SalesInvoice.invoice_no) == func.upper(normalized))
         if date_from is not None:
             query = query.filter(SalesInvoice.invoice_date >= date_from)
         if date_to is not None:
             query = query.filter(SalesInvoice.invoice_date <= date_to)
         query = query.order_by(SalesInvoice.created_at.desc()).limit(1)
+    elif q is not None and str(q).strip():
+        # Server-side search so the UI can retrieve older invoices without loading full history.
+        term = str(q).strip()
+        if len(term) < 3 and (date_from is None or date_to is None):
+            raise HTTPException(
+                status_code=400,
+                detail="Search term too short. Provide at least 3 characters, or use a date range.",
+            )
+        like = f"%{term}%"
+        query = query.filter(
+            (SalesInvoice.invoice_no.ilike(like)) | (SalesInvoice.customer_name.ilike(like))
+        )
+        if date_from is not None:
+            query = query.filter(SalesInvoice.invoice_date >= date_from)
+        if date_to is not None:
+            query = query.filter(SalesInvoice.invoice_date <= date_to)
+        query = query.order_by(
+            SalesInvoice.invoice_date.desc(),
+            SalesInvoice.created_at.desc(),
+            SalesInvoice.invoice_no.desc(),
+        ).limit(limit)
     else:
         # Date-scoped list (default: today only)
         if date_from is not None:
@@ -3147,7 +3184,10 @@ def delete_sales_invoice(
             status_code=400,
             detail=f"Cannot delete invoice with status {invoice.status}. Only DRAFT invoices can be deleted."
         )
-    
+
+    from app.services.quotation_conversion_service import release_quotations_linked_to_invoice
+
+    release_quotations_linked_to_invoice(db, invoice_id)
     db.delete(invoice)
     db.commit()
     return None
@@ -3291,16 +3331,25 @@ def add_invoice_payment(
             status_code=400,
             detail=f"Cannot add payment to invoice with status {invoice.status}. Invoice must be BATCHED."
         )
-    existing_payments = db.query(func.sum(InvoicePayment.amount)).filter(
-        InvoicePayment.invoice_id == invoice_id,
-        InvoicePayment.payment_mode != "insurance",
-    ).scalar() or Decimal("0")
-    total_paid = existing_payments + payment.amount
-    effective_total_after = existing_payments + (Decimal("0") if payment.payment_mode == "insurance" else payment.amount)
+    pay_mode = (payment.payment_mode or "").strip().lower()
+    if pay_mode == "credit":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Payment mode 'credit' does not settle a customer account. "
+                "Use cash, M-Pesa, card, or bank when collecting payment."
+            ),
+        )
+    existing_settled = sum_settled_payments(db, invoice_id)
+    increment = Decimal("0") if pay_mode in ("insurance", "credit", "") else payment.amount
+    effective_total_after = existing_settled + increment
     if effective_total_after > Decimal(str(invoice.total_inclusive or 0)) + PAYMENT_SETTLEMENT_TOLERANCE:
         raise HTTPException(
             status_code=400,
-            detail=f"Payment amount exceeds invoice total. Invoice: {invoice.total_inclusive}, Total paid: {total_paid}"
+            detail=(
+                f"Payment amount exceeds invoice total. Invoice: {invoice.total_inclusive}, "
+                f"Settled after payment: {effective_total_after}"
+            ),
         )
     provider = None
     if payment.payment_mode == "insurance":
@@ -3392,19 +3441,20 @@ def add_invoice_payment(
             notes=f"Claim against invoice {invoice.invoice_no}",
         ))
 
-    apply_payment_status_from_settled(
-        invoice,
-        effective_total_after,
-        approved_by=payment.paid_by,
-    )
-    if getattr(invoice, "customer_id", None) and payment.payment_mode != "insurance":
-        from app.services.customer_invoice_payment_service import (
-            post_customer_ledger_for_invoice_payment,
-            sync_customer_invoice_paid_from_settlements,
-        )
+    from app.services.customer_invoice_payment_service import reconcile_customer_ar_for_invoice
 
-        post_customer_ledger_for_invoice_payment(db, invoice, db_payment)
-        sync_customer_invoice_paid_from_settlements(db, invoice)
+    if getattr(invoice, "customer_id", None):
+        reconcile_customer_ar_for_invoice(
+            db,
+            invoice,
+            approved_by=payment.paid_by,
+        )
+    else:
+        apply_payment_status_from_settled(
+            invoice,
+            effective_total_after,
+            approved_by=payment.paid_by,
+        )
 
     try:
         from app.services.commercial_transaction_lifecycle import on_invoice_payment_recorded
@@ -3482,6 +3532,25 @@ def revert_invoice_paid_status(
 
     req = body or RevertPaidStatusRequest()
     payments_removed = 0
+    if req.clear_payments and getattr(invoice, "customer_id", None):
+        from app.models.customer_financial import CustomerLedgerEntry
+
+        pay_ids = [
+            row[0]
+            for row in db.query(InvoicePayment.id)
+            .filter(
+                InvoicePayment.invoice_id == invoice.id,
+                InvoicePayment.payment_mode != "insurance",
+            )
+            .all()
+        ]
+        if pay_ids:
+            db.query(CustomerLedgerEntry).filter(
+                CustomerLedgerEntry.company_id == invoice.company_id,
+                CustomerLedgerEntry.customer_id == invoice.customer_id,
+                CustomerLedgerEntry.entry_type == "payment",
+                CustomerLedgerEntry.reference_id.in_(pay_ids),
+            ).delete(synchronize_session=False)
     if req.clear_payments:
         payments_removed = (
             db.query(InvoicePayment)
@@ -3494,8 +3563,17 @@ def revert_invoice_paid_status(
 
     previous_status = invoice.status
     previous_payment_status = invoice.payment_status
-    settled = sum_settled_payments(db, invoice.id)
-    new_payment_status = revert_paid_marking(invoice, settled)
+    if getattr(invoice, "customer_id", None):
+        from app.services.customer_invoice_payment_service import (
+            reconcile_customer_ar_for_invoice,
+        )
+
+        ar_result = reconcile_customer_ar_for_invoice(db, invoice)
+        settled = Decimal(str(ar_result.get("settled_amount") or 0))
+        new_payment_status = invoice.payment_status
+    else:
+        settled = sum_settled_payments(db, invoice.id)
+        new_payment_status = revert_paid_marking(invoice, settled)
 
     db.commit()
     db.refresh(invoice)
@@ -3540,13 +3618,27 @@ def reconcile_invoice_payment_status(
             detail=f"Cannot reconcile invoice with status {invoice.status}",
         )
 
+    # Include customer allocations when present; otherwise reconcile from POS payments only.
     settled = sum_settled_payments(db, invoice.id)
+    if getattr(invoice, "customer_id", None):
+        from app.services.customer_invoice_payment_service import total_settled_on_invoice
+
+        settled = total_settled_on_invoice(db, invoice)
     previous = invoice.payment_status
-    new_status = apply_payment_status_from_settled(
-        invoice,
-        settled,
-        approved_by=user.id if invoice.payment_status == "PAID" else None,
-    )
+    ar_result: dict = {}
+    if getattr(invoice, "customer_id", None):
+        from app.services.customer_invoice_payment_service import reconcile_customer_ar_for_invoice
+
+        ar_result = reconcile_customer_ar_for_invoice(db, invoice)
+        settled = Decimal(str(ar_result.get("settled_amount") or 0))
+        new_status = ar_result.get("payment_status") or invoice.payment_status
+    else:
+        settled = sum_settled_payments(db, invoice.id)
+        new_status = apply_payment_status_from_settled(
+            invoice,
+            settled,
+            approved_by=user.id if invoice.payment_status == "PAID" else None,
+        )
     db.commit()
     db.refresh(invoice)
     return {
@@ -3557,6 +3649,8 @@ def reconcile_invoice_payment_status(
         "settled_amount": str(settled),
         "total_inclusive": str(invoice.total_inclusive or 0),
         "reconciled_to": new_status,
+        "balance": str(invoice.balance or 0),
+        "ledger_credits_ensured": int(ar_result.get("ledger_credits_ensured") or 0),
     }
 
 
@@ -3604,9 +3698,12 @@ def delete_invoice_payment(
     db.flush()
 
     remaining = sum_settled_payments(db, invoice.id)
-    apply_payment_status_from_settled(invoice, remaining)
     if getattr(invoice, "customer_id", None):
-        sync_customer_invoice_paid_from_settlements(db, invoice)
+        from app.services.customer_invoice_payment_service import reconcile_customer_ar_for_invoice
+
+        reconcile_customer_ar_for_invoice(db, invoice)
+    else:
+        apply_payment_status_from_settled(invoice, remaining)
 
     db.commit()
     return None
@@ -3657,7 +3754,20 @@ def convert_sales_invoice_to_quotation(
             status_code=400,
             detail="Invoice has no items. Cannot convert to quotation."
         )
-    
+
+    from app.services.quotation_conversion_service import reopen_source_quotation_from_invoice
+
+    restored = reopen_source_quotation_from_invoice(db, invoice)
+    if restored:
+        db.delete(invoice)
+        db.commit()
+        db.refresh(restored)
+        return {
+            "message": "Sales invoice converted back to the original quotation",
+            "quotation_id": str(restored.id),
+            "quotation_no": restored.quotation_no,
+        }
+
     # Generate quotation number
     quotation_no = DocumentService.get_quotation_number(
         db, invoice.company_id, invoice.branch_id
@@ -3703,8 +3813,10 @@ def convert_sales_invoice_to_quotation(
         )
         quotation_items.append(quotation_item)
         db.add(quotation_item)
-    
-    # Delete the sales invoice (it's DRAFT, so safe to delete)
+
+    from app.services.quotation_conversion_service import release_quotations_linked_to_invoice
+
+    release_quotations_linked_to_invoice(db, invoice_id)
     db.delete(invoice)
     
     db.commit()

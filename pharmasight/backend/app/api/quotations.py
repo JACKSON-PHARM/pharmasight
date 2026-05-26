@@ -646,10 +646,20 @@ def convert_quotation_to_invoice(
         raise HTTPException(status_code=404, detail="Quotation not found")
     require_document_belongs_to_user_company(db, user, quotation, "Quotation", request)
     if quotation.status == "converted":
-        raise HTTPException(
-            status_code=400,
-            detail="Quotation has already been converted to an invoice"
-        )
+        linked_invoice = None
+        if quotation.converted_to_invoice_id:
+            linked_invoice = (
+                db.query(SalesInvoice)
+                .filter(SalesInvoice.id == quotation.converted_to_invoice_id)
+                .first()
+            )
+        if linked_invoice and linked_invoice.status == "DRAFT":
+            raise HTTPException(
+                status_code=400,
+                detail="Quotation already has an open draft invoice. Open or delete that invoice first.",
+            )
+        quotation.status = "draft"
+        quotation.converted_to_invoice_id = None
 
     # Convert to an editable sales invoice draft through the normal sales path.
     # That keeps stock and pricing validation aligned with manually-created invoices;

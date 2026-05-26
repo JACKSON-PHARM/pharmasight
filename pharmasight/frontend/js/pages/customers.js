@@ -33,6 +33,7 @@
 
     const customerStatementDateFrom = {};
     const customerStatementDateTo = {};
+    const customerStatementType = {};
     const customerDetailTab = {};
 
     function companyId() {
@@ -438,10 +439,20 @@
         }
     };
 
+    async function refreshCustomerOutstandingCard(customerId) {
+        const el = document.getElementById('customerOutstandingBalance');
+        if (!el) return;
+        try {
+            const a = await API.customers.analytics(customerId, { branch_id: branchId() });
+            el.textContent = fmtMoney(a.outstanding_balance);
+        } catch (_) {}
+    }
+
     async function renderCustomerStatementTab(customerId, customerName, container) {
         const today = new Date();
         const fromDate = customerStatementDateFrom[customerId] || localMonthStart(today);
         const toDate = customerStatementDateTo[customerId] || localDateString(today);
+        const statementType = customerStatementType[customerId] || 'summary';
         container.innerHTML = '<p><i class="fas fa-spinner fa-spin"></i> Loading statement…</p>';
         try {
             const st = await API.customers.getStatement({
@@ -449,6 +460,7 @@
                 branch_id: branchId(),
                 from_date: fromDate,
                 to_date: toDate,
+                statement_type: statementType,
             });
             const integrity = st.statement_integrity || {};
             const status = (integrity.status || 'PASS').toUpperCase();
@@ -459,12 +471,25 @@
                   integrity.warnings.map((w) => '<li>' + esc(w) + '</li>').join('') +
                   '</ul>'
                 : '';
+            const noLinesNote =
+                !(st.lines || []).length && Number(st.opening_balance) === 0 && Number(st.closing_balance) === 0
+                    ? '<p class="text-muted" style="margin:0 0 0.75rem;font-size:0.85rem;">No ledger activity in this period for the selected branch.</p>'
+                    : !(st.lines || []).length && Number(st.opening_balance) !== 0
+                      ? '<p class="text-muted" style="margin:0 0 0.75rem;font-size:0.85rem;">No activity in this period. Balance carried forward from before ' +
+                        esc(st.from_date) +
+                        '.</p>'
+                      : '';
             container.innerHTML = `
                 <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-bottom:1rem;align-items:flex-end;">
                     <div class="form-group" style="margin:0;"><label class="form-label">From</label>
                     <input type="date" id="custStatementDateFrom" class="form-input" value="${esc(fromDate)}"></div>
                     <div class="form-group" style="margin:0;"><label class="form-label">To</label>
                     <input type="date" id="custStatementDateTo" class="form-input" value="${esc(toDate)}"></div>
+                    <div class="form-group" style="margin:0;"><label class="form-label">View</label>
+                    <select id="custStatementType" class="form-input">
+                        <option value="summary" ${statementType === 'summary' ? 'selected' : ''}>Summary</option>
+                        <option value="detailed" ${statementType === 'detailed' ? 'selected' : ''}>Detailed (line items)</option>
+                    </select></div>
                     <button type="button" class="btn btn-primary" id="custStatementApply">Apply</button>
                     <button type="button" class="btn btn-secondary" id="custStatementPrint"><i class="fas fa-print"></i> Print</button>
                     <button type="button" class="btn btn-secondary" id="custStatementPdf"><i class="fas fa-file-pdf"></i> PDF</button>
@@ -486,18 +511,24 @@
                         </div>
                     </div>
                     ${status === 'FAIL' ? '<p style="color:var(--danger-color);font-weight:600;margin:0 0 0.75rem;">DRAFT — NOT FOR EXTERNAL USE until reconciliation passes.</p>' : ''}
+                    ${status === 'PASS_WITH_WARNINGS' ? '<p style="color:var(--warning-color);font-weight:600;margin:0 0 0.75rem;">Reconciled with warnings — review notes below before external use.</p>' : ''}
+                    ${noLinesNote}
                     <table class="data-table" style="width:100%;font-size:0.875rem;">
                         <thead><tr><th>Date</th><th>Description</th><th>Reference</th><th class="text-right">Debit</th><th class="text-right">Credit</th><th class="text-right">Balance</th></tr></thead>
                         <tbody>${(st.lines || [])
                             .map(
-                                (l) => `<tr>
-                            <td>${esc(l.date)}</td>
-                            <td>${esc(l.description || l.entry_type)}</td>
-                            <td>${esc(l.reference || '—')}</td>
-                            <td class="text-right">${fmtMoney(l.debit)}</td>
-                            <td class="text-right">${fmtMoney(l.credit)}</td>
-                            <td class="text-right">${fmtMoney(l.balance)}</td>
-                        </tr>`
+                                (l) => {
+                                    const isDetail = !!l.is_detail;
+                                    const rowStyle = isDetail ? ' style="color:var(--text-secondary);font-size:0.82rem;"' : '';
+                                    return `<tr${rowStyle}>
+                            <td>${isDetail ? '' : esc(l.date)}</td>
+                            <td>${esc(l.description || l.entry_type)}${l.line_amount != null && isDetail ? ' · ' + fmtMoney(l.line_amount) : ''}</td>
+                            <td>${esc(l.reference || (isDetail ? '' : '—'))}</td>
+                            <td class="text-right">${isDetail ? '' : fmtMoney(l.debit)}</td>
+                            <td class="text-right">${isDetail ? '' : fmtMoney(l.credit)}</td>
+                            <td class="text-right">${isDetail ? '' : fmtMoney(l.balance)}</td>
+                        </tr>`;
+                                }
                             )
                             .join('')}</tbody>
                     </table>
@@ -507,9 +538,11 @@
                         ${warnHtml}
                     </div>
                 </div>`;
+            refreshCustomerOutstandingCard(customerId);
             document.getElementById('custStatementApply').addEventListener('click', () => {
                 customerStatementDateFrom[customerId] = document.getElementById('custStatementDateFrom').value;
                 customerStatementDateTo[customerId] = document.getElementById('custStatementDateTo').value;
+                customerStatementType[customerId] = document.getElementById('custStatementType').value || 'summary';
                 renderCustomerStatementTab(customerId, customerName, container);
             });
             document.getElementById('custStatementPrint').addEventListener('click', () => {
@@ -530,6 +563,7 @@
                         branch_id: branchId(),
                         from_date: document.getElementById('custStatementDateFrom').value,
                         to_date: document.getElementById('custStatementDateTo').value,
+                        statement_type: document.getElementById('custStatementType')?.value || 'summary',
                         customer_name: customerName,
                         block_on_fail: false,
                     });
@@ -585,7 +619,7 @@
                 </div>
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.75rem;margin-bottom:1rem;">
                     <div class="card" style="padding:0.75rem;"><div class="text-muted" style="font-size:0.8rem;">30d sales</div><strong>${fmtMoney(analytics.sales_30d)}</strong></div>
-                    <div class="card" style="padding:0.75rem;"><div class="text-muted" style="font-size:0.8rem;">Outstanding</div><strong>${fmtMoney(analytics.outstanding_balance)}</strong></div>
+                    <div class="card" style="padding:0.75rem;"><div class="text-muted" style="font-size:0.8rem;">Outstanding</div><strong id="customerOutstandingBalance">${fmtMoney(analytics.outstanding_balance)}</strong></div>
                     <div class="card" style="padding:0.75rem;"><div class="text-muted" style="font-size:0.8rem;">Overdue</div><strong>${fmtMoney(analytics.overdue_amount)}</strong></div>
                     <div class="card" style="padding:0.75rem;"><div class="text-muted" style="font-size:0.8rem;">Credit limit</div><strong>${creditLine}</strong></div>
                     <div class="card" style="padding:0.75rem;"><div class="text-muted" style="font-size:0.8rem;">Payment terms</div><strong>${terms}</strong></div>
@@ -703,23 +737,31 @@
             return;
         }
         try {
-            const invoices = await API.customers.listInvoices(customerId, { branch_id: branchId(), limit: 12 });
+            const invoices = await API.customers.listInvoices(customerId, { branch_id: branchId(), limit: 25 });
             if (!invoices || !invoices.length) {
                 el.innerHTML = '<p class="text-muted">No previous invoices for this customer yet.</p>';
                 return;
             }
             el.innerHTML = `
                 <table class="data-table" style="width:100%;font-size:0.86rem;">
-                    <thead><tr><th>Date</th><th>Invoice</th><th>Items</th><th class="text-right">Total</th><th></th></tr></thead>
+                    <thead><tr><th>Date</th><th>Invoice</th><th>Items</th><th>Payment</th><th class="text-right">Total</th><th></th></tr></thead>
                     <tbody>${invoices.map(function (inv) {
                         const itemNames = (inv.items || []).map(function (i) {
                             const qty = Number(i.quantity || 0);
                             return esc((i.item_name || 'Item') + (qty ? ' x' + qty : ''));
                         }).join(', ');
+                        const pay = String(inv.payment_status || 'UNPAID').toUpperCase();
+                        const bal = Number(inv.balance || 0);
+                        let payLabel = pay;
+                        if (pay === 'PAID') payLabel = 'Paid';
+                        else if (pay === 'PARTIAL') payLabel = 'Partial';
+                        else if (bal > 0) payLabel = 'Unpaid';
+                        const payColor = pay === 'PAID' ? 'var(--success-color)' : (pay === 'PARTIAL' ? 'var(--warning-color)' : 'var(--danger-color)');
                         return `<tr>
                             <td>${esc(inv.invoice_date || '')}</td>
-                            <td>${esc(inv.invoice_no || '')}</td>
+                            <td><a href="#" onclick="event.preventDefault(); if(window.openSalesInvoiceFromCustomer) window.openSalesInvoiceFromCustomer('${esc(inv.id)}');">${esc(inv.invoice_no || '')}</a></td>
                             <td title="${esc(itemNames)}">${esc(itemNames || (inv.item_count || 0) + ' item(s)')}</td>
+                            <td><span style="color:${payColor};font-weight:600;">${esc(payLabel)}</span>${bal > 0 && pay !== 'PAID' ? ' · ' + fmtMoney(bal) + ' due' : ''}</td>
                             <td class="text-right">${fmtMoney(inv.total_inclusive)}</td>
                             <td class="text-right">
                                 <button type="button" class="btn btn-primary btn-sm" onclick="cloneCustomerInvoiceToDraft('${esc(inv.id)}')">
@@ -734,6 +776,20 @@
         }
     }
     window.loadCustomerInvoices = loadCustomerInvoices;
+
+    // Open a sales invoice from customer profile even if Sales page isn't loaded yet.
+    window.openSalesInvoiceFromCustomer = function (invoiceId) {
+        if (!invoiceId) return;
+        try {
+            sessionStorage.setItem(
+                'pendingLandingDocument',
+                JSON.stringify({ type: 'sales_invoice', invoice_id: invoiceId })
+            );
+        } catch (_) {}
+        if (typeof loadPage === 'function') {
+            loadPage('sales');
+        }
+    };
 
     window.cloneCustomerInvoiceToDraft = async function (invoiceId) {
         if (!invoiceId || !window.API || !API.sales || typeof API.sales.cloneInvoiceToDraft !== 'function') return;
