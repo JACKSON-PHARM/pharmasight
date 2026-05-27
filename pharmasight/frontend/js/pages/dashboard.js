@@ -29,6 +29,20 @@ function getBranchIdForStock() {
     return null;
 }
 
+function getCompanyIdForDashboard() {
+    const branch = typeof BranchContext !== 'undefined' && BranchContext.getBranch ? BranchContext.getBranch() : null;
+    if (branch && branch.company_id) return branch.company_id;
+    if (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID) return CONFIG.COMPANY_ID;
+    try {
+        const saved = localStorage.getItem('pharmasight_config');
+        if (saved) {
+            const c = JSON.parse(saved);
+            if (c.COMPANY_ID) return c.COMPANY_ID;
+        }
+    } catch (e) { /* ignore */ }
+    return null;
+}
+
 function getDashboardParams() {
     const preset = (document.getElementById('dashboardPreset') && document.getElementById('dashboardPreset').value) || 'today';
     let startDate = null;
@@ -169,18 +183,38 @@ async function loadDashboard() {
         if (!endInput.value) endInput.value = today;
     }
 
-    // Apply button: fetch metrics only on click
+    // Apply button: fetch metrics only on click (always fresh — cache cleared in applyDashboardFilters)
     const applyBtn = document.getElementById('dashboardApplyBtn');
     if (applyBtn) {
-        applyBtn.onclick = function () { applyDashboardFilters(); };
+        applyBtn.onclick = function () {
+            applyDashboardFilters();
+        };
     }
 
-    // Load "Items in database" as soon as dashboard is shown (no Apply needed) so it updates after import
-    if (typeof CONFIG !== 'undefined' && CONFIG.COMPANY_ID && typeof API !== 'undefined' && API.items && typeof API.items.count === 'function') {
-        API.items.count(CONFIG.COMPANY_ID).then(function (d) {
-            const el = document.getElementById('totalItems');
-            if (el) el.textContent = (d && d.count != null) ? d.count : 0;
-        }).catch(function () {});
+    const companyId = getCompanyIdForDashboard();
+    if (companyId && typeof API !== 'undefined' && API.items && typeof API.items.count === 'function') {
+        API.items.count(companyId)
+            .then(function (d) {
+                const el = document.getElementById('totalItems');
+                if (el) el.textContent = d && d.count != null ? d.count : 0;
+            })
+            .catch(function () {
+                if (API.items.countSession) {
+                    API.items.countSession()
+                        .then(function (d) {
+                            const el = document.getElementById('totalItems');
+                            if (el) el.textContent = d && d.count != null ? d.count : 0;
+                        })
+                        .catch(function () {});
+                }
+            });
+    } else if (typeof API !== 'undefined' && API.items && typeof API.items.countSession === 'function') {
+        API.items.countSession()
+            .then(function (d) {
+                const el = document.getElementById('totalItems');
+                if (el) el.textContent = d && d.count != null ? d.count : 0;
+            })
+            .catch(function () {});
     }
 }
 
@@ -198,10 +232,15 @@ async function applyDashboardFilters() {
         if (typeof showToast === 'function') showToast('Select a branch first.', 'warning');
         return;
     }
-    if (!CONFIG || !CONFIG.COMPANY_ID) {
+    const companyId = getCompanyIdForDashboard();
+    if (!companyId) {
         if (typeof showToast === 'function') showToast('Company not set.', 'warning');
         return;
     }
+
+    // Apply always refetches — do not reuse cached metrics from a prior click.
+    dashboardCache.range = null;
+    dashboardCache.kpis = null;
 
     const params = getDashboardParams();
     const rangeKey = cacheKeyForRange(branchId, params);
@@ -274,8 +313,8 @@ async function applyDashboardFilters() {
             // NOTE: Expiring KPI requests must wait for this value to avoid
             // race-condition fallback to 365 while drill-down later uses setting.
             const expiringDaysPromise =
-                (API.company && typeof API.company.getSettings === 'function' && CONFIG && CONFIG.COMPANY_ID)
-                    ? API.company.getSettings(CONFIG.COMPANY_ID, 'expiring_soon_days')
+                (API.company && typeof API.company.getSettings === 'function' && companyId)
+                    ? API.company.getSettings(companyId, 'expiring_soon_days')
                         .then(function (d) {
                             const raw = d ? d.value : null;
                             const n = parseInt(raw, 10);
@@ -292,7 +331,28 @@ async function applyDashboardFilters() {
                     });
             promises.push(expiringDaysPromise);
             if (API.items && typeof API.items.count === 'function') {
-                promises.push(API.items.count(CONFIG.COMPANY_ID).then(function (d) { kpis.itemsCount = (d.count != null ? d.count : 0); }).catch(function () { kpis.itemsCount = 0; }));
+                const companyId = getCompanyIdForDashboard();
+                if (companyId) {
+                    promises.push(
+                        API.items.count(companyId)
+                            .then(function (d) {
+                                kpis.itemsCount = d.count != null ? d.count : 0;
+                            })
+                            .catch(function () {
+                                kpis.itemsCount = 0;
+                            })
+                    );
+                } else if (API.items.countSession) {
+                    promises.push(
+                        API.items.countSession()
+                            .then(function (d) {
+                                kpis.itemsCount = d.count != null ? d.count : 0;
+                            })
+                            .catch(function () {
+                                kpis.itemsCount = 0;
+                            })
+                    );
+                }
             }
             if (API.inventory && typeof API.inventory.getItemsInStockCount === 'function') {
                 promises.push(API.inventory.getItemsInStockCount(branchId).then(function (d) { kpis.stockCount = (d.count != null ? d.count : 0); }).catch(function () { kpis.stockCount = 0; }));
@@ -311,7 +371,7 @@ async function applyDashboardFilters() {
                 }));
             }
             if (API.orderBook && typeof API.orderBook.getTodaySummary === 'function') {
-                promises.push(API.orderBook.getTodaySummary(branchId, CONFIG.COMPANY_ID, 50).then(function (s) {
+                promises.push(API.orderBook.getTodaySummary(branchId, companyId, 50).then(function (s) {
                     kpis.orderBookPending = (s && s.pending_count != null ? s.pending_count : 0);
                     cachedOrderBookPendingToday = (s && s.entries) ? s.entries : [];
                 }).catch(function () { kpis.orderBookPending = 0; cachedOrderBookPendingToday = []; }));

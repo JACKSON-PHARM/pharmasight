@@ -1597,9 +1597,8 @@ def _compute_cogs_from_invoice_lines(
     item unit definitions (pack_size, unit names); if those change after batching, line math
     can mis-state COGS vs what was actually deducted at sale time.
 
-    Fallback (legacy / missing SALE ledger): sum per line
-        quantity (sale unit) × multiplier_to_retail × unit_cost_used (per retail/base)
-        when unit_cost_used is set on the line.
+    Fallback (missing SALE ledger): quantity × cost per retail unit from
+        unit_cost_used when set, else margin_reference_unit_cost_base (set at operational batch).
 
     Returns (total_cogs, cogs_by_day_dict or None).
     """
@@ -1662,25 +1661,29 @@ def _compute_cogs_from_invoice_lines(
         else:
             inv_line_cogs = Decimal("0")
             for line in inv.items or []:
-                if not line.unit_cost_used or float(line.unit_cost_used) <= 0:
-                    continue
                 item = line.item
                 if not item:
                     item = db.query(Item).filter(Item.id == line.item_id).first()
                 if not item:
                     continue
 
-                # ARCHITECTURE: unit_cost_used is ALWAYS stored as cost per retail/base unit (ledger/snapshot).
-                # COGS = quantity sold (in retail units) × cost per retail unit.
-                # pack_size is not used for cost; it only affects quantity conversion (sale unit → retail).
                 mult_to_retail = get_unit_multiplier_from_item(item, line.unit_name or "")
                 if mult_to_retail is None or mult_to_retail <= 0:
                     continue
 
                 qty_retail = Decimal(str(line.quantity)) * mult_to_retail
-                cost_per_retail = Decimal(str(line.unit_cost_used))
-                line_cogs = qty_retail * cost_per_retail
-                inv_line_cogs += line_cogs
+                cost_per_retail: Optional[Decimal] = None
+                if line.unit_cost_used and float(line.unit_cost_used) > 0:
+                    cost_per_retail = Decimal(str(line.unit_cost_used))
+                else:
+                    ref_base = getattr(line, "margin_reference_unit_cost_base", None)
+                    if ref_base is not None and float(ref_base) > 0:
+                        cost_per_retail = Decimal(str(ref_base))
+
+                if cost_per_retail is None or cost_per_retail <= 0:
+                    continue
+
+                inv_line_cogs += qty_retail * cost_per_retail
             n_from_lines += 1
 
         invoice_cogs += inv_line_cogs

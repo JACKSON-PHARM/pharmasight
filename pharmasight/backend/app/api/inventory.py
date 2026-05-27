@@ -28,6 +28,10 @@ from app.services.inventory_service import InventoryService, _unit_for_display
 from app.services.item_units_helper import get_stock_display_unit
 from app.services.canonical_pricing import CanonicalPricingService
 from app.services.pricing_service import PricingService
+from app.services.branch_stock_metrics import (
+    count_items_in_stock_from_balances,
+    total_stock_value_from_balances,
+)
 
 router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 
@@ -437,13 +441,8 @@ def get_total_stock_value(
     db: Session = Depends(get_tenant_db),
 ):
     """
-    Get total stock value (KES) for the branch.
-
-    Valuation rule: stock_value = SUM(remaining_qty * base_unit_cost) over remaining batch layers.
-    - Layer identity: (company_id, branch_id, item_id, batch_number, expiry_date, unit_cost).
-    - Remaining per layer = SUM(quantity_delta) grouped by that identity; only layers with remaining > 0 are valued.
-    - Tenant and branch are enforced in the query filter and in the grouping key for safe reuse (e.g. all-branches analytics).
-    - Cost adjustments update ledger_row.unit_cost in place, so the layer's unit_cost reflects the current batch cost.
+    Total stock value (KES) for the branch from inventory_balances (POS on-hand),
+    valued with the same cost-per-retail rules as inventory valuation reports.
     """
     current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
@@ -454,45 +453,9 @@ def get_total_stock_value(
     if not _user_has_permission(db, current_user.id, "inventory.view"):
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    company_item_ids = list(
-        db.query(Item.id).filter(Item.company_id == branch.company_id).all()
+    total_value = total_stock_value_from_balances(
+        db, company_id=branch.company_id, branch_id=branch_id
     )
-    company_item_ids = [r.id for r in company_item_ids]
-    if not company_item_ids:
-        return {"total_value": 0, "currency": "KES"}
-
-    company_id = branch.company_id
-    # Compute total stock value using the SAME valuation approach as the
-    # `/api/inventory/valuation` endpoint (last_cost / selling_price display).
-    # This keeps dashboard "totalStockValue" synchronized with the Current Stock table.
-    stock_rows = (
-        db.query(
-            InventoryLedger.item_id,
-            func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("total_stock"),
-        )
-        .filter(
-            InventoryLedger.item_id.in_(company_item_ids),
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.company_id == company_id,
-        )
-        .group_by(InventoryLedger.item_id)
-        .all()
-    )
-
-    stock_map = {r.item_id: Decimal(str(r.total_stock or 0)) for r in stock_rows}
-    item_ids_with_stock = [iid for iid, qty in stock_map.items() if qty > 0]
-    if not item_ids_with_stock:
-        return {"total_value": 0, "currency": "KES"}
-
-    # last_cost is already "per retail/base unit" so: value = qty_retail * unit_cost_retail
-    cost_per_retail = CanonicalPricingService.get_cost_per_retail_for_valuation_batch(
-        db, item_ids_with_stock, branch_id, company_id
-    ) or {}
-
-    total_value = Decimal("0")
-    for iid in item_ids_with_stock:
-        total_value += stock_map.get(iid, Decimal("0")) * Decimal(str(cost_per_retail.get(iid) or 0))
-
     return {"total_value": round(float(total_value), 2), "currency": "KES"}
 
 
@@ -502,10 +465,7 @@ def get_items_in_stock_count(
     current_user_and_db: tuple = Depends(get_current_user),
     db: Session = Depends(get_tenant_db),
 ):
-    """Get count of distinct items that have stock > 0 at this branch (for dashboard)."""
-    from sqlalchemy import func
-    from app.models import InventoryLedger
-
+    """Count distinct items with stock > 0 (inventory_balances — matches POS on-hand)."""
     current_user, _ = current_user_and_db
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
@@ -515,17 +475,9 @@ def get_items_in_stock_count(
     if not _user_has_permission(db, current_user.id, "inventory.view"):
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    company_item_ids = db.query(Item.id).filter(Item.company_id == branch.company_id)
-    subq = (
-        db.query(InventoryLedger.item_id)
-        .filter(
-            InventoryLedger.branch_id == branch_id,
-            InventoryLedger.item_id.in_(company_item_ids),
-        )
-        .group_by(InventoryLedger.item_id)
-        .having(func.sum(InventoryLedger.quantity_delta) > 0)
-    ).subquery()
-    count = db.query(func.count()).select_from(subq).scalar() or 0
+    count = count_items_in_stock_from_balances(
+        db, company_id=branch.company_id, branch_id=branch_id
+    )
     return {"count": count}
 
 

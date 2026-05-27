@@ -1148,6 +1148,25 @@ def get_item_tier_price(
     return price_data
 
 
+@router.get("/count", response_model=dict)
+def get_items_count_for_session(
+    request: Request,
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Catalog SKU count for the authenticated user's effective company (dashboard)."""
+    user, _ = current_user_and_db
+    company_id = get_effective_company_id_from_request(request, db, user)
+    if company_id is None:
+        company_id = get_effective_company_id_for_user(db, user)
+    if company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Could not resolve company.")
+    if not _user_has_permission(db, user.id, "items.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    count = db.query(Item).filter(Item.company_id == company_id).count()
+    return {"count": count}
+
+
 @router.get("/company/{company_id}/count", response_model=dict)
 def get_items_count(
     company_id: UUID,

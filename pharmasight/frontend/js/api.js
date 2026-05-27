@@ -753,6 +753,7 @@ const API = {
             return api.get(`${CONFIG.API_ENDPOINTS.items}/company/${companyId}/overview${query ? '?' + query : ''}`);
         },
         count: (companyId) => api.get(`${CONFIG.API_ENDPOINTS.items}/company/${companyId}/count`),
+        countSession: () => api.get(`${CONFIG.API_ENDPOINTS.items}/count`),
         get: (itemId, branchId = null) => {
             const params = branchId ? { branch_id: branchId } : {};
             return api.get(`${CONFIG.API_ENDPOINTS.items}/${itemId}`, params);
