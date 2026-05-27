@@ -233,10 +233,11 @@ def build_document_metadata_client_table(
     payment_mode: Optional[str] = None,
     till_number: Optional[str] = None,
     paybill: Optional[str] = None,
+    paybill_account_number: Optional[str] = None,
 ) -> Table:
     """
-    Two-column layout: left = client (or one line: Customer | Payment | Till [| Paybill]); right = "Document:" block.
-    When payment_mode/till_number are provided (sales invoice), left is one line; paybill only if set.
+    Two-column layout: left = client (or one line: Customer | Payment | Till [| Paybill [| Account]]);
+    right = "Document:" block.
     """
     extra_client_rows = extra_client_rows or []
     st = get_document_styles()
@@ -249,6 +250,8 @@ def build_document_metadata_client_table(
             parts.append("Till: " + _escape(str(till_number).strip()))
         if paybill and str(paybill).strip():
             parts.append("Paybill: " + _escape(str(paybill).strip()))
+            if paybill_account_number and str(paybill_account_number).strip():
+                parts.append("Account: " + _escape(str(paybill_account_number).strip()))
         left_para = Paragraph(
             " | ".join(parts),
             ParagraphStyle(name="ClientBlock", parent=st["detail"], fontSize=10, leading=13, spaceAfter=0),

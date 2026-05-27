@@ -4629,11 +4629,36 @@ function generateInvoicePrintHTML(invoice, printType) {
     const vatHeader = showVat ? '<th style="text-align: right;">VAT</th>' : '';
     const colSpanTotal = colCount - 1;
 
+    const splitPaybillAndAccount = (rawPaybill) => {
+        const raw = String(rawPaybill || '').trim();
+        if (!raw) return { paybill: '', account: '' };
+        for (const sep of ['|', ',']) {
+            if (raw.includes(sep)) {
+                const [left, right] = raw.split(sep, 2);
+                return { paybill: String(left || '').trim(), account: String(right || '').trim() };
+            }
+        }
+        return { paybill: raw, account: '' };
+    };
+
     const companyName = invoice.company_name || 'SightOps';
     const companyAddress = invoice.company_address || '';
     const branchName = invoice.branch_name || '';
     const branchAddress = invoice.branch_address || '';
     const branchPhone = invoice.branch_phone || '';
+    const branchTillNumber = (invoice.branch_till_number && String(invoice.branch_till_number).trim())
+        ? String(invoice.branch_till_number).trim()
+        : '';
+    const paybillParsed = splitPaybillAndAccount(
+        invoice.branch_paybill || invoice.paybill || ''
+    );
+    const branchPaybill = paybillParsed.paybill || '';
+    const branchPaybillAccount = (
+        invoice.branch_paybill_account_number && String(invoice.branch_paybill_account_number).trim()
+    ) ? String(invoice.branch_paybill_account_number).trim() : (paybillParsed.account || '');
+    const branchPaymentLine = branchPaybill
+        ? ['Paybill: ' + branchPaybill, branchPaybillAccount ? 'Account: ' + branchPaybillAccount : ''].filter(Boolean).join(' • ')
+        : '';
     const createdByUser = invoice.created_by_username || invoice.created_by_name || '';
     const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     const generatedTime = new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
@@ -4725,6 +4750,8 @@ function generateInvoicePrintHTML(invoice, printType) {
         ${custPinDisplay ? `<p style="margin:0.5mm 0;"><strong>Customer PIN:</strong> ${escapeHtml(custPinDisplay)}</p>` : '<p style="margin:0.5mm 0;"><strong>Customer PIN:</strong> <span style="opacity:0.8">OPTIONAL</span></p>'}
         ${(invoice.customer_phone && String(invoice.customer_phone).trim()) ? `<p style="margin:0.5mm 0;"><strong>Phone:</strong> ${escapeHtml(String(invoice.customer_phone).trim())}</p>` : ''}
         ${(invoice.payment_mode && String(invoice.payment_mode).trim()) ? `<p style="margin:0.5mm 0;"><strong>Payment:</strong> ${escapeHtml(String(invoice.payment_mode).trim())}</p>` : ''}
+        ${(branchTillNumber && String(branchTillNumber).trim()) ? `<p style="margin:0.5mm 0;"><strong>Till:</strong> ${escapeHtml(String(branchTillNumber).trim())}</p>` : ''}
+        ${branchPaymentLine ? `<p style="margin:0.5mm 0;"><strong>${escapeHtml(branchPaymentLine)}</strong></p>` : ''}
     </div>`
         : `<div class="invoice-info">
         <p><strong>Invoice No:</strong> ${escapeHtml(invoice.invoice_no)} &nbsp; <strong>Date:</strong> ${invoiceDate}${invoiceTimeStr ? ` &nbsp; <strong>Time:</strong> ${escapeHtml(invoiceTimeStr)}` : ''}</p>
@@ -4732,6 +4759,8 @@ function generateInvoicePrintHTML(invoice, printType) {
         ${custPinDisplay ? `<p><strong>Customer PIN:</strong> ${escapeHtml(custPinDisplay)}</p>` : '<p><strong>Customer PIN:</strong> <span style="opacity:0.85">OPTIONAL</span></p>'}
         ${(invoice.customer_phone && String(invoice.customer_phone).trim()) ? `<p><strong>Phone:</strong> ${escapeHtml(String(invoice.customer_phone).trim())}</p>` : ''}
         ${(invoice.payment_mode && String(invoice.payment_mode).trim()) ? `<p><strong>Payment:</strong> ${escapeHtml(String(invoice.payment_mode).trim())}</p>` : ''}
+        ${(branchTillNumber && String(branchTillNumber).trim()) ? `<p><strong>Till:</strong> ${escapeHtml(String(branchTillNumber).trim())}</p>` : ''}
+        ${branchPaymentLine ? `<p><strong>${escapeHtml(branchPaymentLine)}</strong></p>` : ''}
     </div>`;
     const invoiceFooterTotal = (invoice.total_inclusive != null && invoice.total_inclusive !== '')
         ? money2(invoice.total_inclusive)

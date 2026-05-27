@@ -279,6 +279,7 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
     payment_mode = payload.get("payment_mode") if doc_type == DOC_TYPE_SALES_INVOICE else None
     till_number = payload.get("till_number") if doc_type == DOC_TYPE_SALES_INVOICE else None
     paybill = payload.get("paybill") if doc_type == DOC_TYPE_SALES_INVOICE else None
+    paybill_account_number = payload.get("paybill_account_number") if doc_type == DOC_TYPE_SALES_INVOICE else None
     flow.append(
         build_document_metadata_client_table(
             metadata_rows=metadata_rows,
@@ -290,6 +291,7 @@ def build_document_pdf(doc_type: str, payload: Dict[str, Any]) -> bytes:
             payment_mode=payment_mode,
             till_number=till_number,
             paybill=paybill if (paybill and str(paybill).strip()) else None,
+            paybill_account_number=paybill_account_number if (paybill and str(paybill).strip()) else None,
         )
     )
     flow.append(Spacer(1, 7 * mm))
@@ -609,6 +611,7 @@ def build_sales_invoice_pdf(
     notes: Optional[str] = None,
     till_number: Optional[str] = None,
     paybill: Optional[str] = None,
+    paybill_account_number: Optional[str] = None,
     prepared_by: Optional[str] = None,
     printed_by: Optional[str] = None,
     served_by: Optional[str] = None,
@@ -653,6 +656,7 @@ def build_sales_invoice_pdf(
         "payment_mode": payment_mode,
         "till_number": till_number,
         "paybill": (paybill or "").strip() or None,
+        "paybill_account_number": (paybill_account_number or "").strip() or None,
         "prepared_by": prepared_by,
         "printed_by": printed_by,
         "served_by": served_by,

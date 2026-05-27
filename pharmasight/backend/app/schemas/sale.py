@@ -169,6 +169,9 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     branch_name: Optional[str] = None
     branch_address: Optional[str] = None
     branch_phone: Optional[str] = None
+    branch_till_number: Optional[str] = None
+    branch_paybill: Optional[str] = None
+    branch_paybill_account_number: Optional[str] = None
     created_by_username: Optional[str] = None
     # Short-lived signed URL for company logo (for print/HTML); only when logo in tenant-assets
     logo_url: Optional[str] = None

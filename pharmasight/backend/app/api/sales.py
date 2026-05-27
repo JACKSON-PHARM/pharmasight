@@ -91,6 +91,24 @@ router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 SNAPSHOT_VS_LEDGER_WARN_THRESHOLD = Decimal("0.01")  # 1% of line_total_exclusive
 
 
+def _split_paybill_and_account(paybill_raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """
+    Parse a paybill string into (paybill_display, account_number).
+    Accepted separators for account suffix: "|" or ",".
+    Example: "Equity 247247, 12345678" -> ("Equity 247247", "12345678")
+    """
+    raw = (paybill_raw or "").strip()
+    if not raw:
+        return (None, None)
+    for sep in ("|", ","):
+        if sep in raw:
+            left, right = raw.split(sep, 1)
+            paybill = left.strip() or raw
+            account = right.strip() or None
+            return (paybill, account)
+    return (raw, None)
+
+
 class DevInvoiceMovementRepairItem(BaseModel):
     item_id: UUID
     quantity: Optional[Decimal] = Field(default=None, gt=0)
@@ -679,7 +697,9 @@ def get_sales_invoice_pdf(
     )
     company_logo_bytes = resolve_company_logo_bytes(getattr(company, "logo_url", None) if company else None, tenant=tenant)
     till_number = getattr(branch, "till_number", None) if branch else None
-    paybill = getattr(branch, "paybill", None) if branch else None
+    paybill, paybill_account_number = _split_paybill_and_account(
+        getattr(branch, "paybill", None) if branch else None
+    )
     prepared_by = None
     served_by = None
     creator = db.query(User).filter(User.id == invoice.created_by).first()
@@ -730,6 +750,7 @@ def get_sales_invoice_pdf(
             notes=getattr(invoice, "notes", None),
             till_number=till_number,
             paybill=paybill,
+            paybill_account_number=paybill_account_number,
             prepared_by=prepared_by,
             printed_by=None,
             served_by=served_by,
@@ -910,6 +931,10 @@ def _get_sales_invoice_response(
         invoice.branch_name = branch.name
         invoice.branch_address = getattr(branch, "address", None) or ""
         invoice.branch_phone = getattr(branch, "phone", None) or ""
+        invoice.branch_till_number = getattr(branch, "till_number", None) or None
+        pb, pb_acc = _split_paybill_and_account(getattr(branch, "paybill", None))
+        invoice.branch_paybill = pb
+        invoice.branch_paybill_account_number = pb_acc
     creator = db.query(User).filter(User.id == invoice.created_by).first()
     if creator:
         invoice.created_by_username = creator.username or getattr(creator, "full_name", None) or ""
