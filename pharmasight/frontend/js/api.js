@@ -986,6 +986,8 @@ const API = {
             ),
         getGrossProfit: (branchId, params = {}) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/gross-profit`, params),
+        getDashboardKpis: (branchId, params = {}) =>
+            api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/dashboard-kpis`, params),
         getBelowMarginSummary: (branchId, params = {}) =>
             api.get(`${CONFIG.API_ENDPOINTS.sales}/branch/${branchId}/below-margin/summary`, params),
         getBelowMarginDetails: (branchId, params = {}) =>

@@ -13,6 +13,7 @@ let dashboardCache = {
     range: null,   // { key, data, ts } for gross profit / sales / orders
     kpis: null     // { branchId, data, ts } for items, stock, value, expiring, orderBook
 };
+let dashboardApplyInFlight = false;
 
 /** Branch for stock/counts: session branch (same as header), then CONFIG, then localStorage. */
 function getBranchIdForStock() {
@@ -238,9 +239,8 @@ async function applyDashboardFilters() {
         return;
     }
 
-    // Apply always refetches — do not reuse cached metrics from a prior click.
-    dashboardCache.range = null;
-    dashboardCache.kpis = null;
+    if (dashboardApplyInFlight) return;
+    dashboardApplyInFlight = true;
 
     const params = getDashboardParams();
     const rangeKey = cacheKeyForRange(branchId, params);
@@ -251,6 +251,8 @@ async function applyDashboardFilters() {
 
     const salesLabel = document.getElementById('dashboardSalesLabel');
     if (salesLabel) salesLabel.textContent = 'Net sales incl. VAT';
+    const applyBtn = document.getElementById('dashboardApplyBtn');
+    if (applyBtn) applyBtn.disabled = true;
 
     try {
         const now = Date.now();
@@ -274,12 +276,44 @@ async function applyDashboardFilters() {
             gpParams.preset = 'today';
         }
 
+        if (!rangeData && API.sales && typeof API.sales.getDashboardKpis === 'function') {
+            try {
+                const d = await API.sales.getDashboardKpis(branchId, gpParams);
+                rangeData = {
+                    sales_exclusive: parseFloat(d.sales_exclusive || 0),
+                    sales_inclusive: parseFloat(d.sales_inclusive || 0),
+                    net_sales_exclusive: parseFloat(d.net_sales_exclusive || 0),
+                    net_sales_inclusive: parseFloat(d.net_sales_inclusive || 0),
+                    credit_notes_inclusive: parseFloat(d.credit_notes_inclusive || 0),
+                    credit_notes_exclusive: parseFloat(d.credit_notes_exclusive || 0),
+                    return_cogs: parseFloat(d.return_cogs || 0),
+                    credit_note_document_count: parseInt(d.credit_note_document_count || 0, 10),
+                    gross_profit: parseFloat(d.gross_profit || 0),
+                    margin_percent: parseFloat(d.margin_percent || 0),
+                    invoice_count: parseInt(d.invoice_count || 0, 10),
+                    start_date: d.start_date,
+                    end_date: d.end_date,
+                    below_margin_lines: parseInt(d.below_margin_lines || 0, 10),
+                    sustainable_min_margin_pct: d.sustainable_min_margin_pct || ''
+                };
+                kpisData = {
+                    itemsCount: d.items_count != null ? Number(d.items_count) : 0,
+                    stockCount: d.stock_count != null ? Number(d.stock_count) : 0,
+                    stockValue: d.stock_value != null ? Number(d.stock_value) : null,
+                    expiringCount: d.expiring_count != null ? Number(d.expiring_count) : 0,
+                    expiringValue: d.expiring_value != null ? Number(d.expiring_value) : 0,
+                    orderBookPending: d.orderbook_pending_count != null ? Number(d.orderbook_pending_count) : 0,
+                    unpaidInvoiceCount: d.unpaid_invoice_count != null ? Number(d.unpaid_invoice_count) : 0,
+                    unpaidInvoiceTotalInclusive: d.unpaid_invoice_total_inclusive != null ? Number(d.unpaid_invoice_total_inclusive) : 0,
+                };
+                dashboardCache.range = { key: rangeKey, data: rangeData, ts: now };
+                dashboardCache.kpis = { branchId: branchId, data: kpisData, ts: now };
+            } catch (_) {
+                // fallback to legacy multi-endpoint path
+            }
+        }
+
         if (!rangeData) {
-            const userId = (window.Permissions && window.Permissions.getSalesViewPermissions)
-                ? await window.Permissions.getSalesViewPermissions(branchId).then(function (p) {
-                    return (!p.canViewAll && p.canViewOwn) ? (CONFIG.USER_ID || null) : null;
-                })
-                : (CONFIG.USER_ID || null);
             const [gpRes, bmRes] = await Promise.all([
                 API.sales.getGrossProfit(branchId, gpParams),
                 (API.sales && typeof API.sales.getBelowMarginSummary === 'function')
@@ -473,6 +507,8 @@ async function applyDashboardFilters() {
         console.error('Error loading dashboard:', error);
         if (typeof showToast === 'function') showToast('Error loading dashboard data', 'error');
     } finally {
+        dashboardApplyInFlight = false;
+        if (applyBtn) applyBtn.disabled = false;
         if (grid) grid.querySelectorAll('.stat-card').forEach(function (card) { card.classList.remove('stat-card-loading'); });
     }
 }

@@ -3,6 +3,8 @@ Sales API routes (KRA Compliant)
 """
 import logging
 import time
+from copy import deepcopy
+from threading import Lock
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session, selectinload
@@ -37,6 +39,7 @@ from app.models import (
     Item, InvoicePayment, UserBranchRole, UserRole,
     CreditNote, CreditNoteItem,
     InsuranceProvider, InsuranceClaim, InsuranceLedgerEntry,
+    DailyOrderBook,
 )
 from app.models.company import Branch, BranchEtimsCredentials, Company
 from app.models.company_kra_profile import CompanyKraProfile
@@ -73,6 +76,10 @@ from app.services.invoice_payment_status import (
 )
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
+from app.services.branch_stock_metrics import (
+    count_items_in_stock_from_balances,
+    total_stock_value_from_balances,
+)
 from app.services.pricing_config_service import validate_line_price, is_line_price_at_promo
 from app.services.etims.invoice_etims_snapshot import (
     apply_etims_snapshots_on_batch,
@@ -89,6 +96,10 @@ router = APIRouter(dependencies=[Depends(require_module("pharmacy"))])
 # Log when draft snapshot COGS (qty×mult×unit_cost_used) would differ from batched ledger by
 # more than this fraction of line revenue (before overwriting unit_cost_used at batch).
 SNAPSHOT_VS_LEDGER_WARN_THRESHOLD = Decimal("0.01")  # 1% of line_total_exclusive
+_GROSS_PROFIT_CACHE_TTL_SECONDS = 30
+_GROSS_PROFIT_CACHE_MAX = 128
+_gross_profit_cache: dict[tuple, tuple[float, dict]] = {}
+_gross_profit_cache_lock = Lock()
 
 
 def _split_paybill_and_account(paybill_raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -1652,9 +1663,8 @@ def _compute_cogs_from_invoice_lines(
     )
     ledger_per_invoice = {r.invoice_id: (r.cogs or Decimal("0")) for r in (ledger_per_inv_rows or [])}
 
-    invoices = (
-        db.query(SalesInvoice)
-        .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+    invoice_rows = (
+        db.query(SalesInvoice.id, SalesInvoice.invoice_date, SalesInvoice.batched_at, SalesInvoice.created_at)
         .filter(
             SalesInvoice.branch_id == branch_id,
             SalesInvoice.status.in_(["BATCHED", "PAID"]),
@@ -1662,13 +1672,25 @@ def _compute_cogs_from_invoice_lines(
         )
         .all()
     )
+    invoices_missing_ledger = [
+        r.id for r in invoice_rows if (ledger_per_invoice.get(r.id) or Decimal("0")) <= 0
+    ]
+    invoices_map_missing: dict[UUID, SalesInvoice] = {}
+    if invoices_missing_ledger:
+        for inv in (
+            db.query(SalesInvoice)
+            .options(selectinload(SalesInvoice.items).selectinload(SalesInvoiceItem.item))
+            .filter(SalesInvoice.id.in_(invoices_missing_ledger))
+            .all()
+        ):
+            invoices_map_missing[inv.id] = inv
     invoice_cogs = Decimal("0")
     invoice_cogs_by_day = {} if by_date else None
     n_from_ledger = 0
     n_from_lines = 0
 
-    for inv in invoices:
-        inv_date = inv.invoice_date or inv.batched_at or inv.created_at
+    for inv_row in invoice_rows:
+        inv_date = inv_row.invoice_date or inv_row.batched_at or inv_row.created_at
         if inv_date is None:
             d = sd
         elif hasattr(inv_date, "date") and callable(getattr(inv_date, "date")):
@@ -1679,12 +1701,15 @@ def _compute_cogs_from_invoice_lines(
             from datetime import datetime as dt
             d = dt.fromisoformat(str(inv_date)[:10]).date() if inv_date else sd
 
-        lid = ledger_per_invoice.get(inv.id) or Decimal("0")
+        lid = ledger_per_invoice.get(inv_row.id) or Decimal("0")
         if lid > 0:
             inv_line_cogs = Decimal(str(lid))
             n_from_ledger += 1
         else:
             inv_line_cogs = Decimal("0")
+            inv = invoices_map_missing.get(inv_row.id)
+            if not inv:
+                continue
             for line in inv.items or []:
                 item = line.item
                 if not item:
@@ -1765,6 +1790,16 @@ def get_branch_gross_profit(
     )
 
     sd, ed = _resolve_date_range(preset, start_date, end_date)
+    cache_key = (
+        str(branch_id),
+        sd.isoformat(),
+        ed.isoformat(),
+        bool(include_breakdown),
+    )
+    with _gross_profit_cache_lock:
+        cached = _gross_profit_cache.get(cache_key)
+        if cached and (time.time() - cached[0]) <= _GROSS_PROFIT_CACHE_TTL_SECONDS:
+            return deepcopy(cached[1])
 
     # Use invoice business date so back-dated invoices stay on their intended day.
     sales_date_key = SalesInvoice.invoice_date
@@ -1898,6 +1933,11 @@ def get_branch_gross_profit(
     }
 
     if not include_breakdown:
+        with _gross_profit_cache_lock:
+            _gross_profit_cache[cache_key] = (time.time(), deepcopy(out))
+            if len(_gross_profit_cache) > _GROSS_PROFIT_CACHE_MAX:
+                oldest_key = min(_gross_profit_cache.items(), key=lambda kv: kv[1][0])[0]
+                _gross_profit_cache.pop(oldest_key, None)
         return out
 
     # Per-day breakdown: sales, credit notes, net sales, cogs, gross profit
@@ -1982,6 +2022,11 @@ def get_branch_gross_profit(
         dcur = dcur + timedelta(days=1)
 
     out["breakdown"] = breakdown
+    with _gross_profit_cache_lock:
+        _gross_profit_cache[cache_key] = (time.time(), deepcopy(out))
+        if len(_gross_profit_cache) > _GROSS_PROFIT_CACHE_MAX:
+            oldest_key = min(_gross_profit_cache.items(), key=lambda kv: kv[1][0])[0]
+            _gross_profit_cache.pop(oldest_key, None)
     return out
 
 
@@ -2023,6 +2068,155 @@ def get_unpaid_invoices_summary(
         "invoice_count": int(getattr(row, "invoice_count", 0) or 0),
         "total_exclusive": str((row.total_exclusive if row else Decimal("0")) or Decimal("0")),
         "total_inclusive": str((row.total_inclusive if row else Decimal("0")) or Decimal("0")),
+    }
+
+
+@router.get("/branch/{branch_id}/dashboard-kpis", response_model=dict)
+def get_dashboard_kpis(
+    branch_id: UUID,
+    preset: Optional[str] = Query(None, description="today | yesterday | this_week | last_week | this_month | last_month | this_year | last_year"),
+    start_date: Optional[date] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
+    current_user_and_db: tuple = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """
+    Consolidated dashboard endpoint to reduce fan-out and timeouts under concurrent load.
+    """
+    user, _ = current_user_and_db
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    effective_company_id = get_effective_company_id_for_user(db, user)
+    if effective_company_id is None or str(branch.company_id) != str(effective_company_id):
+        raise HTTPException(status_code=403, detail="Access denied to this branch")
+    ensure_user_has_branch_access(db, user.id, branch_id)
+    if not _user_has_permission(db, user.id, "sales.view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    gp = get_branch_gross_profit(
+        branch_id=branch_id,
+        preset=preset,
+        start_date=start_date,
+        end_date=end_date,
+        include_breakdown=False,
+        current_user_and_db=current_user_and_db,
+        db=db,
+    )
+    below_margin = get_below_margin_summary(
+        branch_id=branch_id,
+        preset=preset,
+        start_date=start_date,
+        end_date=end_date,
+        current_user_and_db=current_user_and_db,
+        db=db,
+    )
+    unpaid = get_unpaid_invoices_summary(
+        branch_id=branch_id,
+        current_user_and_db=current_user_and_db,
+        db=db,
+    )
+
+    items_count = db.query(Item).filter(Item.company_id == branch.company_id).count()
+    stock_count = None
+    stock_value = None
+    expiring_count = None
+    expiring_value = None
+    if _user_has_permission(db, user.id, "inventory.view"):
+        stock_count = count_items_in_stock_from_balances(
+            db, company_id=branch.company_id, branch_id=branch_id
+        )
+        if _user_has_permission(db, user.id, "inventory.view_cost"):
+            stock_value = round(
+                float(
+                    total_stock_value_from_balances(
+                        db, company_id=branch.company_id, branch_id=branch_id
+                    )
+                ),
+                2,
+            )
+
+        expiring_days_raw = (
+            db.query(CompanySetting.setting_value)
+            .filter(
+                CompanySetting.company_id == branch.company_id,
+                CompanySetting.setting_key == "expiring_soon_days",
+            )
+            .scalar()
+        )
+        try:
+            expiring_days = int(str(expiring_days_raw).strip()) if expiring_days_raw is not None else 365
+        except Exception:
+            expiring_days = 365
+        expiring_days = max(1, min(3650, expiring_days))
+        today = date.today()
+        cutoff = today + timedelta(days=expiring_days)
+        exp_rows = (
+            db.query(
+                InventoryLedger.item_id,
+                InventoryLedger.batch_number,
+                InventoryLedger.expiry_date,
+                func.coalesce(func.sum(InventoryLedger.quantity_delta), 0).label("qty"),
+                func.coalesce(func.sum(InventoryLedger.total_cost), 0).label("val"),
+            )
+            .filter(
+                InventoryLedger.company_id == branch.company_id,
+                InventoryLedger.branch_id == branch_id,
+                InventoryLedger.expiry_date.isnot(None),
+                InventoryLedger.expiry_date >= today,
+                InventoryLedger.expiry_date <= cutoff,
+            )
+            .group_by(
+                InventoryLedger.item_id,
+                InventoryLedger.batch_number,
+                InventoryLedger.expiry_date,
+            )
+            .having(func.sum(InventoryLedger.quantity_delta) > 0)
+            .all()
+        )
+        expiring_count = len(exp_rows)
+        expiring_value = float(sum(Decimal(str(r.val or 0)) for r in exp_rows))
+
+    orderbook_pending = None
+    if _user_has_permission(db, user.id, "orders.view"):
+        today = date.today()
+        q = db.query(DailyOrderBook).filter(
+            DailyOrderBook.branch_id == branch_id,
+            DailyOrderBook.company_id == branch.company_id,
+            DailyOrderBook.status == "PENDING",
+        )
+        if hasattr(DailyOrderBook, "entry_date"):
+            q = q.filter(DailyOrderBook.entry_date == today)
+        else:
+            q = q.filter(func.date(DailyOrderBook.created_at) == today)
+        orderbook_pending = int(q.count() or 0)
+
+    return {
+        "start_date": gp.get("start_date"),
+        "end_date": gp.get("end_date"),
+        "sales_exclusive": gp.get("sales_exclusive"),
+        "sales_inclusive": gp.get("sales_inclusive"),
+        "credit_notes_exclusive": gp.get("credit_notes_exclusive"),
+        "credit_notes_inclusive": gp.get("credit_notes_inclusive"),
+        "credit_note_document_count": gp.get("credit_note_document_count"),
+        "return_cogs": gp.get("return_cogs"),
+        "net_sales_exclusive": gp.get("net_sales_exclusive"),
+        "net_sales_inclusive": gp.get("net_sales_inclusive"),
+        "cogs": gp.get("cogs"),
+        "gross_profit": gp.get("gross_profit"),
+        "margin_percent": gp.get("margin_percent"),
+        "invoice_count": gp.get("invoice_count"),
+        "below_margin_lines": int(below_margin.get("line_count", 0) or 0),
+        "sustainable_min_margin_pct": below_margin.get("sustainable_min_margin_pct") or "",
+        "items_count": int(items_count or 0),
+        "stock_count": stock_count,
+        "stock_value": stock_value,
+        "expiring_count": expiring_count,
+        "expiring_value": expiring_value,
+        "orderbook_pending_count": orderbook_pending,
+        "unpaid_invoice_count": int(unpaid.get("invoice_count", 0) or 0),
+        "unpaid_invoice_total_inclusive": float(Decimal(str(unpaid.get("total_inclusive", 0) or 0))),
+        "cogs_source": gp.get("cogs_source"),
     }
 
 
