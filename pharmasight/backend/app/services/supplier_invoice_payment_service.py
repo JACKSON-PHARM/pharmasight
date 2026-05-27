@@ -11,6 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import SupplierPaymentAllocation, SupplierInvoice
+from app.utils.money import money_amount
 
 
 def sum_allocations_for_invoice(db: Session, invoice_id: UUID) -> Decimal:
@@ -20,7 +21,7 @@ def sum_allocations_for_invoice(db: Session, invoice_id: UUID) -> Decimal:
         .filter(SupplierPaymentAllocation.supplier_invoice_id == invoice_id)
         .scalar()
     )
-    return Decimal(str(row or 0))
+    return money_amount(row or 0)
 
 
 def sync_supplier_invoice_paid_from_allocations(db: Session, invoice: SupplierInvoice) -> None:
@@ -32,7 +33,7 @@ def sync_supplier_invoice_paid_from_allocations(db: Session, invoice: SupplierIn
     if total_paid < 0:
         total_paid = Decimal("0")
 
-    ti = invoice.total_inclusive or Decimal("0")
+    ti = money_amount(invoice.total_inclusive)
     invoice.amount_paid = total_paid
 
     if ti <= 0:
@@ -40,8 +41,8 @@ def sync_supplier_invoice_paid_from_allocations(db: Session, invoice: SupplierIn
         invoice.payment_status = "PAID" if total_paid > 0 else "UNPAID"
         return
 
-    bal = ti - total_paid
-    if bal <= 0:
+    bal = money_amount(ti - total_paid)
+    if bal <= Decimal("0"):
         invoice.balance = Decimal("0")
         invoice.payment_status = "PAID"
     elif total_paid <= 0:
@@ -54,9 +55,9 @@ def sync_supplier_invoice_paid_from_allocations(db: Session, invoice: SupplierIn
 
 def outstanding_after_allocations(db: Session, invoice: SupplierInvoice) -> Decimal:
     """Remaining invoice balance: total_inclusive minus sum of allocation rows (for validation)."""
-    ti = invoice.total_inclusive or Decimal("0")
+    ti = money_amount(invoice.total_inclusive)
     paid = sum_allocations_for_invoice(db, invoice.id)
-    out = ti - paid
+    out = money_amount(ti - paid)
     if out < 0:
         return Decimal("0")
     return out

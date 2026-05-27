@@ -12,18 +12,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.sale import InvoicePayment, SalesInvoice
+from app.utils.money import decimal_amount as _d
+from app.utils.money import money_amount
 
 # KES: treat within 1 cent as fully settled (rounding / legacy rows).
 PAYMENT_SETTLEMENT_TOLERANCE = Decimal("0.01")
 
 # POS rows that reduce invoice / customer AR (not sale-on-account or insurer receivable).
 NON_SETTLING_POS_PAYMENT_MODES = frozenset({"insurance", "credit", ""})
-
-
-def _d(value) -> Decimal:
-    if value is None:
-        return Decimal("0")
-    return Decimal(str(value))
 
 
 def sum_settled_payments(db: Session, invoice_id: UUID) -> Decimal:
@@ -38,13 +34,14 @@ def sum_settled_payments(db: Session, invoice_id: UUID) -> Decimal:
         if (mode or "").strip().lower() in NON_SETTLING_POS_PAYMENT_MODES:
             continue
         total += _d(amount)
-    return total
+    return money_amount(total)
 
 
 def outstanding_balance(invoice: SalesInvoice, settled: Optional[Decimal] = None) -> Decimal:
-    total = _d(invoice.total_inclusive)
-    paid = settled if settled is not None else Decimal("0")
-    return total - paid
+    total = money_amount(invoice.total_inclusive)
+    paid = money_amount(settled if settled is not None else Decimal("0"))
+    balance = total - paid
+    return balance if balance > 0 else Decimal("0")
 
 
 def is_fully_settled(invoice: SalesInvoice, settled: Decimal) -> bool:
@@ -61,7 +58,7 @@ def apply_payment_status_from_settled(
     Update invoice.payment_status (and status when fully paid).
     Returns the new payment_status string.
     """
-    total = _d(invoice.total_inclusive)
+    settled = money_amount(settled)
     if is_fully_settled(invoice, settled):
         invoice.payment_status = "PAID"
         invoice.status = "PAID"

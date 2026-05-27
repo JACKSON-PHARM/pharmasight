@@ -74,6 +74,7 @@ from app.services.invoice_payment_status import (
     revert_paid_marking,
     sum_settled_payments,
 )
+from app.utils.money import money_amount
 from app.services.snapshot_service import SnapshotService
 from app.services.snapshot_refresh_service import SnapshotRefreshService
 from app.services.branch_stock_metrics import (
@@ -3564,12 +3565,13 @@ def add_invoice_payment(
         )
     existing_settled = sum_settled_payments(db, invoice_id)
     increment = Decimal("0") if pay_mode in ("insurance", "credit", "") else payment.amount
-    effective_total_after = existing_settled + increment
-    if effective_total_after > Decimal(str(invoice.total_inclusive or 0)) + PAYMENT_SETTLEMENT_TOLERANCE:
+    effective_total_after = money_amount(existing_settled + increment)
+    invoice_total = money_amount(invoice.total_inclusive)
+    if effective_total_after > invoice_total + PAYMENT_SETTLEMENT_TOLERANCE:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Payment amount exceeds invoice total. Invoice: {invoice.total_inclusive}, "
+                f"Payment amount exceeds invoice total. Invoice: {invoice_total}, "
                 f"Settled after payment: {effective_total_after}"
             ),
         )
