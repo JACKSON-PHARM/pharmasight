@@ -617,9 +617,12 @@ def _worker_loop() -> None:
     poll = max(int(settings.KRA_OUTBOX_POLL_SECONDS or 5), 1)
     while not _stop_event.is_set():
         try:
-            process_outbox_once()
+            processed = process_outbox_once()
         except Exception:
             logger.exception("KRA outbox loop error")
+            processed = 0
+        if processed > 0:
+            continue
         _stop_event.wait(poll)
     logger.info("KRA outbox worker stopped")
 
